@@ -1,0 +1,19 @@
+package isabelle.mcp
+
+import isabelle._
+
+object MCP_Main {
+
+  def mcp(options: Options, progress: Progress = new Progress): Unit = {
+    progress.echo("hello world!")
+  }
+
+  val isabelle_tool =
+    Isabelle_Tool("mcp_server", "Model Context Protocol Server for PIDE", Scala_Project.here,
+    { args => ()
+      var options = Option.init()
+      mcp(options)
+    })
+}
+
+Class Tools extends Isabelle_Scala_Tools(MCP_Main.isabelle_tool)

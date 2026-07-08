@@ -1,0 +1,22 @@
+title = Model Context Protocol server
+
+# output jar
+module = lib/mcp.jar
+
+# list of jar modules needed during the compilation process
+requirements = \
+  env:ISABELLE_SCALA_JAR
+
+# list of files that should be included in the output jar file
+#resources = \ source:target
+
+# list of scala or java files to include in this module
+sources = \
+  src/mcp-main.scala \
+  src/mcp_session.scala \
+  src/mcp_server.scala
+
+# service providers: subclasses of isabelle.Isabelle_System.Service,
+# e.g. isabelle.Isabelle_Scala_Tools for command-line tools
+services = \
+  isabelle.mcp.Tools

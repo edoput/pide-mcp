@@ -1,0 +1,4 @@
+session "MCP-Tools" = Pure +
+  description "MCP tool registry and protocol commands for isabelle mcp_server"
+  theories
+    MCP_Tools
