@@ -12,10 +12,31 @@ package isabelle.mcp
 
 import isabelle._
 
+
+/* what the JSON-RPC layer (MCP_Server.Handler) needs from the prover side:
+   MCP_Session is the real implementation, tests substitute MCP_Test.Fake_Backend */
+trait MCP_Backend {
+  def ml_tools(): List[(String, String)]
+  def ml_run(name: String, arg: String): MCP_Session.Result
+  def mcp_resources(): List[(String, String, String)]
+  def mcp_resource_read(uri: String): MCP_Session.Result
+  def stop(): Unit
+}
+
 object MCP_Session {
   sealed abstract class Result { def ok: Boolean }
   case class Ok(text: String) extends Result { def ok = true }
   case class Error(message: String) extends Result { def ok = false }
+
+  def decode_tools(body: XML.Body): List[(String, String)] = {
+    import XML.Decode._
+    list(pair(string, string))(body)
+  }
+
+  def decode_theories(body: XML.Body): List[String] = {
+    import XML.Decode._
+    list(string)(body)
+  }
 
   def start(
     options: Options,
@@ -36,7 +57,7 @@ object MCP_Session {
       Headless.Resources.make(options, session_name, session_dirs = session_dirs,
         progress = progress)
     val session = resources.start_session(progress = progress)
-    val mcp_session = new MCP_Session(session)
+    val mcp_session = new MCP_Session(session, session_name, session_dirs, theory)
 
     /* theories already in the session image keep their protocol commands
        (defined at build time, persisted in the heap); anything else is
@@ -59,20 +80,33 @@ object MCP_Session {
   }
 }
 
-class MCP_Session private(val session: Headless.Session) {
+class MCP_Session private(
+  val session: Headless.Session,
+  val session_name: String,
+  val session_dirs: List[Path],
+  val theory: String
+) extends MCP_Backend {
   private val tools_promises =
     Synchronized(List.empty[Promise[List[(String, String)]]])
+  private val theories_promises =
+    Synchronized(List.empty[Promise[List[String]]])
   private val run_promises =
     Synchronized(Map.empty[String, Promise[MCP_Session.Result]])
 
   private object Handler extends Session.Protocol_Handler {
     private def tools_result(msg: Prover.Protocol_Output): Boolean = {
-      val tools = {
-        import XML.Decode._
-        list(pair(string, string))(YXML.parse_body(msg.chunk))
-      }
+      val tools = MCP_Session.decode_tools(YXML.parse_body(msg.chunk))
       tools_promises.change { promises =>
         promises.reverse.foreach(_.fulfill(tools))
+        Nil
+      }
+      true
+    }
+
+    private def theories_result(msg: Prover.Protocol_Output): Boolean = {
+      val theories = MCP_Session.decode_theories(YXML.parse_body(msg.chunk))
+      theories_promises.change { promises =>
+        promises.reverse.foreach(_.fulfill(theories))
         Nil
       }
       true
@@ -97,6 +131,7 @@ class MCP_Session private(val session: Headless.Session) {
     override val functions: Session.Protocol_Functions =
       List(
         "MCP.tools_result" -> tools_result,
+        "MCP.theories_result" -> theories_result,
         "MCP.run_tool_result" -> run_tool_result)
   }
 
@@ -109,6 +144,13 @@ class MCP_Session private(val session: Headless.Session) {
     promise.join
   }
 
+  def ml_theories(): List[String] = {
+    val promise = Future.promise[List[String]]
+    theories_promises.change(promise :: _)
+    session.protocol_command("MCP.theories")
+    promise.join
+  }
+
   def ml_run(name: String, arg: String): MCP_Session.Result = {
     val id = UUID.random().toString
     val promise = Future.promise[MCP_Session.Result]
@@ -117,5 +159,23 @@ class MCP_Session private(val session: Headless.Session) {
     promise.join
   }
 
-  def stop(): Process_Result = session.stop()
+  /* isabelle://session: the cheap always-there overview (name, dirs, loaded
+     theory, loaded theories via Thy_Info.get_names()). no repls/scope yet
+     -- those need the MCP_Session.ir bridge and a scope feature that don't
+     exist yet */
+  def mcp_resources(): List[(String, String, String)] =
+    List(("isabelle://session", "session", "current session name, dirs, loaded theories"))
+
+  def mcp_resource_read(uri: String): MCP_Session.Result =
+    uri match {
+      case "isabelle://session" =>
+        MCP_Session.Ok(
+          "session: " + session_name + "\n" +
+          "dirs: " + session_dirs.map(_.implode).mkString(", ") + "\n" +
+          "theory: " + theory + "\n" +
+          "theories: " + ml_theories().mkString(", "))
+      case _ => MCP_Session.Error("Unknown MCP resource " + quote(uri))
+    }
+
+  def stop(): Unit = { session.stop(); () }
 }
