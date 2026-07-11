@@ -36,6 +36,9 @@ trait MCP_Backend {
   def load_theory(name: String, master_dir: String): MCP_Session.Result
   def unload_theory(name: String): MCP_Session.Result
   def check_theory(name: String, master_dir: String): MCP_Session.Result
+  def list_sessions_info(): MCP_Session.Result
+  def list_theories_info(session: String): MCP_Session.Result
+  def search_sources(pattern: String): MCP_Session.Result
   def stop(): Unit
 }
 
@@ -740,23 +743,43 @@ class MCP_Session private(
   /* wave 3 library discovery tools: pure functions over structure/deps
      maps and store (no prover) */
 
-  /* list_sessions: return all known sessions with metadata. Each entry:
-     name, chapter, description, heap_present, is_base_session, theory_count. */
-  def list_sessions_info(): List[Map[String, Any]] = {
-    sessions_map
+  /* list_sessions: return all known sessions as text report with metadata. */
+  def list_sessions_info(): MCP_Session.Result = {
+    val sessions = sessions_map
       .map { case (name, (chapter, description, theories)) =>
         val heap_present = store.get_session(name).defined
-        Map(
-          "name" -> name,
-          "chapter" -> chapter,
-          "description" -> description,
-          "heap_present" -> heap_present,
-          "is_base_session" -> (name == session_name),
-          "theory_count" -> theories.length
-        )
+        (name, chapter, description, heap_present, name == session_name, theories.length)
       }
       .toList
-      .sortBy(_("name").asInstanceOf[String])
+      .sortBy(_._1)
+    val header = "   session       chapter  heap  theories"
+    val rows = sessions.map { case (name, chapter, desc, heap, is_base, count) =>
+      val heap_marker = if (heap) "✓" else " "
+      val base_marker = if (is_base) " [BASE]" else ""
+      "%-18s %-12s  %s      %3d%s".format(name, chapter, heap_marker, count, base_marker)
+    }
+    MCP_Session.Ok(if (rows.isEmpty) header else header + "\n" + rows.mkString("\n"))
+  }
+
+  /* list_theories: return theories in a given session with file paths. */
+  def list_theories_info(sess: String): MCP_Session.Result = {
+    sessions_map.get(sess) match {
+      case None =>
+        MCP_Session.Error("Unknown session " + quote(sess) + "; use list_sessions to discover")
+      case Some((_, _, theories)) =>
+        val header = "   theory name"
+        val rows = theories.sorted
+        MCP_Session.Ok(if (rows.isEmpty) header else header + "\n" + rows.map("   " + _).mkString("\n"))
+    }
+  }
+
+  /* search_sources: find theories by name pattern. */
+  def search_sources(pattern: String): MCP_Session.Result = {
+    val matches =
+      if (pattern.isEmpty) Nil
+      else theory_map.keys.filter(_.contains(pattern)).toList.sorted
+    val header = "   matching theories"
+    MCP_Session.Ok(if (matches.isEmpty) header + " (no matches)" else header + "\n" + matches.map("   " + _).mkString("\n"))
   }
 
   def stop(): Unit = { session.stop(); () }

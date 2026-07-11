@@ -627,12 +627,64 @@ object MCP_Server {
       handler_fn = Some((backend, args) =>
         backend.check_theory(pass_arg(args, "name"), pass_arg(args, "master_dir"))))
 
+  val list_sessions_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "list_sessions",
+      fname = "",
+      description =
+        "List all Isabelle sessions known to the server, enumerated " +
+        "from ROOT files on the configured session directories " +
+        "(distribution, AFP if registered, etc.). Each entry shows " +
+        "session name, chapter, whether a built heap exists, and " +
+        "theory count. Mark the session the server is running as base " +
+        "image. Sessions are coarse-grained units: theories in the base " +
+        "image are queryable now; others require load_theory (slow) or " +
+        "a heap rebuild + server restart (fast, coarse). Follow with " +
+        "list_theories to see what is in a session.",
+      input_schema = input_schema,
+      annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
+      handler_fn = Some((backend, _) => backend.list_sessions_info()))
+
+  val list_theories_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "list_theories",
+      fname = "",
+      description =
+        "List all theories in a given Isabelle session (by name, as " +
+        "shown by list_sessions). Each entry is a long theory name; " +
+        "use load_theory to load one, search_sources for a name search.",
+      input_schema =
+        JSON.Object(
+          "type" -> "object",
+          "properties" -> JSON.Object("session" -> JSON.Object("type" -> "string")),
+          "required" -> List("session")),
+      annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
+      handler_fn = Some((backend, args) => backend.list_theories_info(pass_arg(args, "session"))))
+
+  val search_sources_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "search_sources",
+      fname = "",
+      description =
+        "Search for theories by substring match. Scans all theories " +
+        "across all sessions and returns long names that contain the " +
+        "given pattern. Empty pattern returns no results (use " +
+        "list_theories for a full enumeration of one session).",
+      input_schema =
+        JSON.Object(
+          "type" -> "object",
+          "properties" -> JSON.Object("pattern" -> JSON.Object("type" -> "string")),
+          "required" -> List("pattern")),
+      annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
+      handler_fn = Some((backend, args) => backend.search_sources(pass_arg(args, "pattern"))))
+
   val builtins: List[Builtin_Tool] =
     List(repl_list_tool, repl_init_tool, repl_remove_tool, repl_step_tool, repl_state_tool,
       repl_show_tool, repl_text_tool, repl_edit_tool, repl_replay_tool, repl_truncate_tool,
       repl_back_tool, repl_merge_tool, repl_timeout_tool, repl_pin_tool, repl_unpin_tool,
       repl_rebase_tool, sledgehammer_tool, find_theorems_tool,
-      load_theory_tool, unload_theory_tool, check_theory_tool)
+      load_theory_tool, unload_theory_tool, check_theory_tool,
+      list_sessions_tool, list_theories_tool, search_sources_tool)
 
   /* json arguments object -> the named yxml pair list MCP.ir expects;
      a string property becomes one pair, a json array of strings becomes

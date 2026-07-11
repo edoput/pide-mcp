@@ -167,6 +167,12 @@ class Fake_Backend extends MCP_Backend {
     loaded_theories += name
     MCP_Session.Ok(name + ": ok")
   }
+  def list_sessions_info(): MCP_Session.Result =
+    MCP_Session.Ok("   session       chapter  heap  theories\n   HOL           main     ✓      42\n   HOL-Library   main     ✓      18")
+  def list_theories_info(session: String): MCP_Session.Result =
+    MCP_Session.Ok("   theory name\n   HOL.Main\n   HOL.Nat")
+  def search_sources(pattern: String): MCP_Session.Result =
+    MCP_Session.Ok("   matching theories\n   HOL.Main")
   def stop(): Unit = stopped = true
 }
 
