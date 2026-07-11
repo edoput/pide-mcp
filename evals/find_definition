@@ -1,0 +1,53 @@
+find_definition — evaluation
+=============================
+
+status: planned (2026-07-09)
+focal tool: find_definition (plans/find_definition)
+
+task
+----
+answer "what IS this name" from the prover's own registry — kinds,
+internal names, defining source blocks — replacing name-guessing.
+
+setup
+-----
+fresh server; MCP-HOL's fixture theories (with segments) available
+for the enrichment branch.
+
+prompt
+------
+"Three questions about names in this Isabelle environment:
+1. Where is `rev` defined, and what is its full internal name?
+2. `map` exists as a constant — but is there anything else in the
+   environment that also answers to the name `map`?
+3. For the datatype `'a tree` in <fixture theory>: show me its
+   complete definition, including all constructors."
+
+success
+-------
+(1) List.rev with a real position; (2) all kinds matching "map"
+reported (the ambiguity/kind-sweep feature); (3) the whole datatype
+command text (source-block enrichment), constructors visible.
+
+signals
+-------
+- kind arg use: question 2 invites omitting `kind` (search all) —
+  does the agent grasp that omitted = all, or fire seven kind-
+  specific calls? (fine, but 7x the calls; description clarity
+  finding.)
+- short vs internal names: does the agent pass "rev" and accept the
+  externed resolution, or overqualify?
+- probe-safety in practice: an unknown-name miss (ok, "no
+  definition found") should keep the agent probing, not aborting
+  (plans/find_definition T3's rationale).
+- question 3 is the enrichment claim: does the agent get the
+  constructors from the tool, or bail out to search_sources/reading
+  the file? bailing means enrichment output isn't surfacing.
+
+reflection
+----------
+- the eval measures whether ONE tool spanning seven name spaces is
+  the right granularity, or whether agents would be better served
+  by the kind being required (fewer surprising multi-kind replies).
+  transcripts with confused multi-kind replies argue for the
+  latter; smooth ones vindicate the design.

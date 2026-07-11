@@ -1,0 +1,123 @@
+builtin tool implementation plans
+=================================
+
+one file per builtin tool from the spec's phase 2 (sections "mcp tools
+(new, structured)" and following). since 2026-07-11 the directory also
+holds phase-3 plans, which may cover a feature or a tool family
+rather than a single tool: mcp_tool_registry (the registry pivot),
+tool_scope (the tool_scope_* builtin family), mcp_tool_command (the
+mcp_tool/mcp_resource outer syntax + params machinery). each plan pins down, for one tool:
+
+- advertised metadata: exposed name, description text, inputSchema
+  (json property names = the yxml pair keys of the argument encoding),
+  annotations. this is the exact data for the scala builtin table row.
+- backing mechanism and the name/argument mapping across the layers
+  (mcp name -> bridge fname -> engine function).
+- implementation steps, smallest first, each independently verifiable.
+- ASSUMPTIONS the tool relies on — infrastructure it presumes, prover
+  behavior it presumes, spec decisions it depends on — each with the
+  concrete test that checks it, placed in the four-layer pyramid
+  (ml unit / scala unit / bridge / e2e; see the spec's "testing
+  architecture" and phase 2 "testing" sections).
+
+testing process (since 2026-07-10, munit migration -- see CHANGELOG
+"testing infrastructure"): the pyramid's layer names are unchanged,
+but the scala layers are now munit suites in the separate mcp_test/
+component. new [scala unit] cases go in a suite in
+mcp_test/src/mcp_handler_tests.scala over Fake_Backend (which lives
+in mcp_test/src/mcp_testing.scala); new [bridge] cases in
+mcp_test/src/mcp_bridge_tests.scala, extending MCP_Session_Suite
+(one headless PIDE session per suite; with_repl / slow_step /
+await_busy / eventually / expect_ok / expect_error fixtures);
+register new suites in mcp_test/src/mcp_test_tool.scala. run:
+isabelle mcp_test [-b] [-t PATTERN]. plans written before the
+migration say things like "scala unit round-trips in isabelle
+mcp_test" -- read those through this mapping.
+
+added 2026-07-10: MCP_Heap_Suite (mcp_test/src/mcp_testing.scala), a
+third fixture between [scala unit] and [bridge] -- raw ML evaluated
+by a fresh `isabelle ML_process` against a saved heap (ml / ml_check
+/ ml_test helpers; suites go in mcp_test/src/mcp_heap_tests.scala,
+run under -b). use it for FRESH-PROCESS/heap-restart claims, the one
+environment neither build-time \<^assert> theories (they run inside
+the building process, where e.g. Thy_Info segments still exist) nor
+Fake_Backend can exercise: Thy_Info keying, name-space entry
+survival, whether recorded segments reach a fresh process (they do,
+for record_theories heaps -- the old "segments KNOWN GAP" was
+retracted 2026-07-10, see CHANGELOG; it was the name-normalization
+bug in disguise), and the like (see plans/find_definition's entities
+notes). it has NO Scala context -- \<^scala>, protocol commands and
+PIDE snapshots still need MCP_Session_Suite. heap loads cost seconds:
+batch related assertions into one ml() call.
+
+plans refine the spec where per-tool honesty demands it (e.g. the
+spec's coarse "repl_* is mutating" annotation blanket vs the actually
+read-only repl_list); every such refinement is flagged with
+"spec refinement:" so it can be folded back into the spec.
+
+each plan has a parallel agent evaluation under evals/ (same name:
+evals/repl_step for plans/repl_step). plans verify the mechanism;
+evaluations verify the abstraction — given only a task, does an
+agent find the tool, call it correctly, recover from its errors?
+evaluation failures feed the reflection loop described in
+evals/README and can send a tool back to the spec for a second
+implementation.
+
+status key: [ ] planned only, [x] implemented and green.
+
+process rule (.claude/rules/plan-tasks.md): implementation of a plan
+STARTS by creating a task per implementation step (plus tests +
+close-out) and keeping them live — the plan is the record, the tasks
+are the tracker.
+
+index (wave order from the spec's implementation plan)
+------------------------------------------------------
+
+wave 0 — shared infrastructure (prerequisites, not tools):
+  MCP_Session.ir promise-by-id bridge; named-args yxml encoding on
+  both sides; builtin tool table + tools/list merge + tools/call
+  dispatch. assumptions owned by these are stated once in the pilot
+  plan (repl_list) and referenced as I1..I5 by later plans.
+
+wave 1 — repl lifecycle + stepping + proof search (MCP.ir bridge):
+  - [x] repl_list              plans/repl_list   (pilot: full template)
+  - [x] repl_init              plans/repl_init
+  - [ ] repl_init_from_source  plans/repl_init_from_source
+  - [ ] repl_fork              plans/repl_fork
+  - [x] repl_remove            plans/repl_remove
+  - [x] repl_step              plans/repl_step
+  - [x] repl_state             plans/repl_state
+  - [x] repl_show              plans/repl_show
+  - [x] repl_text              plans/repl_text
+  - [x] repl_edit              plans/repl_edit
+  - [x] repl_replay            plans/repl_replay
+  - [x] repl_truncate          plans/repl_truncate
+  - [x] repl_back              plans/repl_back
+  - [x] repl_merge             plans/repl_merge
+  - [x] repl_timeout           plans/repl_timeout
+  - [x] repl_pin               plans/repl_pin
+  - [x] repl_unpin             plans/repl_unpin
+  - [x] repl_rebase            plans/repl_rebase
+  - [x] sledgehammer           plans/sledgehammer
+  - [x] find_theorems          plans/find_theorems
+
+wave 2 — theory management (headless use_theories, scala side):
+  - [x] load_theory            plans/load_theory
+  - [x] unload_theory          plans/unload_theory
+  - [x] check_theory           plans/check_theory
+
+wave 3 — library discovery (session-structure index, scala side):
+  - [ ] session_structure      plans/session_structure (umbrella:
+        startup structure/deps + resolve_theory infra, filesystem-tier
+        resource widening, load_theory session-qualified resolution;
+        the tools below build on it)
+  - [ ] list_sessions          plans/list_sessions
+  - [ ] list_theories          plans/list_theories
+  - [ ] search_sources         plans/search_sources
+
+wave 4 — scope + navigation:
+  - [ ] scope_add              plans/scope_add
+  - [ ] scope_remove           plans/scope_remove
+  - [ ] scope_show             plans/scope_show
+  - [ ] find_definition        plans/find_definition   (MCP.ir, name-space lookup)
+  - [ ] goto_definition        plans/goto_definition   (scala, snapshot entity markup)

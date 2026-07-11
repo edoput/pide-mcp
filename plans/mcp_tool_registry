@@ -1,0 +1,145 @@
+mcp_tool registry pivot — implementation plan
+==============================================
+
+status: DONE (implemented 2026-07-11; spec: phase 3 "the pivot" +
+"visibility" sections, implementation-order checkbox flipped; see
+CHANGELOG "registry pivot LANDED"). deviations from the plan as
+written: the two registries share an MCP_Registry ML functor (mirror
+by construction, not by copy); the scala exposure function came
+forward from plans/tool_scope (full internal names cross the bridge
+immediately, so the client-name contract needed it now — tool_scope
+extends it, no longer introduces it); "" designation resolves ML-side
+to the MCP_Tools theory itself (deterministic, in every server heap,
+sees exactly the demo tools = today's default view); the heap test
+evaluates via ML_Context.eval_in because theory-defined ML structures
+are not bound at the raw ML_process toplevel. LATER CORRECTION (same
+day, mcp_tool command wave): the attribute is [[mcp_tools add/del:
+...]] (plural) — "mcp_tool" became a command keyword and command
+keywords cannot appear inside [[...]] (they delimit spans).
+
+the foundation move for phase 3: MCP_Tool (and MCP_Resource) leave
+the global Synchronized.var and become context entities — a
+Name_Space table (registration) plus a name set (activation) in
+Generic_Data. everything later (params, bundles, antiquotations,
+tool_scope) builds on this. no new mcp tool in this plan; the
+client-visible behavior of tools/list and tools/call must be
+UNCHANGED for the default configuration (regression gate: test_mcp.py
+and all existing suites stay green).
+
+prototype: the spike theory (2026-07-11) validated the exact shape —
+Name_Space.define/check/extern in Generic_Data, an add/del
+declaration attribute, [[...]] in bundles, `declare [[x del: n]]` at
+theory level. this plan is that prototype plus production concerns
+(Local_Theory declaration path, compat, protocol commands).
+
+data model (MCP_Tools.thy)
+--------------------------
+
+  structure Data = Generic_Data
+  (
+    type T = tool Name_Space.table * Symtab.set   (* defs, active *)
+    val empty = (Name_Space.empty_table "mcp_tool", Symtab.empty)
+    fun merge ((t1, a1), (t2, a2)) =
+      (Name_Space.merge_tables (t1, t2), Symtab.merge (K true) (a1, a2))
+  )
+
+  type tool =
+    {description: string,
+     params: param list,      (* [] until plans/mcp_tool_command *)
+     form: form,              (* string_fun | diag_wrap | method_wrap *)
+     run: Proof.context -> (string * string) list -> string}
+
+merge semantics DECISION (pinned by test, not just precedent): both
+components merge by union; a del on one import path + add on another
+resurrects the tool. this is standard context-data behavior (simpsets
+do the same) and the escape hatch is a del in the importing theory.
+
+api (mirrors named_theorems.ML)
+--------------------------------
+
+  MCP_Tool.declare: binding -> string -> ... -> local_theory ->
+    string * local_theory        (* the one entry point; emits
+                                    MCP.tools_changed at the end *)
+  MCP_Tool.check: Proof.context -> xstring * Position.T -> string
+                                 (* Name_Space.check + completion *)
+  MCP_Tool.get / list / active: context-relative reads
+  MCP_Tool.activate / deactivate: string -> generic -> generic
+  MCP_Tool.run: Proof.context -> string -> (string*string) list -> string
+
+  attribute (Attrib.setup, spike-validated syntax):
+    declare [[mcp_tool add: name]] / [[mcp_tool del: name]]
+
+  diag command: print_mcp_tools ("!" = include inactive), mirroring
+  print_bundles: name, active?, form, one-line description, position.
+
+  ONE API (decided 2026-07-11): MCP_Tool.declare is the only
+  registration entry point; MCP_Tool.register is DELETED, not
+  wrapped. no compat layer — a second signature for the same
+  operation is exactly the kind of parallel state this pivot exists
+  to remove. every existing registration site is ported in this plan
+  (step 2 below); anything specced against register (nothing is —
+  the mcp_tool command in plans/mcp_tool_command was already specced
+  onto the registry's declaration path) targets declare from the
+  start. registration replay on re-execution is naturally idempotent
+  (Name_Space.define in a re-run theory re-defines).
+
+protocol commands (same file)
+------------------------------
+
+MCP.tools / MCP.run_tool / MCP.resources / MCP.read_resource gain a
+designation argument (first chunk): a canonical theory long name, or
+"" = the server's -T default. the handler resolves it via
+Thy_Info.get_theory -> Proof_Context.init_global and reads
+registered-AND-active tools of that context. (repl designation comes
+with plans/tool_scope — the ML side here only needs theory
+designation; keep the dispatcher ready to grow a "repl:ID" form.)
+payload rows grow to (exposed base data): name = full internal name,
+description, form tag; scala externs/sanitizes (see plans/tool_scope).
+
+implementation steps
+--------------------
+
+1. Data + declare + check/get/list/active + attribute +
+   print_mcp_tools in MCP_Tools.thy. MCP_Tool.register is removed in
+   the same commit — the theory must not build with both entry
+   points present. [ml unit green before touching protocol]
+2. FOLLOW-UP PORT (same wave, own commit): move every register site
+   to declare — mcp/Tools/MCP_Tools.thy ("shout" demo,
+   MCP_Resource "greeting") and mcp/Tools/Tests/MCP_Tools_Tests.thy
+   (test_a/test_b/test_dup registrations; the replace-by-name
+   idempotence case there tests Synchronized-var semantics and gets
+   REWRITTEN to pin the new semantics: Name_Space redefinition on
+   re-declare in the same theory, coexistence across theories).
+   grep gate: no MCP_Tool.register / MCP_Resource.register anywhere
+   in the tree afterwards.
+3. protocol commands take + resolve the designation argument;
+   default "" preserves today's behavior (the -T theory of the
+   running session sees "shout" — it is declared there).
+4. scala: MCP_Session.ml_tools/ml_run pass the designation (a new
+   parameter, default ""); MCP_Server keeps zero client-visible
+   change. decode_tools grows the form tag field.
+5. MCP_Resource: same pivot, same file, same steps (its registry is
+   an exact mirror by construction — CHANGELOG 2026-07-10).
+6. flip the spec checkbox, CHANGELOG entry.
+
+ASSUMPTIONS -> tests (four layers)
+-----------------------------------
+
+- name-space registration records positions/short names/errors
+  [ml unit, MCP-Tools-Tests: declare + check round trip, unknown name
+  errors with completion, the_entry position has a line — the spike
+  asserts, made durable]
+- visibility follows imports [ml unit: NEW two-theory fixture in
+  MCP-Tools-Tests: tool declared in A visible in B (imports A),
+  invisible in sibling C; del-vs-add across a diamond pins the union
+  merge decision]
+- bundle open/close scopes activation [ml unit: the spike's bundle/
+  includes/unbundle/declare-del block over the real MCP_Tool]
+- activation survives the heap [heap suite (MCP_Heap_Suite): fresh
+  ML_process asserts "shout" registered+active, print_mcp_tools runs]
+- designation reaches the handler [bridge: MCP.tools with explicit
+  designation = -T theory equals default ""; unknown designation
+  -> typed error, not exception]
+- zero client-visible regression [e2e: test_mcp.py untouched and
+  green; scala unit: Fake_Backend rows updated for the form field
+  only]

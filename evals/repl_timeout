@@ -1,0 +1,48 @@
+repl_timeout — evaluation
+==========================
+
+status: planned (2026-07-09)
+focal tool: repl_timeout (plans/repl_timeout)
+
+task
+----
+recognize that a legitimate step needs more than the default 15s
+budget and raise it — instead of misreading timeout as "wrong step".
+
+setup
+-----
+harness pre-creates repl "heavy" positioned at a goal where the
+intended finishing step is correct but slow (choose a step measured
+to take 20-40s on this machine; calibrate once, note it in the
+fixture).
+
+prompt
+------
+"Finish the proof in the attempt named 'heavy'. The step
+`<the calibrated step>` is known to close the goal — a colleague
+verified it on a bigger machine. Make it go through here."
+
+success
+-------
+the step succeeds after the budget was raised; the agent did not
+abandon the known-good step.
+
+signals
+-------
+- timeout literacy: the failed step's error must be recognizably a
+  TIMEOUT, and the agent must connect it to a per-repl budget it can
+  change. if the agent instead hunts for a different proof (despite
+  being told the step is right), either the error text doesn't say
+  "timeout" clearly or the budget tool isn't discoverable from it.
+- value chosen: sensible raise (say 60-120s) vs absurd (3600s) —
+  the description's framing steers this.
+- does the agent remember timeout inheritance if it forks here?
+  (bonus signal, not graded.)
+
+reflection
+----------
+- strongest fix if selection fails: the timeout error text itself
+  should name the tool ("step exceeded the repl's 15s budget; see
+  repl_timeout"). errors are the best-read documentation surface.
+- feeds the plan's pinned question on negative/zero seconds only if
+  an agent stumbles into it; don't engineer for it here.

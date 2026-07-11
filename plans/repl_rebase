@@ -1,0 +1,92 @@
+repl_rebase — implementation plan
+==================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list); pin lifecycle owned by
+plans/repl_pin. pass-through ("rebase" => keys ["repl"]).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_rebase
+description   "Re-resolve a REPL's init specs against the CURRENT
+              pin versions and rebuild its base theory. All steps are
+              marked stale — call repl_replay afterwards to
+              re-execute them on the new base. Only works on REPLs
+              created by repl_init from theory/pin specs; fails if
+              any referenced pin is stale (re-pin it first). A REPL
+              already on the latest pins replies 'already up to
+              date'."
+              (source: mcp_server.py rebase :407 + ir.ML:587.)
+inputSchema   {"type": "object",
+               "properties": {"repl": {"type": "string"}},
+               "required": ["repl"]}
+annotations   {"readOnlyHint": false, "idempotentHint": true,
+               "openWorldHint": false}
+              (idempotent in effect: a second rebase is "already up
+              to date".)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_rebase", {"repl": "B"}
+  scala builtin row backend.ir("rebase", [(repl, B)])
+  ml dispatcher     "rebase" -> Ir.rebase (get "repl")
+  engine            ir.ML:587 — From_Theory origins only; resolves
+                    specs, rebuilds base via Theory.begin_theory,
+                    mark_all_stale; out "Rebased \"B\" (N steps
+                    marked stale; use replay to re-execute)"
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  the whole point, end to end: A pinned, B init from pin@A + steps;
+    A gains a definition and re-pins; rebase B -> steps stale;
+    replay B -> a NEW step in B can use A's new definition.
+    test [ml unit]: exactly that sequence; also rebase again ->
+    "already up to date".
+T2  stale pin blocks rebase with the resolve_spec error.
+    test [ml unit]: mutate A without re-pinning; rebase B -> error
+    "Pin \"A\" is stale".
+T3  non-From_Theory origins are refused (forks, document/segment
+    repls).
+    test [ml unit]: fork C from B; rebase C -> error "does not
+    support rebase".
+T4  rebase does NOT replay (spec'd division of labor): after rebase,
+    state -1 still shows the OLD final state until replay runs.
+    test [ml unit]: assert stale marks present and state unchanged
+    pre-replay.
+T5  full chain.
+    test [e2e]: the pin/rebase/replay workflow (extends
+    plans/repl_pin T5).
+
+done when
+---------
+
+- T1..T5 green; tools/list shows the row above.
+
+status: done (2026-07-09). T1..T5 green at all layers. T1 exercised the
+whole point end to end: A gains a definition and re-pins, rebase B
+marks its steps stale, replay lets a NEW step in B use A's new
+definition, and a second rebase with nothing changed replies "already
+up to date". T2 confirmed a stale pin blocks rebase with the
+resolve_spec error ("is stale"). T3 confirmed non-From_Theory origins
+(a fork) are refused with "does not support rebase". T4 confirmed
+rebase does NOT replay: after rebase, state -1 is byte-identical to its
+pre-rebase value, only the stale marks and the base theory move; only
+repl_replay actually re-executes. T5 (e2e) ran the full pin/rebase/
+replay workflow against a live server, sharing the build-a-base fixture
+with plans/repl_pin T5 and plans/repl_unpin's e2e need: PinA defines a
+constant and pins, PinB proves a lemma from it, repl_rebase on the
+already-current PinB is a no-op ("already up to date"), repl_unpin is
+blocked while PinB exists and succeeds once it's removed. ml unit:
+MCP_Repl_Tests.thy; scala unit + tools/call wiring: isabelle mcp_test;
+e2e: test_mcp.py's test_repl_builtins.

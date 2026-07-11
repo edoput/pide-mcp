@@ -1,0 +1,102 @@
+repl_fork — implementation plan
+================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pure pass-through: the dispatcher
+entry exists ("fork" => keys ["repl", "new_repl", "state_idx"]), the
+handler is one backend.ir call. the interesting part is the tool-
+specific semantics around state indices and the sub-repl lifecycle
+(shared with repl_merge / repl_truncate / repl_remove).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_fork
+description   "Fork a sub-REPL from an existing REPL at the given
+              state index (0 = base state, N = after step N-1,
+              -1 = latest). The fork starts with no steps of its own
+              and inherits the parent's timeout. Use it to try a
+              proof approach without disturbing the parent; bring the
+              result back with repl_merge, or discard it with
+              repl_remove. Truncating or removing the parent past the
+              fork point removes the fork."
+              (source: mcp_server.py fork :314, enriched with the
+              orphan behavior of ir.ML truncate/remove.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "new_repl": {"type": "string"},
+                 "state_idx": {"type": "integer"}},
+               "required": ["repl", "new_repl", "state_idx"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_fork",
+                    {"repl": "T", "new_repl": "T2", "state_idx": -1}
+  scala builtin row backend.ir("fork", [(repl,T), (new_repl,T2),
+                    (state_idx,"-1")]) — integer serialized as its
+                    decimal string (json number -> string at the I3
+                    conversion; Value.parse_int accepts "-1").
+  ml dispatcher     "fork" -> Ir.fork (get "repl") (get "new_repl")
+                    (get_int "state_idx")
+  engine            ir.ML:456 — negative idx counts from the end
+                    (n+1+idx), origin From_REPL (parent, i);
+                    out "Forked REPL <new> from <parent> at state <i>"
+
+implementation steps
+--------------------
+
+1. [infra] I3 conversion of json numbers: a json integer argument
+   becomes its decimal string in the pair list (first tool to need
+   it together with repl_state; define once in the I3 converter).
+2. [this tool] builtin row + handler; errors -> isError.
+3. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  json number -> decimal string -> Value.parse_int survives the
+    chain including negatives.
+    test [scala unit]: tools/call with state_idx -1 -> fake saw
+    ("state_idx", "-1"). (non-integer json number -> invalid params
+    at the edge, never reaches the bridge.)
+T2  index semantics match repl_state's: 0 = base, -1 = latest, out of
+    range -> status error "out of range (0..n)".
+    test [ml unit]: init, 2 steps; fork at 0 / 1 / -1 / 99 — first
+    three ok (fork at -1 equals fork at 2), last is an error.
+T3  duplicate new_repl id errors and changes nothing; parent stays
+    steppable (claim released).
+    test [ml unit]: fork onto an existing id -> error "already
+    exists"; parent still steps.
+T4  the fork is independent: stepping the fork does not change the
+    parent's steps, and vice versa below the fork point.
+    test [ml unit]: fork at -1, step the fork, show parent -> parent
+    unchanged; step parent, show fork -> fork unchanged.
+T5  orphan rule: truncating the parent strictly below the fork point
+    removes the fork (and its descendants); a busy fork blocks the
+    truncate.
+    test [ml unit]: fork at state 2, truncate parent to 0 -> fork
+    gone from repls. (busy-block is a bridge concern, covered in
+    plans/repl_truncate T4.)
+T6  full chain.
+    test [bridge]: init, step, fork, step fork, repls shows both with
+    origins.
+    test [e2e]: fork -> merge round trip (with plans/repl_merge).
+
+done when
+---------
+
+- T1..T6 green; tools/list shows the row above.

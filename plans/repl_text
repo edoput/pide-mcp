@@ -1,0 +1,85 @@
+repl_text — implementation plan
+================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("text" => keys
+["repl"]); read-only. this is the EXTRACTION tool — step 5 of the
+spec's proving workflow ("extract: repl_text — verified isar text"),
+so byte-fidelity is the whole point.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_text
+description   "Print the concatenated Isar text of all steps in a
+              REPL, newline-separated, exactly as they were sent.
+              This is the verified proof script: after a successful
+              proof, splice this text into the theory file. Stale
+              steps are included as-is — run repl_replay first if you
+              need the text to be verified end-to-end."
+              (source: mcp_server.py text :335, plus the workflow
+              role from the spec's "editing theories and persisting
+              changes".)
+inputSchema   {"type": "object",
+               "properties": {"repl": {"type": "string"}},
+               "required": ["repl"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+              (readOnlyHint spec refinement, flagged in
+              plans/repl_list.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_text", {"repl": "T"}
+  scala builtin row backend.ir("text", [(repl, T)])
+  ml dispatcher     "text" -> Ir.text (get "repl")
+  engine            ir.ML:556 — String.concatWith "\n" (map #text steps)
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  byte fidelity end to end: what repl_step sent is what repl_text
+    returns — through the args encoding INBOUND and the yxml
+    stripping OUTBOUND (I4). risk to check: XML.content on the result
+    must not eat Isabelle symbols like \<Longrightarrow> or collapse
+    whitespace inside string literals.
+    test [ml unit]: step a lemma containing \<Longrightarrow>, an
+    inner string with two spaces, and an embedded newline; text
+    output equals the concatenation verbatim.
+    test [bridge]: the same through session.ir — asserts the scala
+    stripping side.
+T2  zero steps -> ok with empty output (not an error); the model
+    probes freely.
+    test [ml unit]: init, text -> ok, empty.
+T3  full chain: extract-and-splice.
+    test [e2e]: prove a lemma over two steps, repl_text, write the
+    text into a .thy fixture, load_theory checks it (spec workflow
+    steps 5-7; shares the fixture with plans/check_theory).
+
+done when
+---------
+
+- T1..T3 green; tools/list shows the row above.
+
+status: done (2026-07-09). T1..T2 fully green, T3 partially (ml unit:
+mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy -- T1 byte fidelity including a
+symbol, doubled inner spaces, and an embedded newline; T2 zero steps is
+ok with empty output; bridge: isabelle mcp_test -b, T1's scala-side
+yxml-stripping half with the same fixture over a real session; scala
+unit: isabelle mcp_test, metadata + tools/call wiring; e2e:
+mcp/test/test_mcp.py's test_repl_builtins, repl_text after two steps
+returns their concatenated isar text verbatim). T3's splice-into-a-
+theory-file-and-check_theory half is NOT covered -- it needs
+load_theory and check_theory as builtins (wave 2, not yet implemented,
+and load_theory additionally has the KNOWN GAP from plans/repl_init);
+the extraction half (repl_text's own output) is covered by the e2e test
+above and stands in for T3 until wave 2 lands.

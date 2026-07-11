@@ -1,0 +1,52 @@
+repl_fork — evaluation
+=======================
+
+status: planned (2026-07-09)
+focal tool: repl_fork (plans/repl_fork)
+
+task
+----
+explore two proof strategies without losing the common prefix —
+the branching workflow fork exists for.
+
+setup
+-----
+fresh server. the lemma is chosen so both routes are plausible and
+at least one needs a few steps (e.g. a list lemma where induction
+works and a lemma-lookup/simp route also exists).
+
+prompt
+------
+"Prove `lemma \"length (concat xss) = sum_list (map length xss)\"`
+in Isabelle/HOL. I want you to try TWO genuinely different proof
+strategies (e.g. induction vs. rewriting with library lemmas),
+compare where each gets stuck or succeeds, and give me the Isar
+text of the better one. Set up the lemma statement once — don't
+redo the common groundwork for each attempt."
+
+success
+-------
+both strategies were actually explored from a shared prefix; the
+final answer's Isar text is verified in one of the branches.
+
+signals
+-------
+- does the agent fork, or run strategy A, truncate/back to the
+  start, run strategy B (destructive sequential exploration — works,
+  loses the comparison), or create two repls from scratch repeating
+  the lemma statement (ignores the "don't redo groundwork"
+  instruction)? each workaround grades selection differently.
+- state_idx use: default tip vs explicit index; if it passes a
+  negative index, does the n+1+idx semantics (plans/repl_fork T2)
+  match its expectation?
+- cleanup behavior after choosing a winner (feeds evals/repl_remove
+  and evals/repl_merge — note it, don't grade it here).
+
+reflection
+----------
+- if agents never fork unprompted, the description must sell the
+  use case ("try alternatives without losing your place") harder,
+  or branching belongs in a skill.
+- if two-repls-from-scratch is the dominant natural strategy, fork's
+  value claim is thin for agents (unlike humans) — existence-ladder
+  question.

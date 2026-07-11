@@ -1,0 +1,50 @@
+repl_replay — evaluation
+=========================
+
+status: planned (2026-07-09)
+focal tool: repl_replay (plans/repl_replay)
+
+task
+----
+bring a stale repl back to a fully-checked state after something
+invalidated its history (an edit, or a rebase onto a changed theory).
+
+setup
+-----
+harness pre-creates repl "stale" with 4 steps, then makes the tail
+stale via a scripted repl_edit of step 1 (with auto_replay off, per
+whatever default the implementation pinned — if the default is on,
+create staleness via the rebase route instead).
+
+prompt
+------
+"The proof attempt named 'stale' had one of its early steps changed,
+so the later steps may no longer be verified. Get it back to a state
+where every step is actually checked, and tell me whether the change
+broke anything downstream."
+
+success
+-------
+all steps re-verified; the report correctly says whether any step
+failed on replay.
+
+signals
+-------
+- selection: replay is the direct answer; alternatives agents may
+  invent — re-stepping each stale step manually, truncate+retype, or
+  declaring it fine without checking. the last is the dangerous one:
+  does staleness in state/show output read as "needs action"?
+- partial-failure handling (plans/repl_replay T3's pinned unknown):
+  if replay stops at a failing step, does the reply give the agent
+  enough to know where it stopped and what remains stale? grade the
+  agent's subsequent narration for accuracy.
+- idempotence trust: does the agent replay a second time "to be
+  sure" (harmless, "Replayed 0") — fine; looping on it is not.
+
+reflection
+----------
+- if agents skip verification, staleness must be louder in every
+  output that shows a stale step (marker + "run replay" hint).
+- the partial-failure transcript directly informs T3's pin: whatever
+  state the engine leaves must be narratable by the agent, or the
+  reply format must change.

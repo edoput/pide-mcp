@@ -1,0 +1,50 @@
+repl_rebase — evaluation
+=========================
+
+status: planned (2026-07-09)
+focal tool: repl_rebase (plans/repl_rebase)
+
+task
+----
+carry an interactive attempt across a change to its origin theory —
+the tool that keeps repls useful while the agent also edits files.
+
+setup
+-----
+theory Eval_Base.thy on disk with a definition the proof uses;
+harness loads it and creates repl "carry" from it (From_Theory) with
+2 steps. then the harness EDITS Eval_Base.thy (a compatible change:
+add an unrelated lemma) and reloads it, leaving "carry" on the old
+version.
+
+prompt
+------
+"The file Eval_Base.thy was just updated and reloaded, but the proof
+attempt 'carry' was started from its previous version. Bring 'carry'
+onto the current version of the theory, make sure its existing steps
+still hold there, and report the outcome."
+
+success
+-------
+"carry" is rebased onto the new version AND its steps re-verified
+(rebase marks stale, does NOT replay — the "make sure" clause forces
+the two-call sequence).
+
+signals
+-------
+- the two-phase contract: rebase-then-replay. does the agent stop
+  after rebase and report success without re-verifying? that is the
+  contract violation the description must prevent (plans/repl_rebase
+  T4 pins that rebase does not replay).
+- selection vs the destructive workaround: remove + re-init + retype
+  steps achieves the same; if agents prefer it, rebase's value is
+  not legible.
+- does the agent even detect that "carry" is stale-by-origin from
+  list/show output before acting?
+
+reflection
+----------
+- if rebase-without-replay reports recur, either rebase's reply must
+  scream "steps now stale, not re-verified" or the spec revisits
+  auto-replay-on-rebase (coupled to repl_edit's auto_replay
+  decision — decide them together).

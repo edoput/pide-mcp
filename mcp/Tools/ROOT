@@ -2,3 +2,21 @@ session "MCP-Tools" = Pure +
   description "MCP tool registry and protocol commands for isabelle mcp_server"
   theories
     MCP_Tools
+
+session "MCP-Tools-Tests" in "Tests" = "MCP-Tools" +
+  description "Unit tests for the MCP tool registry and protocol payloads"
+  theories
+    MCP_Tools_Tests
+
+session "MCP-HOL" in "HOL" = HOL +
+  description "Agentic proving: I/R engine + MCP.ir bridge over HOL"
+  options [record_theories]
+  sessions
+    "MCP-Tools"
+  theories
+    MCP_Repl
+
+session "MCP-HOL-Tests" in "HOL/Tests" = "MCP-HOL" +
+  description "Unit tests for the MCP.ir dispatcher (MCP_Repl) over the I/R engine"
+  theories
+    MCP_Repl_Tests

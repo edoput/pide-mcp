@@ -1,0 +1,179 @@
+mcp_tool command (outer syntax + params + combinators) — implementation plan
+=============================================================================
+
+status: DONE (implemented 2026-07-11, same wave as the registry pivot;
+spec phase-2 "outer syntax commands" and "builtin table" items closed,
+phase-3 combinators/command items checked; CHANGELOG "mcp_tool command
+landed"). deviations and deferrals from the plan as written:
+- SURFACE (forced by the outer lexer: command keywords delimit spans,
+  they cannot appear as inner tokens): wrapped command names are
+  QUOTED (mcp_tool "find_consts"), and the activation attribute is
+  PLURAL ([[mcp_tools add/del: ...]], [[mcp_resources ...]]).
+- param types: "args" added (verbatim splice into the wrapped
+  command's argument position; the default input of a bare diag wrap
+  — a quoted value there would break the command's own argument
+  syntax, which is how find_theorems criteria work too); "string" is
+  single-line; enum / list-of-scalar DEFERRED.
+- description is MANDATORY for mcp_tool (keyword table does not
+  export command comments — the specced fallback, pinned by test);
+  mcp_resource's bare-name form defaults it (derivable).
+- diag tools execute against the RUN context's theory (the
+  designation decides), not a captured registering theory.
+- deferred to later waves: (scoped) modifier, the HOL first-user
+  (value; MCP-Tools-Tests is Pure-based), tools/list e2e of
+  runtime-registered tools (needs plans/tool_scope designation
+  control — the list_changed e2e is in, the fixture tool just isn't
+  in the DEFAULT designation's context).
+- the output-capture substrate moved from MCP_Repl.thy into
+  MCP_Tools.thy as MCP_Output (register/captured/reset); MCP_Repl
+  builds on it.
+
+depends on plans/mcp_tool_registry (declaration lands in the
+name-space registry). independent of plans/tool_scope (tools declared
+here are served whenever the scope sees them). spikes 1-3
+(2026-07-11) proved the runtime: programmatic diag execution via
+Outer_Syntax.parse_text + Toplevel.command_exception, writeln capture
+via Private_Output swap, ML errors with snippet-relative lines when
+parsed at Position.line 1.
+
+surface (keywords "mcp_tool" "mcp_resource" "mcp_test" :: thy_decl —
+mcp_test is specced in phase 3 and gets its own plan when its wave
+starts; reserve the keyword now so the header never changes again)
+
+  mcp_tool find_consts                                   (* minimal *)
+  mcp_tool find_theorems
+    (description \<open>...\<close>)
+    (params
+      criteria :: string       \<open>...\<close>
+      limit    :: nat = 40     \<open>...\<close>)
+    (format \<open>find_theorems (limit $limit) $criteria\<close>)
+  mcp_tool shout = \<open>String.map Char.toUpper\<close>            (* string_fun *)
+  mcp_tool goal_probe = run \<open>fn ctxt => fn args => ...\<close>
+    (params ...)                                         (* ml_run *)
+  mcp_tool (method) fastforce (params ...)               (* later wave *)
+  modifiers on any form: (scoped)  — register without activating
+
+parser sketch: Parse.name/binding for the command/tool name; the
+clauses as parenthesized keyword blocks (Parse.$$$ inside Args.parens),
+each optional, any order, at most once. params entries:
+  Parse.binding -- ($$$ "::" |-- type) -- Scan.option ($$$ "=" |-- value)
+  -- Parse.document_source (the description cartouche)
+type = string|nat|int|bool|term|typ|fact|enum(...)|list-of-scalar.
+
+semantics per form
+------------------
+
+- diag form (mcp_tool CMD ...): registration-time checks —
+  Outer_Syntax.check_command CMD (reports the position -> ctrl+click
+  to the command), Keyword.is_diag or error naming the command's
+  actual keyword class; format placeholders resolve to declared
+  params, all required params used. default description = the
+  command's outer-syntax comment (Keyword.command_spec? verify the
+  accessor at implementation; else require an explicit description
+  and note it). default params/format (none given) = input :: string,
+  "CMD $input".
+- run function built at declaration: parse+validate the named args
+  (Value.parse_* per type; term/typ/fact elaborated against the run
+  context — errors name the param), substitute into the format with
+  TYPE-DIRECTED QUOTING (string -> inner-string quoted+escaped,
+  term/typ -> cartouche, nat/int/bool -> literal, list -> joined),
+  assemble "CMD args", parse at Position.line 1 (spike 2: NOT
+  Position.none, which erases positions), execute against
+  Toplevel.make_state of the target context (default: registering
+  theory; {repl: R} param when the repl plumbing of tool_scope
+  exists), capture via the MCP_Repl output-routing buffers (they
+  exist; their two unchecked ml-unit boxes in the phase-2 testing
+  list get closed as part of this plan's step 1).
+- position normalization: assembled text puts the command + open
+  cartouche on line 1, snippet lines start at line 2; a reported
+  "line N" rewrites to "line N-1 of your input" in the returned
+  error text.
+- string_fun (= \<open>ML\<close>): the plain string -> string form
+  (the mvp tool shape), schema {input}. registration goes through
+  MCP_Tool.declare like every other form — there is no separate
+  register api (decided 2026-07-11, plans/mcp_tool_registry).
+- ml_run (= run \<open>...\<close> (params ...)): full-power hatch,
+  Proof.context -> (string*string) list -> string with declared
+  params; the combinators make this the wrapper for existing
+  community ML tools.
+
+MCP_Combinators (same theory, under the command)
+-------------------------------------------------
+
+  param : {name, typ, required, default, descr} -> param
+  quote_string / quote_term / quote_typ / join_list / flag
+  diag  : string -> param list -> ((string*string) list -> string)
+          -> tool      (* what the command's diag form compiles to *)
+  func  : (string -> string) -> tool
+  ml_run: (Proof.context -> (string*string) list -> string)
+          -> param list -> tool
+
+the command is a thin parser over these; ml-unit tests target the
+combinators directly, the command tests only the parsing/validation.
+
+schema over the bridge
+----------------------
+
+registry rows serialize params as yxml tuples (name, type, required,
+default?, description, enum items); scala expands to json schema at
+the tools/list merge: string/integer/boolean, enum lists, list-of ->
+array items, defaults + descriptions carried; term/typ/fact -> string
+with the validation contract stated in the property description.
+form tag -> annotations only (diag_wrap: readOnly+idempotent;
+string_fun: readOnly unknown -> omit hints; method_wrap: mutating).
+
+first users (registration test theory + acceptance)
+----------------------------------------------------
+
+re-derive in isar, in a test theory: find_theorems (params criteria/
+limit), ML_val (params src :: string; the position-normalization
+case), value (params t :: term). these three cover the quoting
+matrix (string, term, nat) and the error paths.
+
+implementation steps
+--------------------
+
+1. close the phase-2 output-routing ml-unit boxes (writeln lands in
+   the registered buffer only; transparent when idle) — the capture
+   substrate this plan builds on.
+2. MCP_Combinators + the assemble/quote/validate pipeline as pure ML
+   (no outer syntax yet). [ml unit: quoting matrix, arg validation,
+   typed errors]
+3. exec-at-position runner + capture + normalization. [ml unit:
+   find_consts through the runner returns output; ML_val error
+   reports snippet-relative line — spikes 1-2 made durable]
+4. the mcp_tool command: parser, registration-time validation,
+   compilation onto the combinators; mcp_resource command (bare-name
+   / isar / ML forms per the phase-2 section, now over the pivoted
+   MCP_Resource). [ml unit: registration cases incl. rejection of
+   non-diag commands and unknown params]
+5. tools_changed emit verification end to end (the emit itself ships
+   with plans/mcp_tool_registry's declare): scala forwards
+   notifications/tools/list_changed; initialize declares
+   tools: {listChanged: true} — closes the last open half of the
+   phase-2 builtin-table item. [scala unit + bridge + e2e]
+6. schema expansion scala-side + Fake_Backend rows with params.
+   [scala unit]
+7. e2e: the registration test theory served over stdio; tools/call
+   find_theorems (isar-derived) returns conjI for "conjI"; ML_val
+   tool returns a line-normalized error; list_changed notification
+   observed on load_theory of the registering theory.
+
+ASSUMPTIONS -> tests
+---------------------
+
+- diag execution + capture works in the serving process, not only in
+  ML_process [bridge: run a wrapped find_consts through MCP.run_tool
+  in the live session]
+- build-time registration self-tests are safe (command-in-command:
+  the runner executes a diag command while the mcp_tool command
+  itself runs, if we validate by dry-running — DECISION: we do NOT
+  dry-run at registration; only mcp_test (its own plan) executes
+  tools at build time, so this plan takes no command-in-command risk
+  beyond what spike 1 proved]
+- keyword comment as default description is accessible [ml unit;
+  if the accessor doesn't exist, the fallback (mandatory description)
+  is specced above — either way a test pins the chosen behavior]
+- quoting injection: a string param containing cartouche/quote
+  characters cannot escape its quoting context [ml unit: adversarial
+  values round-trip as data, never parse as isar]

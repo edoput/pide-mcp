@@ -1,0 +1,50 @@
+repl_merge — evaluation
+========================
+
+status: planned (2026-07-09)
+focal tool: repl_merge (plans/repl_merge)
+
+task
+----
+consolidate a successful side exploration back into the main
+attempt — the fork's closing bracket.
+
+setup
+-----
+harness pre-creates parent repl "main" (statement + 1 step) and a
+fork child "main_try" that goes on to close the remaining goal in 3
+further steps.
+
+prompt
+------
+"The side attempt 'main_try' (forked from 'main') found the rest of
+the proof. Fold that successful work back into 'main' so that 'main'
+alone contains the complete proof, clean up whatever is no longer
+needed, and show me main's final text."
+
+success
+-------
+"main" ends complete (the child's steps inlined — per the engine, as
+ONE combined step); the child is gone (merge deletes it); the final
+text is extracted, not reconstructed.
+
+signals
+-------
+- selection: merge is obscure; plausible workarounds are repl_text
+  on the child + re-stepping into the parent (works, forfeits the
+  child cleanup), or just declaring the child the new main. which
+  route agents take measures whether merge's description sells its
+  one-call value.
+- surprise at the ONE-step inlining: after merging, does the agent
+  expect n steps and get confused by 1 (repl_show)? the description
+  must pre-empt this or transcripts will show re-verification loops.
+- does the agent expect the child to survive and error trying to
+  touch it afterwards?
+
+reflection
+----------
+- the one-combined-step behavior is engine-inherited, not designed;
+  if it confuses agents AND humans, spec question: preserve step
+  granularity on merge (second implementation territory).
+- if nobody finds merge, consider folding its description into
+  repl_fork's ("when a fork succeeds, repl_merge folds it back").

@@ -1,0 +1,102 @@
+search_sources — implementation plan
+=====================================
+
+status: planned (2026-07-09; updated 2026-07-11)
+
+wave 3, scala-side; references D1 (plans/list_sessions, implemented
+in plans/session_structure — its theory_map provides the session ->
+source-paths resolution used below). the
+discovery BRIDGE (spec): semantic search cannot see unloaded
+theories, text search can — this tool is how the agent finds that
+Multiset exists before paying to load it.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          search_sources
+description   "Search theory source files by regex or literal
+              pattern, returning {theory, line, snippet} hits. By
+              default searches the base image's sessions plus the
+              sessions owning loaded or scoped theories; pass
+              `sessions` (glob list) to widen — e.g.
+              [\"HOL-Library\"] or [\"*\"] for everything known.
+              This is TEXT search over files: it sees theories no
+              semantic tool can (unloaded sessions, the AFP), and it
+              is how you discover where a constant or lemma lives
+              before deciding to load_theory it. Results are capped
+              (default 40); narrow the pattern or sessions when
+              truncated."
+inputSchema   {"type": "object",
+               "properties": {
+                 "pattern": {"type": "string"},
+                 "sessions": {"type": "array", "items": {"type": "string"}},
+                 "max_results": {"type": "integer", "default": 40}},
+               "required": ["pattern"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+              (reads only files the session structure names; still
+              openWorld false.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "search_sources",
+                    {"pattern": "multiset", "sessions": ["HOL-Library"]}
+  scala builtin row resolve sessions -> theory source paths via D1's
+                    path map; stream-grep each file, collecting up to
+                    max_results (theory long name, 1-based line,
+                    trimmed snippet); no bridge, no engine.
+
+implementation steps
+--------------------
+
+1. [this tool] pattern compilation (try regex, fall back to literal
+   on syntax error? NO — pin: invalid regex is an isError telling
+   the user to escape; silent fallback hides typos), the grep loop
+   with the hard cap and a "truncated" note, default session set
+   (base ancestry + owners of loaded/scoped theories — scope set
+   empty until wave 4), builtin row.
+2. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  hits carry theory long names (not raw paths) and correct line
+    numbers.
+    test [scala unit]: search a known string in a fixture/distribution
+    theory, assert {theory, line} exactly.
+T2  the cap: a broad pattern truncates at max_results and says so;
+    max_results is respected per call.
+    test [scala unit]: pattern "lemma" with max_results 5 -> 5 hits
+    + truncation note.
+T3  session widening: default set misses HOL-Library; sessions:
+    ["HOL-Library"] finds multiset hits — the discovery-bridge
+    behavior in one test.
+    test [scala unit]: both calls, assert absent then present.
+T4  invalid regex -> isError (pinned in step 1); a pattern with
+    regex metacharacters intended literally is the caller's problem,
+    per the description.
+    test [scala unit]: "(" -> isError mentioning the regex.
+T5  performance sanity: "*" over the full distribution (1467+ files)
+    completes in interactive time with the cap doing its job early
+    (stop reading once max_results hit).
+    test [scala unit, timed loosely]: full-scope search of a rare
+    string < a generous bound; early-exit verified by hitting the
+    cap on a common string quickly.
+T6  full chain.
+    test [e2e]: worked-example step 3 — search "multiset" widened to
+    HOL-Library, hits name HOL-Library.Multiset.
+
+done when
+---------
+
+- T1..T6 green; tools/list shows the row above.

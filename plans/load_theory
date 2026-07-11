@@ -1,0 +1,160 @@
+load_theory — implementation plan
+==================================
+
+status: planned (2026-07-09)
+
+wave 2: SCALA-side tool — no MCP.ir involved. backing decision (spec
+"theory loading and checking"): scala use_theories and ML Thy_Info are
+disjoint registries; load/check live on the scala side, and
+Ir.load_theory's headless refusal (Printer.show_markup_default) is
+KEPT — the "load_theory" fname stays in the dispatcher but the builtin
+tool never calls it. references I3 (builtin table) only; I1/I2 do not
+apply.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          load_theory
+description   "Load and check a theory from disk (with its transitive
+              dependencies) into the running session, by
+              session-qualified long name (\"HOL-Library.Multiset\")
+              or by path via master_dir. After loading, the theory is
+              'loaded' tier: source, commands, diagnostics and
+              entities resources answer live, repl_init_from_source
+              can attach to it, and it is auto-added to the resource
+              scope. Replies with per-theory ok/error status;
+              errors carry positions. Loading is the expensive
+              promotion — a deep import chain outside the base image
+              can take minutes; see list_theories for what is already
+              available."
+              (source: mcp_server.py load_theory :426 + the spec's
+              tier/promotion story.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "name": {"type": "string"},
+                 "master_dir": {"type": "string"}},
+               "required": ["name"]}
+annotations   {"readOnlyHint": false, "idempotentHint": true,
+               "openWorldHint": false}
+              (mutating per the spec blanket — it changes session
+              state and scope. idempotent: re-loading an unchanged
+              theory is a no-op at the document level.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "load_theory",
+                    {"name": "HOL-Library.Multiset"}
+  scala builtin row handler calls MCP_Session.load_theory (NEW) —
+                    no bridge, no fname. json -> plain scala args.
+  scala method      resolve the name through the startup
+                    Sessions.load_structure/deps path map (session-
+                    qualified names work without a master_dir);
+                    session.use_theories(...); collect per-node
+                    status + messages (template:
+                    Server_Commands.Use_Theories); auto-add to scope
+                    (wave 4 — no-op stub until scope exists).
+  engine            none (PIDE document processing).
+
+implementation steps
+--------------------
+
+1. [infra, shared with check_theory/unload_theory] MCP_Session.
+   load_theory(name, master_dir?): use_theories + diagnostics
+   extraction into (ok, text-with-positions). mcp_session.scala
+   already runs use_theories at startup for the -T theory — factor
+   that call so both paths share it.
+2. [infra, shared with wave 3] keep the Sessions.load_structure +
+   deps object from startup; name -> path/session resolution.
+3. [this tool] builtin row + handler; per-node errors -> isError
+   result carrying the diagnostics text (an error REPLY is still the
+   full report — the model needs the positions).
+4. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].
+further update: heap-restart claims -- e.g. pinning the Ir.load_theory
+KNOWN GAP (still real), or any Thy_Info behavior in a fresh process --
+now have a dedicated fixture, MCP_Heap_Suite; see plans/README. the
+separate "segments don't survive" KNOWN GAP was retracted 2026-07-10:
+it was the theory-name-normalization bug, see CHANGELOG.)
+
+T1  use_theories on a well-formed .thy under a master_dir loads it
+    and reports ok; the theory is then visible to
+    repl_init_from_source (snapshot exists).
+    test [bridge/scala-integration, mcp_test -b]: load a small
+    fixture theory (mcp/test/), assert ok + node status.
+T2  a broken theory yields isError with line-positioned messages,
+    and the session survives (next load works).
+    test [bridge]: fixture with a bad lemma -> error text contains
+    the line; load the good fixture after -> ok.
+T3  session-qualified names resolve without master_dir via the
+    structure (spec: "load_theory resolves session-qualified names
+    through the same structure").
+    test [bridge]: load "HOL-Library.Multiset"? — MINUTES-expensive;
+    use the smallest out-of-image theory reachable in the bundled
+    distribution, or gate the test as slow.
+T4  re-loading an unchanged theory is fast and ok (idempotency
+    claim); re-loading after a disk edit picks up the new content
+    (this is check_theory's core, shared fixture).
+    test [bridge]: load, load again -> both ok.
+T5  scope auto-add fires once scope exists (wave 4); until then the
+    stub is a recorded no-op.
+    test [scala unit, deferred to plans/scope_add]: load_theory then
+    scope_show contains the theory.
+T6  full chain.
+    test [e2e]: load fixture -> read
+    isabelle://theory/{name}/diagnostics? (resource, separate plan)
+    -> repl_init_from_source attach (plans/repl_init_from_source T5).
+
+done when
+---------
+
+- T1..T4, T6 green (T5 deferred to scope); tools/list shows the row.
+- the Ir.load_theory-stays-refused decision is visible: an ml unit
+  test pins that dispatch "load_theory" in the headless session
+  returns the refusal error, so nobody wires the builtin to it by
+  accident.
+
+status: done (2026-07-10)
+--------------------------
+
+T1 (bridge): a well-formed fixture written under a fresh tmp master_dir
+loads and reports ok. T2 (bridge): a fixture with a failing proof
+("lemma ...: \"False\" by simp") yields isError with "line N" in the
+text, and the session survives (a second, well-formed load right after
+succeeds). T4 (bridge): loading the same unchanged fixture twice is ok
+both times. T3 (session-qualified names, minutes-expensive) and T5
+(scope auto-add) remain deferred, as planned -- T3 to whenever a slow-
+test lane exists, T5 to plans/scope_add. T6 (e2e, test_mcp.py): load_
+theory -> check_theory (staleness) -> unload_theory -> a flagship
+approximation of the full attach/prove/splice chain, since repl_init_
+from_source ("attach") is still a deferred wave-1 tool -- see plans/
+check_theory's status block for the shared details.
+
+See plans/check_theory's status block for the corrected purge story
+(check_theory's "PURGE BEFORE RE-LOADING" turned out to be wrong) --
+load_theory itself never purges, so it is unaffected, but the fix
+touched code load_theory shares via use_theories_result.
+
+Four-layer test locations: scala unit (Fake_Backend dispatch/schema) in
+mcp_test/src/mcp_handler_tests.scala; bridge (live MCP-HOL session) in
+mcp_test/src/mcp_bridge_tests.scala ("wave 2: load_theory ..."); e2e in
+mcp/test/test_mcp.py ("wave 2: ..."). No ml-unit layer -- this tool
+never touches the MCP.ir/Ir.ML engine.
+
+follow-on (2026-07-10, same day): load_theory being done unblocked
+isabelle://theory/{name}/diagnostics (a resources/templates/list
+template, not this tool, but gated on it per the spec's resource
+resolution section) -- backed for real now, see spec's resources
+checklist entry and mcp_session.scala's theory_diagnostics. The other
+theory/* templates still need wave 3 for filesystem path resolution.

@@ -1,0 +1,100 @@
+repl_pin — implementation plan
+===============================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("pin" => keys
+["repl"]). pins are the repl-composition feature: a pinned theory
+state becomes an init spec ("pin@NAME") for other repls; staleness
+and rebase keep the composition honest. this plan owns the pin
+lifecycle tests; unpin/rebase plans reference them.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_pin
+description   "Pin (snapshot) a REPL's current theory state so other
+              REPLs can build on it: pass \"pin@NAME\" in
+              repl_init's theories to start from the pinned state.
+              The REPL must be at theory level, not mid-proof. If the
+              pinned REPL is modified afterwards (step, edit,
+              truncate), the pin is marked STALE — dependents keep
+              working on the old snapshot until you re-pin here and
+              repl_rebase there. Re-pinning bumps the pin version."
+              (source: mcp_server.py repl_pin :399, plus the version/
+              stale mechanics of ir.ML:510.)
+inputSchema   {"type": "object",
+               "properties": {"repl": {"type": "string"}},
+               "required": ["repl"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "openWorldHint": false}
+              (not readOnly: it mutates the repl's pin field; not
+              idempotent: each call bumps the version.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_pin", {"repl": "A"}
+  scala builtin row backend.ir("pin", [(repl, A)])
+  ml dispatcher     "pin" -> Ir.pin (get "repl")
+  engine            ir.ML:510 — refuses mid-proof; version = old+1;
+                    out "Pinned \"A\""
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  mid-proof pin is refused with the engine's message.
+    test [ml unit]: step "lemma True", pin -> error "in a proof
+    state"; finish the proof, pin -> ok.
+T2  the pin round trip: pin A, init B ["pin@A"] -> B's base state has
+    A's definitions; B's origin prints "pin@A".
+    test [ml unit]: A defines a constant, pin, init B from pin@A,
+    step B using the constant -> ok.
+T3  staleness: mutating A after the pin marks it stale (repls/show
+    say "pinned [stale]"), and a NEW init from pin@A errors "Pin ...
+    is stale" — existing dependents are untouched.
+    test [ml unit]: pin A, init B, step A -> show A stale; init C
+    ["pin@A"] -> error; B still steps; re-pin A -> init C ok.
+    NOTE while implementing: verify which mutations mark stale (step
+    goes through claim/release — check mark_pin_stale call sites);
+    pin the actual trigger set in this test and the description.
+T4  version bump feeds rebase: after re-pin, dependent B's specs
+    resolve to the new version (asserted via plans/repl_rebase T1;
+    here just: pin twice -> ok both times).
+T5  full chain.
+    test [e2e]: build-a-base workflow — repl A with definitions, pin,
+    repl B from pin@A proves a lemma using them.
+
+done when
+---------
+
+- T1..T5 green (T3's trigger set pinned); tools/list shows the row
+  above.
+
+status: done (2026-07-09). T1..T5 green at all layers. T1 confirmed
+pinning mid-proof is refused with "in a proof state"; closing the
+proof first makes it pin cleanly. T2 confirmed the round trip: A
+defines a constant, pins, B is init'd from ["pin@A"], B's origin
+(repl_show) literally prints "pin@A", and B can use A's definition
+immediately. T3's trigger set is now pinned: ANY successful mutation
+through with_claim (step/edit/replay/rebase/merge) marks a REPL's pin
+stale on release regardless of what the operation actually changed --
+this was verified with an unrelated step on A, not a step touching the
+pinned content -- and a new init from a stale pin errors "is stale"
+while existing dependents keep working undisturbed; re-pinning clears
+the staleness for future inits. T4 confirmed pinning twice both
+succeed (the version-bump mechanics feed repl_rebase, fully exercised
+there). T5 (e2e) ran the build-a-base workflow against a live server:
+PinA defines a constant and pins, PinB is init'd from pin@PinA and
+proves a lemma using it -- implemented together with repl_unpin and
+repl_rebase since all three share this fixture (see plans/repl_unpin,
+plans/repl_rebase). ml unit: MCP_Repl_Tests.thy; scala unit +
+tools/call wiring: isabelle mcp_test; e2e (T5): test_mcp.py's
+test_repl_builtins.

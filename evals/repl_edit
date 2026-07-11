@@ -1,0 +1,53 @@
+repl_edit — evaluation
+=======================
+
+status: planned (2026-07-09)
+focal tool: repl_edit (plans/repl_edit)
+
+task
+----
+revise a step in the middle of the history without rebuilding the
+proof — including understanding what happens to the steps after it
+(staleness / auto-replay, whichever the implementation pinned).
+
+setup
+-----
+harness pre-creates repl "polish" with 5 steps where step 2 (0-based
+— the third command) uses a heavyweight method (e.g. metis with
+explicit lemmas) for which a simple `by simp` also works, and later
+steps still hold after the change.
+
+prompt
+------
+"In the proof attempt named 'polish', one of the middle steps uses
+metis where plain simp would do. Replace that step with the simpler
+method, make sure the whole proof still goes through afterwards, and
+give me the final text."
+
+success
+-------
+the metis step is replaced in place; the final state has the whole
+proof valid (replayed if the config demanded it); final text reflects
+the edit.
+
+signals
+-------
+- 0-based idx (plans/repl_edit T1: no negatives here, unlike
+  state/fork): the indexing inconsistency across the tool family is
+  most likely to bite exactly here. first-call correctness on idx is
+  the headline number.
+- staleness comprehension: after the edit, does the agent know the
+  tail needs replaying (or was auto-replayed)? does it verify
+  ("make sure it still goes through") via replay/state, or assert
+  success blindly?
+- does the agent instead truncate-and-retype the tail (works,
+  quadratic effort)? that choice means edit's value was not legible.
+
+reflection
+----------
+- feeds the plan's pinned decision on auto_replay's default: if
+  agents universally replay immediately after editing, auto_replay
+  on is the natural default and the description should promise it.
+- if idx confusion recurs, spec question: unify indexing conventions
+  across the repl family (the current mix is historical, not
+  designed).

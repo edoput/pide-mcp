@@ -1,0 +1,145 @@
+repl_init_from_source — implementation plan
+============================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list); builds on plans/repl_init.
+
+this is the only wave-1 tool whose scala handler is more than a pass-
+through: the client speaks (theory, offset | pattern | index), the
+engine speaks either Ir.init_from_document node_name command_id (PIDE
+document, use_theories-loaded theory) or Ir.init ["Thy:idx"] (recorded
+segments, image theory). the scala side owns the resolution (spec:
+"theory loading and checking" + implementation order item "command-
+target resolution (offset/pattern -> command id)").
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_init_from_source
+description   "Create a new REPL proof session rooted at a specific
+              command inside an existing theory, so you can step from
+              the middle of a proof or after a definition instead of
+              rebuilding context from imports. Give the theory's long
+              name plus exactly one locator: `offset` (character
+              offset into the source), `pattern` (a literal source
+              substring; its first occurrence picks the command), or
+              `index` (command/segment index). Works on theories
+              loaded with load_theory (PIDE document) and on image
+              theories with recorded segments. The REPL starts at the
+              state AFTER the located command."
+              (source: mcp_server.py init_from_document :307 +
+              init_at_line :488, generalized to the spec's locator
+              triple.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "theory": {"type": "string"},
+                 "offset": {"type": "integer"},
+                 "pattern": {"type": "string"},
+                 "index": {"type": "integer"}},
+               "required": ["repl", "theory"]}
+              (exactly one of offset/pattern/index; json schema
+              oneOf-with-required is outside the common subset we
+              committed to, so the constraint is enforced in the
+              handler and stated in the description.)
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_init_from_source",
+                    {"repl": "R", "theory": "Draft.Foo", "pattern": "lemma foo"}
+  scala handler     1. resolve the theory name against the headless
+                       session's snapshot (use_theories-loaded) or the
+                       recorded-segments index (image theory).
+                    2. resolve the locator to a command:
+                       - snapshot: offset -> Command at offset;
+                         pattern -> first command whose source contains
+                         it; index -> nth command. -> command id.
+                       - segments: offset/pattern -> containing/first-
+                         matching segment; index used directly.
+                    3. call backend.ir("init_from_document",
+                       [(repl, R), (node_name, <node>), (command_id, <id>)])
+                       or backend.ir("init",
+                       [(repl, R), (theories, "<thy>:<idx>")]).
+  ml dispatcher     "init_from_document" {repl, node_name, command_id}
+                    (already in the dispatcher) or "init" (see
+                    plans/repl_init).
+  engine            ir.ML:426 init_from_document — Document.command_exec,
+                    eval must be finished, base_state = eval result;
+                    out "Created REPL <id> from document ... [proof|theory]".
+                    or ir.ML:393 init with a segment spec.
+
+implementation steps
+--------------------
+
+1. [infra, shared with goto_definition] snapshot access on
+   MCP_Session: a way to get the Document.Snapshot for a loaded node
+   and enumerate its commands (id, source, range). template:
+   Headless session .current_state / snapshot APIs used by
+   Server_Commands.
+2. [this tool] the locator resolution function, PURE where possible:
+   (commands: List[(id, offset, source)], locator) -> Either[error, id]
+   so it unit-tests without a prover. errors: theory not loaded and
+   not segment-recorded; pattern not found; offset/index out of range;
+   zero or several locators given.
+3. [this tool] builtin row + handler branching to the two fnames as in
+   the mapping; engine errors -> isError results.
+4. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+references I1, I2 (done), I3, I5.
+
+T1  exactly-one-locator is enforced scala-side with a clear message
+    (schema can't express it).
+    test [scala unit]: zero locators / two locators -> isError naming
+    the rule, backend never called (assert fake saw nothing).
+T2  the pure resolver picks the documented command: offset ->
+    containing command, pattern -> first occurrence, index -> nth.
+    test [scala unit]: canned command list, all three locators, plus
+    each error case (not found, out of range).
+T3  Ir.init_from_document requires the command to be executed and
+    finished; an unexecuted command is a status error, not a hang.
+    test [bridge]: load a theory via the scala path, init_from_source
+    at a command past the checked region guarded by the engine's
+    "still being evaluated"/"has not been executed" errors.
+T4  the segment fallback works for image theories with recorded
+    segments (record_theories sessions, e.g. MCP-HOL's own theories),
+    where no PIDE document exists.
+    test [ml unit]: dispatch "init" with a "Thy:idx" spec against a
+    recorded theory -> ok (shared with plans/repl_init T6).
+T5  the created repl behaves like any other: visible in repl_list
+    with origin "document ... cmd N" (or "Thy:idx"), steppable,
+    removable.
+    test [e2e]: load_theory a small fixture, repl_init_from_source at
+    a lemma by pattern, repl_step "by simp" variant, repl_text,
+    repl_remove.
+
+open question (resolve while implementing, then fold into the spec):
+whether the mid-proof attach uses the state BEFORE or AFTER the
+located command — Ir.init_from_document gives AFTER (eval result);
+attaching "at the failing command" (the spec's workflow step 3) needs
+the command *before* the failing one. either the resolver picks the
+predecessor when the intent is "attach at" or the description keeps
+the AFTER semantics and the skill teaches pattern-on-predecessor.
+plan assumes AFTER + description honesty.
+
+done when
+---------
+
+- T1..T5 green; the pure resolver has full unit coverage.
+- tools/list shows the row above; e2e attach-by-pattern loop passes.
+- the open question is resolved and reflected in spec + CHANGELOG.

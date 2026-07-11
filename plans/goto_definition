@@ -1,0 +1,107 @@
+goto_definition — implementation plan
+======================================
+
+status: planned (2026-07-09)
+
+wave 4, navigation: POSITION-based lookup (the ctrl-click mirror),
+pure scala over the PIDE snapshot — no ML, no bridge. complements
+plans/find_definition; requires the theory to be use_theories-loaded
+(snapshots only exist for checked documents).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          goto_definition
+description   "Jump from a USE of a name to its definition, given a
+              position in a loaded theory: pass the theory's long
+              name plus `offset` (character offset) or `pattern` (a
+              literal source substring; its first occurrence marks
+              the spot). Works on anything under the cursor —
+              constants, facts, type constructors inside annotations,
+              ML antiquotations — using the checked document's entity
+              markup, with no name guessing. Reports the entity's
+              kind and its definition site (file, line, offset).
+              Only theories loaded with load_theory have the needed
+              markup; for image theories use find_definition
+              instead."
+inputSchema   {"type": "object",
+               "properties": {
+                 "theory": {"type": "string"},
+                 "offset": {"type": "integer"},
+                 "pattern": {"type": "string"}},
+               "required": ["theory"]}
+              (exactly one of offset/pattern; handler-enforced.)
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "goto_definition",
+                    {"theory": "Draft.Nav_Test", "pattern": "rev xs"}
+  scala builtin row resolve the snapshot for the node (shared
+                    snapshot access from plans/repl_init_from_source
+                    step 1); locate the range (offset directly, or
+                    pattern -> first occurrence range); snapshot
+                    cumulate over Rendering.entity_elements at that
+                    range; extract Position.Def_File / Def_Line /
+                    Def_Offset + Markup.kind from the entity
+                    properties; format hits. no engine.
+
+implementation steps
+--------------------
+
+1. [infra shared] the snapshot/command access on MCP_Session (same
+   as repl_init_from_source step 1 — one of the two plans builds it,
+   the other reuses).
+2. [this tool] locator resolution (reuse the pure resolver of
+   repl_init_from_source where it fits — offset/pattern only, range
+   not command granularity), the cumulate + property extraction,
+   builtin row.
+3. [fixture] mcp/test/Nav_Test.thy (named by the spec's
+   implementation order): a small theory using rev, a local
+   definition, a type annotation, and an ML antiquotation — one
+   use-site per claim in the description.
+4. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  entity markup at a use of a global constant (rev) yields its
+    def_file/line pointing into List.thy.
+    test [bridge, over Nav_Test.thy]: pattern "rev" -> hit with
+    kind "constant" and a def_file ending List.thy.
+T2  local definitions resolve within the same file (def_file =
+    Nav_Test.thy, correct line).
+    test [bridge]: pattern on a use of the locally defined constant.
+T3  type constructors in annotations resolve (the spec's explicit
+    claim: kind "type_name").
+    test [bridge]: pattern "::nat" region -> hit for nat.
+T4  a position over plain text (whitespace, keyword) -> ok "no
+    entity at position" (probe-safe); unloaded theory -> isError
+    directing to load_theory/find_definition (the description's
+    contract).
+    test [bridge] + [scala unit] for the unloaded branch.
+T5  exactly-one-locator enforcement (shared shape with
+    repl_init_from_source T1).
+    test [scala unit]: zero/two locators -> isError, no backend
+    touched.
+T6  full chain.
+    test [e2e]: load Nav_Test, goto_definition by pattern, reply
+    carries a def position; feeds the model's read-the-definition
+    loop via isabelle://theory/{name}?lines=.
+
+done when
+---------
+
+- T1..T6 green over the Nav_Test.thy fixture; tools/list shows the
+  row above.

@@ -1,0 +1,75 @@
+repl_unpin — implementation plan
+=================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list); pin lifecycle owned by
+plans/repl_pin. pass-through ("unpin" => keys ["repl"]).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_unpin
+description   "Remove a REPL's pin. Fails if other REPLs were
+              initialized from this pin (remove them first, or leave
+              the pin in place). Unpinning does not change the REPL's
+              own steps or state."
+              (source: mcp_server.py repl_unpin :403 + the dependency
+              guard of ir.ML:523.)
+inputSchema   {"type": "object",
+               "properties": {"repl": {"type": "string"}},
+               "required": ["repl"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "openWorldHint": false}
+              (not idempotent: unpinning an unpinned repl errors.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_unpin", {"repl": "A"}
+  scala builtin row backend.ir("unpin", [(repl, A)])
+  ml dispatcher     "unpin" -> Ir.unpin (get "repl")
+  engine            ir.ML:523 — errors on no pin / dependents;
+                    out "Unpinned \"A\""
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  unpinning without a pin is an error naming the repl.
+    test [ml unit]: init, unpin -> error "is not pinned".
+T2  dependents block: pin A, init B [pin@A], unpin A -> error;
+    remove B, unpin A -> ok; A's steps unchanged throughout.
+    test [ml unit]: as stated; show A after -> no "pinned", same
+    step count.
+    NOTE while implementing: has_pin_dep matches on origin SPECS, so
+    a dependent still blocks after it rebases (its origin still says
+    pin@A) — expected; the test should cover the remove path, not
+    hope rebase frees it.
+T3  full chain.
+    test [bridge]: pin/unpin round trip via session.ir.
+
+done when
+---------
+
+- T1..T3 green; tools/list shows the row above.
+
+status: done (2026-07-09). T1..T3 green at all layers. T1 confirmed
+unpinning without a pin errors "is not pinned". T2 confirmed
+dependents block unpin ("depend" in the error), and the guard is based
+on origin SPECS as the plan's NOTE anticipated: removing the dependent
+frees the unpin, not rebasing it; A's step count is unchanged before
+and after, and "pinned" disappears from repl_show once unpinned. T3
+(bridge) exercised the pin/unpin round trip against a live headless
+session. ml unit: MCP_Repl_Tests.thy; scala unit + tools/call wiring:
+isabelle mcp_test; bridge (T3): isabelle mcp_test -b -d mcp/Tools; the
+plan's own e2e need (unpin blocked while a dependent exists, freed once
+it's removed) is covered by the shared build-a-base fixture in
+test_mcp.py's test_repl_builtins, alongside plans/repl_pin T5 and
+plans/repl_rebase T5.

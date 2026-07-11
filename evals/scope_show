@@ -1,0 +1,44 @@
+scope_show — evaluation
+========================
+
+status: planned (2026-07-09)
+focal tool: scope_show (plans/scope_show)
+
+task
+----
+introspect what is currently visible and why — the read side of the
+scope model (explicit patterns vs implicit working set).
+
+setup
+-----
+harness pre-creates a mixed scope: one pattern ("HOL-Library.*"),
+one loaded theory (Eval_A.thy), one repl "alive".
+
+prompt
+------
+"Explain to me exactly what resources this session currently
+exposes and, for each, WHY it's visible — was it deliberately added,
+or is it there because of work in progress? Distinguish the two."
+
+success
+-------
+the pattern named as deliberate; the loaded theory and the repl
+attributed to work-in-progress (implicit working set); nothing
+invented; sourced from tool output.
+
+signals
+-------
+- the explicit/implicit distinction is the whole scope mental model
+  in one question: if the agent cannot reconstruct it from
+  scope_show's output, the output format doesn't carry the model
+  (plans/scope_show's output must separate the two visibly).
+- selection: scope_show vs resources/list — resources/list gives
+  the WHAT but not the WHY; the prompt's "why" clause is what makes
+  scope_show the right call. an agent answering the why from
+  resources/list alone is guessing.
+
+reflection
+----------
+- output-format findings here feed plans/scope_show step 1
+  directly: whatever sections/labels the transcript shows agents
+  misreading get renamed before the tool ships.

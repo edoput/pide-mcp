@@ -1,0 +1,170 @@
+sledgehammer — implementation plan
+===================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("sledgehammer" =>
+keys ["repl", "timeout_secs"], default 15 already in the dispatcher).
+two things distinguish it: it NEEDS external provers on the PATH
+(spec: the scala process provides the bash bridge), and it is the
+longest-running wave-1 call — the flagship beneficiary of I1's async
+bridge.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          sledgehammer
+description   "Run Sledgehammer on the REPL's current proof state:
+              external ATPs search for a proof and successful
+              attempts come back as 'Try this: ...' lines with a
+              one-liner you can pass to repl_step. Requires the REPL
+              to be mid-proof (after a lemma statement). DO NOT set
+              timeout_secs above 15 — the 15s default is almost
+              always sufficient; Sledgehammer very rarely finds
+              proofs beyond that."
+              (source: mcp_server.py sledgehammer :359 verbatim,
+              plus the mid-proof requirement and the Try-this reply
+              shape of ir.ML:777.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "timeout_secs": {"type": "integer", "default": 15}},
+               "required": ["repl"]}
+              (first tool with an OPTIONAL property — the schema's
+              "required" omits it; the handler omits the pair when
+              the client omits the argument, so the engine default
+              stays in one place, the dispatcher.)
+annotations   {"readOnlyHint": true, "idempotentHint": false,
+               "openWorldHint": false}
+              (read-only: run_sledgehammer only searches; the repl
+              state is untouched — part of the readOnlyHint
+              refinement family. NOT idempotent: ATP results vary
+              run to run. openWorld stays false: external provers
+              run as local subprocesses, not network services.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "sledgehammer", {"repl": "T"}
+                    or {"repl": "T", "timeout_secs": 10}
+  scala builtin row backend.ir("sledgehammer", [(repl,T)] or
+                    [(repl,T),(timeout_secs,"10")])
+  ml dispatcher     "sledgehammer" -> Ir.sledgehammer (get "repl")
+                    (get_int_default "timeout_secs" 15)
+  engine            ir.ML:777 — deferred ML_Compiler.eval (the
+                    Sledgehammer structures live in the HOL heap, not
+                    at ir.ML compile time); args via
+                    Ir.sledgehammer_state; prints only "Try this"
+                    lines when any exist, else the full message
+
+implementation steps
+--------------------
+
+1. [environment, verify once] the MCP-HOL heap has Sledgehammer.thy
+   (it imports Main — yes) and the bundled distribution has at least
+   one working prover (cvc5/verit/z3 ship in contrib; check
+   isabelle components -l). record the finding here.
+2. [this tool] builtin row + handler (omit the pair for the default);
+   errors -> isError.
+3. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  optional-arg plumbing: omitted timeout_secs reaches the engine
+    as 15. (dispatcher default already exercised by the I2 tests;
+    here the SCALA omission path.)
+    test [scala unit]: tools/call without timeout_secs -> fake saw
+    exactly [(repl,T)]; with it -> the pair present.
+T2  not mid-proof -> clean status error (Toplevel.proof_of raises),
+    not a hang or empty reply.
+    test [ml unit]: fresh repl at theory level; sledgehammer ->
+    status error.
+T3  the happy path finds a proof for a trivial goal and the reply
+    contains "Try this"; the suggested one-liner actually closes the
+    goal via a subsequent step.
+    test [bridge, slow — gate behind the -b flag]: lemma
+    "x + y = y + (x::nat)"; sledgehammer; step the returned
+    one-liner -> ok. tolerate prover flakiness: accept EITHER a Try
+    this line or a no-proof-found message, but never a crash;
+    only assert the step when a suggestion came back.
+T4  the sledgehammer_state handoff is concurrency-safe enough for
+    our serialized dispatcher use — two CONCURRENT sledgehammer
+    calls would race the shared Synchronized slots (state is set,
+    read, cleared per call). the bridge runs each call in its own
+    fork_run future, so the race is real.
+    decision to make while implementing: either serialize
+    sledgehammer calls (a global claim/lock in the wrapper) or leave
+    it and document single-flight; pin with:
+    test [bridge]: two concurrent sledgehammer calls on different
+    repls -> both return sane results (or the second errors with a
+    clear busy message) — no crossed outputs.
+T5  async under load (I1): repl_list / repl_step on another repl
+    return while a 15s sledgehammer runs.
+    test [bridge]: shared with plans/repl_step T5's pattern, with
+    sledgehammer as the slow call.
+T6  full chain.
+    test [e2e, test_agentic.py]: the model-facing proof-search loop:
+    step lemma, sledgehammer, step the suggestion (tolerant as T3).
+
+done when
+---------
+
+- T1..T6 green (T4's decision recorded here + CHANGELOG); step 1's
+  prover inventory recorded; tools/list shows the row above.
+
+status: done (2026-07-10). T1..T6 green at all layers.
+
+step 1 (prover inventory, confirmed via `isabelle components -l`):
+cvc5-1.2.0-1, spass-3.8ds-2, vampire-4.8, verit-2021.06.2-rmx-3,
+z3-4.4.0pre-4 all bundled -- the environment requirement is met.
+
+genuine finding along the way, not part of the plan's own assumptions:
+Ir.sledgehammer's deferred ML_Compiler.eval originally picked its
+compilation context via `Toplevel.theory_of st` (the REPL's OWN base
+theory, e.g. plain "Main"). Main is an ANCESTOR of MCP_Repl (which
+declares the Ir structure via ML_file), not a descendant, so Main's
+theory-local ML environment does not see Ir -- the eval failed with
+"Structure (Ir) has not been declared" on every real call (masked
+during earlier plans since sledgehammer had not been exercised
+end-to-end before now). Fixed by capturing MCP_Repl's own theory value
+ONCE at load time (Ir.set_self_theory, called from MCP_Repl.thy right
+after `ML_file "ir.ML"`) and using that captured value -- rather than
+the REPL's base theory -- as the eval context; MCP_Repl imports Main,
+so its own theory is a strict superset (has both Sledgehammer and Ir).
+A first attempt used `Thy_Info.get_theory "MCP_Repl"` (a by-name
+lookup) instead of a captured value; that works under batch `isabelle
+build` but fails against a live headless PIDE session (MCP_Session.start)
+with "Theory loader: undefined entry for theory ..." -- such sessions
+load theories through the document model, not the classical Thy_Info
+loader, the same class of gap already on record for load_theory
+(plans/repl_init T6, plans/load_theory). Capturing the theory value
+directly sidesteps the loader and works uniformly in both contexts.
+
+T1 (scala unit) confirmed the optional-arg plumbing: json_args already
+only emits pairs for keys present in the client's arguments object, so
+omitting timeout_secs reaches backend.ir as exactly [(repl,T)] and no
+special-case handler code was needed -- the generic mechanism already
+gives "the handler omits the pair when the client omits the argument"
+for free. T2 (ml unit) confirmed a fresh REPL at theory level (not
+mid-proof) fails sledgehammer cleanly with a status error. T3 (bridge,
+tolerant of prover flakiness) found a proof for a trivial nat-commutativity
+goal and the suggested one-liner closed it via a subsequent step. T4
+decision: two concurrent sledgehammer calls would race the shared
+sledgehammer_state/sledgehammer_result Synchronized slots (set, read,
+cleared per call) -- serialized via a new global blocking lock
+(Ir.with_sledgehammer_lock, ir.ML) rather than rejecting the second
+caller with a busy error, since the dispatcher already runs each
+request in its own fork_run future and a short wait is simpler for
+callers than a distinct error to retry on; the lock only serializes
+among sledgehammer calls, other REPL operations are unaffected. T5
+confirmed a fast repl_list call returns while a slow sledgehammer call
+is in flight on another REPL (shared pattern with plans/repl_step T5).
+T6 (e2e) ran the full model-facing loop -- step a lemma, sledgehammer,
+step the suggestion -- in test_mcp.py (test_agentic.py does not exist
+in this repo, so e2e coverage lives alongside the other builtins'
+e2e tests there, tolerant of prover flakiness as T3).
+
+ml unit: MCP_Repl_Tests.thy; scala unit: isabelle mcp_test; bridge
+(T3-T5): isabelle mcp_test -b -d mcp/Tools; e2e (T6): test_mcp.py.

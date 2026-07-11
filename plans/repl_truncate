@@ -1,0 +1,108 @@
+repl_truncate — implementation plan
+====================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("truncate" => keys
+["repl", "idx"]). destructive; shares the orphan rule with repl_fork
+and the destructiveHint refinement with repl_remove.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_truncate
+description   "Discard all steps after index `idx`, keeping steps
+              0..idx (idx = -1 with negative counting: -1 drops the
+              last step, -2 the last two, ...; idx 0 keeps only step
+              0). Sub-REPLs forked from a discarded state are removed
+              too. If the REPL is pinned, the pin goes stale. Nothing
+              is re-executed — the kept prefix stays verified. For
+              dropping just the last step, repl_back is the shorthand."
+              (source: mcp_server.py truncate :347, plus orphan/pin
+              behavior ir.ML:635.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "idx": {"type": "integer"}},
+               "required": ["repl", "idx"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "destructiveHint": true, "openWorldHint": false}
+              (destructiveHint refinement, see plans/repl_remove.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_truncate", {"repl":"T","idx":-1}
+  scala builtin row backend.ir("truncate", [(repl,T),(idx,"-1")])
+  ml dispatcher     "truncate" -> Ir.truncate (get "repl")
+                    (get_int "idx")
+  engine            ir.ML:635 — negative idx maps to n+idx-1; deletes
+                    orphaned sub-repls (error if any busy); marks pin
+                    stale; out "Truncated to step N, dropped M steps"
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  index semantics: NOTE truncate's negative mapping (n+idx-1)
+    differs from state/fork's (n+1+idx) — truncate -1 KEEPS n-1
+    steps, i.e. drops one. the description above spells the truncate
+    meaning; the test pins it so nobody "unifies" it silently.
+    test [ml unit]: 3 steps; truncate -1 -> 2 steps left; truncate 0
+    -> 1 step left; truncate -99 / 99 -> "out of range" error.
+T2  the kept prefix is untouched and usable (no re-execution, no
+    staleness added).
+    test [ml unit]: truncate -1, show -> no [stale]; step -> ok and
+    continues from the kept state.
+T3  orphan removal (shared with plans/repl_fork T5): forks at
+    discarded states disappear, forks at kept states survive.
+    test [ml unit]: forks at state 1 and 3 of a 3-step repl;
+    truncate to 1 -> fork@3 gone, fork@1 alive.
+T4  a busy orphan blocks the whole truncate (atomicity).
+    test [bridge]: slow step on fork@3, truncate parent to 1 ->
+    error "is busy"; nothing removed; after join, truncate -> ok.
+T5  pin goes stale (mark_pin_stale), so pin-dependents can't silently
+    build on a state that no longer exists.
+    test [ml unit]: pin, truncate -1, show -> "pinned [stale]".
+T6  full chain.
+    test [e2e]: wrong-turn recovery — 2 steps, truncate -1, step a
+    different way, text shows the new script.
+
+done when
+---------
+
+- T1..T6 green; tools/list shows the row above; destructiveHint
+  refinement folded into the spec or rejected (with repl_remove).
+
+status: done (2026-07-09). T1..T6 green at all layers. T1 confirmed the
+negative-index mapping (n+idx-1) differs from state/fork (n+1+idx):
+truncate -1 keeps n-1 steps, dropping exactly the last one; out-of-range
+idx (too low or too high) errors "out of range" without mutating
+anything. T2 confirmed the kept prefix is untouched: no staleness after
+truncate, and the repl continues stepping from the kept state (the test's
+continuation step had to be a new theory-level command, not a bare
+tactic, since the kept prefix in the fixture ends at a closed proof).
+T3 confirmed the orphan cutoff is exactly `si > idx` (not `si > idx+1`):
+a fork at the truncation boundary itself (si = idx) survives, only forks
+strictly past it are orphaned and removed. T4 (bridge) confirmed
+atomicity: a busy orphaned sub-REPL blocks the entire truncate with an
+"is busy" error and nothing is removed; once the busy step finishes, a
+retried truncate succeeds and the orphan disappears from repl_list. T5
+confirmed a pinned REPL's pin goes stale on truncate (show reports
+"pinned [stale]"), same mechanism as repl_edit/repl_replay. T6 (e2e)
+exercised the wrong-turn-recovery narrative end to end through a live
+server: 2 steps, repl_truncate idx=-1 drops the tactic step, repl_step
+redoes it with different text, repl_text shows the new script. The
+destructiveHint refinement was already folded into the spec during
+repl_remove's work (the spec text explicitly names repl_truncate
+alongside repl_remove as the mutating tools warranting
+{destructiveHint: true}), so no further spec edit was needed here. ml
+unit: mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy; scala unit + tools/call
+wiring: isabelle mcp_test; bridge (T4): isabelle mcp_test -b -d
+mcp/Tools; e2e (T6): mcp/test/test_mcp.py's test_repl_builtins.

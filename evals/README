@@ -1,0 +1,140 @@
+builtin tool evaluations
+========================
+
+one evaluation per builtin tool, parallel to plans/ (same names:
+evals/repl_step evaluates plans/repl_step's tool). the two tracks
+answer different questions:
+
+- plans/ verify the MECHANISM: the tool does what its description
+  says, at every layer (ml unit / scala unit / bridge / e2e).
+- evals/ verify the ABSTRACTION: given only a TASK, does an agent
+  discover the tool, call it correctly, and recover from its errors
+  using nothing but what the server advertises (descriptions,
+  schemas, annotations, error texts)?
+
+the evaluations drive the reflection part of the project. a tool can
+be green at all four test layers and still be a bad tool — never
+picked, picked with wrong arguments, or abandoned after the first
+error. when an evaluation shows that, we update the spec and try a
+second implementation; the evaluation is the regression test for the
+redesign.
+
+principles
+----------
+
+- prompts state the task, never the tool. the prompt describes what a
+  user wants ("prove this lemma", "why does my theory fail to
+  build"), not which tool to call. tool discovery IS the measurement;
+  a prompt that names the tool measures nothing.
+- one focal tool per evaluation. the agent will legitimately use
+  other tools on the way (repl_step's eval needs repl_init); those
+  uses are context, only the focal tool is graded. which OTHER tools
+  the agent reaches for instead of the focal one is itself signal.
+- the agent sees only the advertised surface. no skill files, no
+  extra system prompt about the server, in the first round — the
+  descriptions must carry the tool. (a second round MAY add the
+  planned skills, isabelle-mcp-exploring / isabelle-mcp-verifying,
+  to measure how much the skills buy; keep the rounds apart.)
+- setup is scripted, not prompted. state the tool needs to exist
+  (pre-made repls, a broken theory file on disk) is created by the
+  harness before the agent starts, so the prompt stays a pure task
+  statement.
+
+grading (per run, read from the transcript)
+-------------------------------------------
+
+  outcome     achieved / achieved with detours / failed
+  selection   did the agent call the focal tool at all; at the first
+              moment it was the right call, or only after exhausting
+              alternatives?
+  first call  were the arguments right on the first call (names,
+              types, the exclusivity rules the schema cannot express)?
+  recovery    after a tool error, did the error text alone get the
+              agent to a correct retry, or did it loop / give up /
+              work around?
+
+a tool passes when outcome is achieved AND selection was unforced AND
+recovery never needed more than one retry, across the run set (aim
+for >= 3 runs per evaluation; agent behavior is stochastic).
+
+reflection ladder (what to change when an evaluation fails)
+-----------------------------------------------------------
+
+failures point at a layer; fix the cheapest layer that explains the
+transcript, rerun, escalate only if it recurs:
+
+  1. description — agent never selected the tool, or misread its
+     contract: rewrite the description (this is the common case; the
+     plans' descriptions are first drafts).
+  2. schema/errors — agent selected it but fumbled arguments or
+     could not act on an error: tighten inputSchema, name the key in
+     the error, add the missing example to the description.
+  3. abstraction — agent used it "correctly" and still fought it
+     (wrong granularity, surprising state model): spec change,
+     second implementation. record the decision in the spec and
+     CHANGELOG, keep the evaluation as the acceptance test.
+  4. existence — task achieved more naturally without the tool every
+     time: candidate for removal or merge; take it to the spec.
+
+harness
+-------
+
+run the agent with claude code against the built server:
+
+  claude --mcp-config '{"mcpServers": {"isabelle": {"command":
+    "Isabelle2025-2_linux/Isabelle2025-2/bin/isabelle",
+    "args": ["mcp_server"]}}}' -p "<prompt>"
+
+first round is manual: run, read the transcript, grade the four axes,
+note quotes for the reflection. automation (scripted setup + grader)
+only after the template has survived a few tools — evals/repl_list is
+the pilot, runnable today since repl_list is implemented.
+
+each evaluation file: focal tool, task, setup, prompt (verbatim),
+success (observable end state), signals (what to watch beyond the
+four axes, tied to the plan's pinned decisions), reflection (the
+specific spec questions this evaluation can settle).
+
+status key: [ ] planned only, [x] run at least once and graded.
+
+index (wave order, mirrors plans/README)
+----------------------------------------
+
+wave 1 — repl lifecycle + stepping + proof search:
+  - [ ] repl_list              evals/repl_list   (pilot)
+  - [ ] repl_init              evals/repl_init
+  - [ ] repl_init_from_source  evals/repl_init_from_source
+  - [ ] repl_fork              evals/repl_fork
+  - [ ] repl_remove            evals/repl_remove
+  - [ ] repl_step              evals/repl_step
+  - [ ] repl_state             evals/repl_state
+  - [ ] repl_show              evals/repl_show
+  - [ ] repl_text              evals/repl_text
+  - [ ] repl_edit              evals/repl_edit
+  - [ ] repl_replay            evals/repl_replay
+  - [ ] repl_truncate          evals/repl_truncate
+  - [ ] repl_back              evals/repl_back
+  - [ ] repl_merge             evals/repl_merge
+  - [ ] repl_timeout           evals/repl_timeout
+  - [ ] repl_pin               evals/repl_pin
+  - [ ] repl_unpin             evals/repl_unpin
+  - [ ] repl_rebase            evals/repl_rebase
+  - [ ] sledgehammer           evals/sledgehammer
+  - [ ] find_theorems          evals/find_theorems
+
+wave 2 — theory management:
+  - [ ] load_theory            evals/load_theory
+  - [ ] unload_theory          evals/unload_theory
+  - [ ] check_theory           evals/check_theory
+
+wave 3 — library discovery:
+  - [ ] list_sessions          evals/list_sessions
+  - [ ] list_theories          evals/list_theories
+  - [ ] search_sources         evals/search_sources
+
+wave 4 — scope + navigation:
+  - [ ] scope_add              evals/scope_add
+  - [ ] scope_remove           evals/scope_remove
+  - [ ] scope_show             evals/scope_show
+  - [ ] find_definition        evals/find_definition
+  - [ ] goto_definition        evals/goto_definition

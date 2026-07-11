@@ -1,0 +1,51 @@
+list_theories — evaluation
+===========================
+
+status: planned (2026-07-09)
+focal tool: list_theories (plans/list_theories)
+
+task
+----
+answer "is theory X already available, and at what cost" — the tier
+question (image / loaded / filesystem) that decides whether work
+needs a load_theory, a scope_add, or nothing.
+
+setup
+-----
+fresh server on the HOL image (119 theories in-image; HOL-Library's
+148 on the filesystem).
+
+prompt
+------
+"I need to use `Multiset` and also plain `List` in upcoming proofs.
+For each: is it already available in the running image, or does it
+exist in the installation but need to be brought in first? Tell me
+exactly what (if anything) has to happen before I can use each one."
+
+success
+-------
+List reported as in-image (usable now); Multiset reported as
+HOL-Library, filesystem tier, needing promotion (load / import) —
+both sourced from tool output with correct tier labels.
+
+signals
+-------
+- tier vocabulary: do the three tiers as named in the output map
+  onto the agent's answer ("available now" / "needs loading")
+  without distortion? if the agent invents its own categories, the
+  tier names aren't carrying meaning.
+- scoping the query: Multiset isn't in the default session's
+  theories — does the agent widen (session arg, pattern) or
+  conclude "doesn't exist"? (the discovery-bridge moment shared
+  with evals/search_sources.)
+- cost accuracy: "what has to happen" for Multiset should mention
+  loading/importing from HOL-Library, not rebuilding the world.
+
+reflection
+----------
+- a "doesn't exist" verdict for Multiset is the highest-severity
+  finding possible in wave 3: the default listing scope hides the
+  library. fix candidates: default to installation-wide listing
+  with tier tags (spec change), or make the truncation/scope
+  explicit in every reply ("searched sessions: HOL; 33 more
+  sessions unsearched").

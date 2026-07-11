@@ -1,0 +1,187 @@
+repl_list — implementation plan (pilot)
+=======================================
+
+status: planned (2026-07-09)
+
+why this tool first: it is the minimal full-chain builtin — zero
+arguments, read-only, backed by an fname the ML dispatcher already
+implements (MCP_Repl.thy:130) and the build-time self-test already
+exercises. implementing it forces every shared seam (builtin table,
+tools/list merge, tools/call dispatch, MCP_Session.ir, yxml stripping)
+to exist without any per-tool complexity on top, and the spec's testing
+section already names its cases at all four layers ("dispatch repls []",
+"session.ir(\"repls\", [])").
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_list        (builtin: always the bare name)
+description   "List all open REPL proof sessions. Each entry shows the
+              REPL id, its step count (plus stale steps, if any), the
+              origin it was initialized from, and whether it is
+              currently busy executing an operation. REPLs are created
+              with repl_init or repl_init_from_source and discarded
+              with repl_remove."
+              (source: mcp_server.py's "List all REPL sessions.",
+              enriched with what Ir.repls actually prints — ir.ML:710.)
+inputSchema   {"type": "object"}
+              (zero-arg; the schema is mandatory anyway per "advertised
+              tool metadata". no properties, no required.)
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+              spec refinement: the spec's annotation blanket puts all
+              of repl_* on the mutating side. repl_list (like
+              repl_show/repl_state/repl_text, planned later) only
+              reads the repl table — Ir.repls is a Synchronized.value
+              read plus formatting, no state change. honest per-tool
+              annotations override the coarse blanket; fold this back
+              into the spec's "advertised tool metadata" bullet.
+outputSchema  none (phase 2 policy: free-form captured prover output).
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call name "repl_list", arguments {}
+  scala builtin row handler: backend.ir("repls", Nil)
+  bridge            protocol command MCP.ir [id, "repls", yxml_args]
+                    with yxml_args = encoding of the empty pair list
+  ml dispatcher     fname "repls", no args -> Ir.repls ()
+  engine            ir.ML:710 — folds the repl table, one "    <id>
+                    (N steps[, M stale], from <origin>[, busy ...])"
+                    line per repl via out = writeln
+
+the exposed name (repl_list) and the fname (repls) differ deliberately:
+exposed names follow the spec's tool table (repl_ prefix groups the
+lifecycle for the model); fnames mirror mcp_server.py/Ir verbatim.
+the builtin table row is the single place that records the mapping.
+
+implementation steps
+--------------------
+
+1. [infra, shared] MCP_Session.ir(fname, args): clone of ml_run
+   (mcp/src/mcp_session.scala:154) — send protocol command "MCP.ir"
+   with a fresh id and the yxml-encoded pair list, park a promise in
+   an id-keyed table, resolve it from a protocol-handler function for
+   "MCP.ir_result", strip markup with XML.content(YXML.parse_body(_)).
+   this is the first unchecked item in the spec's implementation order
+   and is shared by all wave-1 tools.
+2. [infra, shared] [done 2026-07-09] named-args encoding, both sides: scala encodes
+   List[(String, String)] via XML.Encode (list of string pairs); the
+   ML dispatcher's signature changes from `string list` (positional,
+   current MCP_Repl.thy:105) to the decoded pair list with per-fname
+   key lookup (missing required key / unparsable value -> the existing
+   bad()/error path). repl_list itself only needs "empty args" to
+   survive the migration, but the migration happens here because the
+   dispatcher signature is one commit, not per tool.
+3. [infra, shared] builtin tool table + merge: a scala
+   Builtin_Tool(name, description, schema_json, annotations_json,
+   handler) list; tools/list = builtins ++ ml registry through the
+   pure exposure-name function; tools/call resolves the name through
+   the same function and runs the handler, converting the client's
+   json arguments object to the (key, value) pair list.
+4. [this tool] add the repl_list row with the metadata above and
+   handler `_ => backend.ir("repls", Nil)`; backend ir errors map to
+   isError tool results (not json-rpc errors).
+5. tests (below) at all four layers; rebuild sessions per
+   .claude/rules/theories-rebuild.md before trusting ML results.
+
+assumptions and how to test them
+--------------------------------
+
+infrastructure assumptions (I1..I5 — stated here once, later plans
+reference them by number):
+
+I1  MCP_Session.ir exists and resolves the promise by id on
+    MCP.ir_result, off the ML protocol loop (async).
+    test [bridge, mcp_test -b]: session.ir("repls", Nil) returns
+    status ok; the spec's async case (slow call then fast call, fast
+    reply first) guards the non-blocking property that a synchronous
+    regression would silently break.
+    test [scala unit, mcp_test]: MCP.ir_result payload decode against
+    a canned message (clone of the decode_tools test); Fake_Backend
+    grows fake ir() so no prover is needed.
+
+I2  the argument encoding is the named yxml pair list on both sides,
+    and the empty argument object encodes to something the dispatcher
+    accepts for a zero-arg fname.
+    test [scala unit]: encode {} -> empty pair list; encode a map with
+    newline/symbol values -> round-trips byte-clean.
+    test [ml unit, MCP-HOL-Tests]: dispatch "repls" with empty args ->
+    ok; dispatch "repls" with a spurious key -> status error (closed
+    arity), not an uncaught exception.
+
+I3  the builtin table is merged into tools/list and tools/call routes
+    to the handler, with builtins keeping the bare name on collision.
+    test [scala unit]: tools/list against Fake_Backend contains
+    repl_list with description and inputSchema {"type": "object"};
+    tools/call "repl_list" {} reaches backend.ir with ("repls", Nil)
+    (assert on what the fake saw); register a fake ml tool named
+    repl_list -> builtin keeps the bare name, ml tool lists qualified;
+    "repl_list" matches ^[a-zA-Z0-9_-]{1,64}$ via the pure
+    exposure-name function test.
+
+I4  yxml stripping yields the plain listing text.
+    test [scala unit]: XML.content(YXML.parse_body(_)) of a canned
+    markup-bearing result equals the plain text.
+
+I5  output routing: Ir.repls reports via writeln (out), which the
+    Private_Output wrappers capture into the request's buffer, and
+    concurrent requests don't cross.
+    test [ml unit]: the spec's output-routing cases (writeln in a
+    registered group lands only in that buffer; output outside any
+    group falls through). already indirectly covered by the build-time
+    self-test asserting on captured output.
+
+tool-specific assumptions:
+
+T1  the dispatcher maps "repls" to Ir.repls () and rejects arguments.
+    holds today for the positional signature (MCP_Repl.thy:130);
+    must survive the I2 migration.
+    test [ml unit]: dispatch "repls" [] -> ok with a well-formed
+    listing (the spec's named case).
+
+T2  Ir.repls () on an empty repl table returns ok with an empty (or
+    header-only) listing — not an error. the tool must be callable
+    before any repl exists, because the model will probe it first.
+    test [ml unit]: on fresh state (after MCP_Repl.reset and no init),
+    dispatch "repls" [] -> status ok; output contains no repl ids.
+
+T3  a created repl appears in the listing with its id and step count,
+    and a removed repl disappears — the listing reflects the live
+    Synchronized table, no caching anywhere in the chain.
+    test [ml unit]: init "T" [Main]; dispatch "repls" -> output
+    contains "T" and "0 steps"; step once -> "1 steps"; remove "T" ->
+    "T" gone.
+    test [e2e, test_agentic.py]: tools/call repl_list before and after
+    repl_init shows the same transition through the full stack.
+
+T4  read-only honesty (backs the readOnlyHint refinement): calling
+    repl_list changes nothing — repeating it yields the same output,
+    and an interleaved repl is unaffected.
+    test [ml unit]: dispatch "repls" twice around an active repl ->
+    identical output (modulo the busy elapsed-time field, which only
+    appears while an operation is in flight — assert on the id/steps/
+    origin fields, not the elapsed seconds); the repl still steps
+    afterwards.
+
+T5  the busy annotation is transient: a repl executing a step shows
+    "busy [...]" and reverts after completion. relevant because the
+    tool's description promises it.
+    test [bridge]: fire a slow step (sleeping isar text) on repl A,
+    then session.ir("repls", Nil) concurrently -> listing shows A busy;
+    after join, listing shows A idle. (bridge layer because it needs
+    real concurrency through the async command; also doubles as an I1
+    async witness.)
+
+done when
+---------
+
+- all I1..I5 and T1..T5 tests green at their layers:
+  isabelle build -d mcp/Tools MCP-Tools-Tests MCP-HOL MCP-HOL-Tests,
+  isabelle mcp_test, isabelle mcp_test -b, python3 mcp/test/*.py.
+- tools/list from a live server shows repl_list with the exact
+  metadata block above.
+- the spec's "advertised tool metadata" bullet is updated with the
+  read-only refinement for repl_list/repl_show/repl_state/repl_text
+  (+ CHANGELOG entry), or the refinement is rejected and this plan's
+  annotations flip to match the spec.

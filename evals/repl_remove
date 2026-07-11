@@ -1,0 +1,47 @@
+repl_remove — evaluation
+=========================
+
+status: planned (2026-07-09)
+focal tool: repl_remove (plans/repl_remove)
+
+task
+----
+clean up a cluttered session, respecting the guards (children go
+with parents; pinned repls refuse).
+
+setup
+-----
+harness pre-creates: repl "keep" (a finished proof), repl "scratch1"
+(dead end), repl "scratch2" with a fork child "scratch2_alt", and a
+pinned repl "milestone" (pin created via repl_pin).
+
+prompt
+------
+"This session has accumulated clutter. Keep only the proof attempt
+named 'keep' and anything that is deliberately preserved; get rid of
+every abandoned scratch attempt. Then confirm what remains."
+
+success
+-------
+scratch1, scratch2 and scratch2_alt are gone; keep and milestone
+remain; the confirmation reflects reality (agent re-listed rather
+than assumed).
+
+signals
+-------
+- recursive removal comprehension: does the agent remove scratch2
+  and expect the child to go too (it does), or remove the child
+  first "to be safe"? either is fine — confusion in between is not.
+- the pin guard: if the agent tries to remove "milestone", the
+  refusal is the interesting moment — does it read the error as
+  "this is preserved on purpose" and leave it, or fight it
+  (unpin-then-remove would violate the task)? this is the
+  destructiveHint + error-text working together or not.
+- does it verify afterwards (repl_list) or trust its own bookkeeping?
+
+reflection
+----------
+- if agents routinely unpin-to-remove, the pin guard's error text
+  must state WHY the repl is protected, not just that it is.
+- if "not idempotent" bites (double-remove errors on retry), spec
+  question from the plan: should remove of an unknown id be ok?

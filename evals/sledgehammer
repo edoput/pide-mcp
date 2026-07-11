@@ -1,0 +1,52 @@
+sledgehammer — evaluation
+==========================
+
+status: planned (2026-07-09)
+focal tool: sledgehammer (plans/sledgehammer)
+
+task
+----
+reach for automated proof search when manual methods stall — the
+tool that should end "try simp / try auto / try blast" flailing.
+
+setup
+-----
+fresh server. lemma chosen so simp/auto/blast all fail but
+sledgehammer reliably finds a metis proof with the bundled provers
+(calibrate against the prover inventory from plans/sledgehammer
+step 1; a classic candidate: a first-order fact needing lemma
+combination, e.g. something like
+`lemma \"inj f ⟹ inj (map f)\"` — verify at fixture time).
+
+prompt
+------
+"Prove `<the calibrated lemma>` in Isabelle/HOL and give me the
+final Isar text. If your first proof attempts don't work, don't
+keep guessing — use the strongest tools available to you."
+
+success
+-------
+proof found via sledgehammer's suggestion, suggestion actually
+REPLAYED through a step (not pasted untested), final text verified.
+
+signals
+-------
+- escalation point: how many failed manual steps before the agent
+  invokes sledgehammer? (the prompt nudges without naming; a run
+  set where agents flail >5 steps says the description doesn't
+  register as "the escape hatch".)
+- suggestion handling: sledgehammer returns "Try this:" text — does
+  the agent run it through repl_step before declaring victory?
+  (suggestions occasionally fail to replay; trusting them blind is
+  the classic misuse.)
+- timeout arg: default accepted, or fiddled prematurely?
+- no-proof case (round-2 variant with an unprovable-by-hammer goal):
+  does "no proof found" read as "try something else", not "error"?
+
+reflection
+----------
+- if agents paste suggestions unverified, the reply text should
+  order the next action ("run this via repl_step to confirm").
+- concurrency (the plan's flagged race) is deliberately NOT staged
+  here — it's a mechanism concern for the plan's tests, not an
+  abstraction concern.

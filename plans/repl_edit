@@ -1,0 +1,112 @@
+repl_edit — implementation plan
+================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("edit" => keys
+["repl", "idx", "isar_text"]). semantics to pin: edit re-executes the
+edited step immediately; later steps go stale (or replay right away
+when auto_replay is on — engine default matters to the description).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_edit
+description   "Replace the step at index `idx` with new Isar text and
+              re-execute it from that point's pre-state. Subsequent
+              steps are marked stale; run repl_replay to re-execute
+              them (or they replay automatically if auto-replay is
+              enabled). If the new text FAILS, the REPL is unchanged
+              — the old step survives. repl_edit edits the REPL's
+              step list, NOT the theory file on disk."
+              (source: mcp_server.py edit :339, plus the failure
+              atomicity of with_claim/edit_repl and the spec's "repl
+              edits are not file edits" warning.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "idx": {"type": "integer"},
+                 "isar_text": {"type": "string"}},
+               "required": ["repl", "idx", "isar_text"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_edit",
+                    {"repl":"T","idx":0,"isar_text":"by auto"}
+  scala builtin row backend.ir("edit", [(repl,T),(idx,"0"),
+                    (isar_text,"by auto")])
+  ml dispatcher     "edit" -> Ir.edit (get "repl") (get_int "idx")
+                    (get "isar_text")
+  engine            ir.ML:628 — with_claim Op_Edit; edit_repl:610
+                    re-executes at idx, marks the tail stale, replays
+                    it if #auto_replay cfg; out "Edited step N, M
+                    subsequent steps marked stale"
+
+implementation steps
+--------------------
+
+1. [decide, description-level] what auto_replay defaults to in OUR
+   server (ir.ML cfg default; mcp_server.py exposed set_auto_replay,
+   we do not plan to). read the cfg record default while implementing
+   and make the description state the actual behavior instead of the
+   conditional sentence above.
+2. [this tool] builtin row + handler; errors -> isError.
+3. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  idx is a plain 0-based step index; negatives are NOT supported
+    here (unlike truncate/fork/state) — out of range error.
+    test [ml unit]: edit at -1 -> error "out of range"; edit at n ->
+    error; edit at 0 -> ok.
+T2  failure atomicity: a failing edit leaves the old step and no
+    staleness behind, claim released.
+    test [ml unit]: 2 steps; edit 0 with garbage -> error; show ->
+    original text, step 1 not stale; repl still steps.
+T3  staleness bookkeeping matches the reply text: editing step i of n
+    marks exactly n-i-1 steps stale (auto_replay off), and
+    repl_replay clears them.
+    test [ml unit]: 3 steps, edit 0 -> "2 subsequent steps marked
+    stale"; show -> [stale] on steps 1,2; replay -> "Replayed 2";
+    show -> clean.
+T4  pin interaction: editing a pinned repl marks the pin stale
+    (mark_pin_stale on mutation), so dependents rebase honestly.
+    test [ml unit]: pin, edit, show -> "pinned [stale]".
+    (covered jointly with plans/repl_pin.)
+T5  full chain.
+    test [e2e]: step a failing 'by simp', repl_edit it to 'by auto',
+    repl_text shows the fixed script.
+
+done when
+---------
+
+- T1..T5 green; description states the real auto_replay default;
+  tools/list shows the row above.
+
+status: done (2026-07-09). T1..T5 green at all layers. Step 1's decision:
+this server's engine default is auto_replay=true (ir.ML:65) and there is
+no MCP.ir fname to change it, so the description states that plainly
+("auto-replay is always on in this server ... no separate repl_replay
+call is needed") instead of the plan's conditional phrasing. ml unit
+(mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy): T1 idx bounds (negative and
+past-end both "out of range", 0 valid), T2 failure atomicity (bad tactic
+leaves the old step and no staleness, claim released, repl still
+steps), T3 the reply's stale count is accurate but -- per the auto_replay
+finding -- show finds them already clean by the time it's called, not
+stale (same class of gap as plans/repl_show T1, documented inline rather
+than silently adjusted), T4 editing a pinned repl marks the pin stale
+regardless of operation kind (release always calls mark_pin_stale).
+scala unit + tools/call wiring in isabelle mcp_test; no new bridge test
+needed (T1-T4 have no async dimension of their own, distinct from
+repl_step/repl_show/repl_remove). e2e (test_mcp.py's test_repl_builtins):
+step a lemma and its proof, repl_edit the proof step's tactic, confirm
+repl_show/repl_text reflect the edit -- the plan's literal
+"edit a failing step" framing does not fit the API (a failing repl_step
+is never added, so there is no index to edit), so T5 exercises
+edit-a-successful-step instead; the failure-atomicity promise itself is
+already covered at the ml-unit layer (T2).

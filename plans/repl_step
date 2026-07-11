@@ -1,0 +1,102 @@
+repl_step — implementation plan
+================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("step" => keys
+["repl", "isar_text"]); THE hot-path tool — everything the model does
+in a proof goes through it, so the description and the failure
+semantics carry the most weight of any wave-1 tool. also the tool for
+which I1's async property matters most: a step can legitimately run
+for seconds (timeout default 10s) and must not block concurrent
+repl_list/repl_state calls.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_step
+description   "Apply one Isar command to a REPL and print the
+              resulting proof state. Examples: 'lemma \"True\"',
+              'by simp', 'definition ...'. Do not send 'theory'
+              headers — the theory context was set by repl_init.
+              IMPORTANT: if a step FAILS (error result), the REPL
+              state is UNCHANGED — do NOT call repl_back to undo a
+              failed step. Steps are subject to the REPL's timeout
+              (default 10s, see repl_timeout); a timed-out step is a
+              failed step."
+              (source: mcp_server.py step :318 verbatim, plus the
+              timeout sentence from ir.ML exec_text.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "isar_text": {"type": "string"}},
+               "required": ["repl", "isar_text"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_step",
+                    {"repl": "T", "isar_text": "by simp"}
+  scala builtin row backend.ir("step", [(repl,T), (isar_text,"by simp")])
+  ml dispatcher     "step" -> Ir.step (get "repl") (get "isar_text")
+  engine            ir.ML:481 — with_claim Op_Step; exec_text under
+                    the repl's timeout; appends the step; out
+                    (pretty_state of the new state)
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  isar text survives the trip byte-clean: newlines, quotes,
+    Isabelle symbols (\<Longrightarrow>), unicode. (encoding half
+    already covered by the I2 round-trip tests; this asserts the
+    engine end.)
+    test [ml unit]: step with a multi-line lemma statement containing
+    \<Longrightarrow> -> ok; text output returns it verbatim
+    (with plans/repl_text).
+T2  failure atomicity — the description's central promise: a failing
+    step leaves step count and last state unchanged, and the repl is
+    NOT left claimed.
+    test [ml unit]: init, step "lemma True", step "garbage_tactic" ->
+    error; show -> still 1 step; step "by simp" -> ok (repl usable,
+    claim released).
+T3  a timed-out step behaves like a failed step.
+    test [ml unit]: timeout T 1; step a sleeping/looping method ->
+    error mentioning timeout; state unchanged; restore timeout.
+T4  proof-state output: a successful step inside a proof prints the
+    goal state (what the model steers by), not just "ok".
+    test [ml unit]: after "lemma \"x + y = y + (x::nat)\"" the output
+    contains "goal" and the subgoal text (already partially covered
+    by the build-time self-test's s2/o2 assertions).
+T5  async under load (I1): a slow step on repl A does not delay
+    repl_list or a step on repl B.
+    test [bridge]: fire slow step on A, then ir("repls") and a fast
+    step on B; both return before A joins. (this is the spec's async
+    case; also listed as I1's test — this tool is where it bites.)
+T6  full chain.
+    test [e2e, test_agentic.py]: init -> step lemma -> step by simp
+    -> text shows both lines.
+
+done when
+---------
+
+- T1..T6 green; tools/list shows the row above; the e2e proof loop
+  passes.
+
+status: done (2026-07-09). T1..T6 green at all layers (ml unit:
+mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy -- T1 symbol/multi-line round-trip
+via repl_text, T2 failure atomicity on a bad tactic, T3 timeout behaving
+as a failed step with the timeout lowered to 1s, T4 goal-state output
+inside a proof; bridge: isabelle mcp_test -b T5, a slow step on one REPL
+does not delay a concurrent step on another, both Future.fork'd; scala
+unit: isabelle mcp_test, metadata + tools/call wiring; e2e:
+mcp/test/test_mcp.py's test_repl_builtins, extended to init -> step
+lemma -> step "by simp" -> list -> remove -> list, closing T6).

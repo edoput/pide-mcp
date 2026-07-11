@@ -1,0 +1,249 @@
+find_definition — implementation plan
+======================================
+
+status: planned (2026-07-09)
+
+wave 4, navigation: NAME-based lookup, ML side via MCP.ir — this adds
+a NEW fname to the dispatcher (the first beyond the mirrored ir.ML
+set). references I1..I5; the design is the spec's "navigation"
+section: name spaces are the authoritative registry (replacing iq's
+name guessing), and hits are enriched to the defining SOURCE BLOCK
+via the source_map machinery when segments exist.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          find_definition
+description   "Find where a name is defined. Looks the name up in
+              the prover's name spaces — constants, types, classes,
+              facts, locales, methods, attributes — so it works for
+              anything any command introduced (definition, fun,
+              datatype, typedef, record, inductive, locale, ...).
+              `kind` restricts the search (const | type | class |
+              fact | locale | method | attribute); omitted searches
+              all. Context: pass `repl` to search in that REPL's
+              context, or `theory` for a loaded/image theory's global
+              context; default is the base image. Each hit reports
+              kind, full internal name, the definition position, and
+              — when the defining theory has recorded segments or a
+              loaded document — the complete defining source block
+              (the whole datatype/fun/typedef command, showing
+              constructors and fields the name space alone cannot)."
+inputSchema   {"type": "object",
+               "properties": {
+                 "name": {"type": "string"},
+                 "kind": {"type": "string",
+                          "enum": ["const", "type", "class", "fact",
+                                   "locale", "method", "attribute"]},
+                 "repl": {"type": "string"},
+                 "theory": {"type": "string"}},
+               "required": ["name"]}
+              (repl and theory are mutually exclusive — handler-
+              enforced, like repl_init_from_source's locators.)
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "find_definition",
+                    {"name": "rev", "kind": "const"}
+  scala builtin row backend.ir("find_definition", pairs of the given
+                    args) after the exclusivity check.
+  ml dispatcher     NEW entry: "find_definition" =>
+                    (keys ["name", "kind", "repl", "theory"];
+                     Ir_Nav.find_definition ...) — new ML code, lives
+                    in MCP_Repl.thy (or a sibling Nav file in the
+                    MCP-HOL session), NOT in ir/ir.ML (which stays
+                    verbatim-reused; the Amazon-header constraint).
+  engine (new ML)   resolve context: repl -> Toplevel.context_of of
+                    its last state; theory -> Thy_Info.get_theory;
+                    default -> the startup theory. spaces:
+                    Sign.const_space, Sign.type_space, classes,
+                    Proof_Context.facts_of, locales, methods,
+                    attributes. per space: Name_Space.check /
+                    extern-aware lookup of `name`, then
+                    Name_Space.the_entry -> {theory_long_name, pos}.
+                    enrich: pos + segments (Ir.find_source) ->
+                    containing segment's text.
+
+implementation steps
+--------------------
+
+1. [new ML] Ir_Nav.find_definition in the MCP-HOL session tree +
+   dispatcher entry + build-time self-test cases (this is the first
+   plan that grows the ML surface — keep it in our file, ir.ML
+   untouched).
+2. [ml detail to settle first] name resolution per space: accept
+   both internal ("List.rev") and extern ("rev") forms —
+   Name_Space.check with the context handles externing; ambiguous
+   short names return ALL matches (it is a search, not a compile).
+3. [this tool] builtin row + handler (exclusivity check scala-side).
+4. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  the kind coverage claim: one hit each for a const (rev), a type
+    introduced by datatype (list), a class (ord), a fact (rev_rev_ident
+    or append_assoc), a locale, a method (simp), an attribute (simp).
+    test [ml unit]: seven dispatch calls, each with kind fixed,
+    asserting kind + internal name + a real position in the reply.
+T2  the type-space claim specifically (the spec calls it out):
+    datatype/typedef/type_synonym/record all land their constructor
+    in Sign.type_space.
+    test [ml unit]: a fixture theory in MCP-HOL-Tests defining one
+    of each; find_definition kind=type finds all four.
+T3  unknown name -> ok with "no definition found" (probe-safe, like
+    the discovery tools), NOT a status error; a bad `kind` value IS
+    an error (closed enum).
+    test [ml unit]: both.
+T4  context selection: a constant defined only in a repl's context
+    is found with repl=..., not without; theory=<image thy> scopes
+    to that theory's view.
+    test [ml unit]: repl defines foo; find_definition foo with and
+    without repl.
+T5  source-block enrichment: for a name defined in a
+    record_theories theory, the reply contains the whole defining
+    command text; for a heap theory without segments, position only
+    (graceful).
+    test [ml unit]: both branches (MCP-HOL's own theories have
+    segments; HOL.List does not).
+T6  full chain.
+    test [e2e]: find_definition {"name": "rev"} returns List.rev
+    with a position — the model-facing replacement for iq's
+    get_definitions.
+
+done when
+---------
+
+- T1..T6 green; the new fname is in the dispatcher's closed table
+  with its key set; tools/list shows the row above.
+
+open problem (2026-07-10): isabelle://theory/{name}/entities resource
+-----------------------------------------------------------------------
+
+spec's checklist bundles this resource into the SAME line as
+find_definition/goto_definition ("navigation: find_definition ...,
+goto_definition ..., isabelle://theory/{name}/entities resource"), but
+no plan file owns it yet and it was never actually started -- this
+note exists so the groundwork already done isn't lost before the tool
+itself lands.
+
+what it needs (spec, "concrete resources"): "entities *defined* in the
+theory with kinds and positions -- consts, types (datatype/typedef/
+type_synonym/record/...), classes, facts, locales -- from name-space
+entries filtered by theory_long_name (image theories) or entity-def
+markup in the snapshot (PIDE-loaded), replacing iq's regex-based
+get_entities."
+
+mechanism for the IMAGE-tier half, worked out but not yet written as
+code: `Name_Space.theory_name {long = true} space name : string`
+(Pure/General/name_space.ML) returns the defining theory's long name
+for any entry directly -- no need to reconstruct it from positions or
+markup. So, given `thy = Thy_Info.get_theory thy_name` and `target =
+Context.theory_long_name thy`, the image-tier entities list is: for
+each of
+
+  Sign.class_space thy       -- classes
+  Sign.type_space thy        -- types (datatype/typedef/type_synonym/
+                                 record all land here per
+                                 find_definition's own T2)
+  Sign.const_space thy       -- consts
+  Global_Theory.fact_space thy -- facts
+  Locale.locale_space thy    -- locales
+
+`Name_Space.get_names space` enumerated, filtered to entries where
+`Name_Space.theory_name {long = true} space name = target`, with
+position from `Name_Space.the_entry space name` (`#pos`, a
+`Position.T`; `Position.line_of` for the line number). This is exactly
+the name-space-enumeration counterpart to find_definition's per-space
+lookup above (T1's kind coverage) -- if find_definition's Ir_Nav
+module gets a per-space "list entries for theory X" helper, this
+resource is a thin consumer of it; if find_definition doesn't need
+one, this resource will have to add its own, following the same
+pattern.
+
+the PIDE-loaded (non-image) half is unexplored -- spec says "entity-
+def markup in the snapshot", the same Rendering.entity_elements
+cumulate goto_definition's plan already describes, just enumerating
+instead of looking up one position; no mechanism verified yet for
+that branch.
+
+not addressed by this note: where the resource lives in mcp_session.
+scala (a new isabelle://theory/{name}/entities-uri case, presumably
+alongside theory_diagnostics_uri and friends), what fname (if any)
+crosses the MCP.ir bridge for it, tests, and — per the KNOWN GAP
+already pinned in CHANGELOG 2026-07-10 ("resources: isabelle://
+theory/{name} source and commands") — whether entities enumeration
+for image theories is even reachable from a live headless process at
+all (Name_Space.theory_name reads Thy_Info-independent per-entry
+bookkeeping baked into the theory VALUE itself at declaration time,
+which the heap DOES serialize, unlike Thy_Info.get_theory_segments --
+so this should NOT hit the same gap, but that is an assumption, not
+yet verified against a live MCP_Session).
+
+update (2026-07-10, first implementation probed live): the resource
+now exists (mcp_session.scala's theory_entities_uri -> MCP.ir fname
+"entities" -> MCP_Repl.thy's entities function) and the heap-survival
+assumption above is VERIFIED against a live `isabelle mcp_server -s
+MCP-HOL`: isabelle://theory/HOL.Wellfounded/entities returns the real
+kind/line/name table from a fresh process — Thy_Info.get_theory and
+name-space entry positions DO survive heap restart; this is NOT the
+segments gap.
+
+ISSUE FOUND (name qualification): the scala gate and the ML lookup
+accept DIFFERENT name forms. mcp_session.scala's image_tier tolerates
+both spellings (loaded_theory(name) ||
+loaded_theory(Long_Name.qualify(session_name, name))) but forwards
+the client's ORIGINAL string to ML, where Thy_Info.get_theory does an
+exact-key lookup against a table whose keys mix qualified and
+unqualified names ("HOL.Wellfounded" but plain "Main"). live matrix
+(mcp_server -s MCP-HOL -T MCP_Repl):
+
+  MCP_Repl          gate passes, ML errors "Theory loader: undefined
+                    entry for theory \"MCP_Repl\"" — the server's own
+                    -T theory under its natural name fails
+  MCP-HOL.MCP_Repl  ok (empty table — correct, ML-only theory)
+  Main              ok
+  HOL.Main          gate rejects -> misleading "not backed yet"
+  Wellfounded       gate rejects -> misleading "not backed yet"
+  HOL.Wellfounded   ok, real table
+
+so the resource only answers for the exact Thy_Info key, which the
+client cannot predict, and both failure modes mislead. fix direction:
+have scala pass the RESOLVED qualified name (the form loaded_theory
+actually matched) to ML, or have ML resolve base names against
+Thy_Info.get_names before get_theory — either makes gate and lookup
+agree by construction. the same latent mismatch sits in /commands and
+bare /theory/{name}, masked there by the segments gap erroring first.
+heap-behavior claims like the above are testable from scala via
+MCP_Heap_Suite (see plans/README "testing process").
+
+FIXED (2026-07-10, scala side): mcp_session.scala's image_theory
+resolves the client spelling to the canonical loaded_theories key --
+verbatim, then session-qualified, then a UNIQUE base-name match over
+the whole image (unknown/ambiguous -> None, i.e. not image tier) --
+and the RESOLVED name is what crosses the ir bridge, for entities and
+for /commands + bare /theory/{name} alike (image_tier is now just
+image_theory(name).isDefined; unload_theory's image check uses it
+too). every row of the matrix above now answers: MCP_Repl,
+Wellfounded and HOL.Main all resolve. pinned by the bridge test
+"wave 2 resources: ... entities -- image-tier names are normalized to
+the canonical Thy_Info key" (mcp_bridge_tests.scala).
+
+bonus fallout: fixing the normalization RETRACTED the segments KNOWN
+GAP entirely -- "No recorded segments" for MCP_Repl was this same bug
+(ir.ML's find_source swallows the "undefined entry" ERROR and rewrites
+it), and with the canonical key isabelle://theory/MCP_Repl and
+.../commands return real recorded source from a live server. see
+CHANGELOG 2026-07-10 "entities name qualification", RETRACTED bullet.

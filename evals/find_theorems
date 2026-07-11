@@ -1,0 +1,53 @@
+find_theorems — evaluation
+===========================
+
+status: planned (2026-07-09)
+focal tool: find_theorems (plans/find_theorems)
+
+task
+----
+find existing library lemmas instead of reproving them — and, the
+plan's explicit open decision: can agents produce correct
+find_theorems query syntax (quoted patterns) from the description
+alone, now that mcp_server.py's silent auto-quoting was dropped?
+
+setup
+-----
+harness pre-creates repl "search" on Main (find_theorems needs a
+repl context).
+
+prompt
+------
+"Working in the attempt named 'search': I need library facts that
+relate `rev` and `map` (the classic push-map-through-reverse facts),
+and separately whatever the library already knows about
+`length (filter ...)`. Find the relevant existing lemmas — do NOT
+prove anything yourself — and list their names and statements."
+
+success
+-------
+rev_map (or equivalent) and length_filter-family facts reported by
+their real names, sourced from tool output.
+
+signals
+-------
+- THE decision's data: first-call query syntax. a term pattern must
+  be quoted ("rev (map _ _)"); name criteria unquoted. count
+  first-call successes vs syntax errors across runs. this number
+  directly settles plans/find_theorems' "revisit if e2e shows
+  models failing" clause.
+- on a syntax error, does the error text produce a fixed retry in
+  one step?
+- criteria richness: does the agent use name: / intro / simp
+  criteria or only bare patterns? (informs how much of the query
+  language the description should teach.)
+- max_results: does the agent page/raise it when the answer seems
+  truncated?
+
+reflection
+----------
+- if quoting failures dominate round 1, the options in order:
+  (1) put two worked query examples at the TOP of the description;
+  (2) reinstate auto-quoting scala-side (reverses the plan's
+  decision — the evaluation was built to legitimate exactly that
+  reversal if needed).

@@ -1,0 +1,52 @@
+list_sessions — evaluation
+===========================
+
+status: planned (2026-07-09)
+focal tool: list_sessions (plans/list_sessions)
+
+task
+----
+answer availability questions about the installed library — what
+session images exist, what could be built — before committing to a
+loading strategy.
+
+setup
+-----
+fresh server (the D1 structure gives ~134 sessions; HOL heap
+present, most others not — per the bundled distribution).
+
+prompt
+------
+"Before we start: I plan to formalize some results that need
+multiset reasoning and possibly probability theory. Survey what
+this Isabelle installation offers for that — which relevant
+sessions exist, and which of them are ready to use right now
+versus would need building first."
+
+success
+-------
+relevant sessions named from tool output (HOL-Library for
+multisets, HOL-Probability), each tagged correctly as heap-present
+or needing a build (heap_present field).
+
+signals
+-------
+- pattern use: does the agent query with patterns ("HOL-*",
+  "*Prob*") or pull everything and read? both fine; a non-matching
+  pattern must read as "no match", not an error (plans/
+  list_sessions pinned probe-safety — this eval exercises it
+  naturally when the agent probes "Multiset*" which matches no
+  SESSION, being a theory name).
+- the session/theory confusion: multisets are a THEORY in
+  HOL-Library, not a session. does the agent recover from the
+  category mismatch and pivot to list_theories/search_sources?
+  (this is the discovery-chain handoff working or not.)
+- heap_present comprehension: is "ready vs needs building"
+  answered from the field, or guessed?
+
+reflection
+----------
+- if the session/theory category error strands agents, the
+  descriptions of the three discovery tools must form an explicit
+  chain ("sessions contain theories; for theories see
+  list_theories") — write it as a paragraph shared across them.

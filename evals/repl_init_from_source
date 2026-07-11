@@ -1,0 +1,57 @@
+repl_init_from_source — evaluation
+===================================
+
+status: planned (2026-07-09)
+focal tool: repl_init_from_source (plans/repl_init_from_source)
+
+task
+----
+attach interactively at a failure inside an existing theory — the
+workflow the tool exists for, and the evaluation that settles the
+plan's open question (attach AFTER vs BEFORE the located command).
+
+setup
+-----
+a theory file Eval_Broken.thy on disk: a few definitions, then a
+lemma whose proof fails at a known step (e.g. `by simp` where simp
+is insufficient). harness pre-loads it with load_theory so the
+failing diagnostics exist. (until wave 2 lands, the harness can
+instead pre-create the loaded document by whatever mechanism the
+implementation provides at run time.)
+
+prompt
+------
+"The theory in Eval_Broken.thy does not check: the proof of lemma
+distrib fails. Investigate the failure interactively — look at the
+actual goal at the point of failure — and tell me a proof step that
+works there."
+
+success
+-------
+the agent lands a repl positioned at (or immediately before) the
+failing command, inspects the real goal, and reports a step it has
+verified against that goal.
+
+signals
+-------
+- locator choice: pattern vs offset vs index — which do agents
+  reach for, and does the exactly-one rule (handler-enforced,
+  invisible in the schema) trip them?
+- THE question: with after-command semantics, attaching "at" the
+  failing command gives the state after it. does the agent notice it
+  is one command off, and does it self-correct (attach at the
+  predecessor)? a transcript where the agent silently reasons about
+  the wrong state is the strongest possible argument for
+  before-semantics or a dedicated "at the failure" mode.
+- does the agent even find this tool, or does it re-type the whole
+  theory into a fresh repl_init repl step by step? (the workaround
+  works — if it is what agents naturally do, the tool's value claim
+  weakens.)
+
+reflection
+----------
+- settles plans/repl_init_from_source's flagged decision with
+  evidence instead of taste.
+- if pattern matching's "first occurrence" bites (pattern matches an
+  earlier line), spec question: occurrence index or containing-
+  command disambiguation in the reply.

@@ -1,0 +1,48 @@
+scope_remove — evaluation
+==========================
+
+status: planned (2026-07-09)
+focal tool: scope_remove (plans/scope_remove)
+
+task
+----
+narrow a listing that has grown noisy — and cope with the pinned
+literal-removal semantics (patterns are removed by literal match,
+not by re-matching what they cover).
+
+setup
+-----
+harness pre-adds two scope patterns: "HOL-Library.*" and
+"HOL-Algebra.*".
+
+prompt
+------
+"The resource listing has gotten noisy. Trim it so only the
+HOL-Algebra theories remain visible from the library additions —
+the HOL-Library ones should disappear from the listing. Confirm
+the listing afterwards."
+
+success
+-------
+the "HOL-Library.*" pattern removed (literally), "HOL-Algebra.*"
+intact, confirmation read from scope_show/resources/list.
+
+signals
+-------
+- the literal-semantics moment: to remove, the agent must reproduce
+  the EXISTING pattern string. does it discover the current patterns
+  first (scope_show) and copy one, or invent a semantically-
+  equivalent-but-different string and get a no-op/error? this is
+  plans/scope_remove's pinned decision meeting reality.
+- no-op comprehension: whatever removing a non-existent pattern
+  returns, does the agent notice nothing changed (the confirmation
+  step forces the check)?
+- does the agent grasp that implicit members (loaded theories,
+  repls) are not removable this way, if it strays there?
+
+reflection
+----------
+- if invented-pattern misses recur, either the removal error/no-op
+  reply should list the actual current patterns ("no such pattern;
+  current: ...") — cheap and decisive — or the spec revisits
+  match-based removal.

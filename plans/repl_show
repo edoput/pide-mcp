@@ -1,0 +1,88 @@
+repl_show — implementation plan
+================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("show" => keys
+["repl"]); read-only.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_show
+description   "Describe one REPL: origin, timeout, pin status, and
+              the numbered list of its steps with staleness marks and
+              proof-level indentation. This is the map of the REPL —
+              use it to find the step index for repl_edit /
+              repl_truncate / repl_fork, and to see which steps are
+              stale after repl_edit / repl_rebase. For the state at a
+              point use repl_state; for the raw Isar text use
+              repl_text."
+              (source: mcp_server.py show :327, enriched with what
+              ir.ML:534 actually prints and the cross-references.)
+inputSchema   {"type": "object",
+               "properties": {"repl": {"type": "string"}},
+               "required": ["repl"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+              (readOnlyHint spec refinement, flagged in
+              plans/repl_list.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_show", {"repl": "T"}
+  scala builtin row backend.ir("show", [(repl, T)])
+  ml dispatcher     "show" -> Ir.show (get "repl")
+  engine            ir.ML:534 — header line (id, N steps, origin,
+                    timeout, pin) + base level + one line per step:
+                    index, indentation by Toplevel.level, rendered
+                    text, "[stale]" mark
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  the output carries what the description promises: origin, step
+    indices starting at 0, stale marks.
+    test [ml unit]: init + 2 steps -> output contains "2 steps",
+    "from", lines starting with "0" and "1"; edit step 0 (auto_replay
+    off) -> "[stale]" appears on step 1.
+T2  read-only honesty: no claim, repeatable, callable on a busy repl?
+    — NO: the_repl on a Claimed entry errors ("is busy"). the
+    description must not promise availability during operations;
+    repl_list is the busy-safe overview.
+    test [ml unit]: show twice -> identical; step still works.
+    test [bridge]: show on A during A's slow step -> status error
+    "busy" (documents the behavior; if this proves annoying in
+    practice, revisit engine-side — out of scope here).
+T3  full chain.
+    test [e2e]: repl_show after two steps lists both.
+
+done when
+---------
+
+- T1..T3 green; tools/list shows the row above.
+
+status: done (2026-07-09). T1..T3 green at all layers (ml unit:
+mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy -- T1 step count/origin/indices,
+T2 read-only and repeatable; bridge: isabelle mcp_test -b T2's busy half,
+show on a REPL claimed by a Future.fork'd slow step errors "is busy",
+not a stale read, then succeeds once the step joins; scala unit:
+isabelle mcp_test, metadata + tools/call wiring; e2e: mcp/test/test_mcp.py's
+test_repl_builtins, extended with repl_show after two steps showing
+"2 steps"). SCOPE NOTE found while writing T1: the plan's stale-mark
+half ("edit step 0 with auto_replay off -- [stale] appears on step 1")
+is not reachable through the current MCP.ir dispatch surface -- the
+engine's default config has auto_replay=true (ir.ML:65) and no fname
+exposes toggling it, so Ir.edit always replays subsequent steps
+immediately. Not a regression (nothing is broken), just an untestable
+corner of the plan as written; the "[stale]" rendering line itself will
+get real coverage once a genuinely stale-producing operation (e.g.
+repl_rebase after a pin change) has its own plan implemented.

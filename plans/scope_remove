@@ -1,0 +1,78 @@
+scope_remove — implementation plan
+===================================
+
+status: planned (2026-07-09)
+
+wave 4; references S1 (plans/scope_add).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          scope_remove
+description   "Remove theory-name patterns from the resource scope.
+              Patterns are removed literally (the exact strings
+              previously added), not by re-matching — removing
+              \"HOL-Library.*\" removes that pattern, not individual
+              theories it matched. The implicit scope members (loaded
+              theories, active REPLs, named resources) are not
+              removable this way; unload_theory / repl_remove govern
+              those. Replies with the remaining scope."
+              (the literal-removal semantics is this plan's decision
+              — matching-based removal would need set subtraction
+              over patterns, which has no clean meaning; pin it
+              here, spec's scoping section stays compatible.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "patterns": {"type": "array",
+                              "items": {"type": "string"}}},
+               "required": ["patterns"]}
+annotations   {"readOnlyHint": false, "idempotentHint": true,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "scope_remove",
+                    {"patterns": ["HOL-Library.*"]}
+  scala builtin row scope-state removal + list_changed. no bridge.
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; removing an absent pattern is
+   a no-op mentioned in the reply (idempotent, probe-safe).
+2. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  add then remove restores the previous resources/list exactly;
+    list_changed fires on both edges (S1's test extended).
+    test [scala unit].
+T2  literal semantics: add "HOL-Library.*", remove
+    "HOL-Library.Multiset" -> reply notes the pattern was not in
+    scope; the glob remains; Multiset still listed.
+    test [scala unit].
+T3  implicit members survive: with a loaded fixture in scope via
+    load_theory, scope_remove of its name-as-pattern does not delist
+    it (it is in scope by load, not by pattern) — pin this
+    interaction; if load-adds are implemented AS patterns, adjust
+    the description and this test to match.
+    test [bridge].
+T4  full chain.
+    test [e2e]: add/remove round trip via tools/call +
+    resources/list.
+
+done when
+---------
+
+- T1..T4 green (T3 pinned); tools/list shows the row above.

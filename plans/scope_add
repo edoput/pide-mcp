@@ -1,0 +1,102 @@
+scope_add — implementation plan
+================================
+
+status: planned (2026-07-09)
+
+wave 4: scope state, scala-side. owns the wave's shared assumption:
+
+S1  the server holds a scope = set of theory-name patterns (plus
+    implicitly: active repls, mcp_resource registrations, loaded
+    theories); resources/list enumerates exactly the scope (the one
+    scope rule: scope filters DISCOVERY, never ACCESS — reads work
+    on any valid uri); scope changes fire
+    notifications/resources/list_changed when the client declared
+    support. default scope = the working set (loaded theories +
+    repls + named resources), nothing else.
+    test [scala unit]: fresh scope + Fake_Backend -> resources/list
+    shows only isabelle://session (+ named); after scope_add a
+    pattern matching an image theory, the theory appears
+    tier-tagged; reading an out-of-scope but valid uri still works.
+    test [scala unit]: list_changed notification emitted on change,
+    skipped when the capability is absent.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          scope_add
+description   "Add theory-name patterns to the resource scope — the
+              set of theories that resources/list enumerates. Glob
+              over long names: \"HOL-Library.*\", \"Main\". Matching
+              theories appear in the listing tagged with their
+              availability tier (image/loaded/filesystem). Scope
+              only controls the LISTING: any valid resource uri is
+              readable regardless, and scope_add does NOT load or
+              check anything (use load_theory for semantics). Replies
+              with the added patterns and their current match
+              counts."
+              (spec "scoping" + the exploring skill's warning that
+              scope_add is not discovery.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "patterns": {"type": "array",
+                              "items": {"type": "string"}}},
+               "required": ["patterns"]}
+annotations   {"readOnlyHint": false, "idempotentHint": true,
+               "openWorldHint": false}
+              (mutates listing state only; adding present patterns
+              again is a no-op.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "scope_add",
+                    {"patterns": ["HOL-Library.*"]}
+  scala builtin row scope state on MCP_Session (Synchronized set of
+                    patterns); match counting against D1's theory
+                    universe; list_changed emission. no bridge.
+
+implementation steps
+--------------------
+
+1. [infra, S1] scope state + the resources/list filter + the
+   list_changed emit point (also used by load/unload_theory's
+   auto-add/remove — retrofit plans/load_theory T5 and
+   plans/unload_theory T4 here).
+2. [this tool] builtin row + handler; zero-match patterns are
+   accepted with count 0 (adding scope for theories you'll load
+   later is legitimate) — pinned, not an error.
+3. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  S1 (above).
+T2  match counts in the reply are computed against the full known
+    universe (image + filesystem via D1), tier included.
+    test [scala unit]: add "HOL-Library.*" -> count 148.
+T3  idempotency: adding the same pattern twice -> same scope, no
+    duplicate listing entries, second reply says already present
+    (count still reported).
+    test [scala unit].
+T4  load_theory auto-adds; unload removes (the deferred T5/T4 of
+    wave 2).
+    test [bridge]: load fixture -> scope_show contains it; unload ->
+    gone.
+T5  full chain.
+    test [e2e]: scope_add, resources/list reflects it, list_changed
+    seen by the client harness.
+
+done when
+---------
+
+- T1..T5 green; tools/list shows the row above; the wave-2 deferred
+  tests are un-deferred.

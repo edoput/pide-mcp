@@ -1,0 +1,44 @@
+repl_state — evaluation
+========================
+
+status: planned (2026-07-09)
+focal tool: repl_state (plans/repl_state)
+
+task
+----
+answer "what is the goal right now / what was it three steps ago"
+mid-proof — the inspection tool for positions in the history.
+
+setup
+-----
+harness pre-creates repl "induct" with 4 successful steps of an
+induction proof (mid-proof, cases open).
+
+prompt
+------
+"In the proof attempt named 'induct': what remains to be proved
+right now? And what did the goal look like just before the most
+recent step? I want to judge whether that last step actually made
+progress."
+
+success
+-------
+both goals reported accurately; the comparison is coherent (the
+agent read two different history positions, not the tip twice).
+
+signals
+-------
+- index arithmetic: "just before the most recent step" is idx n-1 or
+  -2 (n+1+idx semantics). off-by-one here is THE expected failure —
+  does the agent get it right first call, and if not, does the
+  output (which should state which step it shows) let it notice?
+- does the agent use repl_state's idx at all, or repl_show +
+  guesswork over the step list?
+
+reflection
+----------
+- if off-by-one recurs, the description's indexing paragraph needs a
+  worked example ("-1 is the tip, -2 the state before the last
+  step"), or the output should label itself ("state after step 3 of
+  4") so misses are self-evident. the latter helps every caller —
+  prefer it.

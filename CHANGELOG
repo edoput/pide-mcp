@@ -1,0 +1,1121 @@
+isabelle mcp_server — changelog
+================================
+
+Design decisions and milestones, newest first. The spec is the full
+record; entries here point at the section that carries the details.
+
+2026-07-11 (loaded tier = live document nodes; wave-3 plan)
+------------------------------------------------------------
+
+- decision "loaded-tier membership" (spec, "exploring the library
+  universe"): a theory is "loaded" iff it has a (non-empty) node in
+  the live PIDE document — transitive imports of a load_theory'd
+  theory included, and imports added by an on-disk header edit
+  (use_theories recomputes the import closure from the header on
+  every call, so dependency edits are absorbed by construction).
+  fixes a wave-2 under-report: tier was keyed off theory_master_dirs
+  (explicit loads only), so a transitive import answered the
+  filesystem "not checked" line on /diagnostics right after being
+  checked live. theory_master_dirs is demoted to explicit-load
+  bookkeeping (unload_theory eligibility + master_dir recall);
+  unload semantics unchanged — a transitive import alone is still
+  "was not loaded", and clean_theories sweeps it when its importer
+  goes. fix scheduled with wave 3 (plans/session_structure, A8;
+  testing-checklist row added under "library discovery").
+- wave-3 planning: plans/session_structure created (umbrella —
+  startup Sessions.load_structure/deps object, resolve_theory tier
+  resolution, filesystem-tier resource widening retiring
+  not_yet_backed_uri, session-qualified load_theory resolution); the
+  three per-tool discovery plans and plans/README updated to build
+  on it. open spike flagged: filesystem-tier /commands via
+  scala-side outer-syntax spans from deps, honest fallback pinned
+  otherwise.
+
+2026-07-11 (mcp_tool command landed: isar-level tool registration)
+-------------------------------------------------------------------
+
+- implemented plans/mcp_tool_command on top of the registry pivot
+  (below): the mcp_tool / mcp_resource / mcp_test keywords and
+  commands in MCP_Tools.thy. mcp_tool wraps a diagnostic command
+  (registration-time Outer_Syntax.check_command + Keyword.is_diag,
+  position-reported for ctrl+click) with optional (description ...)
+  (params name :: type [= default] <descr> ...) (format <...>)
+  clauses, or takes the ML hatches (= <string -> string>, = run
+  <full-power fn with declared params>); mcp_resource takes a bare
+  fact name (pretty-printed at READ time, so dynamic collections
+  stay current), (isar <diagnostic text>) captured output, or an ML
+  read function. mcp_test is a reserved stub (its wave later).
+- the layer underneath: MCP_Combinators (closed param-type universe
+  string/source/args/nat/int/bool/term/typ/fact; type-directed
+  quoting where adversarial values stay data — pinned by injection
+  tests; validation with typed errors naming the argument; format
+  assembly; execution by parsing at Position.line 1 and folding
+  Toplevel.command_exception over a throwaway state of the RUN
+  context's theory, output captured, multiline payloads framed on
+  their own line and reported line numbers shifted back to "line N-1
+  of your input"). the capture substrate moved from MCP_Repl.thy to
+  MCP_Tools.thy as MCP_Output (the two phase-2 output-routing test
+  boxes are closed in MCP-HOL-Tests); MCP_Repl now builds on it.
+- TWO SURFACE CORRECTIONS forced by the outer lexer (command
+  keywords delimit command spans, so they cannot appear as inner
+  tokens anywhere): wrapped command names are quoted (mcp_tool
+  "find_consts"), and the activation attribute is plural
+  ([[mcp_tools add: ...]] / [[mcp_resources ...]]). also pinned:
+  description is MANDATORY for tools (Outer_Syntax stores but does
+  not export command comments), and the default input of a bare diag
+  wrap has the new type "args" (verbatim splice into the command's
+  argument position — quoting it would break the command's own
+  argument syntax).
+- schema over the bridge: rows carry declared params (yxml);
+  MCP.run_tool takes named args (the MCP.ir encoding); scala expands
+  params to JSON schemas (nat/int -> integer, bool -> boolean, rest
+  string with the validation contract in the description; defaults
+  typed) and diag_wrap advertises readOnly+idempotent annotations.
+  tools/call forwards all JSON arguments as named pairs; ML
+  validation owns missing/ill-typed errors.
+- listChanged closed end to end (the phase-2 builtin-table item's
+  last open half): declare emits MCP.tools_changed/resources_changed,
+  MCP_Session forwards through a callback, serve() pushes
+  notifications/{tools,resources}/list_changed (stdout line-atomic),
+  initialize declares the capability. e2e: test_mcp.py loads a
+  fixture registering a tool with mcp_tool and observes the
+  notification (60 verdicts, 0 failures; all unit/bridge/heap suites
+  green).
+- deferred: enum/list param types, the (scoped) modifier, HOL first
+  user (value), tools/list of runtime-registered tools (needs
+  plans/tool_scope designation control).
+
+2026-07-11 (registry pivot LANDED: tools are context entities)
+---------------------------------------------------------------
+
+- implemented plans/mcp_tool_registry (spec phase 3 "the pivot",
+  first item of the implementation order, now checked): MCP_Tool and
+  MCP_Resource left the global Synchronized.var and became context
+  entities — a shared MCP_Registry ML functor holding a Name_Space
+  table (definitions: positions/ctrl+click, completion,
+  theory-qualified names) plus a Symtab.set (activation) in
+  Generic_Data, both merging by union (pinned by the fixture
+  diamond). MCP_Tool.declare is the one entry point (register is
+  gone; grep gate clean); tools declare with a form tag
+  (string_fun/diag_wrap/method_wrap), a param-list placeholder and a
+  Proof.context-aware run function. declare [[mcp_tool add/del:
+  name]] toggles activation, so bundles scope tools with zero new
+  machinery (context includes covered by tests); print_mcp_tools /
+  print_mcp_resources ("!" = include inactive) print with entity
+  markup.
+- protocol commands MCP.tools/run_tool/resources/read_resource carry
+  a DESIGNATION argument (canonical theory long name; "" = the
+  MCP_Tools theory itself); rows cross the bridge under FULL internal
+  names + form tag, and the scala side computes exposed names
+  (MCP_Server.exposure: base name when unambiguous and not a builtin,
+  else sanitized qualified name, dots -> "__"; colliding entries
+  dropped, never shadowing) — pulled forward from plans/tool_scope
+  because the client-name contract needed it the moment qualified
+  names crossed. tools/call and resources/read resolve back through
+  the same map.
+- duplicate declare in one theory now errors (Name_Space strict) —
+  the mvp replace-by-name idempotence test replaced accordingly;
+  registration order is no longer a served-order guarantee
+  (Name_Space.dest_table sorts).
+- test surface: MCP-Tools-Tests gained fixture theories (visibility
+  follows imports, sibling isolation, del/add diamond, bundle
+  open/close); scala unit suites cover exposure; the bridge suite
+  covers explicit-vs-default designation and typed unknown-
+  designation errors; a new MCP_Registry_Heap_Tests pins heap
+  survival of registration+activation from a fresh ML_process (via
+  ML_Context.eval_in — theory-defined ML structures are not bound at
+  the raw ML_process toplevel); test_mcp.py green at 58/58 with
+  unchanged client-visible names ("shout", isabelle://named/
+  greeting). declare emits MCP.tools_changed (dropped outside
+  PIDE/server); scala forwarding of listChanged remains with
+  plans/mcp_tool_command step 5.
+
+2026-07-11 (registry pivot: one api, no compat wrapper)
+--------------------------------------------------------
+
+- decision (user): the registry pivot ships a SINGLE registration
+  api — MCP_Tool.declare (the declaration-based, context-entity
+  path). the previously planned thin compat wrapper keeping
+  MCP_Tool.register alive is dropped: register is deleted in the
+  pivot commit, and its six in-repo call sites (shout/greeting demos
+  in MCP_Tools.thy, test registrations in MCP_Tools_Tests.thy) are
+  ported as an explicit follow-up step in the same wave, with a grep
+  gate (no register call anywhere afterwards). the mvp
+  replace-by-name idempotence test is rewritten against the new
+  semantics (Name_Space redefinition in-theory, cross-theory
+  coexistence). spec "the pivot" migration bullet and
+  plans/mcp_tool_registry (api section + steps) updated; nothing
+  else in the tree or the spec targets the old signature.
+
+2026-07-11 (phase 3 de-risking spikes + implementation plans)
+--------------------------------------------------------------
+
+- ran the eight de-risking spikes against the phase-3 spec (results
+  recorded in the spec's new "spike results" subsection; artifacts
+  throwaway, durable versions listed in the plans' test inventories).
+  six VERIFIED: programmatic diag execution + Private_Output capture
+  (find_consts through Outer_Syntax.parse_text +
+  Toplevel.command_exception over the MCP-HOL heap); local_theory
+  commands (named_theorems, definition) through the same mechanism;
+  proof-mode states expose readable contexts (Toplevel.context_of
+  mid-proof); bundle-scoped activation end to end in a scratch Pure
+  session (bundle = [[attr add: name]] parses; context includes
+  opens/closes; unbundle persists; declare [[del/add:]] round-trips);
+  protocol_message-from-futures (already proven by MCP_Repl.thy's ir
+  emit + green bridge tests); Name_Space-in-Generic_Data
+  (define/check/extern, completion errors, recorded positions).
+- two spec CORRECTIONS from the spikes: (1) ML_val/snippet errors —
+  text parsed at Position.none carries NO positions; the diag_wrap
+  runner must parse at Position.line 1, which yields exact
+  snippet-relative lines (verified with a line-100 offset datum);
+  spec section "snippet evaluation" rewritten accordingly. (2)
+  eisbach schema derivation DEMOTED: METHOD_CLOSURE does not export
+  its closure data, so mcp_tool (method) on eisbach methods gets the
+  generic {repl, args} schema unless an explicit params clause is
+  given; automatic derivation parked behind an upstream signature
+  extension. also added: the exposure-name caveat (extern'd names
+  keep dots; the phase-2 sanitizer survives the pivot).
+- wrote the first three phase-3 implementation plans:
+  plans/mcp_tool_registry (the Generic_Data + Name_Space pivot,
+  attribute, print_mcp_tools, compat wrapper, designation argument on
+  the protocol commands; zero client-visible change gate),
+  plans/tool_scope (agent-context designation state, the three
+  tool_scope_* builtin rows, exposure-name function = extern
+  shortening + sanitizer, the repl-designation self-extension hinge),
+  plans/mcp_tool_command (params/format language + type-directed
+  quoting + MCP_Combinators + exec-at-position runner; absorbs and
+  closes phase 2's open mcp_tool/mcp_resource outer-syntax item and
+  the tools_changed forwarding). plans/README notes the phase-3
+  family-plan convention.
+
+2026-07-11 (phase 3 spec: isar-level extensibility)
+----------------------------------------------------
+
+- new spec section "phase 3 — isar-level extensibility (tools as
+  context entities)", the brainstorm-to-spec pass for the
+  user-extensibility story beyond wave 3. decisions, all grounded in
+  existing isabelle mechanisms (named_theorems.ML as the package
+  model, bundle.ML for scoping, simproc's declare [[...del:]]
+  attribute precedent, eisbach method closures, entity_antiquotation
+  patterns):
+  * the pivot: MCP_Tool/MCP_Resource move from a global
+    Synchronized.var to a Name_Space table in Generic_Data —
+    positions/ctrl+click/completion/qualified names/import-following
+    visibility for free; phase 2's bespoke collision scheme reduces
+    to Name_Space extern.
+  * visibility split into registration (name space, unconditional)
+    vs activation (name set + declare [[mcp_tool add/del: name]]);
+    bundles scope tools with zero new machinery; the server reads
+    everything relative to a designated AGENT CONTEXT (theory or
+    repl; new tool_scope_show/set/include builtins, distinct from
+    the phase-2 resource scope).
+  * a closed declarative params clause (types incl. term/typ/fact
+    with server-side validation, defaults, enums, per-param docs) +
+    type-directed-quoting format clause = the tool specification
+    language; json schemas derived scala-side from serialized
+    descriptors; MCP_Combinators as the ML layer under the sugar.
+  * payoff inventory verified by grep: every :: diag command wraps
+    for one line — Pure/HOL (find_theorems, value, quickcheck,
+    nitpick, sledgehammer, ML_val...) and AFP entries' own
+    print_*/find_*/try_* commands.
+  * ML_val wrapping = snippet evaluation with compiler errors;
+    position normalization into the user's snippet specced.
+  * methods via method_wrap (repl-stepping apply); eisbach needs no
+    wrapping for agent-authored automation (method is a local_theory
+    command, repl_step handles it) but donates schema derivation
+    from its declarative headers.
+  * mcp_test command: declaration-time tests (build = test runner),
+    slow tags behind a config option, recorded suite rerunnable via
+    the mcp_test_run diag command (itself a tool — the agent tests
+    its own tools live).
+  * explorability: context-relative ML api, print_mcp_tools,
+    \<^mcp_tool> ML antiquotation, @{mcp_tool}/@{mcp_tool_schema}
+    document antiquotations with rendering options.
+  * the self-extension loop documented as the composition of the
+    above (no dedicated feature).
+  * skills impact assessed in-spec: isabelle-ml gains
+    bundles/eisbach/document-antiquotation/keyword topics;
+    isabelle-ml-scala gets the bridge-encoding delta; new skill
+    isabelle-mcp-extending planned; additions queued for the three
+    planned phase-2 skills.
+
+2026-07-10 (spec sync)
+------------------------
+
+- brought the spec in line with everything this changelog already
+  records, no new decisions: testing-architecture section gained the
+  munit-migration update (mcp_test/ component, suites/fixtures,
+  MCP_Heap_Suite, -t flag); the "two registries, one story" section
+  now carries the wave-2 CORRECTION of its own purge-before-reload
+  premise (purge corrupts; use_theories re-reads on its own); the mcp
+  resources section gained the theory-name-spelling normalization
+  contract (image_theory: verbatim -> session-qualified -> unique
+  base-name); the MCP.ir dispatcher table lists the new "entities"
+  fname; implementation-order items updated ([x] MCP_Session.ir wave
+  0; builtin tool table "mostly done" with only the tools_changed
+  forwarding open; navigation item notes the entities resource landed
+  early and the segments retraction improves its enrichment story);
+  the phase-2 testing checklist boxes flipped to [x] where a matching
+  green case verifiably exists in the current tree (20 flips: ml-unit
+  dispatcher/engine cases in MCP_Repl_Tests.thy, scala-unit rows/
+  dispatch/codec cases in mcp_handler_tests.scala, bridge repls/async
+  in mcp_bridge_tests.scala).
+
+2026-07-10 (isabelle://named/{name}: MCP_Resource registry)
+----------------------------------------------------------------------
+
+- done: backed isabelle://named/{name}, the last of the seven
+  documented resource templates without at least a real backing path.
+  Added MCP_Resource to MCP_Tools.thy, a structure/registry mirroring
+  MCP_Tool exactly (register from a plain ML block; no new outer-syntax
+  mcp_resource command yet -- that sugar is separate future work
+  tracked in the spec's "mcp_tool / mcp_resource outer syntax commands"
+  checklist item, and isn't needed for the registry+protocol mechanism
+  itself to work, the same way MCP_Tool has functioned without an
+  mcp_tool command all along). New protocol commands MCP.resources
+  (list, mirrors MCP.theories) and MCP.read_resource (id-keyed read,
+  mirrors MCP.run_tool). Scala side: MCP_Session.ml_named_resources/
+  ml_read_resource (new promise plumbing, same pattern as
+  ml_tools/ml_run); mcp_resources() now merges isabelle://session with
+  one isabelle://named/{name} entry per registered resource;
+  mcp_resource_read dispatches isabelle://named/{name} straight to
+  ml_read_resource. Demo resource "greeting" registered alongside the
+  existing "shout" demo tool, for tests.
+- tests, all three non-ml layers: bridge (mcp_bridge_tests.scala,
+  "bridge: ml_named_resources ...", "... ml_read_resource ...", "...
+  mcp_resources lists isabelle://named/greeting ...", "... resources/
+  read dispatches to MCP_Resource" -- all against a real MCP-Tools
+  session, genuinely round-tripping through the registry); scala unit
+  (mcp_handler_tests.scala, Fake_Backend's named_resources field
+  mirrors extra_ml_tools); e2e (test_mcp.py, "resources/list includes
+  isabelle://named/greeting" + the read/unknown-name cases).
+- bugfix along the way: an edit that dropped not_yet_backed_uri's
+  wrapping capture group (while narrowing it to no longer need the
+  isabelle://named/{name} alternative, now dispatched separately)
+  silently broke the fallback -- `case not_yet_backed_uri(_)` needs
+  exactly one regex group to bind, and a 0-group Regex extractor
+  matches nothing, ever. Caught immediately by the existing "non-image
+  ... still not backed" bridge test failing with a bare "Unknown MCP
+  resource" instead of the documented-gap message. Fixed by keeping
+  the outer capturing group even though its content isn't used
+  (`case not_yet_backed_uri(_)`); mcp_session.scala and mcp_testing.
+  scala both had the same regex, both fixed. Lesson: a Scala Regex
+  extractor's case arity must match its actual group count exactly --
+  removing an alternative from inside a capturing group is safe, but
+  removing the group itself while keeping a binding pattern in the
+  case is not.
+- resource-template scorecard, all 7 now backed for at least their
+  reachable scope: isabelle://repl/{id} and .../text (thin ir bridge
+  dispatch); isabelle://theory/{name}/diagnostics (three-tier: image/
+  loaded/filesystem); isabelle://theory/{name} bare and .../commands
+  (image tier, via Ir.source/source_map); isabelle://theory/{name}/
+  entities (image tier via Name_Space, loaded tier via PIDE entity-def
+  markup); isabelle://named/{name} (this entry). Remaining gaps are
+  narrower than "unbacked template": filesystem-tier theory/{name},
+  /commands and /entities still need wave 3 (session-structure path
+  resolution) for theories never loaded into any running session; the
+  outer-syntax mcp_resource command sugar (not the registry) is
+  separate future polish.
+
+2026-07-10 (entities name qualification; MCP_Heap_Suite)
+----------------------------------------------------------------------
+
+- diagnosed the one issue found implementing isabelle://theory/{name}/
+  entities: name qualification. The scala image_tier gate accepts both
+  base and session-qualified theory names but forwards the client's
+  original string to ML, where Thy_Info.get_theory does an exact-key
+  lookup against a table that mixes qualified and unqualified keys
+  ("HOL.Wellfounded" but plain "Main"). Live matrix and fix direction
+  (pass the resolved qualified name from scala, or resolve base names
+  in ML against Thy_Info.get_names) recorded in plans/find_definition's
+  entities section. Also verified there: the heap-survival assumption
+  HOLDS — Thy_Info.get_theory and name-space entry positions survive a
+  fresh process from a saved heap; entities is NOT the segments gap.
+- new test fixture MCP_Heap_Suite (mcp_test/src/mcp_testing.scala):
+  raw ML run by a fresh `isabelle ML_process` against a saved heap
+  (ml/ml_check/ml_test; suites in mcp_test/src/mcp_heap_tests.scala,
+  run under `isabelle mcp_test -b`). Covers fresh-process/heap-restart
+  claims — the environment build-time \<^assert> theories can never
+  test, and the class both the segments gap and the Thy_Info keying
+  issue belong to. Infrastructure + fixture self-test only so far; no
+  ML tests migrated. See plans/README "testing process".
+- FIXED (same day, scala side): new mcp_session.scala image_theory
+  resolver — client spelling -> canonical loaded_theories key
+  (verbatim, then session-qualified, then unique base-name match;
+  unknown/ambiguous -> not image tier), and the resolved name is what
+  crosses the ir bridge. Applies uniformly to /entities, /commands,
+  bare /theory/{name} (image_tier = image_theory(name).isDefined) and
+  unload_theory's image check. All six rows of the plan's live matrix
+  now answer correctly; pinned by the bridge test "wave 2 resources:
+  ... entities -- image-tier names are normalized to the canonical
+  Thy_Info key". Full mcp_test -b suite green.
+- RETRACTED the segments KNOWN GAP (entry below, "resources:
+  isabelle://theory/{name} source and commands"): it was FALSE, an
+  artifact of this same name bug. The old flow forwarded the client's
+  base spelling to ML; Thy_Info.get_theory errored "undefined entry";
+  ir.ML's find_source swallowed that ERROR and rewrote it as "No
+  recorded segments" -- which read exactly like a missing-segments
+  condition. With the resolved canonical key, segments recorded at
+  build time (record_theories, mcp/Tools/ROOT) DO survive the saved
+  heap: isabelle://theory/MCP_Repl and .../commands return real source
+  from a live server. The genuine error case is a heap built WITHOUT
+  record_theories (stock HOL): still answers with Isabelle's rebuild
+  hint. Bridge test rewritten as a positive pin (mcp_bridge_tests.
+  scala "recorded segments survive into the live server"); e2e updated
+  (MCP_Repl/commands ok + Main/commands still the rebuild hint);
+  comments corrected in mcp_session.scala and MCP_Repl.thy. NOTE:
+  Ir.load_theory's own headless refusal is a separate, still-real gap.
+
+2026-07-10 (resources: isabelle://theory/{name} source and commands)
+----------------------------------------------------------------------
+
+- attempted, found a KNOWN GAP: wired isabelle://theory/{name} (bare,
+  source) and isabelle://theory/{name}/commands to the already-existing
+  MCP.ir fnames "source"/"source_map" (Ir.source/Ir.source_map,
+  mcp/Tools/HOL/ir.ML), gated on the theory being image-tier
+  (session.resources.loaded_theory). Empirically, this never succeeds
+  against a live `isabelle mcp_server` process, for ANY theory,
+  including the session's own -T theory: Ir.source/source_map read off
+  Thy_Info.get_theory_segments, which turns out to be populated only
+  within the process that actually ran `isabelle build` with
+  record_theories -- it does not survive into a freshly started process
+  even against the SAME saved heap (unlike Document.Node data, which
+  the heap itself serializes). A session-wide variant of the existing
+  Ir.load_theory KNOWN GAP (Ir.load_theory refuses in headless
+  sessions; this is broader — no theory's segments are reachable from a
+  live server at all, image-tier or not).
+- decision: kept the dispatch wired anyway (mcp_session.scala's
+  theory_source_uri/theory_commands_uri, gated on image_tier) rather
+  than falling back to the generic not_yet_backed_uri message, because
+  it surfaces Isabelle's own specific, actionable error ("No recorded
+  segments for X. Rebuild the session heap with: isabelle build -o
+  record_theories=true -b <SESSION>") instead of a bare "documented
+  template, not backed yet" — and the routing itself is the correct
+  logic a future fix to the segments gap would benefit from immediately.
+  Non-image (wave-2-loaded or filesystem) theories still fall through
+  to not_yet_backed_uri, since they were never going to have segments
+  either way.
+- tests, pinning the gap rather than hiding it: bridge
+  (mcp_bridge_tests.scala, "wave 2 resources: ... KNOWN GAP: recorded
+  segments don't survive a fresh headless process, even for the
+  session's own -T theory" — MCP_Repl itself, not just Main, still
+  errors), scala unit (mcp_handler_tests.scala, dispatch-routing only,
+  explicit in its name and comment that it does not claim production
+  success), e2e (test_mcp.py, "... KNOWN GAP names the real reason").
+- isabelle://theory/{name}/entities and isabelle://named/{name} remain
+  fully unbacked (not_yet_backed_uri) — entities needs its own
+  navigation infra (find_definition/goto_definition, a separate
+  checklist item), named needs the unbuilt mcp_tool/mcp_resource ML
+  outer-syntax commands, neither touched this round.
+
+2026-07-10 (resources: isabelle://theory/{name}/diagnostics)
+----------------------------------------------------------------
+
+- done: backed isabelle://theory/{name}/diagnostics for real, the one
+  resource template wave 2 unblocks per the plans' gating chain (the
+  other theory templates and isabelle://named/{name} still need wave 3
+  and the unbuilt mcp_resource command respectively). Implements the
+  spec's three-tier answer exactly: image theories -> "checked at
+  build time" (no live snapshot to read); theories loaded via
+  load_theory/check_theory (looked up in the theory_master_dirs
+  registry wave 2 already added) -> a live PIDE-snapshot diagnostics
+  read via session.snapshot(node_name), recomputed on every call
+  (read-time evaluation, per the spec); anything else -> the documented
+  "not checked — load_theory to check" nudge. Unlike check_theory (a
+  tool call), a resource read never reports isError just because the
+  theory happens to have errors — it reports state, not success/
+  failure of an action.
+- tests, all three non-ml layers: scala unit (mcp_handler_tests.scala,
+  Fake_Backend's Image/Loaded/anything-else stand-ins for the three
+  tiers), bridge (mcp_bridge_tests.scala, "wave 2 resources: ...", a
+  real Main for image tier plus load_theory'd good/bad fixtures for
+  the loaded tier's ok/error split), e2e (test_mcp.py, "wave 2: ...").
+- mcp/src/mcp_session.scala: new theory_diagnostics_uri regex and
+  theory_diagnostics method, dispatched ahead of the existing
+  not_yet_backed_uri fallback; mcp_test/src/mcp_testing.scala's
+  Fake_Backend gained the matching three-way branch.
+
+2026-07-10 (wave 2: load_theory, unload_theory, check_theory)
+---------------------------------------------------------------
+
+- done: wave 2 (plans/load_theory, plans/unload_theory,
+  plans/check_theory), on the post-munit-migration testing
+  infrastructure. All three tools are scala-side only (session.
+  use_theories/purge_theories over Headless), disjoint from the MCP.ir
+  bridge -- Ir.load_theory's headless refusal is deliberately left in
+  place, see the KNOWN GAP test in mcp_bridge_tests.scala.
+- finding, pinned (a correction of the plan's own assumption): plans/
+  check_theory's "PURGE BEFORE RE-LOADING" is empirically WRONG for
+  this Headless API and actively corrupts the document if followed
+  literally. Headless.Resources.purge_theories only updates its own
+  Scala-side bookkeeping and never pushes purge_edits via
+  session.update, so a manual purge desyncs Resources' record of a
+  node's prior content from what the live prover document still holds;
+  the next use_theories then diffs the new file content against a
+  phantom "no prior content" baseline and inserts it on top of the
+  still-present old text -- observed directly as duplicated theory
+  headers and cascading "missing theory context" outer-syntax errors.
+  The actual fix: check_theory does NOT purge at all -- session.
+  use_theories() already reads the file fresh and diffs against its
+  OWN correctly-tracked prior content on every call, so a plain re-run
+  already detects on-disk edits with no purge needed (mcp_session.
+  scala's check_theory comment; three-beat bridge test T1). unload_
+  theory, which does need an actual document-level removal (not just a
+  fresh read), goes through Resources.clean_theories instead --
+  unload_theories + purge_theories(None) + session.update in one
+  state.change -- the one purge path that keeps its own bookkeeping in
+  sync with the live document.
+- infra: unload_theory's inputSchema is just {name} (no master_dir),
+  but resolving a theory to its Document.Node.Name needs the master_dir
+  it was loaded with. MCP_Session now records name -> master_dir on
+  every successful load_theory/check_theory call, so unload_theory can
+  resolve consistently without asking for it again; it also doubles as
+  the "was this ever loaded" registry for unload_theory's not-loaded
+  error path.
+- tests: bridge suite (mcp_bridge_tests.scala) covers load_theory T1
+  (well-formed fixture under master_dir), T2 (broken fixture ->
+  line-positioned isError, session survives), T4 (idempotent re-load);
+  unload_theory T1 (load/unload/load-fresh cycle); check_theory T1 (the
+  staleness three-beat), T2 (never-loaded purge no-op path), T3
+  (warning-vs-error policy). e2e (test_mcp.py) threads load_theory ->
+  check_theory staleness -> unload_theory -> a flagship approximation
+  of plans/check_theory T4 (repl proves a lemma, repl_text extracts the
+  script, python splices it into a fixture file, check_theory confirms
+  it on disk) -- the true attach step (repl_init_from_source) is still
+  deferred, so the REPL proves independently rather than attaching to
+  the loaded theory's document.
+- scala-unit coverage (mcp_handler_tests.scala, Fake_Backend) predates
+  this entry (added during the munit migration): tools/list rows,
+  dispatch-not-ir assertions, unload_theory's two error paths.
+
+2026-07-10 (testing infrastructure)
+------------------------------------
+
+- done: scala tests migrated to munit 1.1.1 and split out of the
+  production jar. New component mcp_test/ (registered user-space like
+  mcp/): module lib/mcp_test.jar, sources mcp_testing.scala (Fake_Backend,
+  base suites, runner), mcp_handler_tests.scala (MCP_Protocol_Tests /
+  MCP_Tools_Tests / MCP_Resources_Tests / MCP_Codec_Tests),
+  mcp_bridge_tests.scala (MCP_Bridge_Tests over MCP-Tools,
+  MCP_Ir_Bridge_Tests over MCP-HOL), mcp_test_tool.scala (the
+  isabelle mcp_test wrapper + Test_Tools service). mcp/lib/mcp.jar now
+  ships zero test classes; mcp/etc/settings exports ISABELLE_MCP_JAR so
+  the test component's build.props can require the production jar.
+- vendored (mcp_test/lib/ext, version pinned in the file name, SHA1
+  verified against Maven Central): munit_3-1.1.1, munit-diff_3-1.1.1,
+  org.scalameta junit-interface-1.1.1 (munit's fork -- NOT
+  com.github.sbt's: munit.MUnitRunner links against
+  munit.internal.junitinterface, which only the fork provides; the
+  wrong one fails at runtime with "initializationError: Type [unknown]
+  not present"), junit-4.13.2, hamcrest-core-1.3, test-interface-1.0.
+  Wired per the two-step rule: requirements in etc/build.props
+  (compile), classpath in etc/settings (runtime).
+- abstracted test patterns (mcp_testing.scala): rpc/call_tool/tool_row/
+  assert_dispatch collapse the 15 builtin dispatch tests to one-liners;
+  MCP_Session_Suite gives with_session semantics (one shared headless
+  PIDE session per suite via beforeAll/afterAll, munitTimeout 10min)
+  plus with_repl (init + best-effort remove), slow_step, await_busy,
+  eventually, expect_ok/expect_error. isabelle mcp_test gains
+  -t PATTERN (run tests whose name contains PATTERN; suites with no
+  match are skipped before JUnit sees them). munit brings per-failure
+  source locations and assertEquals diffs, replacing check(cond, msg).
+- parity: all 96 tests carried over name-for-name (73 unit + 5 bridge
+  + 18 ir bridge, verified by diffing extracted names); all layers
+  green: isabelle mcp_test, isabelle mcp_test -b, test_mcp.py.
+
+2026-07-10 (resources)
+-----------------------
+
+- scope note: wave 1 (previous entries today) covers builtin TOOLS.
+  This entry starts on MCP RESOURCES (isabelle://... URIs,
+  resources/list, resources/templates/list, resources/read) — a
+  separate, mostly-unimplemented category. Most documented resources
+  are gated on later waves: filesystem-theory resolution needs wave 3
+  (list_theories/session-structure discovery), /diagnostics needs
+  wave 2 (load_theory), /entities needs wave 4 (navigation),
+  scope-filtered resources/list needs wave 4 (scope_add/remove), and
+  isabelle://named/{name} needs the mcp_resource ML command (unbuilt,
+  a separate phase-2 item). "All resources" is not buildable in
+  isolation — it is the capstone of the rest of phase 2, unlocked
+  wave by wave. This entry implements exactly the independent slice
+  that needs none of that.
+- done: resources/templates/list (spec's "resource templates"
+  section) — a new protocol method, static metadata (backend-
+  independent, unlike scope-filtered resources/list), advertising all
+  seven documented templates (isabelle://theory/{name} and its
+  /commands, /diagnostics, /entities siblings; isabelle://repl/{id}
+  and its /text sibling; isabelle://named/{name}) with uriTemplate,
+  name, description, mimeType: "text/plain", and
+  annotations.audience: ["assistant"] per the spec's advertised
+  resource metadata decision.
+- done: isabelle://repl/{id} and isabelle://repl/{id}/text now read
+  for real — thin dispatch onto the same MCP.ir show/text calls
+  repl_show/repl_text already use (MCP_Session.mcp_resource_read,
+  mirrored in MCP_Test.Fake_Backend for scala-unit coverage). ml
+  layer needed no changes (the ir bridge already existed); scala unit
+  covers the dispatch and the templates/list content; bridge covers a
+  live REPL round trip (init, step, read both resource forms, error
+  on a nonexistent repl id); e2e covers the same round trip through
+  the full JSON-RPC stack in test_mcp.py.
+- decided: reads on the five still-unbacked templates
+  (isabelle://theory/*, isabelle://named/{name}) return a distinct
+  "documented template, not backed yet (needs a later implementation
+  wave)" error rather than the generic "Unknown MCP resource" — the
+  same don't-pretend-it-works honesty already used for the
+  load_theory KNOWN GAP, so a client (or a human reading the error)
+  learns this is a known, tracked gap and not a typo'd uri.
+  resources/list itself is untouched (still just isabelle://session,
+  concretely listed) — pagination cursor and uri query-parameter
+  slicing (?lines=, ?start=&count=, ?kind=&prefix=) are deferred:
+  nothing yet returns a list or payload large enough to need them,
+  and building the mechanism ahead of a real consumer would be
+  speculative.
+  scala unit: isabelle mcp_test; bridge: isabelle mcp_test -b -d
+  mcp/Tools; e2e: test_mcp.py's test_repl_builtins. all layers green.
+- next: the honest path forward is the spec's own wave order — wave 2
+  (load_theory/unload_theory/check_theory) unlocks
+  isabelle://theory/{name}/diagnostics for loaded theories and theory
+  source reads generally; wave 3 (list_sessions/list_theories/
+  search_sources) unlocks filesystem-theory resolution for
+  isabelle://theory/{name} and /commands; wave 4 (scope_add/remove,
+  navigation) unlocks scope-filtered resources/list and /entities.
+  isabelle://named/{name} additionally needs the mcp_resource ML
+  command (mcp_tool / mcp_resource outer syntax, MCP_Tools.thy),
+  which is its own unbuilt phase-2 item, not part of any wave.
+
+2026-07-10 (later)
+-------------------
+
+- done: find_theorems implemented (plans/find_theorems, wave 1 — the
+  last builtin tool of wave 1's proof-search family) — builtin table
+  row (fname "find_theorems", {readOnlyHint: true, idempotentHint:
+  true} -- pure search); optional max_results property (default 40),
+  same omission mechanism as sledgehammer's timeout_secs.
+- decided: mcp_server.py's python-side query auto-quoting heuristic
+  (bare term patterns silently wrapped in quotes) is deliberately NOT
+  reimplemented scala-side — the tool description teaches the quoting
+  contract instead (name patterns unquoted, term/simp patterns
+  quoted). T5 (e2e) confirmed the contract is livable as stated:
+  name:conjI and "_ + _ = _ + _" both return hits through the full
+  stack without any auto-quoting.
+- fixed/pinned: a genuine, previously-undocumented shape in
+  Find_Theorems.find_theorems_cmd's return value, found while writing
+  T3. It returns opt_found = NONE whenever a max_results limit cuts
+  the search short (the exhaustive total is unknown at that point),
+  so a BOUNDED query's tally is "displaying N theorem(s)", never
+  "found N theorem(s) (M displayed)" as ir.ML's own tally-formatting
+  code might suggest in isolation — that found/displayed split only
+  fires when the search is unlimited (max_results 0) and completes
+  exhaustively. Pinned with "name:conj" against Main (more than 3
+  matches): max_results=3 truncates to "displaying 3 theorem(s)",
+  max_results=0 returns the full "found N theorem(s)" count. T2
+  confirmed a malformed query (unterminated quote) is a clean status
+  error, not a crash. T4 confirmed goal-based criteria ("intro") error
+  cleanly at theory level with no goal, and return plausible rules
+  (conjI) once mid-proof on a conjunction goal. T6 confirmed
+  find_theorems on one REPL returns promptly during a slow step on a
+  different REPL — no async gymnastics of its own, but it does not
+  queue behind an unrelated slow call either.
+  ml unit: MCP_Repl_Tests.thy; scala unit: isabelle mcp_test; bridge
+  (T6): isabelle mcp_test -b -d mcp/Tools; e2e (T5): test_mcp.py. all
+  layers green.
+- note: wave 1 is now complete except repl_init_from_source and
+  repl_fork, both explicitly deferred (see plans/README and
+  plans/repl_merge's status block) — no wave-1 plan actually required
+  them as builtins yet, since repl_merge's own ml-unit tests exercised
+  fork semantics directly against the dispatcher. Wave 2 (load_theory,
+  unload_theory, check_theory) is next.
+
+2026-07-10
+----------
+
+- done: sledgehammer implemented (plans/sledgehammer, wave 1 — the
+  flagship async proof-search call) — builtin table row (fname
+  "sledgehammer", {readOnlyHint: true, idempotentHint: false} -- the
+  repl state is untouched but ATP results vary run to run); first
+  tool with an OPTIONAL schema property (timeout_secs, default 15,
+  not in "required"). No special handler code was needed for the
+  omission: json_args already only emits pairs for keys present in
+  the client's arguments object, so omitting timeout_secs reaches
+  backend.ir as exactly [(repl,T)] and the ML dispatcher's own
+  default applies untouched — confirmed by T1.
+- fixed: a genuine, previously-undiscovered bug in ir.ML surfaced by
+  actually exercising sledgehammer end to end for the first time.
+  Ir.sledgehammer's deferred ML_Compiler.eval (needed because the
+  Sledgehammer structures live in the HOL heap, unavailable at ir.ML
+  compile time) picked its compilation context via
+  `Toplevel.theory_of st` — the REPL's OWN base theory (e.g. plain
+  "Main"). Main is an ANCESTOR of MCP_Repl (which declares the Ir
+  structure via ML_file), not a descendant, so Main's theory-local ML
+  environment does not see Ir — every real call failed with
+  "Structure (Ir) has not been declared". Fixed by capturing
+  MCP_Repl's own theory value ONCE at load time
+  (Ir.set_self_theory, called from MCP_Repl.thy right after
+  `ML_file "ir.ML"`) and using that captured value as the eval
+  context instead; MCP_Repl imports Main, so its own theory is a
+  strict superset (has both Sledgehammer and Ir). A first attempt
+  used `Thy_Info.get_theory "MCP_Repl"` (a by-name lookup) instead of
+  a captured value; that works under batch `isabelle build` but fails
+  against a live headless PIDE session (MCP_Session.start) with
+  "Theory loader: undefined entry for theory ..." — the same class of
+  gap already on record for load_theory (plans/repl_init T6,
+  plans/load_theory): such sessions load theories through the
+  document model, not the classical Thy_Info loader. Capturing the
+  theory value directly sidesteps the loader and works uniformly in
+  both contexts.
+- decided (T4, concurrency): sledgehammer's ML_Compiler.eval bridge
+  passes arguments through two shared Synchronized slots
+  (sledgehammer_state/sledgehammer_result), so two CONCURRENT
+  sledgehammer calls would race them. Serialized via a new global
+  blocking lock (Ir.with_sledgehammer_lock, ir.ML) rather than
+  rejecting the second caller with a busy error — the dispatcher
+  already runs each request in its own fork_run future, and a short
+  wait is simpler for callers than a distinct error to retry on. The
+  lock only serializes among sledgehammer calls; other REPL
+  operations are unaffected (confirmed by T5, a fast repl_list call
+  during an in-flight sledgehammer).
+  step 1's prover inventory (isabelle components -l): cvc5-1.2.0-1,
+  spass-3.8ds-2, vampire-4.8, verit-2021.06.2-rmx-3, z3-4.4.0pre-4 all
+  bundled. T2 confirmed a fresh REPL at theory level (not mid-proof)
+  fails sledgehammer cleanly with a status error. T3 (tolerant of
+  prover flakiness) found a proof for a trivial nat-commutativity goal
+  and the suggested one-liner closed it via a subsequent step. T6
+  (e2e) ran the full model-facing loop — step a lemma, sledgehammer,
+  step the suggestion — in test_mcp.py (test_agentic.py does not
+  exist in this repo, so e2e coverage lives alongside the other
+  builtins' e2e tests there). ml unit: MCP_Repl_Tests.thy; scala unit:
+  isabelle mcp_test; bridge (T3-T5): isabelle mcp_test -b -d mcp/Tools;
+  e2e: test_mcp.py. all layers green.
+
+2026-07-09
+----------
+
+- done: repl_pin, repl_unpin, and repl_rebase implemented together
+  (plans/repl_pin, plans/repl_unpin, plans/repl_rebase, wave 1 — the
+  pin/rebase composition feature) — three builtin table rows: repl_pin
+  (fname "pin", {readOnlyHint: false, idempotentHint: false} -- each
+  call bumps the pin version, not a no-op), repl_unpin (fname "unpin",
+  same non-idempotent mutating shape -- unpinning an unpinned REPL
+  errors), repl_rebase (fname "rebase", {idempotentHint: true} -- a
+  REPL already on the latest pins replies "already up to date").
+  repl_pin T1 confirmed pinning mid-proof is refused ("in a proof
+  state"). T2 confirmed the round trip: A defines a constant and pins,
+  B is init'd from ["pin@A"], B's origin literally prints "pin@A", and
+  B can use A's definition immediately. T3 pinned the staleness trigger
+  set: ANY successful with_claim-based mutation (step/edit/replay/
+  rebase/merge) marks a REPL's pin stale on release regardless of what
+  actually changed -- verified with a step that has nothing to do with
+  the pinned content -- and a new init from a stale pin errors while
+  existing dependents are untouched; re-pinning clears it. T4 confirmed
+  re-pinning twice both succeed. repl_unpin T1 confirmed unpinning an
+  unpinned REPL errors "is not pinned". T2 confirmed dependents block
+  unpin (origin-spec based, so removing the dependent frees it, not
+  rebasing it) and A's own steps are unchanged throughout. repl_rebase
+  T1 exercised the whole point end to end: A gains a definition and
+  re-pins, rebase B marks its steps stale, replay lets a NEW step in B
+  use A's new definition, a second rebase says "already up to date".
+  T2 confirmed a stale pin blocks rebase. T3 confirmed non-From_Theory
+  origins (forks) are refused. T4 confirmed rebase does NOT replay --
+  state is byte-identical pre/post rebase, only staleness and the base
+  theory move. All three tools share one e2e fixture (repl_pin T5,
+  repl_rebase T5, repl_unpin's e2e need): a build-a-base workflow
+  against a live server -- PinA defines a constant and pins, PinB
+  proves a lemma from pin@PinA, rebase on the current PinB is a no-op,
+  unpin is blocked while PinB exists and succeeds once it's removed.
+  ml unit: MCP_Repl_Tests.thy; scala unit + tools/call wiring: isabelle
+  mcp_test; bridge (repl_unpin T3, the pin/unpin round trip): isabelle
+  mcp_test -b -d mcp/Tools; e2e: test_mcp.py's test_repl_builtins. all
+  four layers green across all three tools.
+- done: repl_timeout implemented (plans/repl_timeout, wave 1) —
+  builtin table row (fname "timeout", pass-through {repl, secs} ->
+  backend.ir("timeout", [(repl,...),(secs,...)])); mutating but
+  genuinely idempotent (setting the same value twice is a no-op), so
+  {idempotentHint: true} within the mutating bucket, same class as
+  repl_replay. T1 confirmed the set value bounds steps: secs=1 makes a
+  2s sleeping step time out, secs=0 lets the same step run to
+  completion. T2 (pinned, a genuine surprise): exec_text only bounds
+  execution when timeout_secs > 0, so a negative value behaves exactly
+  like 0/unlimited for STEP EXECUTION -- but repl_show's rendering only
+  special-cases exactly 0 as "unlimited"; any other value, negative
+  included, goes through SML's plain string_of_int, which spells
+  negative numbers with a tilde, not a minus sign, so a REPL set to -1
+  shows "timeout=~1s", not "timeout=-1s". Both halves (execution
+  treats negative as unlimited; display does not, and spells it oddly)
+  are pinned in the test rather than silently "fixed", since this is
+  existing ir.ML behavior, not something this tool introduced. T3
+  confirmed the normal rendering: "timeout=Ns" / "timeout=unlimited".
+  T4 exercised the full chain at both the bridge and e2e layers against
+  live sessions: set, then repl_show immediately reflects the new
+  value. ml unit: MCP_Repl_Tests.thy; scala unit + tools/call wiring:
+  isabelle mcp_test; bridge: isabelle mcp_test -b -d mcp/Tools; e2e:
+  test_mcp.py's test_repl_builtins. all four layers green.
+- done: repl_merge implemented (plans/repl_merge, wave 1) — builtin
+  table row (fname "merge", pass-through {repl} (the CHILD, parent
+  implied by origin) -> backend.ir("merge", [(repl,...)])); mutating
+  and destructive ({destructiveHint: true} — deletes the child, can
+  replace a parent step). T1 pinned both merge shapes: forking at the
+  parent's tip and merging APPENDS the child's concatenated steps as
+  one new step ("appended as new step"); forking at an interior state
+  and merging REPLACES the step at the fork index ("replaced step N")
+  -- the tail-staleness half of the interior case was dropped from the
+  test for the same auto_replay=true reason as repl_edit/repl_show (the
+  tail is always replayed immediately, no [stale] mark is ever
+  observable on this server). T2 confirmed merging a non-sub-REPL
+  errors "is not a sub-REPL" and the REPL is otherwise untouched. T3
+  confirmed full atomicity on a parent-side failure: fork, then edit
+  the parent's pre-fork step (moving the goal out from under the
+  child's already-recorded tactic), then merge -- it fails and BOTH
+  REPLs survive completely unchanged, the same release-the-original-
+  snapshot behavior already pinned for repl_replay T3. T4 (bridge)
+  confirmed a busy parent blocks merge without corrupting the child --
+  concurrent merge during a slow parent step errors "busy", nothing is
+  deleted, and a retried merge succeeds once the parent frees up.
+  DEFERRAL: e2e (T5) needs repl_fork as a builtin to create a sub-REPL
+  through tools/call, and repl_fork/repl_init_from_source remain
+  unimplemented (skipped in the wave-1 ordering); T1-T3's ml-unit
+  fixtures use MCP_Repl.run "fork" directly against the dispatcher
+  instead, the same technique repl_replay used for pin/rebase, so no
+  repl_fork builtin was needed to fully exercise the engine semantics.
+  ml unit: MCP_Repl_Tests.thy; scala unit + tools/call wiring: isabelle
+  mcp_test; bridge (T4): isabelle mcp_test -b -d mcp/Tools; e2e:
+  deferred pending repl_fork.
+- done: repl_back implemented (plans/repl_back, wave 1) — builtin
+  table row (fname "back", pass-through {repl} -> backend.ir("back",
+  [(repl,...)])); pure sugar for repl_truncate idx -1
+  (ir.ML:664), destructive ({destructiveHint: true}, same class as
+  repl_truncate). T1 confirmed the equivalence including the edge: back
+  on a 0-step repl errors "out of range", the same message truncate
+  gives. T2 pinned the description's trap: step ok, step FAILS, back --
+  the surviving repl has 0 steps, not 1, since a failed repl_step never
+  joins the repl and back discards the one good step that was there;
+  the test documents this rather than fixing it, matching the plan's
+  intent. T3 (e2e) exercised the wrong-turn loop through the dedicated
+  shorthand against a live server (shared fixture with repl_truncate
+  T6): step, back, step differently, repl_text confirms the new script.
+  No bridge test needed -- repl_back has no async dimension of its own,
+  it delegates straight to truncate. ml unit: MCP_Repl_Tests.thy; scala
+  unit + tools/call wiring: isabelle mcp_test; e2e: test_mcp.py's
+  test_repl_builtins. all layers green.
+- done: repl_truncate implemented (plans/repl_truncate, wave 1) —
+  builtin table row (fname "truncate", pass-through {repl, idx} ->
+  backend.ir("truncate", [(repl,...),(idx,...)])); mutating and
+  destructive ({destructiveHint: true}, refinement already folded into
+  the spec alongside repl_remove). T1 pinned that truncate's negative
+  index mapping (n+idx-1) differs from state/fork's (n+1+idx): truncate
+  -1 keeps n-1 steps (drops exactly the last one), not n as the state
+  convention might suggest; out-of-range idx errors "out of range"
+  without mutating anything. T2 confirmed the kept prefix is untouched
+  -- no staleness added, and the repl continues stepping from the kept
+  state. T3 confirmed the orphan cutoff is exactly `si > idx`: a fork at
+  the truncation boundary itself survives, only forks strictly past it
+  are orphaned and removed (shared mechanism with repl_fork). T4
+  (bridge) confirmed atomicity: a busy orphaned sub-REPL blocks the
+  whole truncate with an "is busy" error and nothing is removed; a
+  retried truncate succeeds once the busy step finishes. T5 confirmed a
+  pinned REPL's pin goes stale on truncate, same mechanism as
+  repl_edit/repl_replay. T6 (e2e) exercised wrong-turn recovery end to
+  end against a live server: 2 steps, truncate -1 drops the tactic step,
+  repl_step redoes it differently, repl_text shows the new script. ml
+  unit: MCP_Repl_Tests.thy; scala unit + tools/call wiring: isabelle
+  mcp_test; bridge (T4): isabelle mcp_test -b -d mcp/Tools; e2e (T6):
+  test_mcp.py's test_repl_builtins. all four layers green.
+- done: repl_replay implemented (plans/repl_replay, wave 1) — builtin
+  table row (fname "replay", pass-through {repl} -> backend.ir("replay",
+  [(repl,...)])); mutating but genuinely idempotent in the success case
+  (a second replay finds zero stale steps, "Replayed 0 stale steps"),
+  so it gets {idempotentHint: true} within the mutating bucket, a new
+  annotations combination alongside the destructiveHint one from
+  repl_remove. FIXTURE FINDING: genuinely stale steps aren't reachable
+  via repl_edit on this server either (auto_replay=true always, same
+  gap as repl_edit's own T3), so the ml-unit tests produce them via
+  repl_rebase instead -- Ir.pin bumps its version on every call
+  regardless of content change, so re-pinning a REPL that a second REPL
+  was init'd "pin@..." from is enough to make Ir.rebase see a version
+  mismatch and mark the dependent's steps stale with no replay, no
+  plans/repl_pin or plans/repl_rebase builtin required (ml unit calls
+  the dispatcher fnames directly). Resolved the plan's open T3 NOTE
+  empirically: with_claim's exception path releases the ORIGINAL claimed
+  snapshot (ir.ML:305), so a failing replay is an all-or-nothing revert
+  -- every step that was stale before the attempt is still stale after
+  it, not "prefix clean, tail stale" as the plan considered. ml-layer
+  tests (T1 zero-stale no-op, T2 replay re-chains state to match a
+  fresh run, T3 the all-or-nothing revert on mid-replay failure via a
+  dropped-constant fixture, T4 replay honors the repl's CURRENT timeout
+  not whatever was in effect when the stale step first succeeded) in
+  MCP_Repl_Tests.thy; scala-unit tests (idempotentHint metadata,
+  tools/call wiring) in isabelle mcp_test; no new bridge test (no async
+  dimension of its own); e2e via test_mcp.py's test_repl_builtins covers
+  T1 (the idempotent no-op) against a live server -- T2-T4's fixtures
+  need repl_pin/repl_rebase as builtins, not yet implemented, so they
+  stay ml-unit-only for now. all four layers green (T2-T4 at the
+  ml-unit layer, per the above).
+- done: repl_edit implemented (plans/repl_edit, wave 1) — builtin table
+  row (fname "edit", pass-through {repl, idx, isar_text} ->
+  backend.ir("edit", [(repl,...),(idx,...),(isar_text,...)])); mutating.
+  the plan's step 1 asked to pin down the real auto_replay default before
+  writing the description: this server's engine config default is
+  auto_replay=true (ir.ML:65) with no MCP.ir fname to toggle it, so the
+  description states plainly that subsequent steps are always
+  auto-replayed and no repl_replay call is needed, rather than the
+  plan's conditional phrasing. ml-layer tests (T1 idx bounds -- negative
+  and past-end both "out of range", 0 valid; T2 failure atomicity, a bad
+  tactic leaves the old step/no staleness and releases the claim; T3 the
+  reply's "N subsequent steps marked stale" count is accurate but they
+  are already clean by the time repl_show is called, per the
+  auto_replay finding -- same class of gap as repl_show's stale-mark
+  note; T4 editing a pinned repl marks the pin stale regardless of
+  operation kind) in MCP_Repl_Tests.thy; scala-unit tests (integer idx
+  schema, tools/call wiring) in isabelle mcp_test; no new bridge test
+  needed (no async dimension distinct from repl_step/repl_show/
+  repl_remove); e2e via test_mcp.py's test_repl_builtins -- edits a
+  successful proof step's tactic rather than the plan's literal
+  "edit a failing step" framing, since a failing repl_step is never
+  added to the repl in the first place (no index would exist to edit);
+  the failure-atomicity promise is already covered at the ml-unit layer
+  (T2). all four layers green.
+- done: repl_text implemented (plans/repl_text, wave 1) — builtin table
+  row (fname "text", pass-through {repl} -> backend.ir("text",
+  [(repl,...)])); read-only, the extraction tool (step 5 of the spec's
+  proving workflow), so byte-fidelity is the whole point. ml-layer tests
+  (T1 an Isabelle symbol, doubled inner spaces, and an embedded newline
+  all survive verbatim; T2 zero steps is ok with empty output, not an
+  error) in MCP_Repl_Tests.thy; bridge test (T1's scala-side yxml-
+  stripping half, same fixture over a real session) in isabelle
+  mcp_test -b; scala-unit tests (schema, tools/call wiring) in isabelle
+  mcp_test; e2e via test_mcp.py's test_repl_builtins, checking
+  repl_text's concatenated output after two steps matches verbatim.
+  T3's splice-into-a-theory-and-check_theory half is deferred -- needs
+  load_theory/check_theory as builtins (wave 2, not yet implemented);
+  the extraction half stands in for T3 until then.
+- done: repl_show implemented (plans/repl_show, wave 1) — builtin table
+  row (fname "show", pass-through {repl} -> backend.ir("show",
+  [(repl,...)])); read-only per the plans/repl_list annotation
+  refinement. ml-layer tests (T1 step count/origin/index-0-based
+  formatting, T2 read-only and repeatable) in MCP_Repl_Tests.thy; bridge
+  test (T2's busy half: show on a REPL claimed by a slow Future.fork'd
+  step errors "is busy" rather than returning a stale read, then
+  succeeds once the step joins) in isabelle mcp_test -b; scala-unit
+  tests (schema, tools/call wiring) in isabelle mcp_test; e2e via
+  test_mcp.py's test_repl_builtins, extended with a repl_show call after
+  two steps checking for "2 steps" (T3). all four layers green. SCOPE
+  NOTE: the plan's stale-mark assertion (editing step 0 with
+  auto_replay off) is not reachable today -- the engine's default
+  config has auto_replay=true (ir.ML:65) with no MCP.ir fname to toggle
+  it, so Ir.edit always replays immediately; not a bug, just deferred to
+  whichever plan first produces genuinely stale steps (e.g.
+  plans/repl_rebase).
+- done: repl_state implemented (plans/repl_state, wave 1) — builtin
+  table row (fname "state", pass-through {repl, state_idx} ->
+  backend.ir("state", [(repl,...),(state_idx,...)])); read-only per the
+  plans/repl_list annotation refinement. first tool with an
+  integer-typed json property end to end -- json_args's existing
+  fallback branch (JSON.Format on any non-string, non-array value)
+  already produced the bare unquoted string Ir.state's get_int expects,
+  so no new conversion case was needed, just a test pinning it.
+  ml-layer tests (T1 index arithmetic: -1 equals the last index, 0 is
+  the base state, both directions out of range error, T2 read-only and
+  repeatable, repl still steps afterwards) in MCP_Repl_Tests.thy; the
+  async property (T2's bridge half) is exercised by the existing shared
+  repl_step T5 test, no new bridge test needed; scala-unit tests
+  (integer schema, json_args integer conversion, tools/call wiring) in
+  isabelle mcp_test; e2e via test_mcp.py's test_repl_builtins, extended
+  so repl_state -1 reproduces the same goal text repl_step just printed
+  (T3). all four layers green.
+- done: repl_step implemented (plans/repl_step, wave 1) — builtin table
+  row (fname "step", pass-through {repl, isar_text} ->
+  backend.ir("step", [(repl,...),(isar_text,...)])); the hot-path tool,
+  so its description carries the failure-atomicity and timeout warnings
+  verbatim from mcp_server.py. ml-layer tests (T1 Isabelle-symbol and
+  multi-line isar text survives byte-clean via repl_text, T2 a failing
+  tactic leaves the step count/state unchanged and releases the claim so
+  the repl stays usable, T3 a lowered 1s timeout behaves like a failed
+  step -- error mentions "timed out", state unchanged, repl still usable
+  afterwards, T4 a successful step inside a proof prints the goal state
+  not just an acknowledgement) in MCP_Repl_Tests.thy; bridge test (T5: a
+  Future.fork'd slow step on one REPL does not delay a concurrent step
+  on a second REPL) in isabelle mcp_test -b; scala-unit tests (schema,
+  tools/call wiring) in isabelle mcp_test; e2e via test_mcp.py's
+  test_repl_builtins, extended to the full init/step-lemma/step-by-simp/
+  list/remove/list loop (T6). all four layers green.
+- done: repl_init's T7 e2e loop closed and repl_remove implemented
+  (plans/repl_remove, wave 1) — builtin table row (fname "remove",
+  pass-through {repl} -> backend.ir("remove", [(repl, ...)])); spec
+  refinement: destructiveHint true within the mutating bucket (repl_remove
+  destroys state irrecoverably; repl_truncate reasoned the same way for
+  later). ml-layer tests (T1 unknown-repl error + non-idempotent
+  re-removal, T2 recursive removal over a two-level fork chain reporting
+  every removed id, T3 pin dependents block removal until the dependent
+  is removed first) in MCP_Repl_Tests.thy; bridge test (T4: a
+  Future.fork'd slow step keeps a forked child observably busy, so
+  concurrent removal of the parent is refused until the step joins, then
+  succeeds) in isabelle mcp_test -b; scala-unit tests (destructiveHint
+  metadata, tools/call wiring) in isabelle mcp_test; e2e via
+  test_mcp.py's test_repl_builtins, now covering the full
+  init/list/remove/list loop (T5, and closing repl_init's own T7 loose
+  end from the same run). all four layers green.
+- done: repl_init implemented (plans/repl_init, wave 1) — builtin table
+  row (theories: json array -> repeated ("theories", v) pairs in array
+  order, handler generalized to backend.ir(fname, args) directly since
+  json property names already equal the yxml pair keys); json_args
+  extended to convert a json array property into repeated pairs (was:
+  single tools needing only string args). ml-layer tests (T1 order
+  independence, T2 empty-theories engine error, T3 duplicate id, T4
+  unknown theory, T5 long-name resolution, T6 mixed-spec/pin@ error
+  paths) in MCP_Repl_Tests.thy; scala-layer tests (array schema,
+  json_args conversion, tools/call wiring) in isabelle mcp_test; e2e via
+  test_mcp.py. FOUND: Ir.load_theory refuses to run from a headless
+  Headless.Session (Ir.is_interactive_session () reads
+  Printer.show_markup_default, which jEdit AND our headless server both
+  set true via init_options_interactive) -- blocks repl_init's "Thy:idx"
+  segment-spec form end to end; pinned as a regression test in
+  isabelle mcp_test -b, belongs to plans/load_theory to fix.
+- added: evals/ — one agent evaluation per builtin tool, parallel to
+  plans/ (same names). plans verify the mechanism; evaluations verify
+  the abstraction: a task-only prompt (never naming the tool), scripted
+  setup, and four graded axes (outcome / selection / first-call
+  correctness / error recovery), read from claude-code transcripts
+  against the built server. evaluations drive the reflection loop: a
+  four-rung ladder (description -> schema+errors -> abstraction/second
+  implementation -> existence) decides what to change when one fails,
+  and the evaluation stays as the acceptance test for the redesign.
+  several evaluations are built to settle decisions the plans
+  deliberately left open with evidence: init_from_source's before/
+  after-command semantics, find_theorems' dropped auto-quoting, the
+  back/step failed-step trap (whether the description's warning is
+  believed), the truncate-vs-state indexing divergence, and whether
+  the scope tools (and goto_definition) earn agent usage at all —
+  the last measured as an aggregate across all transcripts, not one
+  eval. pilot: evals/repl_list, runnable today.
+- done: repl_list implemented end to end (plans/repl_list, wave 1
+  pilot) — MCP_Session.ir bridge (Scala: id-keyed promise table over
+  protocol command "MCP.ir", resolved from "MCP.ir_result", yxml
+  stripped via XML.content(YXML.parse_body(_))); scala builtin tool
+  table (Builtin_Tool: name/description/inputSchema/annotations/
+  handler) merged into tools/list ahead of the ML registry, builtins
+  keeping the bare name on a name collision (ML-side theory-qualified
+  naming deferred — no real ML tool named repl_list exists yet); the
+  repl_list row itself (handler -> backend.ir("repls", Nil)). new
+  session MCP-HOL-Tests (mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy) covers
+  the ml-layer assumptions (I2 named-arg error paths, T1-T4). bridge
+  tests in isabelle mcp_test -b cover I1 (async: a slow MCP.ir call
+  does not block a concurrent fast one) and T5 (repl_list's busy
+  annotation is transient). spec updated with the readOnlyHint
+  refinement for repl_list/repl_show/repl_state/repl_text (narrows the
+  mutating repl_* bucket accordingly). all four layers green: isabelle
+  build -d mcp/Tools MCP-Tools MCP-Tools-Tests MCP-HOL MCP-HOL-Tests,
+  isabelle mcp_test, isabelle mcp_test -b, python3 mcp/test/test_mcp.py.
+- done: plans/ complete — all ~30 builtin tools planned (waves 1-4),
+  one file per tool following the pilot template, index in
+  plans/README. new shared-assumption groups beyond I1..I5: D1
+  (session structure at startup, plans/list_sessions) and S1 (scope
+  state + one scope rule, plans/scope_add). spec refinements flagged
+  while planning, to fold back or reject: destructiveHint true for
+  repl_remove/repl_truncate/repl_back/repl_merge (extends the
+  readOnlyHint refinement from plans/repl_list); decisions deferred
+  to implementation time are marked NOTE/pin in the plans (e.g.
+  init_from_source before/after-command semantics, sledgehammer
+  concurrent-call handling, find_theorems auto-quoting dropped,
+  literal scope_remove semantics).
+- done: named-args migration (the "argument encoding" decision
+  implemented). MCP_Repl.dispatch takes (key, value) pairs instead of
+  positional strings — keys mirror mcp_server.py parameter names
+  (repl, theories, isar_text, state_idx, ...), each fname owns a
+  closed key set, missing/spurious/unparsable arguments are typed
+  status errors naming the key, optional args keep their engine
+  defaults (timeout_secs 15, max_results 40), list args as repeated
+  keys (repl_init.theories). the MCP.ir protocol command decodes one
+  yxml chunk via MCP_Repl.decode_args; scala mirror
+  MCP_Session.encode_args/decode_args. tests: build-time self-test
+  (dispatch + error paths + decode round-trip), scala unit round-trips
+  in isabelle mcp_test; all layers green.
+- added: plans/ — per-builtin-tool implementation plans (metadata row,
+  layer mapping, steps, assumptions each with its test in the pyramid).
+  plans/README carries the template and the wave-ordered index; pilot
+  plan: plans/repl_list, which also states the shared infrastructure
+  assumptions I1..I5 that later plans reference. flags one spec
+  refinement: repl_list (and the other read-only repl_* tools) should
+  get readOnlyHint true despite the spec's coarse repl_* blanket.
+- decided: advertised tool/resource metadata. tools: name + inputSchema
+  required (json schema, top-level object, common subset); description
+  always sent (outer-syntax comment default for wrapped commands);
+  honest annotations (readOnlyHint/idempotentHint on diagnostic wraps,
+  readOnly builtins except the mutating surface); no outputSchema in
+  phase 2 (text results only); no examples slot exists in the protocol
+  — examples ride in descriptions/skills. schemas are static per tool,
+  fixed by the registration form: ML registry carries a form tag
+  (diag_wrap | string_fun) expanded to schema + annotations scala-side;
+  MCP.tools payload becomes (name, description, theory, form_tag)
+  quadruples. resources: uri + name required; we add description,
+  mimeType text/plain, audience ["assistant"]; size/lastModified
+  deliberately absent (read-time evaluation). spec: "mcp tools" ->
+  "advertised tool metadata"; "mcp resources" -> "advertised resource
+  metadata".
+- decided: MCP.ir argument encoding is named args in yxml — args =
+  [id, fname, yxml_args], where yxml_args is an association list of
+  (key, value) string pairs, list-valued arguments as repeated keys.
+  supersedes the positional-strings sketch; handles optional args
+  (find_theorems.max_results, sledgehammer.timeout_secs) and list
+  args (repl_init.theories) without arity variants or sentinels.
+  spec: "ml bridge" -> "argument encoding".
+- decided: tool name collisions resolve by namespacing with the
+  registering theory — builtins keep the bare name; a colliding
+  ML/Isar tool is exposed as <theory base name>__<tool> (escalating
+  to the sanitized long name if base names collide). exposed names
+  must match the messages-api constraint ^[a-zA-Z0-9_-]{1,64}$
+  (theory long names contain dots, so they cannot appear raw).
+  MCP.tools payload becomes (name, description, theory) triples;
+  exposure names are computed scala-side as a pure function at the
+  tools/list merge; registry replacement is keyed on (theory, name).
+  spec: "mcp tools" -> "tool naming and collisions".
+- added: implementation-plan mapping of the ~30 builtin tools to five
+  backing mechanisms (MCP.ir bridge, use_theories, session-structure
+  index, scope state, navigation) — discussion only, order unchanged.
+
+2026-07-08
+----------
+
+- added: "exploring the library universe" — three availability tiers
+  (image / loaded / filesystem), discovery tools list_sessions /
+  list_theories / search_sources over Sessions.load_structure + deps,
+  filesystem resolution for isabelle://theory/{name}, promotion cost
+  model, AFP story. verified: HOL heap holds 119 theories (incl.
+  HOL.Real, HOL.Complex) vs 1467 .thy files under src/HOL; structure
+  enumeration needs no heaps.
+- fixed: one scope rule stated everywhere — resources/list enumerates
+  exactly the scope; scope_add pulls image or filesystem theories
+  into the listing, tier-tagged; nothing is enumerated unbidden,
+  everything valid is readable.
+- added: two agent-facing skills planned in parallel with the
+  implementation — isabelle-mcp-exploring (discovery chain, Multiset
+  worked example) and isabelle-mcp-verifying (resource trigger
+  patterns, load_theory -> diagnostics -> fix -> check_theory loop).
+- added: phase 3+ callouts — resource subscriptions (diagnostics-only
+  target, commands_changed debounce, lifecycle, capability gating)
+  and cross-heap semantic search (Find_Facts as the recommended
+  shape).
+- decided: registering a tool or resource (ML or Isar path) emits
+  notifications/tools/list_changed (resp. resources/list_changed)
+  from one emit point in MCP_Tool.register / MCP_Resource.register;
+  initialize declares tools: {listChanged: true}.
+
+2026-07-08 (earlier)
+--------------------
+
+- done: phase 2 first implementation item — ir.ML reused verbatim
+  (symlink, Amazon MIT header preserved), MCP_Repl.thy with the async
+  MCP.ir bridge (fresh Future group per request, Private_Output
+  routing by group ancestry, closed fname dispatcher), MCP-HOL
+  session (in HOL/, record_theories) builds green with the ML
+  self-test; MCP_Repl.reset () keeps wrapper state out of the heap.
+
+2026-07-07
+----------
+
+- done: phase 1 mvp — isabelle mcp_server (scala, stdio json-rpc,
+  headless PIDE session), ML tool registry (MCP_Tool), protocol
+  commands MCP.tools / MCP.run_tool, test_mcp.py 10/10 green against
+  warm and fresh builds.
+- done: post-mvp testing refactor — pure logic split from transport
+  on both sides (MCP_Protocol in ML, MCP_Backend/Handler/serve in
+  scala); four-layer pyramid (ml unit / scala unit via Fake_Backend /
+  bridge via isabelle mcp_test -b / e2e), all green.

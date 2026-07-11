@@ -1,0 +1,160 @@
+check_theory — implementation plan
+===================================
+
+status: planned (2026-07-09)
+
+wave 2, scala-side (see plans/load_theory). the RE-VERIFICATION tool —
+step 7 of the spec's proving workflow: the client spliced repl_text
+into the file on disk; check_theory re-reads that file and reports.
+the one hard requirement (spec, verbatim): PURGE BEFORE RE-LOADING,
+because use_theories against a still-loaded node would report the
+stale snapshot, not the edited file.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          check_theory
+description   "Re-read a theory file from disk and check it, then
+              report its diagnostics (errors and warnings with
+              positions). Use this after editing the file — e.g.
+              after splicing in a proof extracted with repl_text — to
+              verify the file as it now stands. Equivalent to
+              unload_theory followed by load_theory. A clean reply
+              means the theory checks; errors carry line positions
+              for the next edit round."
+              (spec: "check_theory {name} -> reload & report
+              diagnostics" + workflow step 7.)
+inputSchema   {"type": "object",
+               "properties": {"name": {"type": "string"}},
+               "required": ["name"]}
+annotations   {"readOnlyHint": false, "idempotentHint": true,
+               "openWorldHint": false}
+              (mutating (reloads the document) but idempotent: same
+              file -> same result.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "check_theory", {"name": "Draft.Foo"}
+  scala builtin row MCP_Session.check_theory (NEW) =
+                    purge (plans/unload_theory infra) + load
+                    (plans/load_theory infra) + diagnostics report.
+                    also works on a not-currently-loaded theory
+                    (purge is a no-op then) — "check" subsumes
+                    "load and tell me".
+  engine            none.
+
+implementation steps
+--------------------
+
+1. [this tool] MCP_Session.check_theory composing the two existing
+   infra methods; builtin row + handler. diagnostics go in the reply
+   whether ok or error; isError only when errors (not warnings)
+   exist — pin the warning policy here: warnings -> ok result with
+   the warnings in the text.
+2. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  THE staleness case, the reason purge-first exists: load fixture
+    (ok), edit the file on disk to break it, check_theory -> reports
+    the NEW error; fix the file, check_theory -> ok. without the
+    purge the middle step would falsely report ok.
+    test [bridge]: exactly that three-beat sequence with a temp copy
+    of the fixture.
+T2  checking a never-loaded filesystem theory works (purge no-op
+    path).
+    test [bridge]: check_theory on a fresh fixture -> ok.
+T3  warnings vs errors policy is what step 1 pinned.
+    test [bridge]: fixture with a sorry (warning-class) -> ok result
+    whose text mentions it; fixture with a type error -> isError.
+T4  full chain — the spec's end-to-end workflow.
+    test [e2e, test_agentic.py]: load -> attach -> prove -> repl_text
+    -> python splices into the file -> check_theory ok. this single
+    test threads plans/load_theory, repl_init_from_source, repl_step,
+    repl_text and this tool together; it is the flagship e2e case.
+
+done when
+---------
+
+- T1..T4 green; tools/list shows the row above; the warning policy
+  is recorded (here + description).
+
+status: done (2026-07-10)
+--------------------------
+
+CORRECTION to this plan's central premise: "PURGE BEFORE RE-LOADING"
+is empirically WRONG for Headless.Session's actual API, and actively
+harmful if followed literally. Three experiments, in order:
+
+  1. purge_theories(List(name), master_dir = "") (the naive call the
+     plan implied): silently resolved to the WRONG Document.Node.Name
+     (import_name bakes master_dir into the node's identity, and ""
+     != the real master_dir), so it purged nothing -- yet the SECOND
+     use_theories call still correctly reported the on-disk edit. That
+     was the first sign the purge wasn't doing (or needing to do)
+     anything.
+  2. purge_theories(List(name), master_dir = <the real one>) (fixing
+     the resolution bug): this time the purge actually matched the
+     loaded node -- and the very next use_theories call produced a
+     CORRUPTED document (duplicated theory headers, cascading "missing
+     theory context" outer-syntax errors). Root cause: Headless.
+     Resources.purge_theories only updates its own Scala-side
+     bookkeeping (state.theories) and never calls session.update with
+     the purge_edits that would tell the live prover document to
+     actually drop the old text. So Resources ends up believing the
+     node has no prior content, while the prover's actual document
+     still holds the old text; the next use_theories diffs the new
+     file against that phantom "empty" baseline and inserts the whole
+     new theory on top of the still-present old one.
+  3. no purge at all -- just call session.use_theories(...) again:
+     clean, correct staleness detection, both directions (good ->
+     bad -> good), no corruption. use_theories reads the file fresh
+     off disk and diffs against its OWN correctly-tracked prior
+     content (kept in sync by its own internal load_theories/
+     update_theories bookkeeping) on every call, so a plain re-run
+     already picks up on-disk edits -- no purge involved.
+
+check_theory's implementation is now just `use_theories_result(name,
+master_dir)`, unconditionally -- no purge step. The corrected finding
+and the three experiments are recorded in mcp_session.scala's
+check_theory comment and CHANGELOG (2026-07-10, "wave 2"). unload_
+theory still needs a REAL document-level removal (that's its whole
+job), so it uses a different mechanism -- Resources.clean_theories,
+which does call session.update -- see plans/unload_theory's status
+block.
+
+T1 (bridge and e2e): the staleness three-beat -- load a fixture (ok),
+edit it on disk to a failing proof, check_theory -> isError with a
+line position for the NEW content (not the stale ok from the first
+load), edit it back, check_theory -> ok again. T2 (bridge): check_
+theory on a never-loaded fixture works (the purge-no-op path is now
+moot -- there is no purge -- but the "works on a fresh theory" claim
+still holds since use_theories handles first-load and re-load
+identically). T3 (bridge): a sorry-only fixture is an ok result whose
+text mentions "warning"; a fixture with a genuine failing proof is
+isError -- confirming the pinned policy (isError only on genuine
+errors, never on warnings alone). T4 (e2e, test_mcp.py, "wave 2:
+flagship -- ..."): approximates the full load -> attach -> prove ->
+repl_text -> splice -> check_theory chain -- a REPL proves a lemma and
+repl_text extracts the script (repl_init_from_source, the "attach"
+step, is still a deferred wave-1 tool, so the REPL proves independently
+rather than attaching to the loaded theory's document), python splices
+the script into the fixture file, check_theory confirms it ok on disk.
+
+Four-layer test locations: bridge in mcp_test/src/mcp_bridge_tests.scala
+("wave 2: check_theory T1/T2/T3 ..."); e2e in mcp/test/test_mcp.py
+("wave 2: tools/call check_theory ...", "wave 2: flagship -- ..."). No
+scala-unit-specific check_theory error-path tests beyond the shared
+tools/list and dispatch-not-ir rows (mcp_handler_tests.scala); no
+ml-unit layer.

@@ -1,0 +1,131 @@
+tool_scope_show / tool_scope_set / tool_scope_include — implementation plan
+============================================================================
+
+status: planned (2026-07-11; spec: phase 3 "visibility" section)
+
+one family file for the three builtins (they share all state and
+plumbing). depends on plans/mcp_tool_registry (the designation
+argument on MCP.tools/MCP.run_tool).
+
+the AGENT CONTEXT: the server-side designation of the context whose
+registered-and-active tools are served. distinct from the phase-2
+resource scope (scope_add/...): resource scope filters the resources
+LISTING; tool scope picks WHICH CONTEXT DEFINES THE TOOL SET. the
+skills must teach the distinction (spec, skills impact).
+
+advertised metadata (builtin table rows)
+-----------------------------------------
+
+name          tool_scope_show
+description   "Show the current tool scope: which theory or repl
+              context the server reads user-registered tools from,
+              and the tools registered and active there. Tools are
+              context entities in Isabelle: a tool is visible when
+              the scope's context (transitively) imports its
+              registering theory and it has not been deactivated
+              (declare [[mcp_tool del: ...]] / closed bundle)."
+inputSchema   {"type": "object"}
+annotations   {readOnlyHint: true, idempotentHint: true,
+               openWorldHint: false}
+
+name          tool_scope_set
+description   "Set the tool scope to a theory (by name, any known
+              spelling) or to a repl (by id). Repl scope serves the
+              tools of the repl's CURRENT state — use this after
+              registering a tool via repl_step to call it without
+              persisting the theory first."
+inputSchema   {"type": "object", "properties":
+                {"theory": {"type": "string"},
+                 "repl": {"type": "string"}},
+               ...exactly one of the two required (json schema:
+               oneOf; described in prose in the property docs since
+               some clients ignore oneOf)}
+annotations   {readOnlyHint: false, idempotentHint: true,
+               openWorldHint: false}
+              (mutates connection state, not prover state)
+
+name          tool_scope_include
+description   "Open bundles in the current tool scope (like Isar's
+              'context includes'): tools activated by those bundles
+              become servable until the scope changes. Bundle names
+              resolve in the scope's context."
+inputSchema   {"type": "object", "properties":
+                {"bundles": {"type": "array",
+                             "items": {"type": "string"}}},
+               "required": ["bundles"]}
+annotations   {readOnlyHint: false, idempotentHint: true,
+               openWorldHint: false}
+
+name/argument mapping across the layers
+----------------------------------------
+
+  scala state       MCP_Server connection state: designation =
+                    Theory(name) | Repl(id), plus included bundle
+                    names (ordered). default: Theory(-T theory).
+                    theory spellings normalize through the existing
+                    image_theory resolver BEFORE storing (canonical
+                    key crosses the bridge — the phase-2 rule).
+  bridge            the designation argument of MCP.tools/MCP.run_tool
+                    (plans/mcp_tool_registry) grows the repl form:
+                    "theory:NAME" | "repl:ID"; a second argument
+                    carries the include-bundle list (yxml strings).
+  engine (ml)       dispatcher resolves: theory -> Thy_Info +
+                    init_global; repl -> the repl's latest
+                    Toplevel.state, Toplevel.context_of (VERIFIED
+                    mid-proof by spike 8); then folds
+                    Bundle.includes over the bundle names. bundle
+                    resolution errors -> typed status error naming
+                    the bundle.
+
+exposure names: computed scala-side from the payload's full internal
+names — extern-like shortening (base name when unambiguous within
+the served set, else the qualified name) + the phase-2 sanitizer
+(dots -> "__", regex ^[a-zA-Z0-9_-]{1,64}$). pure function of the
+row set, unit-testable against Fake_Backend; tools/call resolves
+through the same function. builtins always win the bare name.
+
+design decisions (from the spec, restated for implementation)
+--------------------------------------------------------------
+
+- load_theory does NOT auto-switch the designation (explicit only).
+- included bundles are scope state, re-applied on every read, so a
+  tool_scope_set replaces designation AND clears includes (state
+  what you get: fresh context, no accumulated soup). include is
+  additive until then.
+- the repl designation reads the repl's CURRENT latest state at each
+  tools/list — stepping the repl can change the tool set; that is
+  the point (self-extension), and list_changed only fires on
+  registration events, not on steps: document in the skill that
+  tools/list after repl work is cheap and worth re-running.
+
+implementation steps
+--------------------
+
+1. ml: dispatcher-side designation resolution (theory | repl +
+   bundle includes) with typed errors. [ml unit]
+2. scala: connection state + the three builtin rows + dispatch;
+   exposure-name function extended (extern shortening + sanitizer),
+   old collision tests re-pointed at it as the contract. [scala unit]
+3. bridge + e2e cases below; CHANGELOG; spec checkbox.
+
+ASSUMPTIONS -> tests
+---------------------
+
+- repl states expose readable contexts mid-proof [ml unit: resolve a
+  repl designation while its repl sits inside `lemma ... ` — spike 8
+  made durable]
+- Bundle.includes over the agent context activates scoped tools
+  [bridge: theory with a scoped tool + bundle; tool absent from
+  MCP.tools, present after include; absent again after
+  tool_scope_set re-set]
+- repl-registered tools become servable [bridge: repl_step a
+  MCP_Tool.declare text, tool_scope_set {repl}, MCP.tools
+  lists it, MCP.run_tool runs it — the self-extension hinge]
+- exposure names: unambiguous -> base name; cross-theory clash ->
+  both qualified+sanitized; regex always satisfied [scala unit,
+  pure-function tests over fake rows]
+- unknown theory/repl/bundle in scope calls -> isError with the
+  offending name, connection state unchanged [scala unit + bridge]
+- e2e (test_agentic.py): register-in-repl -> tool_scope_set ->
+  tools/list shows it -> tools/call runs it; tool_scope_show
+  round-trips the designation.

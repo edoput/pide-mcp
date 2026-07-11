@@ -1,0 +1,27 @@
+title = Model Context Protocol server test suite
+
+# output jar (test code only -- never shipped with the mcp server)
+module = lib/mcp_test.jar
+
+# jar modules needed during compilation: the Isabelle/Scala API, the
+# production mcp.jar (exported as ISABELLE_MCP_JAR by mcp/etc/settings),
+# and the vendored munit stack (see lib/ext, pinned by file name)
+requirements = \
+  env:ISABELLE_SCALA_JAR \
+  env:ISABELLE_MCP_JAR \
+  lib/ext/munit_3-1.1.1.jar \
+  lib/ext/munit-diff_3-1.1.1.jar \
+  lib/ext/junit-interface-1.1.1.jar \
+  lib/ext/junit-4.13.2.jar \
+  lib/ext/hamcrest-core-1.3.jar \
+  lib/ext/test-interface-1.0.jar
+
+sources = \
+  src/mcp_testing.scala \
+  src/mcp_handler_tests.scala \
+  src/mcp_bridge_tests.scala \
+  src/mcp_heap_tests.scala \
+  src/mcp_test_tool.scala
+
+services = \
+  isabelle.mcp.Test_Tools

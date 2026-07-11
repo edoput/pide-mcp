@@ -1,0 +1,84 @@
+repl_remove — implementation plan
+==================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pure pass-through; the dispatcher
+entry exists ("remove" => keys ["repl"]). semantics worth pinning:
+removal is RECURSIVE (descendants go too) and pin-guarded.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_remove
+description   "Remove a REPL and all sub-REPLs forked from it. Fails
+              if any of them is busy executing an operation, or if
+              other REPLs were initialized from this REPL's pin
+              (unpin dependents or remove them first). The reply
+              names every REPL that was removed."
+              (source: mcp_server.py remove :395, enriched with the
+              pin/busy guards of ir.ML:690.)
+inputSchema   {"type": "object",
+               "properties": {"repl": {"type": "string"}},
+               "required": ["repl"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "destructiveHint": true, "openWorldHint": false}
+              spec refinement: the spec's blanket only separates
+              read-only from mutating; repl_remove (and repl_truncate)
+              destroy state irrecoverably, so they honestly carry
+              destructiveHint true. fold into the spec's "advertised
+              tool metadata" bullet together with the readOnlyHint
+              refinement already flagged by plans/repl_list.
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_remove", {"repl": "T"}
+  scala builtin row backend.ir("remove", [(repl, T)])
+  ml dispatcher     "remove" -> Ir.remove (get "repl")
+  engine            ir.ML:690 — collect descendants, refuse if any is
+                    Claimed or the pin has dependents; delete all;
+                    out "Removed \"T\", \"T2\", ..."
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  removing an unknown repl is a status error ("No REPL"), not ok —
+    the tool is not idempotent by design; the model learns the id was
+    wrong.
+    test [ml unit]: remove "nope" -> error; remove "T" twice ->
+    second call errors.
+T2  removal is recursive and reports every removed id.
+    test [ml unit]: init T, fork T2, fork T3 from T2; remove T ->
+    output mentions T, T2, T3; repls empty.
+T3  pin dependents block removal.
+    test [ml unit]: init A [Main], pin A, init B ["pin@A"];
+    remove A -> error "depend on its pin"; remove B; remove A -> ok.
+T4  a busy descendant blocks removal (nothing is half-removed).
+    test [bridge]: slow step on fork T2, remove T concurrently ->
+    error "is busy"; after join, remove T -> ok. (needs real
+    concurrency; doubles as an I1 async witness.)
+T5  full chain: the e2e create/step/remove loop (shared with
+    plans/repl_init T7).
+
+done when
+---------
+
+- T1..T5 green; tools/list shows the row above.
+- the destructiveHint refinement is folded into the spec (+CHANGELOG)
+  or rejected and the annotations here flip.
+
+status: done (2026-07-09). T1..T5 green at all layers (ml unit:
+mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy T1-T3; bridge: isabelle mcp_test -b
+T4, a real Future.fork'd busy descendant blocking removal; scala unit:
+isabelle mcp_test, builtin metadata + tools/call wiring; e2e:
+mcp/test/test_mcp.py's test_repl_builtins, full create/list/remove/list
+loop). the destructiveHint refinement was folded into the spec (+
+CHANGELOG) as proposed, not rejected.

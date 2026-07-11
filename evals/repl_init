@@ -1,0 +1,51 @@
+repl_init — evaluation
+=======================
+
+status: planned (2026-07-09)
+focal tool: repl_init (plans/repl_init)
+
+task
+----
+start a proof from nothing: the canonical entry into the whole repl
+surface. if agents cannot get a repl started unaided, nothing else
+in wave 1 matters.
+
+setup
+-----
+fresh server, no repls.
+
+prompt
+------
+"Prove this in Isabelle/HOL and give me the finished Isar text:
+
+  lemma \"rev (xs @ ys) = rev ys @ rev xs\"
+
+Work interactively so you can see intermediate goals."
+
+success
+-------
+a repl exists built on a Main-bearing context, the lemma is proved
+through it, and the reply contains valid Isar text ending in done/qed.
+
+signals
+-------
+- first repl_init call shape: does the agent produce
+  {"repl": ..., "theories": ["Main"]} unaided? watch for the known
+  failure modes the schema cannot prevent: theories as a string not
+  an array, "HOL.Main" vs "Main" (both work — but does the agent
+  hesitate?), inventing extra keys.
+- if the first call errors (e.g. empty theories — engine says "at
+  least one spec"), does the error text alone produce a correct
+  retry? (recovery axis; plans/repl_init T2's error is the one
+  agents will actually see.)
+- id choice: agents must invent the repl name. do they collide with
+  themselves on retries (dup id error, T3) and recover?
+
+reflection
+----------
+- is requiring the client to name the repl natural, or do agents
+  fumble it? if dup-id retries recur, spec question: server-generated
+  ids with an optional name.
+- does "theories" read as "imports"? if agents pass session names or
+  file paths here, the description needs to say what a theory spec is
+  with examples up front.

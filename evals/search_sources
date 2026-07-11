@@ -1,0 +1,53 @@
+search_sources — evaluation
+============================
+
+status: planned (2026-07-09)
+focal tool: search_sources (plans/search_sources)
+
+task
+----
+find WHERE in the library something lives when its name is unknown —
+the discovery bridge: from a concept to a theory long name that the
+other tools can then act on.
+
+setup
+-----
+fresh server.
+
+prompt
+------
+"Somewhere in this Isabelle installation the library defines a
+'sorted list of a multiset' operation (turning a multiset into a
+sorted list). I don't know what it's called or where it lives. Find
+the theory that defines it and the exact name of the operation, and
+show me the defining lines."
+
+success
+-------
+sorted_list_of_multiset located in HOL-Library's Multiset theory,
+with the theory long name and real source lines in the answer
+(readable via the theory resource or the snippet itself).
+
+signals
+-------
+- query formulation: regex correctness first call (plans/
+  search_sources pinned: invalid regex is an ERROR, no silent
+  literal fallback — this eval measures how often that error fires
+  in practice and whether its text produces a fixed retry).
+- search strategy: sensible term progression ("sorted_list",
+  "multiset.*sorted") vs natural-language queries pasted as regex
+  (the give-away that the description didn't say "regex" loudly
+  enough).
+- truncation handling: a broad first query will hit the cap — does
+  the truncation note lead to narrowing, or does the agent answer
+  from a truncated list as if complete?
+- the handoff: from a hit's theory long name, does the agent reach
+  the source lines (theory resource with ?lines=, or the snippet)?
+  the discovery chain's last link.
+
+reflection
+----------
+- if natural-language-as-regex dominates, either say "regular
+  expression" first word in the parameter description or accept
+  plain substring by default with an explicit regex flag (spec
+  change — cheaper for agents, this eval legitimates it).

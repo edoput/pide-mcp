@@ -1,0 +1,83 @@
+repl_state — implementation plan
+=================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("state" => keys
+["repl", "state_idx"]); read-only.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_state
+description   "Print the proof/theory state of a REPL at a given
+              index: 0 = the base state (right after init), N = the
+              state after step N-1, -1 = the latest state. Use it to
+              re-read the current goal without re-running anything,
+              or to inspect an earlier state before repl_fork /
+              repl_truncate."
+              (source: mcp_server.py state :331.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "state_idx": {"type": "integer"}},
+               "required": ["repl", "state_idx"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+              (part of the readOnlyHint spec refinement flagged in
+              plans/repl_list: Ir.state is the_repl + pretty_state,
+              no claim, no mutation.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_state", {"repl":"T","state_idx":-1}
+  scala builtin row backend.ir("state", [(repl,T),(state_idx,"-1")])
+  ml dispatcher     "state" -> Ir.state (get "repl") (get_int "state_idx")
+  engine            ir.ML:486 — negative idx = n+1+idx; out
+                    (pretty_state st); out of range -> error
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  index arithmetic matches the description: on a repl with 2 steps,
+    valid indices are 0, 1, 2 and -1..-3; -1 equals 2.
+    test [ml unit]: assert state at -1 and at n print identical
+    output; 0 prints the base; n+1 and -(n+2) -> "out of range
+    (0..n)" errors. (the missing-key and garbage-value cases are
+    already in the build-time self-test from the I2 migration —
+    s8/s9.)
+T2  reading a state does not disturb the repl: no claim taken, works
+    while another repl is busy, repeatable.
+    test [ml unit]: state twice -> identical output; step still works.
+    test [bridge]: state on B while A runs a slow step -> returns
+    immediately (shared with plans/repl_step T5).
+T3  full chain.
+    test [e2e]: after two steps, repl_state -1 shows the goal text
+    the model just saw from repl_step.
+
+done when
+---------
+
+- T1..T3 green; tools/list shows the row above.
+
+status: done (2026-07-09). T1..T3 green at all layers (ml unit:
+mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy -- T1 index arithmetic (-1 == n,
+0 == base, both directions of out-of-range), T2 read-only/repeatable,
+repl still steps afterwards; bridge: the async property is exercised by
+the shared repl_step T5 test in isabelle mcp_test -b, no separate
+repl_state bridge test needed; scala unit: isabelle mcp_test, integer
+schema property + json_args integer-to-bare-string conversion +
+tools/call wiring; e2e: mcp/test/test_mcp.py's test_repl_builtins,
+extended so repl_state -1 after a repl_step reproduces the same goal
+text (T3)). this is also the first tool exercising an integer-typed
+json property end to end; json_args's number branch (JSON.Format on a
+non-string, non-array value) was already generic enough, no new case
+needed.

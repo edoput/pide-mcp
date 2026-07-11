@@ -1,0 +1,9 @@
+{
+  "I/Q": {
+    "command": "python3",
+    "args": ["/home/edoput/AutoCorrode/iq/iq_bridge.py"],
+    "env": {},
+    "autoApprove": [],
+    "description": "MCP server to connect to an Isabelle/jEdit instance and inspect/modify Isabelle theory files, proof states, and session information"
+  }
+}

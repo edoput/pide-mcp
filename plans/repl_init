@@ -1,0 +1,169 @@
+repl_init — implementation plan
+================================
+
+status: planned (2026-07-09)
+
+references the shared infrastructure assumptions I1..I5 stated in
+plans/repl_list. I2 (named-args encoding) is done (2026-07-09); the
+dispatcher entry for this tool already exists:
+  "init" => (keys ["repl", "theories"]; Ir.init (get "repl") (get_all "theories"))
+
+why this tool second: it is the first tool with arguments, the only
+one with a *list-valued* argument (theories -> repeated keys), and the
+gate to every other repl tool — nothing else in wave 1 can be
+exercised end-to-end without a created repl. it forces the I3 handler
+to convert a json array to repeated pairs, which no other wave-1 tool
+needs.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_init
+description   "Create a new REPL proof session that imports the given
+              Isabelle theories. This is equivalent to writing
+              `theory T imports A B C begin ...` in a .thy file, and
+              it is the only way to make a theory's definitions,
+              lemmas, and notations available for stepping. Theories
+              not in the initial heap must be loaded first with
+              load_theory.
+
+              `theories` is a list of theory specs. Examples:
+              - [\"Main\"] — start from the standard HOL library
+              - [\"HOL-Library.Multiset\"] — import one theory
+              - [\"HOL-Library.Multiset\", \"HOL-Library.FSet\"] —
+                import and merge multiple theories
+              - [\"MySession.MyTheory:42\"] — start from source
+                segment 42 of a recorded theory (single spec only)
+              - [\"pin@A\"] — start from the pinned state of REPL A
+                (use repl_pin first)
+              - [\"pin@A\", \"Main\"] — merge a pin with a theory
+
+              The REPL id must be new; remove an old REPL with
+              repl_remove first. Discard with repl_remove, inspect
+              with repl_list."
+              (source: mcp_server.py init at :288 verbatim, with the
+              lifecycle sentence adjusted to the repl_* tool names.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "theories": {"type": "array", "items": {"type": "string"}}},
+               "required": ["repl", "theories"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "openWorldHint": false}
+              (mutating per the spec's blanket, and honestly so: it
+              creates a repl; not idempotent — the second identical
+              call errors with "REPL ... already exists".)
+outputSchema  none (phase 2 policy).
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call name "repl_init",
+                    arguments {"repl": "T", "theories": ["HOL.Main"]}
+  scala builtin row handler: backend.ir("init",
+                    ("repl", repl) :: theories.map("theories" -> _))
+                    — the array becomes repeated ("theories", v) pairs
+                    IN ORDER (merge order is user-visible).
+  bridge            MCP.ir [id, "init", yxml_args]
+  ml dispatcher     fname "init" -> Ir.init (get "repl")
+                    (get_all "theories")
+  engine            ir.ML:393 — parse_spec each string ("Thy",
+                    "Thy:idx", "pin@NAME"), resolve, Theory.begin_theory
+                    merge (or segment state for the single "Thy:idx"
+                    form), insert into repl_tab; out "Created REPL <id>"
+
+implementation steps
+--------------------
+
+1. [infra] I1 (MCP_Session.ir) and I3 (builtin table + tools/call
+   argument conversion) must exist. this tool adds the array case to
+   the I3 conversion: json string values map to one pair, json arrays
+   of strings map to repeated pairs in array order; any other json
+   shape (numbers arrive elsewhere, objects/null never) -> invalid
+   params at the tools/call edge, before the bridge.
+2. [this tool] add the builtin row above with handler as in the
+   mapping. engine errors (unknown theory, duplicate id, stale pin,
+   bad spec) come back as status "error" -> isError tool result.
+3. tests below; rebuild per .claude/rules/theories-rebuild.md.
+
+assumptions and how to test them
+--------------------------------
+
+references I1 (async bridge), I2 (named args — done), I3 (table +
+conversion), I5 (output routing).
+
+T1  repeated keys preserve array order through encode/decode/get_all,
+    and merge order matters only as Theory.begin_theory order (both
+    orders succeed for independent theories).
+    test [ml unit]: dispatch init with theories = [Main, Multiset]
+    reversed -> both ok; get_all returns encode order (already
+    asserted by the I2 round-trip self-test).
+T2  empty theories array is rejected by the ENGINE, not the
+    dispatcher: keys/get pass (repl present, zero "theories" pairs is
+    a valid encoding), Ir.init errors "init requires at least one
+    spec" -> status error.
+    test [ml unit]: dispatch "init" [("repl", "T")] -> status error
+    mentioning "at least one spec"; no repl created (repls output
+    unchanged).
+T3  duplicate id is an engine error and leaves the existing repl
+    untouched.
+    test [ml unit]: init "T" [Main]; init "T" [Main] again -> error
+    "already exists"; step "T" still works.
+T4  an unloaded/unknown theory name is a status error naming the
+    theory (Thy_Info.get_theory raises; fork_run captures).
+    test [ml unit]: init with theories = ["No.Such_Theory"] -> status
+    error; no repl created.
+T5  image theories resolve under LONG names — "Main" may fail while
+    "HOL.Main" succeeds depending on the heap; the description tells
+    the model to check `theories` output. the self-test already
+    resolves via suffix match on Thy_Info.get_names().
+    test [ml unit]: init with the resolved long name -> ok.
+    test [e2e]: tools/call theories, pick a listed name, repl_init
+    with it -> ok.
+T6  spec forms parse at the engine: "Thy:idx" only as a single spec
+    (mixing -> error "Cannot mix theory and segment specs"), "pin@A"
+    requires a fresh pin (stale pin / missing pin / busy repl ->
+    error).
+    test [ml unit]: init ["Main:0"]-style segment spec against a
+    record_theories theory -> ok; init ["Main", "Main:0"] -> error;
+    init ["pin@nope"] -> error "No REPL".
+    (pin round-trip tests live in plans/repl_pin; here only the
+    resolve_spec error path.)
+T7  the full chain: tools/call repl_init creates a repl visible to
+    repl_list.
+    test [scala unit]: tools/call "repl_init" {"repl": "T",
+    "theories": ["A", "B"]} against Fake_Backend -> fake saw
+    ("init", [(repl,T),(theories,A),(theories,B)]).
+    test [bridge]: session.ir("init", ...) with HOL.Main -> ok
+    "Created REPL"; follow with ir("repls") showing it.
+    test [e2e, test_agentic.py]: repl_init -> repl_step "lemma True"
+    -> "by simp" -> repl_remove.
+
+done when
+---------
+
+- T1..T7 green at their layers; I3's array conversion unit-tested.
+- tools/list shows repl_init with the metadata block above.
+- the e2e create/step/remove loop passes against a live server.
+
+status: done (2026-07-09). T1..T5, T7 green at all layers (ml unit:
+mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy; scala unit + bridge: isabelle
+mcp_test -b; e2e: mcp/test/test_mcp.py). T6 partially green: the
+mixed-spec and pin@ error paths are ml-unit tested (they trip before
+segment resolution); the positive "Thy:idx" ok-path is NOT — see the
+KNOWN GAP below.
+
+KNOWN GAP found while testing T6: Ir.load_theory (ir.ML) refuses to run
+whenever Ir.is_interactive_session () is true, which reads
+Printer.show_markup_default -- a flag meant to distinguish jEdit from
+batch `isabelle build`. Our MCP_Session backend runs a Headless.Session,
+which goes through the same init_options_interactive as jEdit and sets
+that ref true. Consequence: load_theory cannot run from the live MCP
+server at all today, and since repl_init's "Thy:idx" segment spec
+requires a theory loaded with record_theories (only load_theory does
+that), that spec form is unusable end to end until this is fixed. Pinned
+as a regression test (isabelle mcp_test -b: "KNOWN GAP -- load_theory
+refuses to run from a headless MCP_Session") so a fix is forced to
+update it. Belongs to plans/load_theory's scope to actually fix
+(distinguish "headless server" from "interactive jEdit", not just
+"batch build" from "interactive"); flagging here since T6 discovered it.

@@ -1,0 +1,91 @@
+repl_timeout — implementation plan
+===================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("timeout" => keys
+["repl", "secs"]).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_timeout
+description   "Set the per-step timeout in seconds for one REPL
+              (0 = unlimited; default 10s). Applies to repl_step,
+              repl_edit, repl_replay and repl_merge re-execution.
+              DO NOT raise it above 10s without a specific reason:
+              calls like metis, auto, blast, force should finish in
+              5s, and a step that needs longer usually points at a
+              proof that ought to be broken down. Forked REPLs
+              inherit the parent's timeout at fork time."
+              (source: mcp_server.py timeout :388 verbatim, plus the
+              fork-inheritance fact from ir.ML:456.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "secs": {"type": "integer"}},
+               "required": ["repl", "secs"]}
+annotations   {"readOnlyHint": false, "idempotentHint": true,
+               "openWorldHint": false}
+              (setting the same value twice is a no-op — honest
+              idempotency, like repl_replay.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_timeout", {"repl":"T","secs":5}
+  scala builtin row backend.ir("timeout", [(repl,T),(secs,"5")])
+  ml dispatcher     "timeout" -> Ir.timeout (get "repl")
+                    (get_int "secs")
+  engine            ir.ML:320
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  the set value actually bounds steps: secs=1 makes a sleeping
+    step fail, 0 makes it run to completion.
+    test [ml unit]: timeout 1 + slow step -> timeout error;
+    timeout 0 + the same step -> ok. (keep the sleep short — this is
+    the same fixture as plans/repl_step T3.)
+T2  negative secs: pin the engine behavior while implementing —
+    likely accepted and nonsensical; if so, reject scala-side
+    (schema minimum: 0 is advisory only) or engine-side, and test
+    the chosen gate.
+    test [ml unit]: timeout -1 -> the pinned behavior.
+T3  show reflects it ("timeout=5s" / "unlimited").
+    test [ml unit]: set, show -> string present.
+T4  full chain.
+    test [bridge]: session.ir("timeout", ...) -> ok reply.
+
+done when
+---------
+
+- T1..T4 green (T2 pinned); tools/list shows the row above.
+
+status: done (2026-07-09). T1..T4 green at all layers. T1 confirmed the
+set value bounds steps: secs=1 makes a 2s sleeping step time out
+("timed out"), secs=0 lets the same step run to completion. T2's engine
+behavior is now pinned, with a genuine surprise on the RENDERING side:
+exec_text only bounds execution when timeout_secs > 0 (ir.ML:342), so a
+negative value behaves exactly like 0/unlimited for step execution --
+a slow step under timeout -1 still succeeds. But show's string only
+special-cases exactly 0 as "unlimited" (ir.ML:537); any other value,
+negative included, goes through SML's plain \<^ML>\<open>string_of_int\<close>,
+which spells negative numbers with a tilde, not a minus sign -- so
+repl_show reports "timeout=~1s" for a REPL set to -1, not "timeout=-1s"
+as a JSON-facing caller might expect. Both halves (execution treats
+negative as unlimited; display does not) are pinned in the test. T3
+confirmed show's normal rendering: "timeout=Ns" for a positive value,
+"timeout=unlimited" for 0. T4 (bridge + e2e) confirmed the full chain
+against both a headless PIDE session and a live server: repl_timeout's
+reply names the new value, and repl_show immediately reflects it. ml
+unit: MCP_Repl_Tests.thy; scala unit + tools/call wiring: isabelle
+mcp_test; bridge (T4): isabelle mcp_test -b -d mcp/Tools; e2e (T4):
+test_mcp.py's test_repl_builtins.

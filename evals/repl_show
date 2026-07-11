@@ -1,0 +1,44 @@
+repl_show — evaluation
+=======================
+
+status: planned (2026-07-09)
+focal tool: repl_show (plans/repl_show)
+
+task
+----
+review one repl's full history — the "what have I done so far"
+question, as opposed to repl_state's "what is the goal at idx".
+
+setup
+-----
+harness pre-creates repl "review" with ~6 steps, one of which was
+preceded by failed attempts (invisible in history — failures leave
+no trace; that fact is part of what the output teaches).
+
+prompt
+------
+"Walk me through the proof attempt named 'review': list the steps
+taken so far in order, and note where the proof currently stands."
+
+success
+-------
+all steps reported in order plus a correct tip status; no mutating
+calls.
+
+signals
+-------
+- repl_show vs repl_text vs repeated repl_state: three plausible
+  routes. which reads as "the history view"? if repl_text (source
+  only, no states) wins, the show/text split may not be legible from
+  the descriptions.
+- if the harness manages to present "review" busy on first call:
+  does the "busy" error route the agent to repl_list (the documented
+  busy-safe overview) or to a retry loop?
+
+reflection
+----------
+- show/state/text form a triad with overlapping surfaces; if
+  transcripts show agents using them interchangeably or always
+  chaining all three, spec question: merge or sharpen the
+  descriptions' contrast ("show = steps, state = one goal, text =
+  paste-ready source").

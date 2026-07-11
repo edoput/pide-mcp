@@ -1,0 +1,47 @@
+unload_theory — evaluation
+===========================
+
+status: planned (2026-07-09)
+focal tool: unload_theory (plans/unload_theory)
+
+task
+----
+drop a theory that is no longer needed from the working set — the
+hygiene tool; rarely urgent, so the evaluation checks it is at
+least findable and safe when asked for.
+
+setup
+-----
+harness pre-loads Eval_A.thy and Eval_B.thy (independent); a repl
+"onA" attached from Eval_A's document (to stage the plan's T3
+question: what happens to repls when their theory unloads).
+
+prompt
+------
+"We're done with the theory Eval_B — remove it from the loaded
+working set so it no longer clutters what you see, but keep Eval_A
+and all proof attempts intact. Confirm the resulting state."
+
+success
+-------
+Eval_B unloaded, Eval_A still loaded, repl "onA" still usable
+(agent verified, e.g. a repl_state call succeeds); confirmation read
+from the server.
+
+signals
+-------
+- selection is the whole game here — this tool is only ever used
+  deliberately; the interesting failure is not finding it and
+  declaring "theories can't be unloaded".
+- collateral caution: does the agent check what depends on Eval_B
+  before unloading (nothing does — but LOOKING is the good
+  behavior)?
+- round-2 variant (after plans/unload_theory T3 pins the behavior):
+  unload Eval_A itself and grade whether the agent predicts/handles
+  the effect on repl "onA" from the description's wording.
+
+reflection
+----------
+- whatever T3 pins (repls survive or die on unload) must be stated
+  in the description; the round-2 variant is the acceptance test
+  for that sentence.

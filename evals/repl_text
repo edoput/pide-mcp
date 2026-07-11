@@ -1,0 +1,45 @@
+repl_text — evaluation
+=======================
+
+status: planned (2026-07-09)
+focal tool: repl_text (plans/repl_text)
+
+task
+----
+extract the finished proof as paste-ready Isar source — the tool
+that turns interactive work into a deliverable.
+
+setup
+-----
+harness pre-creates repl "done" holding a complete proof (statement
+through qed).
+
+prompt
+------
+"The proof attempt named 'done' is finished. Give me the exact Isar
+text I can paste into my theory file, and nothing else — it must be
+character-for-character what was accepted by the prover, not a
+reconstruction from memory."
+
+success
+-------
+the reply's Isar block matches the repl's actual accepted source
+(harness diffs it); the agent extracted rather than re-synthesized.
+
+signals
+-------
+- extraction vs reconstruction: agents are strongly tempted to
+  reprint from their own context. the prompt forbids it explicitly;
+  whether they still reconstruct measures if repl_text's purpose is
+  legible at all.
+- fidelity trust: does the agent post-process the returned text
+  ("cleaning up" symbols/whitespace)? plans/repl_text T1 guarantees
+  byte fidelity server-side; agent-side mangling would waste it.
+
+reflection
+----------
+- if reconstruction dominates, the description should say WHY
+  extraction matters (symbol encoding, exact accepted form) — or
+  repl_step's replies should not echo full source, removing the
+  temptation's raw material. spec-level trade-off; the transcripts
+  decide.

@@ -1,0 +1,12 @@
+# -*- shell-script -*- :mode=shellscript:
+
+ISABELLE_MCP_TEST_HOME="$COMPONENT"
+
+# vendored test libraries: runtime classpath for the munit stack
+# (compile-time counterpart: requirements in etc/build.props)
+classpath "$COMPONENT/lib/ext/munit_3-1.1.1.jar"
+classpath "$COMPONENT/lib/ext/munit-diff_3-1.1.1.jar"
+classpath "$COMPONENT/lib/ext/junit-interface-1.1.1.jar"
+classpath "$COMPONENT/lib/ext/junit-4.13.2.jar"
+classpath "$COMPONENT/lib/ext/hamcrest-core-1.3.jar"
+classpath "$COMPONENT/lib/ext/test-interface-1.0.jar"

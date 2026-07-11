@@ -1,0 +1,93 @@
+list_sessions — implementation plan
+====================================
+
+status: planned (2026-07-09; updated 2026-07-11 — D1's implementation
+moved to the wave umbrella plan, plans/session_structure, which also
+covers the resource widening and load_theory resolution halves of the
+wave; this plan keeps the tool row + its tests)
+
+wave 3: library discovery, scala-side over the startup
+Sessions.load_structure + deps object (spec "exploring the library
+universe"; verified there: 134 sessions enumerable in seconds, no
+heaps). first of the three discovery tools; states the shared
+infrastructure assumption for the wave (implemented per
+plans/session_structure step 1):
+
+D1  the session structure computed once at server startup (from the
+    same -d dirs) enumerates every session with chapter, description,
+    theories and source paths, and Store lookup answers heap_present.
+    test [scala unit]: against the bundled distribution structure,
+    "HOL" and "HOL-Library" are present with nonempty theory lists;
+    the base image session is marked. (pure data, no prover.)
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          list_sessions
+description   "List Isabelle sessions known to the server (from ROOT
+              files on the configured dirs — the distribution, and
+              the AFP if registered), optionally glob-filtered by
+              name. Each entry: name, chapter, one-line description,
+              whether a built heap exists, and a marker on the
+              session the server is running as base image. Sessions
+              are the unit of coarse-grained availability: theories
+              of the base image are queryable now; others need
+              load_theory (fine-grained, slow) or a heap build +
+              server restart (coarse-grained). Follow with
+              list_theories for a session's contents."
+inputSchema   {"type": "object",
+               "properties": {"pattern": {"type": "string"}}}
+              (no required — bare call lists everything.)
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "list_sessions", {"pattern": "HOL-*"}
+  scala builtin row pure function over the cached structure +
+                    Store.heap lookups; no bridge, no engine.
+
+implementation steps
+--------------------
+
+1. [infra, D1] keep the load_structure/deps object on MCP_Session at
+   startup (shared with plans/load_theory step 2 — whoever lands
+   first builds it).
+2. [this tool] glob matcher (reuse isabelle's own pattern utilities
+   if fitting, else java glob), formatting, builtin row.
+3. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  D1 (above).
+T2  glob filtering: "HOL-*" matches HOL-Library but not HOL; no
+    pattern lists all; a non-matching pattern -> ok with "no
+    sessions match" (not an error — discovery must be probe-safe).
+    test [scala unit]: the three cases against the real structure
+    (cheap enough) or a canned structure.
+T3  heap_present is live: it reflects heaps built after server
+    startup? — NO: Store lookup at call time vs structure at startup;
+    decide (recompute store lookup per call — cheap — vs startup
+    snapshot) and pin. plan assumes per-call Store lookup.
+    test [scala unit]: entry for the base image has heap_present
+    true.
+T4  full chain.
+    test [e2e]: list_sessions {pattern: "HOL-*"} returns HOL-Library
+    — the worked example step 1 of the exploring skill.
+
+done when
+---------
+
+- T1..T4 green; tools/list shows the row above; D1 is referenced by
+  plans/list_theories and plans/search_sources.

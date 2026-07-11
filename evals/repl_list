@@ -1,0 +1,51 @@
+repl_list — evaluation
+=======================
+
+status: planned (2026-07-09)
+focal tool: repl_list (plans/repl_list — implemented, so this
+evaluation is runnable today; it is the pilot for the template).
+
+task
+----
+orient in a session the agent did not build: several proof attempts
+already exist, the agent must report the lay of the land without
+disturbing it.
+
+setup
+-----
+harness pre-creates (via direct tools/call, not visible to the
+agent's transcript): three repls — "assoc" with 2 successful steps,
+"comm" with 0 steps, "slow" mid-step (claimed/busy at prompt time if
+timing allows; acceptable to skip the busy one on flaky timing).
+
+prompt
+------
+"You are joining an in-progress Isabelle proof session. Before doing
+any new work, give me a status report: what proof attempts exist,
+how far along each one is, and which (if any) are currently busy.
+Do not modify anything."
+
+success
+-------
+- report names all three repls with plausible per-repl detail
+  (step counts or goal summaries), busy state mentioned if present.
+- no mutating tool was called (the annotations say which are
+  read-only — this also evaluates whether readOnlyHint is trusted).
+
+signals
+-------
+- does the agent open with repl_list, or guess ids and poke
+  repl_state/repl_show one by one? (selection axis, but also: if it
+  prefers per-repl tools, the overview description may not read as
+  the entry point.)
+- does it re-poll repl_list to resolve the busy repl instead of
+  calling repl_show on it and hitting the "busy" error?
+  (plans/repl_show T2 — repl_list is the documented busy-safe path.)
+
+reflection
+----------
+- is "list" the name agents look for, or do they try "status" /
+  "sessions"? transcript search terms tell us.
+- if the agent cannot answer "how far along" from repl_list output
+  alone and must chain repl_state per repl, should repl_list output
+  grow (step count, tip goal) — spec question for the output format.

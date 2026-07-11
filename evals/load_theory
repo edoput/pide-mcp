@@ -1,0 +1,49 @@
+load_theory — evaluation
+=========================
+
+status: planned (2026-07-09)
+focal tool: load_theory (plans/load_theory)
+
+task
+----
+bring a user's theory file under the prover and report its problems
+with positions — the entry point of the whole verification workflow.
+
+setup
+-----
+theory Eval_Diag.thy on disk containing: one type error in a
+definition and one failing proof, at known lines. NOT pre-loaded.
+
+prompt
+------
+"My theory file Eval_Diag.thy doesn't build. Check it with the
+prover and give me every problem it has, each with its line number
+and the prover's actual message — not your guess of what's wrong."
+
+success
+-------
+both defects reported with correct lines and genuine prover
+messages; the agent loaded the file rather than eyeballing the
+source.
+
+signals
+-------
+- selection: load_theory vs reading the file and static-guessing
+  (the prompt forbids guessing — an agent that guesses anyway shows
+  the tool didn't register as "the way to check").
+- name/path handling: the tool takes theory names resolved via the
+  session structure; does the agent pass a file path, a bare name,
+  a qualified name? whichever fails first-call tells us what the
+  parameter must accept (or the description must show).
+- error-reply reading: diagnostics arrive positioned (plans/
+  load_theory: error reply still carries full diagnostics) — does
+  the agent transcribe positions accurately?
+- second load of the same theory (agents often retry): sensible
+  no-op or confusing error?
+
+reflection
+----------
+- if path-vs-name fumbles dominate, spec question: accept both in
+  the parameter (resolve paths to theory names server-side) — a
+  cheap schema-layer fix with high leverage, since every wave-2
+  eval starts here.

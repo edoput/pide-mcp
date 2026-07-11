@@ -1,0 +1,67 @@
+scope_show — implementation plan
+=================================
+
+status: planned (2026-07-09)
+
+wave 4; references S1 (plans/scope_add).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          scope_show
+description   "Show the current resource scope: the explicit
+              patterns with their match counts, plus the implicit
+              members — theories loaded with load_theory, active
+              REPLs, and registered named resources. This is what
+              resources/list will enumerate. Scope never limits
+              resource READS, only the listing."
+inputSchema   {"type": "object"}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "scope_show", {}
+  scala builtin row read the scope state + D1 match counting +
+                    session working set; format. no bridge.
+                    (zero-arg like repl_list: {"type": "object"},
+                    the I3 empty-args path.)
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler over the S1 state.
+2. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  the default scope on a fresh server is exactly the working set:
+    no patterns, the startup theory listed as loaded, no repls.
+    test [scala unit]: fresh state -> output names the implicit
+    members only.
+T2  it reflects every mutation source: scope_add pattern, a created
+    repl, a load_theory, a registered mcp_resource each show up; the
+    corresponding removals disappear.
+    test [scala unit] for patterns; [bridge] for repl + load_theory.
+T3  agreement with resources/list: everything scope_show names is
+    listed, nothing else is (S1 restated from the read side — one
+    assertion loop over both outputs).
+    test [scala unit].
+T4  full chain.
+    test [e2e]: scope_show before/after the scope_add e2e case.
+
+done when
+---------
+
+- T1..T4 green; tools/list shows the row above.

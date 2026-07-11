@@ -1,0 +1,251 @@
+session_structure — wave 3 shared infrastructure (implementation plan)
+========================================================================
+
+status: planned (2026-07-11)
+
+wave 3: library discovery. this is an UMBRELLA plan in the style of
+mcp_tool_registry/tool_scope — it owns the shared session-structure
+infrastructure and the non-tool halves of the spec's wave-3 item
+("scala: session-structure discovery", phase-2 implementation plan):
+
+  a. the startup Sessions.load_structure + Sessions.deps object and
+     the maps derived from it (this file — supersedes the "whoever
+     lands first builds it" note shared by plans/list_sessions step 1
+     and plans/load_theory step 2);
+  b. widening isabelle://theory/{name} (and /commands) resolution to
+     filesystem-tier theories via the structure's path map;
+  c. tier answers on /diagnostics and /entities for filesystem
+     theories (today they fall through to not_yet_backed_uri);
+  d. load_theory resolving session-qualified names through the same
+     structure (no master_dir needed for "HOL-Library.Multiset");
+  e. the loaded-tier correction (spec "loaded-tier membership",
+     decision 2026-07-11): tier and /diagnostics node lookup follow
+     the live document's nodes, so transitively loaded imports report
+     "loaded" instead of wave 2's false "filesystem / not checked".
+
+the three discovery TOOLS keep their own plans — plans/list_sessions,
+plans/list_theories, plans/search_sources — which reference the D1
+infrastructure assumption; D1's implementation now lives here.
+EXPLICITLY OUT OF SCOPE: scope state and scope_add/scope_remove/
+scope_show, scope-filtered resources/list, resources/list_changed
+(wave 4, plans/scope_* and plans/tool_scope's resource sibling); the
+"auto-add to scope" hooks in load_theory stay no-op stubs.
+
+spec anchors: "exploring the library universe (theories outside the
+heap)" (tiers, backing mechanism, resource widening, promotion cost),
+the phase-2 implementation-plan item "scala: session-structure
+discovery", and the "library discovery" block of the phase-2 testing
+checklist.
+
+current code state (2026-07-11, for orientation)
+------------------------------------------------
+
+- MCP_Session.start (mcp/src/mcp_session.scala) runs Build.build +
+  Headless.Resources.make over (options, session_name, session_dirs);
+  NO load_structure/deps object exists anywhere yet.
+- mcp_resource_read resolves image-tier theories via image_theory
+  (verbatim / session-qualified / unique-base-name normalization —
+  keep that lesson, see the comment block at mcp_session.scala:408)
+  and loaded-tier diagnostics/entities via theory_master_dirs +
+  snapshots; everything else hits the not_yet_backed_uri error that
+  names this wave.
+- KNOWN DEFECT this wave fixes (spec "loaded-tier membership",
+  decision 2026-07-11): theory_master_dirs records only EXPLICITLY
+  requested loads, but use_theories pulls in the transitive import
+  closure as live document nodes — so a transitive import (including
+  one an agent just added to a header on disk) answers the
+  filesystem "not checked" line on /diagnostics moments after being
+  checked live. tier must follow the document, not the bookkeeping.
+- load_theory/check_theory take (name, master_dir) and resolve via
+  resources.import_name(Sessions.DRAFT, master_dir, name): a bare
+  session-qualified name with no master_dir does not find its file.
+
+infrastructure (the D1 object, expanded)
+----------------------------------------
+
+one value computed at server startup from the SAME (options,
+session_dirs) the server was given — a registered AFP shows up with
+zero extra work — and kept on MCP_Session:
+
+  structure  = Sessions.load_structure(options, dirs = session_dirs)
+  deps       = Sessions.deps over the full selection (header parsing
+               only; spec-verified: 134 sessions, seconds, no heaps)
+  store      = Store(options)   (heap_present lookups at CALL time,
+               so heaps built after startup are seen — pinned in
+               plans/list_sessions T3)
+
+derived maps, computed once:
+
+  sessions   : name -> (chapter, description, theories)
+  theory_map : theory long name -> (session, source Path)
+               (from each session's known/used theories in deps; this
+               is the "uri -> path resolution" the spec says the deps
+               object also answers)
+  base_names : base name -> List[long name]  (for the unique-base-name
+               resolution rule, now over the WHOLE structure, not just
+               the image — see resolution below)
+
+resolution: ONE function replaces/extends image_theory —
+
+  resolve_theory(name): Option[(long_name, Tier, Option[Path])]
+
+  tier order is authoritative and checked in this order:
+    image      resources.session_base.loaded_theories (existing
+               image_theory logic verbatim — its normalization rules
+               are load-bearing, see CHANGELOG 2026-07-10 retraction)
+    loaded     the current PIDE document version's non-empty nodes
+               (session.snapshot().version.nodes, matched by theory
+               name) — NOT theory_master_dirs keys. this is the
+               loaded-tier correction (spec decision 2026-07-11):
+               use_theories loads the transitive import closure as
+               document nodes, so transitive imports ARE loaded and
+               must say so. skip empty nodes: purged nodes can
+               linger as empty entries in the version (verify in
+               A8's test). theory_master_dirs is DEMOTED to
+               explicit-load bookkeeping: unload_theory eligibility
+               ("was not loaded" for never-requested names) and
+               master_dir recall — it no longer answers tier, and
+               /diagnostics' node lookup goes through the document
+               node found here rather than reconstructing a
+               node_name from the recorded master_dir.
+    filesystem theory_map lookup: verbatim, then unique base-name
+               match. AMBIGUITY IS AN ANSWER, not a guess: two
+               structure theories sharing a base name -> None from
+               the base-name rule; the error message lists the
+               candidates so the client can qualify.
+
+startup cost decision: compute structure+deps EAGERLY at startup,
+synchronously — seconds against the distribution, amortized over the
+session lifetime, and it keeps every discovery call pure over
+immutable data (no lazy-init races with the Synchronized promise
+machinery). if AFP-scale dirs push this past ~10s in practice, demote
+to a Future set at startup and joined on first use — decide by
+measuring in step 1, pin whichever holds with the T-startup test.
+
+implementation steps
+--------------------
+
+1. [infra] load_structure + deps + store at startup; the three derived
+   maps; resolve_theory subsuming image_theory (image_theory stays as
+   a thin wrapper or is inlined — its tests keep passing verbatim).
+   measure startup delta; pin eager vs Future per the decision above.
+2. [resources] mcp_resource_read: theory_source_uri and
+   theory_commands_uri gain a filesystem-tier branch reading the file
+   at theory_map's path (source = File.read; commands = the span
+   question, see A4 below); /diagnostics and /entities gain the tier
+   answer ("filesystem theory — not checked; load_theory to get
+   semantics") for structure-known names; not_yet_backed_uri now only
+   catches names outside the structure entirely — reword it to say
+   "unknown theory" with a pointer at list_theories/search_sources.
+   theory_diagnostics' loaded branch switches from theory_master_dirs
+   + import_name reconstruction to the document node resolve_theory
+   found (the loaded-tier correction) — transitive imports get the
+   live snapshot read, same as explicit loads. unload_theory is
+   UNCHANGED: still keyed on theory_master_dirs (explicit loads
+   only), still sweeping unrequired transitive imports via
+   clean_theories.
+3. [load_theory] resolve session-qualified names with no master_dir
+   through theory_map: pass the resolved path's directory as
+   master_dir into the existing use_theories path (the wave-2
+   machinery is unchanged downstream). check_theory identically.
+4. [tools] land plans/list_sessions, plans/list_theories,
+   plans/search_sources on top (their own steps and tests; they are
+   pure functions over the maps above plus store lookups).
+5. tests (below + the per-tool plans').
+
+assumptions and how to test them
+--------------------------------
+
+(testing process per plans/README: [scala unit] = munit over
+Fake_Backend in mcp_test/src/mcp_handler_tests.scala — but note most
+cases here are pure functions over a REAL structure, no backend
+needed; [bridge] = mcp_test/src/mcp_bridge_tests.scala over
+MCP_Session_Suite; run isabelle mcp_test [-b] [-t PATTERN]. remember
+the scala-rebuild rule: isabelle scala_build -f after edits.)
+
+A1  D1 (restated from plans/list_sessions, implementation moved
+    here): load_structure + deps over the bundled distribution
+    enumerates HOL and HOL-Library with nonempty theory lists,
+    chapters, descriptions; theory_map holds HOL-Library.Multiset
+    with an existing source path; store answers heap_present for the
+    base image.
+    test [scala unit]: pure, against the real bundled distribution.
+A2  startup cost: structure+deps computation stays within interactive
+    startup budget (seconds) on the configured dirs.
+    test [scala unit, timed loosely]: construction < generous bound;
+    revisit if AFP dirs are added to the test environment.
+A3  resolve_theory tier truthfulness and precedence: (a) HOL.Main ->
+    image even though it also appears in the structure (image wins);
+    (b) a load_theory'd fixture -> loaded, back to filesystem after
+    unload_theory; (c) HOL-Library.Multiset -> filesystem + path;
+    (d) unknown name -> None; (e) ambiguous base name across two
+    structure sessions -> None from the base-name rule (candidates
+    surfaced in the caller's error).
+    test [scala unit] for (a,c,d,e) pure; [bridge] for (b), riding
+    the existing wave-2 load/unload suite.
+A4  /commands for filesystem theories: command spans need outer
+    syntax. VERIFY BY SPIKE before step 2: scala-side
+    Outer_Syntax.parse_spans with the owning session's syntax from
+    deps gives usable {command, offset} spans for an unloaded .thy.
+    if the per-session syntax is not cheaply reachable from deps,
+    FALL BACK and pin: filesystem /commands answers the tier line
+    ("filesystem theory — command map needs load_theory") and only
+    the bare source uri is widened — the spec's wording ("{name}
+    (and /commands) resolves ... through the path map") permits
+    reading, not necessarily span-mapping, and honesty beats a
+    half-right span table.
+    test: [scala unit] either the spans of a fixture .thy or the
+    pinned fallback message.
+A5  resource widening end to end (the testing-checklist rows):
+    resources/read on isabelle://theory/HOL-Library.Multiset serves
+    file content WITHOUT loading it; /diagnostics on it answers the
+    "not checked" tier line, not an error; a name in no session ->
+    the reworded unknown-theory error.
+    test [bridge]: all three against the live server.
+A6  load_theory session-qualified resolution: {"name":
+    "HOL-Library.Multiset"} with no master_dir resolves and starts
+    checking (assert resolution + node appearance, not completion —
+    deep imports are minutes; use a SHALLOW filesystem fixture
+    theory in a test session for the full ok round trip).
+    test [bridge]: shallow fixture full loop; resolution-only
+    assertion for the deep case if kept at all.
+A7  nothing regresses for image names: the wave-2 image_theory tests
+    (normalization matrix: base name, session-qualified, foreign
+    qualifier, ambiguous) pass unchanged through resolve_theory.
+    test [scala unit]: existing cases re-pointed, plus [bridge]
+    suites stay green.
+A8  loaded tier follows the document (the spec's 2026-07-11
+    loaded-tier decision; the testing-checklist row added with it):
+    with fixture theories A imports B (both filesystem, shallow),
+    load_theory A ->
+    (a) resolve_theory B = loaded; list_theories reports B "loaded";
+    (b) /diagnostics on B answers live (not "not checked");
+    (c) unload_theory B alone -> "was not loaded" error (explicit-
+        load bookkeeping untouched by the correction);
+    (d) unload_theory A -> B reverts to filesystem (clean_theories
+        sweeps unrequired nodes), and the empty-node caveat is
+        exercised: after the sweep, resolve_theory B must NOT report
+        loaded off a lingering empty version node;
+    (e) the dependency-edit path: append "imports B" to a loaded
+        fixture's header ON DISK, check_theory it -> B appears
+        loaded, per-node report names it (use_theories recomputes
+        the closure from the header, nothing cached).
+    test [bridge]: one suite over the fixture pair, riding the
+    wave-2 load/unload machinery; (a)'s pure precedence half also
+    [scala unit] on canned node sets.
+
+spec refinement: the not_yet_backed_uri error class disappears —
+after this wave every documented template answers for every
+structure-known theory (with tier honesty), and unknown names get a
+discovery pointer. fold into the spec's resource-templates section
+when landing.
+
+done when
+---------
+
+- A1..A8 green; steps 1-3 landed; the three per-tool plans check off
+  on top of this infrastructure (their T-cases green; tools/list
+  shows the three rows); the spec's phase-2 wave-3 item and the
+  "library discovery" testing-checklist rows (minus the scope row,
+  wave 4) get their done annotations; CHANGELOG entry per the repo
+  convention.

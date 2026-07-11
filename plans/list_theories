@@ -1,0 +1,83 @@
+list_theories — implementation plan
+====================================
+
+status: planned (2026-07-09; updated 2026-07-11)
+
+wave 3, scala-side; references D1 (plans/list_sessions, implemented
+in plans/session_structure). the tier computation below is
+resolve_theory of plans/session_structure — do not reimplement it
+here.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          list_theories
+description   "List the theories of one session with their long
+              names, availability tier, and source path. Tiers:
+              'image' (in the base heap — semantic queries like
+              find_theorems and find_definition work now), 'loaded'
+              (checked live via load_theory — semantics plus fresh
+              diagnostics), 'filesystem' (known from the session
+              structure only — source readable and text-searchable,
+              NO semantic queries until promoted with load_theory).
+              Every discovery answer names the tier so you know what
+              the next step costs."
+              (spec: the three-tier table, verbatim tier contract.)
+inputSchema   {"type": "object",
+               "properties": {"session": {"type": "string"}},
+               "required": ["session"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "list_theories", {"session": "HOL-Library"}
+  scala builtin row structure.deps for the session's theories +
+                    tier computation: image = in the base image's
+                    ancestry (known at startup); loaded = current
+                    use_theories nodes; filesystem = the rest.
+                    no bridge, no engine.
+
+implementation steps
+--------------------
+
+1. [this tool] tier function (session structure ancestry set +
+   loaded-nodes set -> tier), formatting, builtin row.
+2. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  tier truthfulness — the wave's core honesty requirement:
+    (a) every theory of the base image's ancestry reports "image"
+    (HOL.Main under -s MCP-HOL); (b) a load_theory'd fixture flips
+    to "loaded" and back to "filesystem" after unload_theory;
+    (c) HOL-Library theories report "filesystem" out of the box.
+    test [scala unit] for the pure tier function on canned sets;
+    test [bridge] for the load/unload flip.
+T2  unknown session -> isError naming it; a session with zero
+    theories (exists in the wild) -> ok, empty.
+    test [scala unit]: both.
+T3  counts match the spec's verified numbers on the bundled
+    distribution (HOL-Library: 148) — guards against accidentally
+    listing only ROOT-declared instead of all reachable theories.
+    test [scala unit]: assert the 148 (update if the distribution
+    changes).
+T4  full chain.
+    test [e2e]: worked-example step 2 — list_theories
+    {"session": "HOL-Library"} shows Multiset, tier filesystem.
+
+done when
+---------
+
+- T1..T4 green; tools/list shows the row above.

@@ -1,0 +1,126 @@
+unload_theory — implementation plan
+====================================
+
+status: planned (2026-07-09)
+
+wave 2, scala-side (see plans/load_theory for the registry split).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          unload_theory
+description   "Unload a theory that was loaded with load_theory:
+              removes its PIDE document (and purges the snapshot) and
+              drops it from the resource scope. Its resources revert
+              to the 'filesystem' tier (source still readable, no
+              semantics). Cannot unload theories baked into the base
+              image, and does not touch REPLs that were initialized
+              from the theory's document — remove or keep them
+              explicitly."
+              (spec: unload + purge; the repl caveat is pinned by T3
+              below.)
+inputSchema   {"type": "object",
+               "properties": {"name": {"type": "string"}},
+               "required": ["name"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "unload_theory", {"name": "Draft.Foo"}
+  scala builtin row MCP_Session.unload_theory (NEW):
+                    session.unload_theories + purge_theories
+                    (Headless API); scope removal (wave 4 stub).
+  engine            none.
+
+implementation steps
+--------------------
+
+1. [infra] MCP_Session.unload_theory over Headless
+   unload_theories/purge_theories (shared with check_theory's purge
+   step — write it once here).
+2. [this tool] builtin row + handler; unknown/not-loaded name ->
+   isError; image theory -> isError explaining the tier.
+3. tests.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process update 2026-07-10: the [scala unit] and [bridge]
+cases below are now written as munit suites in the mcp_test/
+component -- scala-unit cases in mcp_test/src/mcp_handler_tests.scala
+over Fake_Backend, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite and its fixtures (with_repl, slow_step,
+await_busy, eventually, expect_ok/expect_error); see plans/README
+"testing process". run: isabelle mcp_test [-b] [-t PATTERN].)
+
+T1  load -> unload -> the snapshot is gone: diagnostics/entities
+    resources answer "filesystem tier", and re-loading works fresh.
+    test [bridge]: load fixture, unload, load again -> ok each step.
+T2  unloading a never-loaded or image theory is a clean isError
+    naming the reason (not found vs image tier).
+    test [scala unit]: against Fake_Backend-level structure, both
+    error paths.
+T3  repls initialized from the theory's document survive the unload
+    with their captured states (Toplevel.state values are
+    self-contained) — OR break; PIN the actual behavior while
+    implementing and put it in the description.
+    test [bridge]: load, init_from_source, unload, step the repl ->
+    pinned expectation.
+T4  scope drop (deferred to plans/scope_add, like load_theory T5).
+T5  full chain.
+    test [e2e]: load/unload cycle visible in scope_show and
+    resources/list once those exist; until then assert the tool
+    replies.
+
+done when
+---------
+
+- T1..T3, T5 green (T3 pinned in the description); tools/list shows
+  the row above.
+
+status: done (2026-07-10)
+--------------------------
+
+T1 (bridge): load a fixture, unload it, load it fresh again -- all
+three ok. T2 (scala unit, Fake_Backend): both error paths, never-
+loaded and image-tier, are clean isErrors naming the reason.
+
+Implementation note (a genuine engine-level finding, not just a
+detail): the plan's step 1 said "session.unload_theories + purge_
+theories (shared with check_theory's purge step)" -- that shared purge
+step turned out to be actively harmful (see plans/check_theory's
+status block for the full story: Headless.Resources.purge_theories
+never pushes its edits to the live document, so calling it directly
+desyncs Resources' bookkeeping from the prover and the next reload
+corrupts the document). check_theory dropped the purge entirely, but
+unload_theory genuinely needs a document-level removal, not just a
+fresh read -- so it goes through Resources.clean_theories instead
+(unload_theories + purge_theories(None) + session.update in one
+state.change), the one purge path that keeps its own bookkeeping
+consistent with the live document. Its blast radius is session-wide
+(purge_theories(None) sweeps every currently-unrequired node, not just
+the target theory) -- harmless here since MCP_Session never keeps a
+theory "required" past the end of its own use_theories call, but worth
+knowing if that assumption ever changes.
+
+Also: unload_theory's inputSchema is just {name} (per the plan, no
+master_dir), but resolving name -> Document.Node.Name needs the same
+master_dir the theory was loaded with. MCP_Session now records name ->
+master_dir on every successful load_theory/check_theory, so unload_
+theory can resolve without asking for it again; the same map doubles
+as the "was this ever loaded" registry for T2's not-loaded error path.
+
+T3 (repls surviving/breaking an unload) stays deferred: it needs
+repl_init_from_source ("attach"), a still-deferred wave-1 tool, to
+create a repl from the theory's document in the first place. T4 (scope
+drop) stays deferred to plans/scope_add, as planned. T5 (full chain):
+covered as part of the e2e wave-2 block in mcp/test/test_mcp.py (load
+-> check_theory staleness -> unload -> unload-again-is-error).
+
+Four-layer test locations: scala unit in mcp_test/src/
+mcp_handler_tests.scala; bridge in mcp_test/src/mcp_bridge_tests.scala
+("wave 2: unload_theory T1 ..."); e2e in mcp/test/test_mcp.py
+("wave 2: tools/call unload_theory ..."). No ml-unit layer.

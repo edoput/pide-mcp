@@ -1,0 +1,54 @@
+repl_step — evaluation
+=======================
+
+status: planned (2026-07-09)
+focal tool: repl_step (plans/repl_step)
+
+task
+----
+the hot path: drive a multi-step proof, including surviving failed
+attempts. the single most important behavioral claim to check is the
+description's warning — a failed step leaves state UNCHANGED, do NOT
+call repl_back after a failure.
+
+setup
+-----
+fresh server. the lemma needs induction + a non-obvious step so that
+at least one failed attempt is near-certain (that failure is the
+point of the evaluation, not a defect of it).
+
+prompt
+------
+"Prove `lemma \"foldr (+) xs (0::nat) = sum_list xs\"` in
+Isabelle/HOL, working step by step so you can inspect goals as you
+go. Give me the final Isar text."
+
+success
+-------
+proof completed; after every failed step the agent's next action was
+consistent with unchanged state (retry a different step — NOT an
+undo).
+
+signals
+-------
+- THE trap: after a failed `by simp`, does the agent call repl_back
+  (discarding a good step) because its editor intuition says "undo
+  the failure"? the description warns against exactly this — the
+  evaluation measures whether the warning is read and believed.
+  count occurrences across runs; this number decides whether the
+  warning must escalate (into the error text of the failed step
+  itself, the strongest placement).
+- step granularity: one Isar command per call, or does it paste
+  multi-command blobs? (the plan pins one-command semantics; blobs
+  produce confusing errors.)
+- failure loops: same failing step retried verbatim more than once?
+  (recovery axis — the error text may not be informative enough.)
+
+reflection
+----------
+- if the back-after-failure trap fires even once per run set, put
+  the state-unchanged notice INSIDE the failed-step error reply, not
+  only in the description (agents demonstrably read errors more
+  than descriptions).
+- if goal output after each step is too verbose/too terse for the
+  agent to plan the next step, output-format spec question.

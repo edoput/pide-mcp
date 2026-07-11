@@ -1,0 +1,141 @@
+find_theorems — implementation plan
+====================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("find_theorems" =>
+keys ["repl", "query", "max_results"], default 40 in the dispatcher).
+NOTE the ML argument order is (id, max_results, query) — the
+dispatcher already handles the reordering; wire keys are what
+matters. one design decision inherited from mcp_server.py: its
+python-side query AUTO-QUOTING (bare term patterns get wrapped in
+quotes). we do NOT reimplement that heuristic scala-side — the
+description teaches quoting instead; revisit only if e2e shows models
+failing at it.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          find_theorems
+description   "Search for theorems visible in the REPL's current
+              context. Criteria: name:foo (name pattern, unquoted),
+              intro / elim / dest / solves (goal-based, need a
+              current goal), simp:\"term\" (simplification rules for
+              a term), or \"pattern\" (term pattern). Terms and
+              patterns MUST be quoted: \"_ + _\", \"_ @ _\"; name
+              patterns are NOT quoted: name:append. Prefix a
+              criterion with - to negate it. Examples: name:conjI,
+              \"_ + _ = _\", simp:\"True\", -name:foo. Multiple
+              criteria are space-separated and conjoined."
+              (source: mcp_server.py find_theorems :366 verbatim,
+              minus the auto-quoting it performed silently.)
+inputSchema   {"type": "object",
+               "properties": {
+                 "repl": {"type": "string"},
+                 "query": {"type": "string"},
+                 "max_results": {"type": "integer", "default": 40}},
+               "required": ["repl", "query"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+              (pure search — readOnlyHint refinement family.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "find_theorems",
+                    {"repl": "T", "query": "name:conjI"}
+  scala builtin row backend.ir("find_theorems", [(repl,T),
+                    (query,"name:conjI")] (+ max_results if given))
+  ml dispatcher     "find_theorems" -> Ir.find_theorems (get "repl")
+                    (get_int_default "max_results" 40) (get "query")
+  engine            ir.ML:758 — Find_Theorems.read_query +
+                    find_theorems_cmd against the last state's
+                    context (goal-aware when mid-proof); out
+                    "found N theorem(s) (M displayed):" + one pretty
+                    theorem per line
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler (omit max_results pair when
+   absent); errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  query strings with quotes and underscores cross the wire intact
+    — the encoding's job, but this is the tool where clients WILL
+    send embedded double quotes.
+    test [scala unit]: tools/call with query "_ + _ = _" (quoted
+    form) -> fake saw the exact string including quote characters.
+T2  a malformed query is a status error from read_query, not a
+    crash.
+    test [ml unit]: query with unbalanced quotes -> status error.
+T3  results respect max_results and say so ("N found (M displayed)").
+    test [ml unit]: a broad pattern with max_results 3 -> at most 3
+    lines, tally mentions both numbers; max_results 0 -> unlimited
+    (limit = NONE per ir.ML:763) — pin this in the description if
+    kept.
+T4  goal-based criteria (intro/solves) work mid-proof and error (or
+    return empty — pin which) at theory level with no goal.
+    test [ml unit]: mid-proof "intro" -> ok with plausible rules
+    (conjI for a conjunction goal); at theory level -> pinned
+    behavior.
+T5  the description's quoting contract is livable without the
+    python auto-quoter: a model following it verbatim gets results.
+    test [e2e]: name:conjI and "_ + _" both return hits through the
+    full stack.
+T6  full chain latency: find_theorems is interactive-fast (unlike
+    sledgehammer) — no async gymnastics needed, but it must not
+    block behind one either.
+    test [bridge]: find_theorems on B during a slow step on A ->
+    returns promptly.
+
+done when
+---------
+
+- T1..T6 green (T3/T4 pinned); tools/list shows the row above; the
+  auto-quoting decision is recorded in the CHANGELOG when the tool
+  lands.
+
+status: done (2026-07-10). T1..T6 green at all layers.
+
+T1 (scala unit) confirmed a query string with embedded double quotes and
+underscores ("\"_ + _ = _\"") crosses tools/call -> backend.ir intact,
+quote characters included; max_results plumbs through the same way as
+sledgehammer's timeout_secs (json_args already omits the pair when the
+client omits the argument, no special handler code needed).
+
+T2 (ml unit) confirmed a malformed query (an unterminated quote) is a
+clean status error from Find_Theorems.read_query, not a crash.
+
+T3 (ml unit, pinned -- a genuine surprise): Find_Theorems.find_theorems_cmd
+returns opt_found = NONE whenever a limit cuts the search short (the
+exhaustive total is unknown at that point), so a BOUNDED query's tally
+is "displaying N theorem(s)", never the optimistic "found N (M
+displayed)" shape one might assume from ir.ML's own tally-formatting
+code reading in isolation -- the found/displayed split only fires when
+the search is unlimited (max_results 0) and completes exhaustively,
+giving "found N theorem(s)" with N lines actually returned. Both shapes
+are pinned in MCP_Repl_Tests.thy with "name:conj" (Main has more than
+3 matches, so max_results=3 truncates and max_results=0 does not).
+
+T4 (ml unit) confirmed goal-based criteria ("intro") error cleanly at
+theory level (no goal to search from) and, once mid-proof on a
+conjunction goal, return plausible rules including conjI.
+
+T5 (e2e) confirmed the description's quoting contract is livable
+without mcp_server.py's python-side auto-quoter: name:conjI (bare,
+unquoted) and "_ + _ = _ + _" (quoted term pattern) both return hits
+through the full stack -- the auto-quoting heuristic was deliberately
+NOT reimplemented scala-side (recorded in the CHANGELOG).
+
+T6 (bridge) confirmed find_theorems on one REPL returns promptly while
+a slow 2s step is still in flight on a different REPL -- it needs no
+async gymnastics of its own (unlike sledgehammer), but must not (and
+does not) queue behind an unrelated slow call.
+
+ml unit: MCP_Repl_Tests.thy; scala unit: isabelle mcp_test; bridge
+(T6): isabelle mcp_test -b -d mcp/Tools; e2e (T5): test_mcp.py.

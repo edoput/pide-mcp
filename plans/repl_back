@@ -1,0 +1,82 @@
+repl_back — implementation plan
+================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("back" => keys
+["repl"]); pure sugar — ir.ML:664 defines back id = truncate id ~1.
+everything of substance lives in plans/repl_truncate; this plan only
+pins the sugar and the one behavioral trap (backing after a FAILED
+step).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_back
+description   "Revert the last SUCCESSFUL step (shorthand for
+              repl_truncate with idx -1). Only call it after a step
+              that succeeded — a FAILED repl_step left the state
+              unchanged, so repl_back after a failure would discard
+              the last GOOD step. Sub-REPLs forked from the discarded
+              state are removed; a pin goes stale."
+              (source: mcp_server.py back :351 verbatim, plus the
+              truncate side effects.)
+inputSchema   {"type": "object",
+               "properties": {"repl": {"type": "string"}},
+               "required": ["repl"]}
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "destructiveHint": true, "openWorldHint": false}
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_back", {"repl": "T"}
+  scala builtin row backend.ir("back", [(repl, T)])
+  ml dispatcher     "back" -> Ir.back (get "repl")
+  engine            ir.ML:664 = truncate ~1
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  equivalence with truncate -1, including on the edge: back on a
+    0-step repl -> "out of range" error (nothing to revert), same
+    message truncate gives.
+    test [ml unit]: 2 steps; back -> 1 step; back -> 0 steps; back ->
+    error.
+T2  the description's trap is real and the reply proves the model
+    can recover: step ok, step FAILS, back — the surviving step is
+    the FIRST one (the failed step never existed).
+    test [ml unit]: step "lemma True"; step garbage (error); back;
+    show -> 0 steps (the good step was discarded — exactly why the
+    description shouts). this test documents the trap, it does not
+    fix it.
+T3  full chain.
+    test [e2e]: step, back, step alternative — part of the wrong-turn
+    loop shared with plans/repl_truncate T6.
+
+done when
+---------
+
+- T1..T3 green; tools/list shows the row above.
+
+status: done (2026-07-09). T1..T3 green at all layers. T1 confirmed
+repl_back is exactly truncate -1's sugar: 2 steps -> back -> 1 step ->
+back -> 0 steps -> back -> "out of range" error, the same message
+truncate gives on an empty repl. T2 confirmed the description's trap is
+real: step ok, step FAILS, back -- the surviving repl has 0 steps, not
+1, because the failed step was never added and back discarded the one
+good step that was there. This documents the trap rather than fixing
+it, per the plan. T3 (e2e) exercised the wrong-turn loop through the
+dedicated shorthand against a live server, sharing the fixture with
+repl_truncate T6: step, back, step a different way, repl_text confirms
+the new script. No bridge test: repl_back has no async dimension of its
+own (it delegates straight to truncate, already covered at that layer).
+ml unit: MCP_Repl_Tests.thy; scala unit + tools/call wiring: isabelle
+mcp_test; e2e (T3): test_mcp.py's test_repl_builtins.

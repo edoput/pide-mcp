@@ -1,0 +1,49 @@
+repl_truncate — evaluation
+===========================
+
+status: planned (2026-07-09)
+focal tool: repl_truncate (plans/repl_truncate)
+
+task
+----
+abandon a wrong line of attack partway and keep the good prefix —
+the multi-step undo.
+
+setup
+-----
+harness pre-creates repl "detour" with 6 steps: statement + 2 sound
+steps, then 3 steps down a dead end (they succeeded but lead
+nowhere).
+
+prompt
+------
+"In the proof attempt named 'detour', the approach taken after the
+first two proof steps is a dead end. Roll the attempt back so only
+the statement and those first two steps remain, confirm what's left,
+then stop — don't try to finish the proof."
+
+success
+-------
+exactly 3 steps remain (statement + 2); the confirmation is read
+from the server, not assumed.
+
+signals
+-------
+- index arithmetic under the DIVERGENT convention (plans/
+  repl_truncate T1: negatives here are n+idx-1, unlike state/fork's
+  n+1+idx): "keep the first three" can be expressed positively or
+  negatively — if the agent goes negative, does it land right first
+  call? a miss here and a hit in evals/repl_state together prove the
+  inconsistency costs real mistakes.
+- direction confusion: does the agent express "keep 3" vs "drop 3"
+  correctly per the schema's semantics?
+- destructiveHint respect: does the agent double-check (repl_show)
+  before cutting? (good caution, worth counting, not required.)
+
+reflection
+----------
+- this evaluation exists largely to force the indexing-unification
+  spec question with evidence (see evals/repl_edit reflection).
+- if keep-vs-drop confusion appears, the parameter name/description
+  must state its direction in words ("keep the first N" or "remove
+  the last N"), not just a number's semantics.

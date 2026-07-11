@@ -1,0 +1,46 @@
+repl_unpin — evaluation
+========================
+
+status: planned (2026-07-09)
+focal tool: repl_unpin (plans/repl_unpin)
+
+task
+----
+retire a waypoint that is no longer needed — and understand the
+dependency guard when it is still in use.
+
+setup
+-----
+harness pre-creates: pin "base"; repl "user1" initialized from
+pin@base (still alive); pin "orphan" with no dependents.
+
+prompt
+------
+"Clean up the saved points in this session: remove any saved
+point that nothing depends on anymore. If one can't be removed,
+explain to me why and what would have to happen first."
+
+success
+-------
+"orphan" unpinned; "base" still present; the explanation correctly
+names user1 as the dependent and remove-the-dependent as the path.
+
+signals
+-------
+- the dependency guard error (has_pin_dep): does its text let the
+  agent produce the correct explanation without extra probing? the
+  prompt's "explain why" clause turns the error text's quality into
+  the graded output.
+- the subtle case from plans/repl_unpin T2 (a REBASED dependent
+  still blocks, because matching is on origin specs) is not staged
+  here — one guard comprehension test at a time; stage it in a
+  round-2 variant if round 1 passes.
+- discovery: how does the agent enumerate pins? (repl_list output
+  should carry them — if the agent cannot find what pins exist,
+  that's a repl_list output finding.)
+
+reflection
+----------
+- if the explanation is wrong or vague, rewrite the guard error to
+  name the depending repl(s) explicitly — the error is the
+  documentation here.

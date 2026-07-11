@@ -1,0 +1,107 @@
+repl_replay — implementation plan
+==================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("replay" => keys
+["repl"]). companion to repl_edit and repl_rebase — the only way to
+turn stale steps back into verified ones.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_replay
+description   "Re-execute all stale steps in a REPL, in order, each
+              from its predecessor's state. Steps become stale after
+              repl_edit (the tail) or repl_rebase (all of them).
+              Non-stale steps are not re-run. If a replayed step
+              fails, replay stops there with the error. Replies with
+              the number of steps replayed."
+              (source: mcp_server.py replay :343, plus replay_repl
+              semantics ir.ML:561.)
+inputSchema   {"type": "object",
+               "properties": {"repl": {"type": "string"}},
+               "required": ["repl"]}
+annotations   {"readOnlyHint": false, "idempotentHint": true,
+               "openWorldHint": false}
+              (idempotent in the success case: a second replay finds
+              zero stale steps and is a no-op — "Replayed 0 stale
+              steps". honest and useful for retry-happy clients.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_replay", {"repl": "T"}
+  scala builtin row backend.ir("replay", [(repl, T)])
+  ml dispatcher     "replay" -> Ir.replay (get "repl")
+  engine            ir.ML:574 — with_claim Op_Replay; replay_repl
+                    re-executes stale steps under the repl's timeout;
+                    out "Replayed N stale steps"
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  no stale steps -> ok no-op ("Replayed 0"), not an error.
+    test [ml unit]: fresh repl with 2 clean steps; replay -> ok, 0.
+T2  replay executes exactly the stale suffix and re-chains states:
+    after edit 0 + replay, the states are consistent (state -1 equals
+    a from-scratch run of the same script).
+    test [ml unit]: 3 steps, edit 0 (equivalent text variant),
+    replay; state -1 output equals the pre-edit state -1 output.
+T3  failure mid-replay surfaces as a status error and leaves the
+    already-replayed prefix clean, the failing-and-after steps stale
+    — the repl is inspectable, not corrupted.
+    test [ml unit]: make step 1 fail under the edited step 0 (edit
+    changes a definition the later step needs); replay -> error;
+    show -> step 1 (and 2) still [stale]; the repl still answers
+    show/state.
+    NOTE while implementing: verify what with_claim does with the
+    partially-replayed repl on error — if the exception discards r',
+    ALL steps stay stale (also fine); pin the actual behavior in the
+    test and the description.
+T4  replay respects the repl's timeout per step (exec_text carries
+    #timeout r).
+    test [ml unit]: timeout 1, make a stale step that sleeps ->
+    replay errors with timeout.
+T5  full chain.
+    test [e2e]: edit-then-replay loop after repl_edit (shared
+    fixture with plans/repl_edit T5).
+
+done when
+---------
+
+- T1..T5 green (T3's actual behavior pinned); tools/list shows the
+  row above.
+
+status: done (2026-07-09). T1..T5 green at all layers. FIXTURE NOTE:
+genuinely stale steps (as opposed to repl_edit's tail, which this
+server's auto_replay=true default always replays immediately -- see
+plans/repl_edit T3) cannot be produced via repl_edit here either, so
+all ml-unit fixtures instead use repl_rebase: Ir.pin increments its
+version on every call regardless of content change, so re-pinning a
+REPL that a second REPL was init'd "pin@..." from is enough to make
+Ir.rebase see a version mismatch and mark the dependent's steps stale
+with no replay -- exactly what repl_replay needs to test against, and
+requires no plans/repl_pin or plans/repl_rebase builtins to exist yet
+(the ml-unit layer calls MCP_Repl.run "pin"/"rebase" directly against
+the dispatcher). T3's open NOTE is now resolved: with_claim releases the
+ORIGINAL claimed snapshot on exception (ir.ML:305), discarding whatever
+replay_repl had rebuilt before raising, so a failed replay leaves ALL
+previously-stale steps stale afterward -- not "prefix clean, tail
+stale" as the plan's phrasing suggested, but a clean all-or-nothing
+revert (verified empirically: 4 steps stale before a failing replay, 4
+steps stale after). T4 confirmed replay honors the repl's CURRENT
+timeout value, not whatever was in effect when the now-stale step first
+succeeded. ml unit: mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy; scala unit +
+tools/call wiring: isabelle mcp_test; no new bridge test (no async
+dimension of its own); e2e: mcp/test/test_mcp.py's test_repl_builtins
+covers T1 (the idempotent no-op case) against a live server; T2-T4's
+genuinely-stale-step scenarios need repl_pin/repl_rebase as builtins,
+not yet implemented, so they stay at the ml-unit layer for now.

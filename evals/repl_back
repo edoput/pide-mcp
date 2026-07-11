@@ -1,0 +1,48 @@
+repl_back — evaluation
+=======================
+
+status: planned (2026-07-09)
+focal tool: repl_back (plans/repl_back)
+
+task
+----
+single-step undo after a step that SUCCEEDED but was a mistake —
+the one situation back is for. the evaluation deliberately also
+manufactures the situation back is NOT for (a failed step), because
+the failure mode is calling back there.
+
+setup
+-----
+fresh server; the agent builds its own repl (this evaluation rides
+on a live proof, unlike most).
+
+prompt
+------
+"Prove `lemma \"set (remdups xs) = set xs\"` step by step. Partway
+through, deliberately take one proof step that succeeds but that you
+then decide against (e.g. an unfolding you don't want) — undo just
+that one step and continue to the finished proof. Tell me when you
+perform the undo."
+
+success
+-------
+the undo removed exactly the announced successful step; the proof
+completes; at no point was an undo issued right after a FAILED step.
+
+signals
+-------
+- the trap, from the other side of evals/repl_step: if any step
+  fails naturally during the run, does the agent reach for back?
+  (failed steps change nothing; back would eat a good step.) count
+  jointly with repl_step's runs — this is the project's clearest
+  description-vs-instinct conflict.
+- does the agent use back, or truncate with a count of one? both
+  correct; heavy preference for truncate would mark back as sugar
+  nobody needs (existence-ladder note, not a failure).
+
+reflection
+----------
+- same escalation as evals/repl_step: if the trap fires, move the
+  warning into the failed-step error reply.
+- if back is never chosen over truncate across the run set, spec
+  question: drop repl_back and teach truncate ~1 in descriptions.

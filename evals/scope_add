@@ -1,0 +1,53 @@
+scope_add — evaluation
+=======================
+
+status: planned (2026-07-09)
+focal tool: scope_add (plans/scope_add)
+
+task
+----
+make a set of library theories visible in the resource listing for
+sustained work. this is the evaluation most likely to challenge its
+tool's EXISTENCE: reads are never scope-limited (the one scope
+rule), so an agent can complete almost any task without ever
+touching scope. the question is whether scope earns its keep for
+agents at all, or only for human clients browsing resources.
+
+setup
+-----
+fresh server, default scope (working set only).
+
+prompt
+------
+"We'll be working with HOL-Library's algebra theories for a while.
+Set things up so that the full list of those theories is visible to
+you as browsable resources — I want you to be able to enumerate them
+without searching from scratch each time — then show me what became
+visible."
+
+success
+-------
+a pattern covering the target theories was added; the shown listing
+reflects it (match count, resources/list agreement).
+
+signals
+-------
+- honest measurement requires this prompt's directness (it nearly
+  names the mechanism) — because round-0 probing showed/will show
+  whether agents EVER touch scope unprompted in the other 29
+  evaluations. record scope-tool usage across ALL eval transcripts;
+  that aggregate, not this eval alone, answers the existence
+  question.
+- pattern shape: what wildcard syntax does the agent try first, and
+  does a zero-match pattern (accepted, count 0 — pinned in the
+  plan) read as success-with-nothing or confuse it?
+- does the agent verify via resources/list or scope_show after
+  adding? (the S1 agreement, seen from the client side.)
+
+reflection
+----------
+- if the cross-eval aggregate shows scope untouched everywhere and
+  agents thriving via search_sources + direct reads, the spec
+  question is honest: scope tools may be for human clients and
+  resource-UI ergonomics, not agents — keep them but stop expecting
+  agent usage, and say so in the spec's scope section.

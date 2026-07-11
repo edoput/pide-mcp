@@ -1,0 +1,120 @@
+repl_merge — implementation plan
+=================================
+
+status: planned (2026-07-09)
+
+references I1..I5 (plans/repl_list). pass-through ("merge" => keys
+["repl"]). the most intricate engine semantics in wave 1 (two claims,
+child text inlined into the parent as ONE step, child deleted), so
+the plan is mostly about pinning those semantics in tests.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          repl_merge
+description   "Merge a sub-REPL back into its parent: the sub-REPL's
+              steps are concatenated into a single block of Isar text
+              and re-executed in the parent at the fork point — as a
+              replacement of the step at that index, or appended if
+              the fork was at the parent's latest state. On success
+              the sub-REPL is deleted. Fails if the argument is not a
+              sub-REPL, if either REPL is busy, or if the re-executed
+              text fails in the parent (both REPLs then survive
+              unchanged)."
+              (source: mcp_server.py merge :355, expanded from
+              ir.ML:666 — the one-step inlining and the failure
+              behavior are worth the words.)
+inputSchema   {"type": "object",
+               "properties": {"repl": {"type": "string"}},
+               "required": ["repl"]}
+              (the argument is the CHILD; the parent is implied by
+              its origin.)
+annotations   {"readOnlyHint": false, "idempotentHint": false,
+               "destructiveHint": true, "openWorldHint": false}
+              (destructive: deletes the child; can replace a parent
+              step.)
+outputSchema  none.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "repl_merge", {"repl": "T2"}
+  scala builtin row backend.ir("merge", [(repl, T2)])
+  ml dispatcher     "merge" -> Ir.merge (get "repl")
+  engine            ir.ML:666 — claim child, find From_REPL parent,
+                    claim parent, edit_repl at fork idx (or step_repl
+                    if fork was at the tip), delete child; out
+                    "Merged \"T2\" into \"T\" (replaced step N |
+                    appended as new step)"
+
+implementation steps
+--------------------
+
+1. [this tool] builtin row + handler; errors -> isError.
+2. tests; rebuild per rules.
+
+assumptions and how to test them
+--------------------------------
+
+T1  both merge shapes: fork at the tip -> "appended as new step";
+    fork at an interior state -> "replaced step N" and the parent's
+    subsequent steps go stale (edit_repl semantics).
+    test [ml unit]: (a) fork at -1, 2 child steps, merge -> parent
+    has n+1 steps, last step's text is the two lines joined;
+    (b) fork at 1 of a 3-step parent, child steps, merge -> parent
+    step 1 replaced, steps 2.. stale (auto_replay off).
+T2  non-sub-repl -> error, child claim released (the Exn.capture /
+    release dance).
+    test [ml unit]: merge a From_Theory repl -> error "is not a
+    sub-REPL"; the repl still steps afterwards.
+T3  failure in the parent leaves both repls alive and unchanged
+    (parent claim released via with_claim, child released in the
+    Exn handler).
+    test [ml unit]: child whose text fails against the CURRENT parent
+    state (parent stepped past the fork point so the inlined text no
+    longer applies); merge -> error; repls still lists both; both
+    still step.
+T4  busy parent blocks merge without corrupting the child.
+    test [bridge]: slow step on parent, merge child concurrently ->
+    error "busy"; after join, merge -> ok.
+T5  full chain.
+    test [e2e]: fork, prove a lemma in the fork, merge, repl_text of
+    the parent contains the fork's script (with plans/repl_fork T6).
+
+done when
+---------
+
+- T1..T5 green; tools/list shows the row above.
+
+status: done (2026-07-09). T1..T4 green at all layers; T5 (e2e)
+deferred -- it needs repl_fork as a builtin to create the sub-REPL
+through tools/call, and repl_fork/repl_init_from_source are not yet
+implemented (they were skipped over in the wave-1 ordering, same as
+repl_pin/repl_rebase being skipped for repl_replay's T2-T4), so it
+stays ml-unit-only for now, same deferral pattern as repl_replay.
+T1(a) confirmed the tip-fork shape: forking at -1 (the parent's latest
+state) and merging appends the child's concatenated steps as ONE new
+step, message "appended as new step", repl_text shows the joined
+lines. T1(b) confirmed the interior-fork shape: forking at an
+in-between state and merging replaces the step at the fork index,
+message "replaced step N" -- the plan's staleness assertion for
+subsequent steps was dropped for the same reason as repl_edit/repl_show:
+this server's auto_replay=true default replays the tail immediately,
+so no [stale] mark is ever observable, only the message and step count
+are asserted. T2 confirmed merging a non-sub-REPL (From_Theory origin)
+errors "is not a sub-REPL" and leaves the REPL fully usable. T3
+confirmed atomicity on a parent-side failure: forking, then editing the
+parent's pre-fork step to change the goal underneath the child's
+already-recorded tactic, then merging -- the merge fails and BOTH REPLs
+survive completely unchanged (parent keeps its edited step, child keeps
+its own step and still steps normally afterward), matching with_claim's
+release-the-original-snapshot behavior already established for
+repl_replay T3. T4 (bridge) confirmed a busy parent blocks merge
+without corrupting the child: concurrent merge while the parent is mid
+sleep-step errors "busy", nothing is deleted, and once the parent frees
+up the merge succeeds and the child disappears from repl_list. ml unit:
+MCP_Repl_Tests.thy (using MCP_Repl.run "fork" directly against the
+dispatcher, no repl_fork builtin needed at this layer, same technique
+repl_replay used for pin/rebase); scala unit + tools/call wiring:
+isabelle mcp_test; bridge (T4): isabelle mcp_test -b -d mcp/Tools; e2e
+(T5): deferred, see above.

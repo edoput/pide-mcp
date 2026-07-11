@@ -1,0 +1,19 @@
+An extensible Model Context Protocol for Isabelle
+=================================================
+
+The first goal of this project is to build an Isabelle tool that allows agents to interact with Isabelle.
+
+The second goal of this project is to make the MCP server extensible by writing Isabelle/ML tools and registering them with the server. As an example consider the following theory. It imports the MCP commands mcp_tool and mcp_resource to register a tool called find_consts and a resource called sessions.
+
+```
+theory BasicTool
+imports MCP
+begin
+
+mcp_tool find_consts "..."
+
+mcp_resource sessions "..."
+end
+```
+
+These tools are then available to the agent.

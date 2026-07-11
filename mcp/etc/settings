@@ -2,6 +2,9 @@
 
 ISABELLE_MCP_HOME="$COMPONENT"
 
+# the production jar, for other components (mcp_test) to compile against
+ISABELLE_MCP_JAR="$COMPONENT/lib/mcp.jar"
+
 ISABELLE_SCALA_SOURCES="$ISABELLE_SCALA_SOURCES:$COMPONENT/src"
 
 ISABELLE_TOOLS="$ISABELLE_TOOLS:$COMPONENT/lib"

@@ -1,0 +1,50 @@
+check_theory — evaluation
+==========================
+
+status: planned (2026-07-09)
+focal tool: check_theory (plans/check_theory)
+
+task
+----
+the edit-verify loop: after changing a file ON DISK, get a fresh
+verdict — trusting neither stale prover state nor one's own edit.
+this is the flagship wave-2 workflow (plans/check_theory T4).
+
+setup
+-----
+Eval_Fix.thy on disk with one failing proof; harness pre-loads it,
+so the failure diagnostics are already in the session. the agent
+has file-editing ability (claude code default).
+
+prompt
+------
+"Eval_Fix.thy has a failing proof. Fix the file — edit it on disk —
+and then demonstrate that the fixed file genuinely checks: I want
+the prover's fresh verdict on the file as it now stands, not a
+stale result from before your edit."
+
+success
+-------
+file fixed on disk; a check that PURGES-AND-RELOADS ran after the
+edit (transcript shows check_theory post-edit); the reported verdict
+matches an independent harness re-check.
+
+signals
+-------
+- the staleness trap: does the agent re-read old diagnostics (or
+  call load_theory again and get whatever its reload semantics are)
+  instead of check_theory? the check/load distinction — check
+  guarantees fresh-from-disk — must be legible from the two
+  descriptions side by side.
+- edit-then-check discipline: any "it should work now" without a
+  post-edit check is a straight fail on the task's explicit demand.
+- warning policy (the plan's step-1 pin): if the fix leaves
+  warnings, does the agent report "checks, with warnings" correctly?
+
+reflection
+----------
+- if agents use load_theory for re-checking and it happens to work,
+  consider whether two tools are needed at all (existence ladder):
+  maybe load_theory with always-fresh semantics is the better
+  abstraction and check_theory folds into it. this evaluation is
+  the main evidence source for that spec question.

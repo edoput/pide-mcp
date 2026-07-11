@@ -1,0 +1,56 @@
+goto_definition — evaluation
+=============================
+
+status: planned (2026-07-09)
+focal tool: goto_definition (plans/goto_definition)
+
+task
+----
+resolve a name AT A USE SITE — the ctrl-click: when the question is
+"this occurrence, in this file, what does it refer to", which
+name-based lookup cannot answer (shadowing, overloading, locality).
+
+setup
+-----
+mcp/test/Nav_Test.thy (the plan's fixture) loaded via load_theory:
+it uses `rev`, defines and uses a local constant, has a `::nat`
+annotation and an ML antiquotation.
+
+prompt
+------
+"In the loaded theory Nav_Test: on the line `<the line using the
+local constant>`, there's an identifier that might be the library's
+or might be defined in this very file — I can't tell by name alone.
+Determine, for that exact occurrence, where it actually resolves
+to: which file and line define it. Then do the same for the `rev`
+in the same theory."
+
+success
+-------
+local constant resolved to Nav_Test.thy's own definition line; rev
+resolved into List.thy — both from entity markup (positions the
+agent could not have guessed).
+
+signals
+-------
+- the find/goto split: the prompt is engineered so name-based lookup
+  is explicitly insufficient ("can't tell by name alone") — does
+  the agent pick the POSITION tool, or run find_definition anyway
+  and hand-wave the disambiguation? tool-pair legibility is the
+  finding.
+- locator: pattern vs offset — and when the pattern's first
+  occurrence isn't the intended one, does the agent notice from the
+  reply and refine? (shared shape with repl_init_from_source; grade
+  jointly.)
+- the loaded-theory precondition: on an unloaded theory the error
+  directs to load_theory/find_definition (the description's
+  contract) — if the agent hits it, does the redirect work in one
+  step?
+
+reflection
+----------
+- if find_definition + hand-waving wins every run, goto's agent-
+  facing value is marginal (humans with cursors are its real
+  client) — existence-ladder note, coupled to the scope finding
+  pattern: some tools may be for humans, and the spec should say
+  which.

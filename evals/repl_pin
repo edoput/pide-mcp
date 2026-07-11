@@ -1,0 +1,51 @@
+repl_pin — evaluation
+======================
+
+status: planned (2026-07-09)
+focal tool: repl_pin (plans/repl_pin)
+
+task
+----
+name a reached proof state as a reusable waypoint and actually reuse
+it — pins are only worth their guards if agents build on them.
+
+setup
+-----
+fresh server.
+
+prompt
+------
+"I need two lemmas about the same setup: prove
+`lemma \"finite (set xs)\"` and `lemma \"set xs ⊆ set (xs @ ys)\"`
+in Isabelle/HOL. Both need the same context (Main). Establish the
+shared context once, save that point under a name so it can be
+reused, and build each proof on top of the saved point. Give me
+both Isar texts."
+
+success
+-------
+a pin exists; both proofs were started FROM the pin (init with
+pin@NAME, per plans/repl_init T6's spec form); both texts verified.
+
+signals
+-------
+- the pin@NAME spec form: it lives in repl_init's description, the
+  pin's creation in repl_pin's — does the agent connect the two
+  halves of the feature across two descriptions? failure to connect
+  is a documentation-topology finding, not an agent defect.
+- mid-proof pin refusal (engine: refuses inside an open proof): if
+  the agent tries to pin mid-proof, does the error steer it to
+  finish/back out first?
+- or does the agent skip pinning entirely and just init twice with
+  ["Main"]? for THIS task that is nearly as good (Main is cheap) —
+  expected; the pin's real value needs an expensive context. if
+  round 1 shows the workaround, re-run with a costlier shared setup
+  (several loaded theories) before concluding anything.
+
+reflection
+----------
+- if the two-description split defeats agents, cross-reference
+  explicitly: repl_pin's description should show the reuse call
+  ("then: repl_init with theories [\"pin@NAME\"]").
+- feeds plans/repl_pin T3's pinned question only observationally
+  (which mutations agents EXPECT to invalidate a pin).
