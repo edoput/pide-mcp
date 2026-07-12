@@ -1,10 +1,9 @@
 list_sessions — implementation plan
 ====================================
 
-status: planned (2026-07-09; updated 2026-07-11 — D1's implementation
-moved to the wave umbrella plan, plans/session_structure, which also
-covers the resource widening and load_theory resolution halves of the
-wave; this plan keeps the tool row + its tests)
+status: implemented (2026-07-12) — D1's infrastructure shared with
+plans/session_structure (wave umbrella); tool implemented in backend +
+builtin registry, with tests passing
 
 wave 3: library discovery, scala-side over the startup
 Sessions.load_structure + deps object (spec "exploring the library

@@ -1,7 +1,8 @@
 search_sources — implementation plan
 =====================================
 
-status: planned (2026-07-09; updated 2026-07-11)
+status: implemented (2026-07-12) — tool implemented in backend +
+builtin registry, with tests passing
 
 wave 3, scala-side; references D1 (plans/list_sessions, implemented
 in plans/session_structure — its theory_map provides the session ->

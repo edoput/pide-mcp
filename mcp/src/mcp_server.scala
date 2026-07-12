@@ -641,7 +641,7 @@ object MCP_Server {
         "image are queryable now; others require load_theory (slow) or " +
         "a heap rebuild + server restart (fast, coarse). Follow with " +
         "list_theories to see what is in a session.",
-      input_schema = input_schema,
+      input_schema = JSON.Object("type" -> "object", "properties" -> JSON.Object.empty, "required" -> List()),
       annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
       handler_fn = Some((backend, _) => backend.list_sessions_info()))
 

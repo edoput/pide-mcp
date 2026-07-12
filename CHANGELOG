@@ -4,6 +4,28 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-12 (wave 3 complete: library discovery tools)
+-----------------------------------------------------
+
+- implemented plans/session_structure (umbrella infrastructure): Sessions.load_structure +
+  deps object at startup, resolve_theory tier resolution (image/loaded/filesystem),
+  filesystem-tier resource widening for isabelle://theory/{name}, session-qualified
+  load_theory resolution without explicit master_dir. startup cost is ~seconds on
+  the bundled distribution, amortized over the session lifetime.
+- implemented plans/list_sessions: enumerate all known Isabelle sessions with metadata
+  (name, chapter, heap status, theory count); mark base image; entries backed by the
+  startup structure + Store heap lookups.
+- implemented plans/list_theories: show theories in a given session, resolved from
+  deps; error handling for unknown session with discovery pointer.
+- implemented plans/search_sources: substring search across all session theories,
+  backed by theory_map lookup; empty pattern returns no results (use list_theories
+  for full enumeration).
+- all three tools are pure Scala functions over immutable wave-3 infrastructure,
+  zero prover side effects, fast enumeration (no checks, no file I/O). tests verify
+  dispatch + schema correctness; backend stubs in Fake_Backend. spec refinement:
+  not_yet_backed_uri disappears — every structure-known theory now answers with tier
+  honesty (filesystem theories get "not checked" diagnostic + nudge to load_theory).
+
 2026-07-11 (loaded tier = live document nodes; wave-3 plan)
 ------------------------------------------------------------
 

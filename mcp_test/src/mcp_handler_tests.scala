@@ -391,6 +391,72 @@ class MCP_Tools_Tests extends MCP_Suite {
     assert_no_error(reply)
   }
 
+  /* wave 3 (plans/session_structure, plans/list_sessions, plans/list_theories,
+     plans/search_sources): library discovery tools. these three bypass the
+     MCP.ir bridge entirely, like wave 2, and call backend.list_sessions_info(),
+     backend.list_theories_info(), backend.search_sources() directly. */
+
+  test("tools/list includes list_sessions with readOnlyHint and idempotentHint") {
+    val row = tool_row("list_sessions")
+    assertEquals(required_args(row), List())
+    assertEquals(annotation(row, "readOnlyHint"), true)
+    assertEquals(annotation(row, "idempotentHint"), true)
+    assertEquals(annotation(row, "openWorldHint"), false)
+  }
+
+  test("tools/call list_sessions reaches backend.list_sessions_info, not backend.ir") {
+    val backend = new Fake_Backend
+    val reply = call_tool("list_sessions", JSON.Object(), backend)
+    assert(backend.last_ir.isEmpty, "list_sessions must not touch the ir bridge")
+    assert_no_error(reply)
+    val content = get_list(reply, "result", "content")
+    assert(content.nonEmpty, "result content should not be empty")
+    val text = get_string(content.head, "text")
+    assert(text.contains("HOL"), "list_sessions should mention HOL session")
+  }
+
+  test("tools/list includes list_theories with a required session parameter") {
+    val row = tool_row("list_theories")
+    assertEquals(required_args(row), List("session"))
+    assertEquals(property_type(row, "session"), "string")
+    assertEquals(annotation(row, "readOnlyHint"), true)
+    assertEquals(annotation(row, "idempotentHint"), true)
+    assertEquals(annotation(row, "openWorldHint"), false)
+  }
+
+  test("tools/call list_theories reaches backend.list_theories_info, not backend.ir") {
+    val backend = new Fake_Backend
+    val reply = call_tool("list_theories", JSON.Object("session" -> "HOL"), backend)
+    assert(backend.last_ir.isEmpty, "list_theories must not touch the ir bridge")
+    assert_no_error(reply)
+    val content = get_list(reply, "result", "content")
+    assert(content.nonEmpty, "result content should not be empty")
+    val text = get_string(content.head, "text")
+    assert(text.contains("HOL.Main") || text.contains("Main"),
+      "list_theories output should contain theory names")
+  }
+
+  test("tools/list includes search_sources with a required pattern parameter") {
+    val row = tool_row("search_sources")
+    assertEquals(required_args(row), List("pattern"))
+    assertEquals(property_type(row, "pattern"), "string")
+    assertEquals(annotation(row, "readOnlyHint"), true)
+    assertEquals(annotation(row, "idempotentHint"), true)
+    assertEquals(annotation(row, "openWorldHint"), false)
+  }
+
+  test("tools/call search_sources reaches backend.search_sources, not backend.ir") {
+    val backend = new Fake_Backend
+    val reply = call_tool("search_sources", JSON.Object("pattern" -> "Main"), backend)
+    assert(backend.last_ir.isEmpty, "search_sources must not touch the ir bridge")
+    assert_no_error(reply)
+    val content = get_list(reply, "result", "content")
+    assert(content.nonEmpty, "result content should not be empty")
+    val text = get_string(content.head, "text")
+    assert(text.contains("Main") || text.nonEmpty,
+      "search_sources should return results or be non-empty")
+  }
+
   test("tools/list: a colliding ML tool does not shadow the repl_list builtin") {
     val backend = new Fake_Backend
     backend.extra_ml_tools =
