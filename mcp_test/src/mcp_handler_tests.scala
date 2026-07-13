@@ -589,7 +589,7 @@ class MCP_Tools_Tests extends MCP_Suite {
     class Recording_Backend extends Fake_Backend {
       var seen: Option[(String, List[(String, String)])] = None
       override def ml_run(name: String, args: List[(String, String)],
-          designation: String): MCP_Session.Result = {
+          designation: String, bundles: List[String]): MCP_Session.Result = {
         seen = Some((name, args))
         MCP_Session.Ok("ok")
       }
@@ -623,6 +623,132 @@ class MCP_Tools_Tests extends MCP_Suite {
     val lines = split_lines(out_stream.toString(StandardCharsets.UTF_8)).filter(_.nonEmpty)
     assert(lines.exists(_.contains("notifications/tools/list_changed")),
       "missing list_changed notification: " + lines.toString)
+  }
+}
+
+
+/* tool_scope_show/set/include (plans/tool_scope): the connection's tool
+   scope, distinct from the phase-2 RESOURCE scope (scope_add/...) --
+   resource scope filters resource LISTING, tool scope picks WHICH
+   CONTEXT DEFINES THE TOOL SET. every test here shares ONE Handler via
+   rpc_on/call_tool_on (the ordinary rpc()/call_tool() helpers build a
+   fresh, stateless Handler per call, wrong for scope persistence). */
+
+class MCP_Tool_Scope_Tests extends MCP_Suite {
+  test("tools/list includes tool_scope_show/set/include with their schemas") {
+    val show = tool_row("tool_scope_show")
+    assertEquals(annotation(show, "readOnlyHint"), true)
+    val set = tool_row("tool_scope_set")
+    assertEquals(required_args(set), Nil: List[JSON.T])
+    assertEquals(property_type(set, "theory"), "string")
+    assertEquals(property_type(set, "repl"), "string")
+    val include = tool_row("tool_scope_include")
+    assertEquals(required_args(include), List("bundles"))
+  }
+
+  test("tool_scope_show default: theory MCP_Tools, no bundles") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    val text = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(text.contains("default"), text)
+    assert(text.contains("Included bundles: none"), text)
+    assert(text.contains("MCP_Tools.shout"), text)
+  }
+
+  test("tool_scope_show: a scope that goes stale after tool_scope_set reports BROKEN, not a silent zero") {
+    val backend = new Fake_Backend
+    val handler = new MCP_Server.Handler(backend)
+    assert_no_error(call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "R")))
+    /* the repl existed at set-time (check_designation passed) but is
+       gone by the time tool_scope_show reads it -- e.g. repl_remove'd
+       in between; ml_tools would silently degrade this to zero rows
+       (MCP.tools' crash-safety floor), so tool_scope_show must check
+       separately and say the scope itself is broken. */
+    backend.known_repls = Set.empty
+    val text = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(text.contains("BROKEN"), text)
+    assert(text.contains("R"), text)
+  }
+
+  test("tool_scope_set: theory and repl are mutually exclusive") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    val reply =
+      call_tool_on(handler, "tool_scope_set",
+        JSON.Object("theory" -> "Main", "repl" -> "R"))
+    val msg = assert_is_error(reply)
+    assert(msg.contains("Main") && msg.contains("R"), msg)
+  }
+
+  test("tool_scope_set: neither theory nor repl is an error") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    assert_is_error(call_tool_on(handler, "tool_scope_set", JSON.Object()))
+  }
+
+  test("tool_scope_set{theory}: unknown theory is an isError naming it, state unchanged") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    val msg = assert_is_error(call_tool_on(handler, "tool_scope_set",
+      JSON.Object("theory" -> "No_Such_Theory")))
+    assert(msg.contains("No_Such_Theory"), msg)
+    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(show.contains("default"), "scope should be unchanged: " + show)
+  }
+
+  test("tool_scope_set{theory}: normalizes an alternate spelling to the canonical key") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    assert_no_error(call_tool_on(handler, "tool_scope_set", JSON.Object("theory" -> "HOL.Main")))
+    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(show.contains("theory \"Main\""), show)
+  }
+
+  test("tool_scope_set{repl}: unknown repl is an isError naming it, state unchanged") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    val msg = assert_is_error(call_tool_on(handler, "tool_scope_set",
+      JSON.Object("repl" -> "NOPE")))
+    assert(msg.contains("NOPE"), msg)
+    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(show.contains("default"), "scope should be unchanged: " + show)
+  }
+
+  test("tool_scope_set{repl}: known repl round-trips through tool_scope_show") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    assert_no_error(call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "R")))
+    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(show.contains("repl \"R\""), show)
+  }
+
+  test("tool_scope_include: unknown bundle is an isError naming it, state unchanged") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    val msg = assert_is_error(call_tool_on(handler, "tool_scope_include",
+      JSON.Object("bundles" -> List("No_Such_Bundle"))))
+    assert(msg.contains("No_Such_Bundle"), msg)
+    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(show.contains("Included bundles: none"), "bundles should be unchanged: " + show)
+  }
+
+  test("tool_scope_include: known bundle round-trips through tool_scope_show") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    assert_no_error(call_tool_on(handler, "tool_scope_include",
+      JSON.Object("bundles" -> List("scoped_tools"))))
+    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(show.contains("Included bundles: scoped_tools"), show)
+  }
+
+  test("tool_scope_set clears bundles included by a prior tool_scope_include") {
+    val handler = new MCP_Server.Handler(new Fake_Backend)
+    assert_no_error(call_tool_on(handler, "tool_scope_include",
+      JSON.Object("bundles" -> List("scoped_tools"))))
+    assert_no_error(call_tool_on(handler, "tool_scope_set", JSON.Object("theory" -> "Main")))
+    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(show.contains("Included bundles: none"), "tool_scope_set should clear bundles: " + show)
+  }
+
+  test("a colliding ML tool does not shadow tool_scope_show") {
+    val backend = new Fake_Backend
+    backend.extra_ml_tools =
+      List(MCP_Session.Tool_Row("Some_Theory.tool_scope_show", "not the real one",
+        "string_fun", Nil))
+    val row = tool_row("tool_scope_show", backend)
+    assert(get_string(row, "description").contains("Show the current tool scope"),
+      get_string(row, "description"))
   }
 }
 

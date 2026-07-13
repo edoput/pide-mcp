@@ -715,6 +715,21 @@ object MCP_Server {
       load_theory_tool, unload_theory_tool, check_theory_tool,
       list_sessions_tool, list_theories_tool, search_sources_tool)
 
+  /* tool_scope_show/set/include (plans/tool_scope, spec "the agent
+     context"): unlike every other builtin above, these read and mutate
+     the CONNECTION's tool scope, not backend/prover state -- Builtin_Tool
+     values are shared, static (module-level), so their handler_fn cannot
+     close over a Handler's per-connection var directly. Handler builds
+     its OWN three Builtin_Tool values (tool_scope_builtins below),
+     closing over its own scope_designation/scope_bundles, and dispatch
+     looks them up ALONGSIDE the static list (builtins ++
+     tool_scope_builtins), which also reserves their names for
+     exposure() purposes. */
+  def format_designation(designation: String): String =
+    if (designation == "") "default (the base registry theory)"
+    else if (designation.startsWith("repl:")) "repl " + quote(designation.stripPrefix("repl:"))
+    else "theory " + quote(designation)
+
   /* json arguments object -> the named yxml pair list MCP.ir expects;
      a string property becomes one pair, a json array of strings becomes
      repeated (key, element) pairs IN ARRAY ORDER (repl_init.theories);
@@ -812,6 +827,132 @@ object MCP_Server {
      unit-testable against any MCP_Backend */
 
   class Handler(backend: MCP_Backend) {
+    /* the AGENT CONTEXT (spec): "" = default (the -T theory); a bare
+       canonical theory long name; "repl:ID". Connection state, like the
+       phase-2 resource scope -- reset per connection, not persisted. */
+    private var scope_designation: String = ""
+    private var scope_bundles: List[String] = Nil
+
+    private val tool_scope_show_tool: Builtin_Tool =
+      Builtin_Tool(
+        name = "tool_scope_show",
+        fname = "",
+        description =
+          "Show the current tool scope: which theory or repl context " +
+          "the server reads user-registered tools from, the bundles " +
+          "included in it, and the tools registered and active there. " +
+          "Tools are context entities in Isabelle: a tool is visible " +
+          "when the scope's context (transitively) imports its " +
+          "registering theory and it has not been deactivated " +
+          "(declare [[mcp_tools del: ...]] or a closed bundle).",
+        input_schema = JSON.Object("type" -> "object"),
+        annotations = read_only_annotations,
+        handler_fn = Some((backend, _) => {
+          val bundles_text =
+            if (scope_bundles.isEmpty) "none" else scope_bundles.mkString(", ")
+          /* a designation valid at tool_scope_set time can go stale
+             later (e.g. its repl was removed): ml_tools degrades a bad
+             designation to an empty list (MCP.tools' crash-safety
+             floor), indistinguishable from a merely-empty scope unless
+             checked separately -- so check first and say so, rather
+             than silently reporting "0 active tools". */
+          backend.check_designation(scope_designation, scope_bundles) match {
+            case MCP_Session.Error(msg) =>
+              MCP_Session.Ok(
+                "Tool scope: " + format_designation(scope_designation) + " (BROKEN: " + msg +
+                  ") -- use tool_scope_set to point it at a valid theory or repl\n" +
+                "Included bundles: " + bundles_text)
+            case MCP_Session.Ok(_) =>
+              val rows = backend.ml_tools(scope_designation, scope_bundles)
+              MCP_Session.Ok(
+                "Tool scope: " + format_designation(scope_designation) + "\n" +
+                "Included bundles: " + bundles_text + "\n" +
+                "Active tools (" + rows.length + "): " +
+                (if (rows.isEmpty) "none" else rows.map(_.name).mkString(", ")))
+          }
+        }))
+
+    private val tool_scope_set_tool: Builtin_Tool =
+      Builtin_Tool(
+        name = "tool_scope_set",
+        fname = "",
+        description =
+          "Set the tool scope to a theory (by name, any known spelling) " +
+          "or to a repl (by id). Repl scope serves the tools of the " +
+          "repl's CURRENT state -- use this after registering a tool " +
+          "via repl_step to call it without persisting the theory " +
+          "first. Replaces the designation AND clears any bundles " +
+          "included with tool_scope_include (fresh context, no " +
+          "accumulated soup).",
+        input_schema =
+          JSON.Object(
+            "type" -> "object",
+            "properties" -> JSON.Object(
+              "theory" -> JSON.Object("type" -> "string"),
+              "repl" -> JSON.Object("type" -> "string")),
+            "required" -> List()),
+        annotations = mutating_annotations,
+        handler_fn = Some((backend, args) => {
+          val theory = args.collectFirst({ case ("theory", v) => v })
+          val repl = args.collectFirst({ case ("repl", v) => v })
+          (theory, repl) match {
+            case (Some(t), Some(r)) =>
+              MCP_Session.Error(
+                "tool_scope_set: theory and repl are mutually exclusive (got theory=" +
+                  quote(t) + ", repl=" + quote(r) + ")")
+            case (None, None) =>
+              MCP_Session.Error("tool_scope_set: exactly one of theory or repl is required")
+            case (Some(t), None) =>
+              backend.resolve_context_theory(t) match {
+                case Right(canonical) =>
+                  scope_designation = canonical
+                  scope_bundles = Nil
+                  MCP_Session.Ok("Tool scope set to theory " + quote(canonical))
+                case Left(msg) => MCP_Session.Error(msg)
+              }
+            case (None, Some(r)) =>
+              val candidate = "repl:" + r
+              backend.check_designation(candidate) match {
+                case MCP_Session.Ok(_) =>
+                  scope_designation = candidate
+                  scope_bundles = Nil
+                  MCP_Session.Ok("Tool scope set to repl " + quote(r))
+                case error @ MCP_Session.Error(_) => error
+              }
+          }
+        }))
+
+    private val tool_scope_include_tool: Builtin_Tool =
+      Builtin_Tool(
+        name = "tool_scope_include",
+        fname = "",
+        description =
+          "Open bundles in the current tool scope (like Isar's `context " +
+          "includes`): tools activated by those bundles become servable " +
+          "until the scope changes (tool_scope_set). Bundle names " +
+          "resolve in the scope's context.",
+        input_schema =
+          JSON.Object(
+            "type" -> "object",
+            "properties" -> JSON.Object(
+              "bundles" ->
+                JSON.Object("type" -> "array", "items" -> JSON.Object("type" -> "string"))),
+            "required" -> List("bundles")),
+        annotations = mutating_annotations,
+        handler_fn = Some((backend, args) => {
+          val bundles = args.collect({ case ("bundles", v) => v })
+          val candidate = scope_bundles ++ bundles
+          backend.check_designation(scope_designation, candidate) match {
+            case MCP_Session.Ok(_) =>
+              scope_bundles = candidate
+              MCP_Session.Ok("Included bundle(s): " + bundles.mkString(", "))
+            case error @ MCP_Session.Error(_) => error
+          }
+        }))
+
+    private val tool_scope_builtins: List[Builtin_Tool] =
+      List(tool_scope_show_tool, tool_scope_set_tool, tool_scope_include_tool)
+
     def handle(json: JSON.T): Option[JSON.Object.T] = {
       val id = JSON.value(json, "id").orNull
       val has_id = JSON.value(json, "id").isDefined
@@ -839,15 +980,16 @@ object MCP_Server {
         case Some("ping") => Some(RPC.response(id, JSON.Object()))
 
         case Some("tools/list") =>
-          val builtin_names = builtins.map(_.name).toSet
+          val all_builtins = builtins ++ tool_scope_builtins
+          val builtin_names = all_builtins.map(_.name).toSet
           val builtin_json =
-            builtins.map(t =>
+            all_builtins.map(t =>
               JSON.Object(
                 "name" -> t.name,
                 "description" -> t.description,
                 "inputSchema" -> t.input_schema,
                 "annotations" -> t.annotations))
-          val rows = backend.ml_tools()
+          val rows = backend.ml_tools(scope_designation, scope_bundles)
           val exposed = exposure(rows.map(_.name), builtin_names)
           val ml_json =
             rows.flatMap(row =>
@@ -870,7 +1012,7 @@ object MCP_Server {
                   case Some(obj: JSON.Object.T @unchecked) => obj
                   case _ => JSON.Object()
                 }
-              builtins.find(_.name == name) match {
+              (builtins ++ tool_scope_builtins).find(_.name == name) match {
                 case Some(tool) =>
                   tool.handler(backend, json_args(arguments)) match {
                     case MCP_Session.Ok(text) =>
@@ -885,10 +1027,11 @@ object MCP_Server {
                      go over as named pairs; missing/ill-typed values are
                      the ML validator's job (typed errors name the arg). */
                   val exposed =
-                    exposure(backend.ml_tools().map(_.name), builtins.map(_.name).toSet)
+                    exposure(backend.ml_tools(scope_designation, scope_bundles).map(_.name),
+                      (builtins ++ tool_scope_builtins).map(_.name).toSet)
                   val internal =
                     exposed.collectFirst({ case (i, x) if x == name => i }).getOrElse(name)
-                  backend.ml_run(internal, json_args(arguments)) match {
+                  backend.ml_run(internal, json_args(arguments), scope_designation, scope_bundles) match {
                     case MCP_Session.Ok(text) =>
                       Some(RPC.response(id, text_result(text)))
                     case MCP_Session.Error(message) =>

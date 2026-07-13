@@ -16,6 +16,15 @@ itself. Must run here, right after the \<open>ML_file "ir.ML"\<close> above, so 
 captured theory value already includes Ir -- see Ir.the_self_theory.\<close>
 ML \<open>Ir.set_self_theory \<^theory>\<close>
 
+text \<open>Install the repl branch of MCP_Protocol.designated_context
+(plans/tool_scope): the base layer (MCP_Tools.thy) has no notion of
+repls, so it exposes a hook that only the HOL layer -- the one that
+loads \<^ML_structure>\<open>Ir\<close> -- can fill in. \<^ML>\<open>Ir.context_of\<close> reaches
+the repl's LATEST state (mirroring \<^ML>\<open>Ir.find_theorems\<close>'s own
+\<open>last_state (the_repl id)\<close>), so a designation tracks repl_step calls
+made after \<open>tool_scope_set\<close> without re-resolving anything scala-side.\<close>
+ML \<open>MCP_Protocol.set_repl_context_hook Ir.context_of\<close>
+
 section \<open>Output routing and dispatcher\<close>
 
 text \<open>Ir reports through \<^ML>\<open>writeln\<close> and friends. Each request runs in a

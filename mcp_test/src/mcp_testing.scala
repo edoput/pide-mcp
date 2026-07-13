@@ -43,12 +43,12 @@ class Fake_Backend extends MCP_Backend {
      Handler's exposure() shortens "MCP_Tools.shout" to "shout" and
      resolves tools/call back to the internal name; the params expand
      into the mvp {input :: string} schema */
-  def ml_tools(designation: String): List[MCP_Session.Tool_Row] =
+  def ml_tools(designation: String, bundles: List[String]): List[MCP_Session.Tool_Row] =
     MCP_Session.Tool_Row("MCP_Tools.shout", "uppercase the input", "string_fun",
       List(MCP_Session.Tool_Param("input", "string", true, None, "tool input"))) ::
     extra_ml_tools
   def ml_run(name: String, args: List[(String, String)],
-      designation: String): MCP_Session.Result =
+      designation: String, bundles: List[String]): MCP_Session.Result =
     if (name == "MCP_Tools.shout") {
       args.collectFirst({ case ("input", v) => v }) match {
         case Some(input) => MCP_Session.Ok(input.toUpperCase)
@@ -56,6 +56,28 @@ class Fake_Backend extends MCP_Backend {
       }
     }
     else MCP_Session.Error("Unknown MCP tool " + quote(name))
+  /* tool_scope_set{repl}/tool_scope_include: settable fake repl/bundle
+     universes, good enough for the scala-unit "unknown X errors naming
+     X, connection state unchanged" tests -- real repl/bundle resolution
+     is a bridge-suite claim (MCP_Protocol.designated_context). Bare
+     theory designations are always ok here: the theory case is
+     validated scala-side via resolve_context_theory before it ever
+     reaches check_designation (plans/tool_scope). */
+  var known_repls: Set[String] = Set("R")
+  var known_bundles: Set[String] = Set("scoped_tools")
+  def check_designation(designation: String, bundles: List[String]): MCP_Session.Result = {
+    val repl_ok =
+      if (designation.startsWith("repl:")) known_repls(designation.stripPrefix("repl:")) else true
+    if (!repl_ok) {
+      MCP_Session.Error("Unknown repl " + quote(designation.stripPrefix("repl:")))
+    }
+    else {
+      bundles.find(!known_bundles(_)) match {
+        case Some(bad) => MCP_Session.Error("Unknown bundle " + quote(bad))
+        case None => MCP_Session.Ok("")
+      }
+    }
+  }
   def ir(fname: String, args: List[(String, String)]): MCP_Session.Result = {
     last_ir = Some((fname, args))
     (fname, args) match {
@@ -253,6 +275,22 @@ abstract class MCP_Suite extends munit.FunSuite {
   def notification(method: String, params: JSON.Object.T = null,
       backend: MCP_Backend = new Fake_Backend): Option[JSON.T] =
     new MCP_Server.Handler(backend).handle(request(None, method, Option(params)))
+
+  /* like rpc(), but against a HANDLER THE CALLER OWNS instead of a fresh
+     one per call -- every other request in this suite is stateless from
+     Handler's point of view, but tool_scope_* (plans/tool_scope) mutates
+     per-connection state (the designation, included bundles), so tests
+     of it need calls to land on the SAME Handler instance. */
+  def rpc_on(handler: MCP_Server.Handler, method: String, params: JSON.Object.T = null)
+      (implicit loc: munit.Location): JSON.T = {
+    next_id += 1
+    handler.handle(request(Some(next_id), method, Option(params)))
+      .getOrElse(fail("expected a reply to " + method))
+  }
+
+  def call_tool_on(handler: MCP_Server.Handler, name: String, args: JSON.Object.T)
+      (implicit loc: munit.Location): JSON.T =
+    rpc_on(handler, "tools/call", JSON.Object("name" -> name, "arguments" -> args))
 
 
   /* tools/list rows */

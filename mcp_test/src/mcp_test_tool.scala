@@ -18,6 +18,7 @@ object MCP_Test {
     List(
       classOf[MCP_Protocol_Tests],
       classOf[MCP_Tools_Tests],
+      classOf[MCP_Tool_Scope_Tests],
       classOf[MCP_Resources_Tests],
       classOf[MCP_Codec_Tests])
 
@@ -27,6 +28,7 @@ object MCP_Test {
     List(
       classOf[MCP_Heap_Fixture_Tests],
       classOf[MCP_Registry_Heap_Tests],
+      classOf[MCP_Tool_Scope_Heap_Tests],
       classOf[MCP_Bridge_Tests],
       classOf[MCP_Ir_Bridge_Tests])
 

@@ -17,14 +17,20 @@ import isabelle._
    MCP_Session is the real implementation, tests substitute MCP_Test.Fake_Backend */
 trait MCP_Backend {
   /* rows carry full internal names, form tags and declared params,
-     relative to the DESIGNATION: a canonical theory long name, "" = the
-     ML side's default (the MCP_Tools theory) -- plans/mcp_tool_registry;
-     the repl form arrives with plans/tool_scope. Exposed (client-visible)
-     names are computed scala-side (MCP_Server.exposure) and params expand
-     into JSON schemas at tools/list time. */
-  def ml_tools(designation: String = ""): List[MCP_Session.Tool_Row]
+     relative to the DESIGNATION: "" = the ML side's default (the
+     MCP_Tools theory); a bare canonical theory long name selects that
+     theory; "repl:ID" selects a repl's current context
+     (plans/mcp_tool_registry, plans/tool_scope). bundles names are
+     folded onto the resolved context via Bundle.includes_cmd
+     (tool_scope_include) before the tool set is read. Exposed
+     (client-visible) names are computed scala-side (MCP_Server.exposure)
+     and params expand into JSON schemas at tools/list time. */
+  def ml_tools(designation: String = "", bundles: List[String] = Nil): List[MCP_Session.Tool_Row]
   def ml_run(name: String, args: List[(String, String)],
-    designation: String = ""): MCP_Session.Result
+    designation: String = "", bundles: List[String] = Nil): MCP_Session.Result
+  /* validate a candidate designation without committing to it
+     (tool_scope_set/tool_scope_include, plans/tool_scope) */
+  def check_designation(designation: String, bundles: List[String] = Nil): MCP_Session.Result
   /* registration events (MCP.tools_changed / MCP.resources_changed from
      MCP_Tool.declare): the server loop registers a callback that pushes
      the matching notifications/{tools,resources}/list_changed line to the
@@ -95,6 +101,13 @@ object MCP_Session {
   def encode_args(args: List[(String, String)]): String = {
     import XML.Encode._
     YXML.string_of_body(list(pair(string, string))(args))
+  }
+
+  /* bundle names for tool_scope_include, mirroring MCP_Protocol.decode_names
+     (a flat yxml list of strings, distinct from encode_args's pairs) */
+  def encode_names(names: List[String]): String = {
+    import XML.Encode._
+    YXML.string_of_body(list(string)(names))
   }
 
   def decode_args(body: XML.Body): List[(String, String)] = {
@@ -207,6 +220,8 @@ class MCP_Session private(
     Synchronized(List.empty[Promise[List[(String, String)]]])
   private val read_resource_promises =
     Synchronized(Map.empty[String, Promise[MCP_Session.Result]])
+  private val check_designation_promises =
+    Synchronized(Map.empty[String, Promise[MCP_Session.Result]])
 
   private object Handler extends Session.Protocol_Handler {
     private def tools_result(msg: Prover.Protocol_Output): Boolean = {
@@ -283,6 +298,20 @@ class MCP_Session private(
         case None => false
       }
 
+    private def check_designation_result(msg: Prover.Protocol_Output): Boolean =
+      Properties.get(msg.properties, "id") match {
+        case Some(id) =>
+          val result =
+            if (Properties.get(msg.properties, "status") == Some("ok")) MCP_Session.Ok(msg.text)
+            else MCP_Session.Error(msg.text)
+          check_designation_promises.change { promises =>
+            promises.get(id).foreach(_.fulfill(result))
+            promises - id
+          }
+          true
+        case None => false
+      }
+
     private def tools_changed(msg: Prover.Protocol_Output): Boolean = {
       changed_handler.value("tools")
       true
@@ -302,7 +331,8 @@ class MCP_Session private(
         "MCP.run_tool_result" -> run_tool_result,
         "MCP.ir_result" -> ir_result,
         "MCP.resources_result" -> named_resources_result,
-        "MCP.read_resource_result" -> read_resource_result)
+        "MCP.read_resource_result" -> read_resource_result,
+        "MCP.check_designation_result" -> check_designation_result)
   }
 
   session.init_protocol_handler(Handler)
@@ -310,10 +340,11 @@ class MCP_Session private(
   override def set_changed_handler(handler: String => Unit): Unit =
     changed_handler.change(_ => handler)
 
-  def ml_tools(designation: String = ""): List[MCP_Session.Tool_Row] = {
+  def ml_tools(designation: String = "", bundles: List[String] = Nil): List[MCP_Session.Tool_Row] = {
     val promise = Future.promise[List[MCP_Session.Tool_Row]]
     tools_promises.change(promise :: _)
-    session.protocol_command_raw("MCP.tools", List(Bytes(designation)))
+    session.protocol_command_raw("MCP.tools",
+      List(Bytes(designation), Bytes(MCP_Session.encode_names(bundles))))
     promise.join
   }
 
@@ -325,13 +356,28 @@ class MCP_Session private(
   }
 
   def ml_run(name: String, args: List[(String, String)],
-      designation: String = ""): MCP_Session.Result = {
+      designation: String = "", bundles: List[String] = Nil): MCP_Session.Result = {
     val id = UUID.random().toString
     val promise = Future.promise[MCP_Session.Result]
     run_promises.change(_ + (id -> promise))
     session.protocol_command_raw("MCP.run_tool",
-      List(Bytes(id), Bytes(designation), Bytes(name),
+      List(Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles)), Bytes(name),
         Bytes(MCP_Session.encode_args(args))))
+    promise.join
+  }
+
+  /* tool_scope_set/tool_scope_include (plans/tool_scope): validate a
+     candidate repl/bundle designation against the prover BEFORE the
+     Handler commits it as connection state, mirroring ml_run's own
+     resolution phase but discarding the context -- only ok/error and
+     the message matter here. The theory case needs no round trip
+     (resolve_context_theory already validates + normalizes it). */
+  def check_designation(designation: String, bundles: List[String] = Nil): MCP_Session.Result = {
+    val id = UUID.random().toString
+    val promise = Future.promise[MCP_Session.Result]
+    check_designation_promises.change(_ + (id -> promise))
+    session.protocol_command_raw("MCP.check_designation",
+      List(Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles))))
     promise.join
   }
 

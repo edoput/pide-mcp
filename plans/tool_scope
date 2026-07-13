@@ -1,11 +1,51 @@
 tool_scope_show / tool_scope_set / tool_scope_include — implementation plan
 ============================================================================
 
-status: planned (2026-07-11; spec: phase 3 "visibility" section).
-UNBLOCKED 2026-07-13: the mcp_tool_registry dependency below landed
-2026-07-11 (see plans/mcp_tool_registry, status DONE), including the
-scala exposure function this plan was going to introduce — tool_scope
-now extends it rather than adding it.
+status: DONE (implemented 2026-07-13; spec: phase 3 "visibility"
+section, "agent context on the scala side" implementation-order item
+flipped; see CHANGELOG same date). UNBLOCKED 2026-07-13: the
+mcp_tool_registry dependency below landed 2026-07-11 (see
+plans/mcp_tool_registry, status DONE), including the scala exposure
+function this plan was going to introduce — tool_scope now extends it
+rather than adding it.
+
+deviations from the plan as written:
+- the wire designation stays a BARE theory name (no "theory:" prefix)
+  instead of growing one, so the already-shipped mcp_tool_registry
+  bridge tests and callers (bare-name designations) needed no changes;
+  only "repl:ID" is new syntax, disambiguated by its own prefix. the
+  scala/ml sections below describe the AS-BUILT bare-name shape, not
+  the "theory:NAME" | "repl:ID" pair originally sketched.
+- builtin coverage (tool_scope_show reflecting builtin activation) is
+  DEFERRED until plans/builtin_activation lands (still status:
+  planned) — decided explicitly with the user rather than bundling
+  both plans into one pass. the tool_scope_show description below is
+  trimmed accordingly (no "covers BUILTINS too" sentence); re-add it
+  when builtin_activation ships (A6 there).
+- exposure names via Name_Space extern (dropping the bespoke
+  sanitize_name/exposure collision function) is DEFERRED — an
+  internal refactor orthogonal to tool_scope's user-visible surface;
+  mcp_server.scala's existing exposure() is unchanged and still the
+  contract its tests pin.
+- one new ir.ML export was needed and added: \<^ML>\<open>Ir.context_of\<close>
+  (string -> Proof.context), the generic "get a repl's current
+  context" accessor IR's signature didn't have (only purpose-specific
+  ones like find_theorems/sledgehammer existed). Confirmed additive
+  and in-precedent (ir.ML already carries MCP-only hooks
+  set_self_theory/sledgehammer_state from its very first commit) and
+  confirmed with the user before editing the shared/symlinked file.
+- found and fixed live during implementation (not anticipated by the
+  plan): MCP.tools/MCP.resources' designation resolution was NOT
+  crash-safe like MCP.run_tool's — an unknown/stale designation raised
+  an uncaught ML exception inside the protocol command, leaving the
+  Scala-side promise unfulfilled FOREVER (a hang, confirmed by a
+  bridge test before the fix). Fixed with
+  MCP_Protocol.designated_context_safe (degrade to the empty list/
+  NONE) plus a new MCP.check_designation command so
+  tool_scope_set/include can validate a candidate repl/bundle
+  designation against the prover BEFORE committing it as connection
+  state (the theory case validates for free via
+  resolve_context_theory).
 
 one family file for the three builtins (they share all state and
 plumbing). depends on plans/mcp_tool_registry (the designation
@@ -23,14 +63,19 @@ advertised metadata (builtin table rows)
 name          tool_scope_show
 description   "Show the current tool scope: which theory or repl
               context the server reads user-registered tools from,
-              and the tools registered and active there. Tools are
-              context entities in Isabelle: a tool is visible when
-              the scope's context (transitively) imports its
-              registering theory and it has not been deactivated
-              (declare [[mcp_tools del: ...]] / closed bundle).
-              Since 2026-07-13 this covers BUILTINS too (mirror
-              rows, see plans/builtin_activation): the listing
-              shows their activity in the scope's context."
+              the bundles included in it, and the tools registered
+              and active there. Tools are context entities in
+              Isabelle: a tool is visible when the scope's context
+              (transitively) imports its registering theory and it
+              has not been deactivated (declare [[mcp_tools del:
+              ...]] or a closed bundle)." (as shipped 2026-07-13; the
+              "covers BUILTINS too" sentence sketched below is
+              DEFERRED until plans/builtin_activation lands — decided
+              explicitly with the user rather than bundling both
+              plans into one pass — at which point re-add: "Since
+              <date> this covers BUILTINS too (mirror rows, see
+              plans/builtin_activation): the listing shows their
+              activity in the scope's context.")
 inputSchema   {"type": "object"}
 annotations   {readOnlyHint: true, idempotentHint: true,
                openWorldHint: false}

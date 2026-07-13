@@ -52,6 +52,16 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
       containing = "No_Such_Theory")
   }
 
+  /* plans/tool_scope: probing whether MCP.tools' resolution (unlike
+     MCP.run_tool's, which already catches) is crash-safe against a bad
+     designation -- tools_body has no (status, output) wrapper today, so
+     an uncaught ML exception there could leave the "MCP.tools_result"
+     promise unfulfilled forever instead of erroring gracefully. */
+  test("bridge: ml_tools on an unknown designation does not hang") {
+    val tools = session.ml_tools(designation = "No_Such_Theory")
+    assertEquals(tools, Nil)
+  }
+
   test("bridge: isabelle://session resource reads the loaded theory") {
     val text = expect_ok(session.mcp_resource_read("isabelle://session"))
     assert(text.contains("MCP_Tools"), "session resource missing theory name: " + text)
@@ -602,6 +612,82 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
       val text = repl_listing()
       assert(!text.contains("Par") && !text.contains("Child"),
         "listing still shows Par or Child after removal: " + text)
+    }
+  }
+
+  /* plans/tool_scope: the SELF-EXTENSION HINGE -- a tool registered by
+     the agent itself, mid-session, via repl_step, becomes callable once
+     the connection's tool scope is pointed at that repl. Exercised
+     through MCP_Server.Handler (the JSON-RPC layer), not session.ir
+     directly, since the scope is Handler-owned connection state. */
+  test("tool_scope bridge: a repl-registered tool becomes servable after tool_scope_set{repl}") {
+    /* the mcp_tool command keyword is only active in theories that
+       (transitively) import MCP_Tools -- Main does not, so this repl is
+       rooted in MCP_Repl itself (the session's own base theory) rather
+       than the with_repl default, exactly so the self-extension step
+       below can use the ordinary Isar declaration syntax. */
+    with_repl("ScopeSelf", theories = List("MCP-HOL.MCP_Repl")) {
+      expect_ok(
+        session.ir("step",
+          List("repl" -> "ScopeSelf",
+            "isar_text" -> "mcp_tool scoped_tool = \\<open>String.map Char.toUpper\\<close> (description \\<open>uppercase\\<close>)")),
+        "registering scoped_tool via repl_step")
+
+      val handler = new MCP_Server.Handler(session)
+      assert_no_error(call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "ScopeSelf")))
+
+      val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
+      assert(tools.exists(t => get_string(t, "name") == "scoped_tool"),
+        "scoped_tool missing from tools/list: " + tools.toString)
+
+      val reply = call_tool_on(handler, "scoped_tool", JSON.Object("input" -> "hi"))
+      assert_no_error(reply)
+      assertEquals(result_text(reply), "HI")
+    }
+  }
+
+  /* plans/tool_scope: bundle scoping -- a tool registered inactive
+     (declare [[mcp_tools del: ...]]) is absent from tools/list until
+     tool_scope_include opens the bundle that reactivates it, and absent
+     again after the NEXT tool_scope_set (set replaces the designation
+     AND clears included bundles). */
+  test("tool_scope bridge: tool_scope_include opens a bundle-scoped repl tool; tool_scope_set clears it again") {
+    with_repl("ScopeBundle", theories = List("MCP-HOL.MCP_Repl")) {
+      expect_ok(
+        session.ir("step",
+          List("repl" -> "ScopeBundle",
+            "isar_text" -> "mcp_tool bundle_tool = \\<open>String.map Char.toUpper\\<close> (description \\<open>uppercase\\<close>)")),
+        "registering bundle_tool via repl_step")
+      expect_ok(
+        session.ir("step",
+          List("repl" -> "ScopeBundle", "isar_text" -> "declare [[mcp_tools del: bundle_tool]]")),
+        "deactivating bundle_tool")
+      expect_ok(
+        session.ir("step",
+          List("repl" -> "ScopeBundle",
+            "isar_text" -> "bundle exploration = [[mcp_tools add: bundle_tool]]")),
+        "defining the exploration bundle")
+
+      val handler = new MCP_Server.Handler(session)
+      assert_no_error(
+        call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "ScopeBundle")))
+
+      def tool_names(): List[String] =
+        get_list(rpc_on(handler, "tools/list"), "result", "tools").map(get_string(_, "name"))
+
+      assert(!tool_names().contains("bundle_tool"),
+        "bundle_tool visible before tool_scope_include: " + tool_names())
+
+      assert_no_error(
+        call_tool_on(handler, "tool_scope_include",
+          JSON.Object("bundles" -> List("exploration"))))
+      assert(tool_names().contains("bundle_tool"),
+        "bundle_tool missing after tool_scope_include: " + tool_names())
+
+      assert_no_error(
+        call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "ScopeBundle")))
+      assert(!tool_names().contains("bundle_tool"),
+        "bundle_tool still visible after a re-set cleared the bundles: " + tool_names())
     }
   }
 }

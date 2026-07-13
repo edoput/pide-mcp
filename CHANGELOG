@@ -4,6 +4,59 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-13 (tool_scope: the agent context lands)
+--------------------------------------------------
+
+- milestone (spec phase 3 "visibility", "agent context on the scala
+  side" implementation-order item; plan: plans/tool_scope, status
+  DONE): the three tool_scope_* builtins (show/set/include) give the
+  connection a mutable AGENT CONTEXT — a designation ("" default | a
+  bare canonical theory name | "repl:ID") plus an ordered list of
+  included bundle names, read on every tools/list and tools/call. the
+  self-extension hinge works end to end: a tool registered mid-session
+  via repl_step becomes listed and callable once tool_scope_set{repl}
+  points the connection at that repl (pinned by a bridge test);
+  tool_scope_include opens a bundle (Bundle.includes_cmd, Isar's
+  "context includes") to reactivate a scoped-off tool, and the next
+  tool_scope_set clears it again ("fresh context, no accumulated
+  soup"). mechanics: MCP_Protocol.designated_context grows a repl
+  branch resolved through a hook the HOL layer installs
+  (MCP_Protocol.set_repl_context_hook, filled with the new
+  \<^ML>\<open>Ir.context_of\<close> — additive, in-precedent with ir.ML's
+  existing MCP-only hooks); a second wire argument carries the bundle
+  list. found and fixed live: MCP.tools/MCP.resources' designation
+  resolution was not crash-safe like MCP.run_tool's — an unknown or
+  stale (e.g. a removed repl) designation raised an uncaught ML
+  exception that left the Scala-side "MCP.tools_result" promise
+  unfulfilled forever, confirmed as a real hang by a bridge test
+  before the fix (MCP_Protocol.designated_context_safe degrades to an
+  empty payload instead); a new MCP.check_designation command lets
+  tool_scope_set/include validate a candidate repl/bundle designation
+  against the prover BEFORE committing it as connection state (the
+  theory case validates for free via resolve_context_theory, which
+  also supplies the "normalize before storing" canonical spelling).
+  spec refinement: the wire designation stays a bare theory name
+  (no "theory:" prefix) rather than growing one, so the shipped
+  mcp_tool_registry bridge contract needed no changes; only "repl:ID"
+  is new syntax. DEFERRED (decided explicitly rather than folding
+  both into one pass): tool_scope_show reflecting builtin activation,
+  pending plans/builtin_activation; the Name_Space-extern exposure
+  refactor, an internal simplification orthogonal to this surface.
+  tool_scope_show separately checks the designation (MCP.check_designation)
+  before reading tools, so a scope that went stale after tool_scope_set
+  (e.g. its repl was removed) reports itself BROKEN rather than a
+  silent "0 active tools" (ml_tools' own crash-safety floor would
+  otherwise make the two indistinguishable). all four test layers
+  green: ml unit (MCP-Tools-Tests, plus a new MCP_Tool_Scope_Heap_Tests
+  fresh-process case for the repl-context resolution mid-proof), scala
+  unit (Fake_Backend), bridge (the self-extension hinge and bundle
+  scoping against a live MCP-HOL session), e2e (test_mcp.py 79
+  cases, only the 3 pre-existing/unrelated filesystem-tier failures
+  present, confirmed also present on the unmodified tree via a
+  stash/rebuild/retest bisect) — the stdio JSON-RPC wire arity change
+  (MCP.tools 1→2 args, MCP.run_tool 4→5) is thereby also e2e-covered,
+  not just at the bridge layer.
+
 2026-07-13 (builtin tools join the activation layer)
 ------------------------------------------------------
 

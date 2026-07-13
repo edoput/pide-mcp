@@ -152,7 +152,7 @@ section \<open>Designation\<close>
 
 ML \<open>
 (*"" designates the MCP_Tools theory itself: sees shout, not fixtures*)
-val rows0 = decode_tools (MCP_Protocol.tools_body (MCP_Protocol.designated_context ""));
+val rows0 = decode_tools (MCP_Protocol.tools_body (MCP_Protocol.designated_context "" []));
 \<^assert> (exists (fn (n, _, _) => n = "MCP_Tools.shout") rows0);
 \<^assert> (not (exists (fn (n, _, _) => n = "MCP_Fixture_A.alpha") rows0));
 
@@ -162,12 +162,30 @@ val rows0 = decode_tools (MCP_Protocol.tools_body (MCP_Protocol.designated_conte
   coverage is the bridge suite's job*)
 val tools_name =
   the (find_first (fn n => Long_Name.base_name n = "MCP_Tools") (Thy_Info.get_names ()));
-val rows_t = decode_tools (MCP_Protocol.tools_body (MCP_Protocol.designated_context tools_name));
+val rows_t = decode_tools (MCP_Protocol.tools_body (MCP_Protocol.designated_context tools_name []));
 \<^assert> (rows_t = rows0);
 
 (*unknown designations error with the offending name*)
 \<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
-  MCP_Protocol.designated_context "No_Such_Theory")));
+  MCP_Protocol.designated_context "No_Such_Theory" [])));
+
+(*unknown repl designations error with the offending id, distinct from
+  an unknown theory (no repl support in the base MCP-Tools-Tests image)*)
+val repl_err =
+  (case Exn.capture_body (fn () => MCP_Protocol.designated_context "repl:R1" []) of
+    Exn.Exn exn => Runtime.exn_message exn
+  | Exn.Res _ => "");
+\<^assert> (String.isSubstring "R1" repl_err andalso String.isSubstring "repl" repl_err);
+
+(*bundle includes fold onto the resolved context; an unresolvable bundle
+  name errors naming the bundle, before or after other bundles*)
+\<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
+  MCP_Protocol.designated_context "" ["No_Such_Bundle"])));
+val bundle_err =
+  (case Exn.capture_body (fn () => MCP_Protocol.designated_context "" ["No_Such_Bundle"]) of
+    Exn.Exn exn => Runtime.exn_message exn
+  | Exn.Res _ => "");
+\<^assert> (String.isSubstring "No_Such_Bundle" bundle_err);
 \<close>
 
 section \<open>Resources (exact mirror of tools)\<close>

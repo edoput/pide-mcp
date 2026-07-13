@@ -47,6 +47,7 @@ sig
   val sledgehammer_state : (Proof.state * int) option Synchronized.var
   val sledgehammer_result : string Synchronized.var
   val find_theorems : string -> int -> string -> unit
+  val context_of : string -> Proof.context
   val timeout : string -> int -> unit
   val is_interactive_session : unit -> bool
   val help : unit -> unit
@@ -384,6 +385,11 @@ fun exec_text timeout_secs text st =
 
 fun last_state ({steps, base_state, ...} : repl) =
   case rev steps of [] => base_state | ({post_state, ...} :: _) => post_state;
+
+(* Generic context accessor for MCP integration (mirrors set_self_theory /
+   sledgehammer_state above): exposes a repl's current context without
+   exposing the repl_tab/repl_entry internals themselves. *)
+fun context_of id = Toplevel.context_of (last_state (the_repl id));
 
 fun pretty_state st =
   Pretty.string_of (Pretty.chunks (Toplevel.pretty_state st));

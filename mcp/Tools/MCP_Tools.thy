@@ -919,17 +919,27 @@ section \<open>Protocol payloads\<close>
 
 text \<open>Pure functions, kept apart from the protocol-command wrappers below so
 they can be unit-tested (session MCP-Tools-Tests) without a PIDE context.
-All context-relative now: the DESIGNATION argument (a canonical theory
-long name; "" = this theory, MCP_Tools, the guaranteed-present default)
-picks the context whose registered-AND-active entries are served
-(plans/mcp_tool_registry; the repl designation form arrives with
-plans/tool_scope).\<close>
+All context-relative now: the DESIGNATION argument picks the context
+whose registered-AND-active entries are served (plans/mcp_tool_registry).
+"" = this theory, MCP_Tools, the guaranteed-present default; a bare
+canonical theory long name selects that theory (unchanged, shipped
+contract — kept bare rather than growing a "theory:" prefix, a
+deliberate deviation from the plan's literal wire format so the
+already-shipped bridge tests keep working; see plans/tool_scope,
+"spec refinement"); "repl:ID" selects a repl's current context
+(plans/tool_scope) via a hook the HOL layer installs (this theory has
+no notion of repls). A second argument, bundle_names, is folded onto
+the resolved context via \<^ML>\<open>Bundle.includes_cmd\<close> (Isar's "context
+includes"), left-to-right, first unresolvable name wins.\<close>
 
 ML \<open>
 signature MCP_PROTOCOL =
 sig
-  val designated_context: string -> Proof.context
+  val set_repl_context_hook: (string -> Proof.context) -> unit
+  val designated_context: string -> string list -> Proof.context
+  val designated_context_safe: string -> string list -> Proof.context option
   val decode_args: string -> (string * string) list
+  val decode_names: string -> string list
   val tools_body: Proof.context -> XML.body
   val theories_body: unit -> XML.body
   val run_tool: Proof.context -> string -> (string * string) list -> string * string
@@ -948,16 +958,57 @@ fun default_theory () =
     SOME thy => thy
   | NONE => Thy_Info.get_theory "MCP_Tools");
 
-fun designated_context "" = Proof_Context.init_global (default_theory ())
-  | designated_context name =
-      (case try Thy_Info.get_theory name of
-        SOME thy => Proof_Context.init_global thy
-      | NONE => error ("Unknown theory " ^ quote name ^ " in MCP designation"));
+(*installed by MCP_Repl.thy (the HOL layer, which owns the repl
+  registry); NONE = no repl support in this session (e.g. the plain
+  MCP-Tools test image) -- repl designations then fail with a message
+  saying so, rather than a missing-hook internal error.*)
+val repl_context_hook : (string -> Proof.context) option Synchronized.var =
+  Synchronized.var "MCP_Protocol.repl_context_hook" NONE;
+
+fun set_repl_context_hook f = Synchronized.change repl_context_hook (K (SOME f));
+
+fun repl_context id =
+  (case Synchronized.value repl_context_hook of
+    SOME f => f id
+  | NONE =>
+      error ("Unknown repl " ^ quote id ^
+        " in MCP designation (no repl support in this session)"));
+
+fun resolve_designation "" = Proof_Context.init_global (default_theory ())
+  | resolve_designation designation =
+      (case try (unprefix "repl:") designation of
+        SOME id => repl_context id
+      | NONE =>
+          (case try Thy_Info.get_theory designation of
+            SOME thy => Proof_Context.init_global thy
+          | NONE => error ("Unknown theory " ^ quote designation ^ " in MCP designation")));
+
+fun designated_context designation bundle_names =
+  fold (fn name => fn ctxt =>
+      Bundle.includes_cmd [((true, Position.none), (name, Position.none))] ctxt
+        handle ERROR msg => error (msg ^ " (bundle " ^ quote name ^ " in MCP designation)"))
+    bundle_names (resolve_designation designation);
+
+(*crash-safe variant for wire commands with no (status, output) shape of
+  their own (tools_body/resources_body, unlike run_tool/read_resource):
+  a stale or bad designation (e.g. a repl removed after tool_scope_set)
+  must not leave the client's tools/list request unanswered -- degrade
+  to NONE (the caller serves the empty-payload floor) rather than
+  letting the exception escape the protocol command uncaught, which
+  would leave the promise on the Scala side unfulfilled forever.*)
+fun designated_context_safe designation bundle_names =
+  (case Exn.capture_body (fn () => designated_context designation bundle_names) of
+    Exn.Res ctxt => SOME ctxt
+  | Exn.Exn exn => if Exn.is_interrupt exn then Exn.reraise exn else NONE);
 
 (*named args cross as one yxml chunk holding an association list — the
   same encoding as MCP.ir's arguments (MCP_Session.encode_args)*)
 fun decode_args yxml =
   let open XML.Decode in list (pair string string) (YXML.parse_body yxml) end;
+
+(*bundle names cross the same way, as a flat yxml list of strings*)
+fun decode_names yxml =
+  let open XML.Decode in list string (YXML.parse_body yxml) end;
 
 (*rows are (full internal name, description, form tag, params);
   Isabelle/Scala computes the exposed (shortened, sanitized) names —
@@ -1026,9 +1077,12 @@ section \<open>Protocol commands for Isabelle/Scala\<close>
 ML \<open>
 val _ =
   Protocol_Command.define "MCP.tools"
-    (fn [designation] =>
+    (fn [designation, bundles_yxml] =>
       Output.protocol_message [Markup.function "MCP.tools_result"]
-        [MCP_Protocol.tools_body (MCP_Protocol.designated_context designation)]);
+        [(case MCP_Protocol.designated_context_safe designation
+            (MCP_Protocol.decode_names bundles_yxml) of
+           SOME ctxt => MCP_Protocol.tools_body ctxt
+         | NONE => [])]);
 
 val _ =
   Protocol_Command.define "MCP.theories"
@@ -1038,10 +1092,12 @@ val _ =
 
 val _ =
   Protocol_Command.define "MCP.run_tool"
-    (fn [id, designation, name, args_yxml] =>
+    (fn [id, designation, bundles_yxml, name, args_yxml] =>
       let
         val (status, output) =
-          (case Exn.capture_body (fn () => MCP_Protocol.designated_context designation) of
+          (case Exn.capture_body (fn () =>
+              MCP_Protocol.designated_context designation
+                (MCP_Protocol.decode_names bundles_yxml)) of
             Exn.Res ctxt => MCP_Protocol.run_tool ctxt name (MCP_Protocol.decode_args args_yxml)
           | Exn.Exn exn =>
               if Exn.is_interrupt exn then Exn.reraise exn
@@ -1051,19 +1107,51 @@ val _ =
           [Markup.function "MCP.run_tool_result", ("id", id), ("status", status)]
           [[XML.Text output]]
       end);
+\<close>
 
+text \<open>tool_scope_set/tool_scope_include (plans/tool_scope) validate a
+candidate designation BEFORE committing it as connection state ("unknown
+theory/repl/bundle in scope calls -> isError, connection state
+unchanged"). The theory case validates scala-side for free (via
+resolve_context_theory, the same normalization that must run before
+storing anyway); the repl and bundle cases need the prover, hence this
+command -- it mirrors run_tool's own resolution phase, discarding the
+context (only success/failure and the message matter here).\<close>
+
+ML \<open>
+val _ =
+  Protocol_Command.define "MCP.check_designation"
+    (fn [id, designation, bundles_yxml] =>
+      let
+        val (status, output) =
+          (case Exn.capture_body (fn () =>
+              MCP_Protocol.designated_context designation (MCP_Protocol.decode_names bundles_yxml)) of
+            Exn.Res _ => ("ok", "")
+          | Exn.Exn exn =>
+              if Exn.is_interrupt exn then Exn.reraise exn
+              else ("error", Runtime.exn_message exn));
+      in
+        Output.protocol_message
+          [Markup.function "MCP.check_designation_result", ("id", id), ("status", status)]
+          [[XML.Text output]]
+      end);
+\<close>
+
+ML \<open>
 val _ =
   Protocol_Command.define "MCP.resources"
     (fn [designation] =>
       Output.protocol_message [Markup.function "MCP.resources_result"]
-        [MCP_Protocol.resources_body (MCP_Protocol.designated_context designation)]);
+        [(case MCP_Protocol.designated_context_safe designation [] of
+           SOME ctxt => MCP_Protocol.resources_body ctxt
+         | NONE => [])]);
 
 val _ =
   Protocol_Command.define "MCP.read_resource"
     (fn [id, designation, name] =>
       let
         val (status, output) =
-          (case Exn.capture_body (fn () => MCP_Protocol.designated_context designation) of
+          (case Exn.capture_body (fn () => MCP_Protocol.designated_context designation []) of
             Exn.Res ctxt => MCP_Protocol.read_resource ctxt name
           | Exn.Exn exn =>
               if Exn.is_interrupt exn then Exn.reraise exn

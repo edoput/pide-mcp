@@ -2316,11 +2316,38 @@ implementation order
       attribute, duplicate-declare error), scala unit incl. exposure,
       bridge designation + heap-survival suites, test_mcp.py 58/58
       unchanged. plan: plans/mcp_tool_registry.
-- [ ] agent context on the scala side: designation state,
-      tool_scope_show/set/include builtins, tools/list + tools/call
-      against the designation; exposure names via Name_Space extern
-      (drop the bespoke collision function; keep its tests as the
-      contract).
+- [x] agent context on the scala side (done 2026-07-13): Handler-owned
+      connection state (designation: "" default | bare canonical theory
+      name | "repl:ID"; included bundle names, cleared on every
+      tool_scope_set); tool_scope_show/set/include builtins;
+      tools/list + tools/call read the designation and bundles.
+      ml: MCP_Protocol.designated_context grows the repl branch (a
+      hook MCP_Repl.thy installs as Ir.context_of, itself
+      last_state(the_repl id) |> Toplevel.context_of, the same shape
+      Ir.find_theorems already relies on) and folds bundle names via
+      Bundle.includes_cmd; MCP.tools/MCP.resources wrapped
+      crash-safe (designated_context_safe, degrading to the empty
+      list on a stale/bad designation -- found live via a bridge
+      test: the unwrapped call hung the "MCP.tools_result" promise
+      forever) mirroring MCP.run_tool's existing (status, output)
+      shape; new MCP.check_designation command validates a candidate
+      repl/bundle designation before tool_scope_set/include commit it
+      (the theory case validates for free via resolve_context_theory,
+      which also supplies the "normalize before storing" spelling
+      rule). SPEC REFINEMENT: the wire designation stays a BARE
+      theory name (no "theory:" prefix) rather than growing one --
+      the mcp_tool_registry wire contract already shipped bare names
+      and tests against it, so only "repl:ID" is new, disambiguated
+      by its own prefix. one new ir.ML export, \<^ML>\<open>Ir.context_of\<close>
+      (additive, mirrors the existing set_self_theory/
+      sledgehammer_state MCP-integration hooks in the same file).
+      exposure names via Name_Space extern (drop the bespoke collision
+      function; keep its tests as the contract) is DEFERRED -- an
+      internal refactor, not part of tool_scope's user-visible
+      surface; the bespoke exposure() function is unchanged. builtin
+      coverage (tool_scope_show listing builtin activity) is likewise
+      DEFERRED to plans/builtin_activation landing (composes either
+      order; A6 there). plan: plans/tool_scope.
 - [x] params clause + format compiler + type-directed quoting +
       MCP_Combinators; wire param serialization over MCP.tools and
       schema expansion scala-side (form tags reduce to annotation
