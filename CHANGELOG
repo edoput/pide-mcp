@@ -4,6 +4,26 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-13 (spec/plans sync; distribution README)
+--------------------------------------------------
+
+- housekeeping: the spec's implementation-order item for wave-3
+  session-structure discovery is flipped to [x] (the close-out commit
+  had updated CHANGELOG/plans/tests but not the spec), with an honest
+  status note on the "library discovery" test block: scala-unit
+  schema/dispatch/shape coverage landed, the enumerated tier/glob
+  cases stay open. plan headers refreshed where dependencies have
+  since landed: tool_scope (registry pivot DONE -> unblocked),
+  scope_add (D1 theory universe exists), find_definition (reuse the
+  context-selector machinery find_theorems' promotion implemented).
+- milestone: the repo-root README is now a user-facing distribution
+  document — component registration (isabelle components -u), heap
+  pre-build, verifying local theories (plain-directory master_dir
+  route vs ROOT-file -d route, incl. the -d-replaces-default gotcha),
+  MCP client configuration (claude mcp add / .mcp.json), and the
+  mcp_tool/mcp_resource extension surface with the corrected quoted
+  syntax.
+
 2026-07-12 (find_theorems context promotion: implemented)
 -----------------------------------------------------------
 

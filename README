@@ -1,19 +1,160 @@
-An extensible Model Context Protocol for Isabelle
-=================================================
+An extensible Model Context Protocol server for Isabelle
+=========================================================
 
-The first goal of this project is to build an Isabelle tool that allows agents to interact with Isabelle.
+`isabelle mcp_server` lets an AI agent drive the Isabelle proof
+assistant over the Model Context Protocol (MCP): step through Isar
+proofs in server-side repls, run sledgehammer and find_theorems, load
+and verify theory files from disk, and explore the session library —
+all against one long-running prover session, so the agent never pays
+Isabelle's startup cost twice.
 
-The second goal of this project is to make the MCP server extensible by writing Isabelle/ML tools and registering them with the server. As an example consider the following theory. It imports the MCP commands mcp_tool and mcp_resource to register a tool called find_consts and a resource called sessions.
+The server is also extensible from inside the logic: any theory can
+register new MCP tools and resources with the `mcp_tool` /
+`mcp_resource` commands (see "Extending the server" below), and they
+appear to the agent next to the builtins.
 
-```
-theory BasicTool
-imports MCP
-begin
+Requirements
+------------
 
-mcp_tool find_consts "..."
+- Isabelle2025-2. This repository bundles a Linux distribution at
+  `Isabelle2025-2_linux/Isabelle2025-2/bin/isabelle`; a standard
+  install works the same. Below, `isabelle` means whichever executable
+  you use — give your MCP client the absolute path if it is not on
+  PATH.
+- Python 3 (only for the optional smoke test).
 
-mcp_resource sessions "..."
-end
-```
+Installation
+------------
 
-These tools are then available to the agent.
+1. Clone this repository.
+
+2. Register the `mcp/` component in user-space (once per user/machine):
+
+       isabelle components -u /path/to/isabelle-mcp/mcp
+
+3. Pre-build the proving session so the first agent connection does
+   not wait for a full HOL build (the server builds missing heaps
+   itself, but HOL from scratch takes a while):
+
+       isabelle build -b -d /path/to/isabelle-mcp/mcp/Tools MCP-HOL
+
+4. (Optional) smoke-test the installation end to end:
+
+       python3 mcp/test/test_mcp.py
+
+   and, if you also registered the `mcp_test/` component
+   (`isabelle components -u /path/to/isabelle-mcp/mcp_test`), run the
+   unit suites with `isabelle mcp_test` (add `-b` for the slower
+   bridge tests against a live session).
+
+Running the server
+------------------
+
+    isabelle mcp_server -s MCP-HOL
+
+speaks newline-delimited JSON-RPC 2.0 (MCP) on stdin/stdout and logs
+progress to stderr; it exits when stdin closes. Your MCP client
+launches and owns this process — you rarely run it by hand.
+
+Options:
+
+    -d DIR       include a session directory (repeatable; default:
+                 $ISABELLE_MCP_HOME/Tools)
+    -s SESSION   session to run (default: MCP-Tools, the minimal
+                 Pure-based registry — for actual proving you want
+                 MCP-HOL, which is HOL plus the repl/search tools)
+    -T THEORY    theory registering the MCP tools (default: MCP_Tools)
+
+Verifying your own theories
+---------------------------
+
+The agent verifies local theories with the `load_theory` /
+`check_theory` tools; diagnostics, source and entities are served as
+`isabelle://theory/{name}` resources. Two setups, by how your
+theories are organized:
+
+**Plain directory of .thy files** (imports available in the running
+image, e.g. `Main`): no configuration needed. The agent calls
+
+    load_theory {"name": "MyTheory", "master_dir": "/path/to/dir"}
+
+which loads and checks the theory with its transitive dependencies
+and reports per-theory ok/error status with positions. After edits,
+`check_theory` re-verifies.
+
+**A project with a ROOT file** (its own session): start the server
+with your project directory added,
+
+    isabelle mcp_server -s MCP-HOL -d /path/to/isabelle-mcp/mcp/Tools -d /path/to/your/project
+
+(note: passing any `-d` replaces the default, so keep the
+`mcp/Tools` entry). Your session then appears in the discovery tools
+— `list_sessions`, `list_theories`, `search_sources` — and theories
+load by session-qualified name: `load_theory {"name":
+"MySession.MyTheory"}`.
+
+Beyond batch verification, the repl tools (`repl_init`, `repl_step`,
+`repl_state`, ...) let the agent develop a proof interactively, with
+`sledgehammer` and `find_theorems` available at every step.
+
+Configuring the agent
+---------------------
+
+Any MCP client that supports stdio servers works. For Claude Code,
+from your project directory:
+
+    claude mcp add isabelle -- isabelle mcp_server -s MCP-HOL -d /path/to/isabelle-mcp/mcp/Tools -d .
+
+or equivalently in `.mcp.json`:
+
+    {
+      "mcpServers": {
+        "isabelle": {
+          "command": "isabelle",
+          "args": ["mcp_server", "-s", "MCP-HOL",
+                   "-d", "/path/to/isabelle-mcp/mcp/Tools",
+                   "-d", "."]
+        }
+      }
+    }
+
+Use an absolute path for `"command"` if `isabelle` is not on the
+client's PATH. The first connection blocks until the session heap is
+loaded (seconds when pre-built, see Installation step 3); clients
+with short startup timeouts may need that pre-build.
+
+Extending the server
+--------------------
+
+MCP tools are Isabelle context entities: a theory registers them, and
+they are visible to the agent when the running session imports that
+theory. A minimal registration theory:
+
+    theory My_Tools
+      imports "MCP-Tools.MCP_Tools"
+    begin
+
+    (* wrap a diagnostic Isar command as a tool; the description is
+       mandatory and the command name is quoted *)
+    mcp_tool "find_consts" (description \<open>Search for constants by
+      name pattern or type.\<close>)
+
+    (* expose a named fact collection as a read-time resource *)
+    mcp_resource simps
+
+    end
+
+Add the theory to a session of your own (based on `MCP-HOL`) and run
+the server with `-s YourSession`. Tools registered mid-session emit
+`tools/list_changed` notifications, so the agent picks them up live.
+There are further forms — string functions, ML run functions with
+typed parameters — documented in `mcp/Tools/MCP_Tools.thy`.
+
+Project layout
+--------------
+
+    mcp/        the server component (Scala + the MCP-Tools/MCP-HOL sessions)
+    mcp_test/   munit test suites (`isabelle mcp_test`)
+    ir/         the I/R proving engine (reused verbatim by MCP-HOL)
+    spec        the full design record; CHANGELOG tracks decisions
+    plans/      per-tool implementation plans; evals/ agent evaluations
