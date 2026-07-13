@@ -6,7 +6,9 @@ one file per builtin tool from the spec's phase 2 (sections "mcp tools
 holds phase-3 plans, which may cover a feature or a tool family
 rather than a single tool: mcp_tool_registry (the registry pivot),
 tool_scope (the tool_scope_* builtin family), mcp_tool_command (the
-mcp_tool/mcp_resource outer syntax + params machinery). each plan pins down, for one tool:
+mcp_tool/mcp_resource outer syntax + params machinery),
+builtin_activation (scala builtins mirrored into the ML registry so
+one activation layer governs both kinds, decided 2026-07-13). each plan pins down, for one tool:
 
 - advertised metadata: exposed name, description text, inputSchema
   (json property names = the yxml pair keys of the argument encoding),

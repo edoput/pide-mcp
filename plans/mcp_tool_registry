@@ -16,6 +16,10 @@ are not bound at the raw ML_process toplevel. LATER CORRECTION (same
 day, mcp_tool command wave): the attribute is [[mcp_tools add/del:
 ...]] (plural) — "mcp_tool" became a command keyword and command
 keywords cannot appear inside [[...]] (they delimit spans).
+EXTENDED 2026-07-13 (not by this plan): the scala builtins gain
+mirror rows in this registry (new form Builtin) so the activation
+layer governs them too — see plans/builtin_activation and the spec's
+"builtin tools in the activation layer".
 
 the foundation move for phase 3: MCP_Tool (and MCP_Resource) leave
 the global Synchronized.var and become context entities — a

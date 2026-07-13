@@ -4,6 +4,41 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-13 (builtin tools join the activation layer)
+------------------------------------------------------
+
+- decision (spec phase 3, new section "builtin tools in the
+  activation layer"): ONE ACTIVATION LAYER over TWO IMPLEMENTATION
+  SUBSTRATES. every scala builtin's name is mirror-registered into
+  the ML MCP_Tool registry (new form Builtin, tag "builtin",
+  description duplicated, run slot errors — dispatch stays scala-
+  side), so the [[mcp_tools add/del: ...]] attribute, bundles,
+  print_mcp_tools and the tool_scope_* family govern builtins exactly
+  like user tools; the user can prune the ~25-builtin surface to the
+  task at hand. mechanics: the MCP.tools payload grows a builtins =
+  (name, active) section covering every registered mirror; the scala
+  merge serves builtin table rows whose mirror is active. three
+  guardrails make the unification safe: (1) AVAILABILITY FLOOR — an
+  empty builtins section (designated context without MCP_Tools, no
+  ML session, broken -T theory) serves the FULL builtin table, so
+  the old two-table merge is the degraded mode and diagnosing a
+  broken heap never loses the scala tools; (2) ASYMMETRIC
+  CALLABILITY — a del'd builtin is unlisted but still callable
+  (activation filters discovery, not access — the resource-scope
+  rule; builtins have no alternate route since ML cannot call scala,
+  and this makes lockout impossible without a privileged meta-core),
+  while a del'd ML tool stays unlisted AND uncallable; (3) DRIFT
+  GATE — a bridge test pins mirror name set == builtin table name
+  set both ways, so the duplicated list cannot rot. bare-name
+  invariant unchanged (mirrors never enter exposure-name
+  computation); resources NOT mirrored (they have scope_add).
+  while there, the spec's activation examples are corrected to the
+  implemented PLURAL attribute spelling ([[mcp_tools ...]]) — the
+  old singular examples predated the lexer correction. plan:
+  plans/builtin_activation (new, wave: with tool_scope); new
+  unchecked item in the spec's phase-3 implementation order;
+  plans/tool_scope and plans/mcp_tool_registry annotated.
+
 2026-07-13 (spec/plans sync; distribution README)
 --------------------------------------------------
 

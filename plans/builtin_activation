@@ -1,0 +1,111 @@
+builtin activation unification — implementation plan
+=====================================================
+
+status: planned (decided 2026-07-13; spec: phase 3 "builtin tools in
+the activation layer"; CHANGELOG same date). no new mcp tool — this
+is a feature plan (like mcp_tool_registry): the existing activation
+layer (attribute, bundles, tool_scope) grows to govern the scala
+builtins. depends on plans/mcp_tool_registry (DONE — the registry,
+forms, and the MCP.tools designation argument) and composes with
+plans/tool_scope (the designation decides which context's activation
+filters the builtin listing; either plan can land first, this one
+reads the designation MCP.tools already takes).
+
+the decision, restated for implementation
+-------------------------------------------
+
+ONE ACTIVATION LAYER over TWO IMPLEMENTATION SUBSTRATES. builtins
+keep their scala table (descriptions, json schemas, annotations,
+dispatch — the substrate); their NAMES additionally live in the ML
+MCP_Tool registry so activation is uniform:
+
+  declare [[mcp_tools del: repl_fork repl_merge repl_rebase]]
+  bundle exploration = [[mcp_tools add: list_theories find_theorems]]
+
+three pinned guardrails (spec, same section):
+
+- AVAILABILITY FLOOR: empty builtins section in the MCP.tools
+  payload (context without MCP_Tools import, no ML session, broken
+  -T theory) -> scala serves the FULL builtin table. the old
+  two-table merge is the degraded mode.
+- ASYMMETRIC CALLABILITY: del'd builtin = unlisted but callable
+  (tools/call dispatches builtin names scala-side BEFORE consulting
+  activation — the existing dispatch order, kept deliberately);
+  del'd ML tool = unlisted and uncallable (unchanged,
+  MCP_Protocol.run_tool). no privileged non-scopable meta-core —
+  unlisted-but-callable already makes lockout impossible.
+- DRIFT GATE: mirror name set == builtin table name set, both
+  directions, pinned over the live bridge.
+
+data model delta (MCP_Tools.thy)
+---------------------------------
+
+- MCP_Tool.form grows a constructor: Builtin (form_tag "builtin").
+- mirror declarations at the end of MCP_Tools.thy, one per scala
+  builtin: MCP_Tool.declare with the one-line description duplicated
+  from the scala table and run = (fn _ => fn _ => error "builtin
+  tool: dispatched Isabelle/Scala-side"). registered active, like
+  any top-level declaration. print_mcp_tools shows them as
+  [builtin] rows for free.
+- tools_body (MCP_Protocol) grows a second section: builtins =
+  (name, active) for EVERY registered Builtin-form row — inactive
+  rows included, so scala can tell "hidden" from "absent". Builtin
+  rows are EXCLUDED from the existing ML-tool row list (they carry
+  no real params/run and must not enter exposure-name computation).
+
+scala delta (mcp_server.scala / mcp_session.scala)
+---------------------------------------------------
+
+- decode the builtins section alongside the tool rows.
+- tools/list merge: builtin table rows filtered to active mirrors;
+  empty section -> full table (the floor). still a pure function of
+  (builtin table, decoded payload) — Fake_Backend testable.
+- tools/call: UNCHANGED (builtin dispatch precedes activation; ML
+  dispatch path already refuses inactive tools engine-side).
+
+name/argument mapping across the layers
+----------------------------------------
+
+  mcp            tools/list only changes (which builtin rows appear)
+  bridge         MCP.tools payload: (ml_rows, builtin_activation)
+  engine (ml)    MCP_Tool registry: Builtin-form rows, active set
+
+implementation steps
+--------------------
+
+1. ml: Builtin form + mirror declarations + tools_body split
+   (Builtin rows out of the ML list, into the (name, active)
+   section). [ml unit: MCP-Tools-Tests]
+2. scala: payload decode + merge filter + availability floor.
+   [scala unit over Fake_Backend]
+3. bridge: drift gate + del-drops-listing cases. [mcp_test -b]
+4. e2e: del'd builtin absent from tools/list yet callable; del'd ML
+   tool absent and refused. [test_mcp.py or test_agentic.py]
+5. close-out: spec implementation-order checkbox, CHANGELOG
+   milestone entry, plans/README checkbox, skills note (the
+   isabelle-mcp-extending skill teaches builtin pruning when
+   written).
+
+ASSUMPTIONS -> tests
+---------------------
+
+- A1 mirror rows behave as ordinary registry entries: del/add round
+  trip, visibility follows imports, run slot errors with the
+  builtin message [ml unit, MCP-Tools-Tests].
+- A2 the builtins section distinguishes hidden from absent: all
+  mirrors del'd -> section full of (name, false) -> zero builtins
+  listed; context without MCP_Tools -> empty section -> full table
+  [scala unit: both payload shapes against Fake_Backend].
+- A3 no exposure regression: a user ML tool named like a builtin
+  still gets theory-qualified; the builtin keeps the bare name;
+  Builtin rows never reach the exposure function [scala unit,
+  existing collision tests extended].
+- A4 drift gate: mirror set == table set both ways over the live
+  bridge — fails when a builtin is added scala-side without a
+  mirror, or a mirror outlives a removed builtin [bridge].
+- A5 asymmetric callability: del'd builtin callable, del'd ML tool
+  refused with "Inactive MCP tool" [bridge + e2e].
+- A6 tool_scope interaction (once plans/tool_scope lands): a del in
+  a theory affects designations importing it; switching designation
+  switches the builtin listing accordingly [bridge, deferred to the
+  tool_scope wave if this plan lands first].

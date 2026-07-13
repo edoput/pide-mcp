@@ -27,7 +27,10 @@ description   "Show the current tool scope: which theory or repl
               context entities in Isabelle: a tool is visible when
               the scope's context (transitively) imports its
               registering theory and it has not been deactivated
-              (declare [[mcp_tool del: ...]] / closed bundle)."
+              (declare [[mcp_tools del: ...]] / closed bundle).
+              Since 2026-07-13 this covers BUILTINS too (mirror
+              rows, see plans/builtin_activation): the listing
+              shows their activity in the scope's context."
 inputSchema   {"type": "object"}
 annotations   {readOnlyHint: true, idempotentHint: true,
                openWorldHint: false}
@@ -101,6 +104,13 @@ design decisions (from the spec, restated for implementation)
   the point (self-extension), and list_changed only fires on
   registration events, not on steps: document in the skill that
   tools/list after repl work is cheap and worth re-running.
+- builtin activation unification (decided 2026-07-13, spec "builtin
+  tools in the activation layer", plans/builtin_activation): the
+  designation ALSO decides which builtins are listed — MCP.tools'
+  builtins section is read from the designated context, so a del in
+  an imported theory or a closed bundle prunes builtin rows too.
+  composition is order-independent (either plan can land first);
+  the joint bridge case is A6 in plans/builtin_activation.
 
 implementation steps
 --------------------

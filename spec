@@ -520,6 +520,13 @@ two tool kinds now exist:
    MCP.ir), each with a real json schema. mcp_server.py's docstrings
    are the template. tools/list returns both kinds.
 
+updated 2026-07-13: the two kinds remain implementation SUBSTRATES
+(where schema/dispatch live), but visibility unifies — every builtin
+name is mirrored into the ML registry so the one activation layer
+(the [[mcp_tools add/del: ...]] attribute, bundles, tool_scope)
+governs both kinds. see phase 3, "builtin tools in the activation
+layer".
+
 advertised tool metadata (decided 2026-07-09): what tools/list must
 and may carry per tool (verified against the mcp spec, 2025-06-18
 revision — the version this server targets):
@@ -600,6 +607,11 @@ the scheme:
 - builtins always keep the bare name — they are the server's own api
   surface. two *ML* tools colliding across theories both get
   qualified (symmetric; no first-wins ordering dependence).
+  (unchanged by the 2026-07-13 activation unification: builtin mirror
+  rows carry no run function and never enter the exposure-name
+  computation as ML tools — a user tool that collides with a builtin
+  name still gets theory-qualified, the builtin still wins the bare
+  name.)
 - mechanism: the registry records the registering theory per tool.
   the mcp_tool isar command knows its theory trivially; the ML escape
   hatch captures Context.theory_long_name from the ambient context at
@@ -1866,8 +1878,15 @@ two layers, because isabelle separates them too:
    by a declaration attribute, following the simproc precedent
    exactly (HOL says `declare [[simproc del: finite_Collect]]`):
 
-     declare [[mcp_tool del: find_theorems]]     (* user's "no_tool" *)
-     declare [[mcp_tool add: find_theorems]]
+     declare [[mcp_tools del: find_theorems]]    (* user's "no_tool" *)
+     declare [[mcp_tools add: find_theorems]]
+
+   (attribute name is PLURAL — mcp_tool is a command keyword and
+   command keywords delimit spans, so it cannot appear inside
+   [[...]]; corrected 2026-07-13 throughout this spec to match the
+   implementation. and since 2026-07-13 this example is literally
+   true: find_theorems is a BUILTIN, and the attribute governs its
+   listing too — see "builtin tools in the activation layer" below.)
 
    a tool declared at theory top level is active from its declaration
    point onward (register + activate in one step, the common case).
@@ -1877,7 +1896,7 @@ just applies its attributes to the current context (bundle.ML: a
 bundle IS a list of (thms, attributes)):
 
      mcp_tool find_consts (scoped)          (* register, don't activate *)
-     bundle search_tools = [[mcp_tool add: find_consts]]
+     bundle search_tools = [[mcp_tools add: find_consts]]
 
    `unbundle search_tools` (theory), `context includes search_tools`
    (nested context), `including` (proof) now activate the tool with
@@ -1915,6 +1934,71 @@ of that context, run against it by default.
 - bridge change: MCP.tools / MCP.run_tool take the designation as an
   argument (theory name or repl id); the scala side owns the current
   designation as connection state, like the resource scope.
+
+builtin tools in the activation layer (decided 2026-07-13)
+-----------------------------------------------------------
+
+problem: the activation machinery above only reached ML-registered
+tools, while the bulk of the served surface (~25 builtins and
+growing) sat in a static scala table outside it — unlisted from
+print_mcp_tools, untouchable by the attribute and bundles,
+unprunable. the whole point of scoping is letting the user (and the
+agent) shrink tools/list to the task at hand; a scope mechanism that
+cannot touch four fifths of the surface misses it. decision: ONE
+ACTIVATION LAYER over TWO IMPLEMENTATION SUBSTRATES.
+
+- mirror rows: MCP_Tools.thy declares every scala builtin's name
+  into the MCP_Tool registry — a new form Builtin (form tag
+  "builtin"), the one-line description duplicated from the scala
+  table, no real run function (the run slot errors "builtin tool:
+  dispatched Isabelle/Scala-side"; dispatch never reaches it, see
+  callability below). mirrors are registered active, like any
+  top-level declaration. from here the attribute, bundles,
+  print_mcp_tools (rows show [builtin]), the tool_scope_* family and
+  the phase-3 antiquotations work over builtins with ZERO new
+  user-facing machinery:
+
+    declare [[mcp_tools del: repl_fork repl_merge repl_rebase]]
+    bundle exploration = [[mcp_tools add: list_theories find_theorems]]
+
+- the wire: the MCP.tools payload grows a second section, builtins =
+  (name, active) for EVERY registered builtin-form row (not just the
+  active ones — the merge must distinguish "hidden" from "absent").
+  the ML-tool rows are unchanged.
+- the merge (scala, still a pure function): tools/list = builtin
+  table rows whose mirror is active, plus active ML rows under the
+  exposure-name function. AVAILABILITY FLOOR: an EMPTY builtins
+  section means the designated context carries no mirrors (a theory
+  that does not import MCP_Tools, no ML session yet, a broken -T
+  theory) — then the FULL builtin table is served. the pre-2026-07-13
+  two-table merge is thereby the degraded mode: diagnosing a broken
+  heap never loses the scala tools, which is exactly when they are
+  needed. deactivating every builtin is still expressible (all
+  mirrors present, none active) because the section carries inactive
+  rows.
+- callability is ASYMMETRIC, deliberately: a deactivated BUILTIN is
+  unlisted but STILL CALLABLE — tools/call dispatches builtin names
+  scala-side before consulting activation, unchanged. rationale:
+  activation filters discovery, not access (the same rule the
+  resource scope pins: "scope filters discovery, not access");
+  builtins wrap scala capabilities with NO alternate route (ML
+  cannot call into scala), and unlisted-but-callable makes lockout
+  structurally impossible — a client that knows tool_scope_show's
+  name can always recover, so NO non-scopable meta-core is needed.
+  a deactivated ML tool stays unlisted AND uncallable (unchanged,
+  pinned by MCP_Protocol.run_tool): ML tools wrap Isar the repl
+  reaches anyway, so nothing is severed.
+- drift gate: the mirror name set must equal the builtin table name
+  set, both directions, pinned by a scala-side test over the live
+  bridge — a builtin added in scala without a mirror (or a stale
+  mirror after a removal) fails the suite, so the duplicated name
+  list cannot rot silently.
+- resources are NOT mirrored: the resource surface has its own scope
+  mechanism (scope_add patterns over theory names), and resource
+  templates are not per-name entities the way tools are. MCP_Resource
+  (named resources) already rides the registry natively.
+
+plan: plans/builtin_activation.
 
 the parameter spec language (params clause) and schema derivation
 ------------------------------------------------------------------
@@ -2200,7 +2284,7 @@ skills impact (assessed 2026-07-11)
   mechanics unchanged.
 - NEW skill: isabelle-mcp-extending — the authoring guide for this
   phase's user surface (mcp_tool forms + params + format quoting
-  rules, mcp_resource, mcp_test, bundle scoping, declare [[mcp_tool
+  rules, mcp_resource, mcp_test, bundle scoping, declare [[mcp_tools
   del: ...]], the combinator library, the self-extension loop and
   its persistence step). audience is both the human user writing
   theories and the agent extending itself; written against settled
@@ -2261,6 +2345,16 @@ implementation order
       and the HOL first-user (value) — MCP-Tools-Tests is Pure-based.
       SURFACE CORRECTIONS (outer lexer, see the phase-2 command item):
       quoted command names, plural activation attribute.
+- [ ] builtin activation unification (decided 2026-07-13): ml mirror
+      rows for every scala builtin (form Builtin, tag "builtin", run
+      slot errors); MCP.tools payload grows the (name, active)
+      builtins section; scala merge filters builtin table rows by
+      mirror activation, with the empty-section availability floor
+      (full table served when the designated context has no
+      mirrors); unlisted-but-callable pinned for builtins,
+      unlisted-and-uncallable re-pinned for ML tools; drift gate
+      (mirror name set == builtin table name set, both directions).
+      plan: plans/builtin_activation.
 - [ ] method_wrap: mcp_tool (method), Method.check_name validation,
       repl-step execution; generic {repl, args} schema (closure
       derivation demoted — see the eisbach section). import Eisbach
@@ -2308,6 +2402,16 @@ testing (mapped to the standard pyramid)
    open/close changes tools/list; document build of a theory using
    @{mcp_tool_schema} renders (isabelle document run in the test).
 
+builtin activation cases ride the same layers (2026-07-13; details
+in plans/builtin_activation): ml unit — mirror del/add round trip,
+mirror run slot errors; scala unit — merge filters by the builtins
+section, empty section serves the full table (availability floor),
+collision with a builtin name still qualifies the ML tool; bridge —
+drift gate (mirror set == table set), del in a designated context
+drops the builtin from MCP.tools; e2e — del'd builtin absent from
+tools/list yet tools/call succeeds, del'd ML tool absent and
+refused.
+
 acceptance criteria
 -------------------
 
@@ -2315,7 +2419,9 @@ a user, writing only isar, can: register a diagnostic command with a
 real parameter schema (types, defaults, enums, per-param docs) and
 call it over mcp with typed argument errors; scope a tool inside a
 bundle and observe it served exactly while the bundle is open;
-exclude a tool with declare [[mcp_tool del: ...]]; wrap a proof
+exclude a tool with declare [[mcp_tools del: ...]] — builtins
+included: a del'd builtin leaves tools/list but stays callable, a
+del'd ML tool leaves and is refused; wrap a proof
 method (eisbach or not) and drive it against a repl; evaluate ML and
 term-level snippets with errors pointing into the snippet; declare
 tests next to tools that run at build time and on demand via
