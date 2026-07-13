@@ -1,7 +1,11 @@
 tool_scope_show / tool_scope_set / tool_scope_include — implementation plan
 ============================================================================
 
-status: planned (2026-07-11; spec: phase 3 "visibility" section)
+status: planned (2026-07-11; spec: phase 3 "visibility" section).
+UNBLOCKED 2026-07-13: the mcp_tool_registry dependency below landed
+2026-07-11 (see plans/mcp_tool_registry, status DONE), including the
+scala exposure function this plan was going to introduce — tool_scope
+now extends it rather than adding it.
 
 one family file for the three builtins (they share all state and
 plumbing). depends on plans/mcp_tool_registry (the designation

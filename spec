@@ -1257,12 +1257,23 @@ implementation order
       + isabelle://named/*, concrete): pagination cursor and
       query-parameter slicing are not implemented, since nothing yet
       returns a payload large enough to need them.
-- [ ] scala: session-structure discovery — keep Sessions.load_structure
+- [x] scala: session-structure discovery — keep Sessions.load_structure
       + deps from server startup; list_sessions / list_theories /
       search_sources tools; widen isabelle://theory/{name} resolution
       to filesystem theories via the structure's path map; tier
       answers on /diagnostics and /entities; load_theory resolves
       session-qualified names through the same structure.
+      done (2026-07-12, wave 3 complete): all of the above landed —
+      structure + deps at startup, resolve_theory three-tier
+      resolution (not_yet_backed_uri retired), the three discovery
+      builtins, load_theory session-qualified resolution, the
+      loaded-tier document-based correction. scala-unit coverage
+      (schemas, annotations, dispatch, result shape) in
+      mcp_handler_tests.scala; the finer-grained cases in the
+      "testing" section below are still open (see the note there).
+      the filesystem-tier /commands spike stays open in
+      plans/session_structure. CHANGELOG 2026-07-12 ("wave 3
+      complete: library discovery tools").
       plan (2026-07-11): plans/session_structure (umbrella — startup
       structure/deps object, resolve_theory tier resolution, the
       resource-widening and load_theory-resolution halves; retires
@@ -1518,6 +1529,11 @@ the finer-grained test inventories.
          advertised the capability in initialize (test both branches)
 
    library discovery (against a fake session structure):
+   (status 2026-07-13: the wave-3 close-out landed scala-unit
+   coverage of the three tools' schemas, annotations, dispatch
+   routing and result shape in mcp_handler_tests.scala; the
+   specific cases below are STILL OPEN — kept unchecked honestly.
+   the scope-dependent ones at the end belong to wave 4 anyway.)
    - [ ] list_sessions glob-filters and carries heap_present + the
          base-image marker
    - [ ] list_theories reports the correct tier for an image, a

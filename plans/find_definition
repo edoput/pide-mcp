@@ -1,7 +1,13 @@
 find_definition — implementation plan
 ======================================
 
-status: planned (2026-07-09)
+status: planned (2026-07-09). dependency note (2026-07-13): the
+context-selector interface this plan specs (repl? | theory?, default
+= base image, theory spelling normalized) is now IMPLEMENTED for
+find_theorems (context promotion, 2026-07-12) — reuse
+MCP_Backend.resolve_context_theory and the MCP_Repl.thy self-theory
+capture rather than re-deriving them; see plans/find_theorems
+"context promotion" and CHANGELOG 2026-07-12.
 
 wave 4, navigation: NAME-based lookup, ML side via MCP.ir — this adds
 a NEW fname to the dispatcher (the first beyond the mirrored ir.ML
