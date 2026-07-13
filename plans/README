@@ -113,8 +113,8 @@ wave 3 — library discovery (session-structure index, scala side):
   - [x] search_sources         plans/search_sources
 
 wave 4 — scope + navigation:
-  - [ ] scope_add              plans/scope_add
-  - [ ] scope_remove           plans/scope_remove
+  - [x] scope_add              plans/scope_add
+  - [x] scope_remove           plans/scope_remove
   - [ ] scope_show             plans/scope_show
   - [ ] find_definition        plans/find_definition   (MCP.ir, name-space lookup)
   - [ ] goto_definition        plans/goto_definition   (scala, snapshot entity markup)

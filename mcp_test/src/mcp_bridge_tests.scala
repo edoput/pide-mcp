@@ -690,4 +690,80 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
         "bundle_tool still visible after a re-set cleared the bundles: " + tool_names())
     }
   }
+
+  /* scope_add/scope_remove (plans/scope_add, plans/scope_remove): the
+     phase-2 RESOURCE scope against a real headless session -- match
+     counting over the real theory universe (D1's structure/deps maps),
+     and the load_theory/unload_theory retrofit (T4). Each test uses its
+     own patterns/fixture names so they don't interfere with each other
+     via the session-wide scope state. */
+
+  /* the session is shared across every test in this class (beforeAll
+     starts it once) -- and so is scope state, unlike a fresh
+     Fake_Backend per call. Each test below removes what it added, the
+     same discipline with_repl's finally-teardown uses for repls. */
+  test("scope_add T2: match counts are computed against the real theory universe (image tier)") {
+    val handler = new MCP_Server.Handler(session)
+    try {
+      val text =
+        result_text(call_tool_on(handler, "scope_add", JSON.Object("patterns" -> List("HOL.Wellf*"))))
+      assert(text.contains("HOL.Wellf*: added ("), "unexpected scope_add reply: " + text)
+      assert(!text.contains("(0 theories match)"),
+        "HOL.Wellf* should match at least HOL.Wellfounded in the real image: " + text)
+    }
+    finally call_tool_on(handler, "scope_remove", JSON.Object("patterns" -> List("HOL.Wellf*")))
+  }
+
+  test("scope_add zero-match pattern against the real universe is pinned, not an error") {
+    val handler = new MCP_Server.Handler(session)
+    val reply =
+      call_tool_on(handler, "scope_add", JSON.Object("patterns" -> List("NoSuchScopeBridgeThy.*")))
+    assert_no_error(reply)
+    assert(result_text(reply).contains("NoSuchScopeBridgeThy.*: added (0 theories match)"),
+      "unexpected scope_add reply: " + result_text(reply))
+  }
+
+  /* T4 (plans/scope_add / plans/unload_theory): load_theory auto-adds a
+     filesystem-tier fixture to the resources/list working set, tagged
+     loaded; unload_theory removes it again. */
+  test("scope bridge T4: load_theory auto-adds to resources/list; unload_theory removes it") {
+    with_fixture_dir("ScopeBridgeLoad" -> wave2_theory("ScopeBridgeLoad", wave2_good)) { dir =>
+      val handler = new MCP_Server.Handler(session)
+      expect_ok(session.load_theory("ScopeBridgeLoad", File.standard_path(dir)), "load")
+
+      val listed = get_list(rpc_on(handler, "resources/list"), "result", "resources")
+      val entry = listed.find(r => get_string(r, "uri") == "isabelle://theory/ScopeBridgeLoad")
+        .getOrElse(fail("ScopeBridgeLoad missing from resources/list: " + listed.toString))
+      assertEquals(get_string(entry, "description"), "theory (loaded)")
+
+      expect_ok(session.unload_theory("ScopeBridgeLoad"), "unload")
+      val after_unload = get_list(rpc_on(handler, "resources/list"), "result", "resources")
+      assert(!after_unload.exists(r => get_string(r, "uri") == "isabelle://theory/ScopeBridgeLoad"),
+        "ScopeBridgeLoad should be gone from resources/list after unload: " + after_unload.toString)
+    }
+  }
+
+  /* T5 (plans/scope_add): full chain -- scope_add, resources/list
+     reflects it, list_changed fires. */
+  test("scope bridge T5: scope_add's pattern match appears in resources/list and fires list_changed") {
+    val handler = new MCP_Server.Handler(session)
+    var seen: List[String] = Nil
+    session.set_changed_handler(seen ::= _)
+    assert_no_error(
+      call_tool_on(handler, "scope_add", JSON.Object("patterns" -> List("HOL.Wellfounded"))))
+    assertEquals(seen, List("resources"), "scope_add should fire exactly one resources notification")
+
+    val listed = get_list(rpc_on(handler, "resources/list"), "result", "resources")
+    val entry = listed.find(r => get_string(r, "uri") == "isabelle://theory/HOL.Wellfounded")
+      .getOrElse(fail("HOL.Wellfounded missing from resources/list: " + listed.toString))
+    assertEquals(get_string(entry, "description"), "theory (image)")
+
+    seen = Nil
+    assert_no_error(
+      call_tool_on(handler, "scope_remove", JSON.Object("patterns" -> List("HOL.Wellfounded"))))
+    assertEquals(seen, List("resources"), "scope_remove should fire exactly one resources notification")
+    val after_remove = get_list(rpc_on(handler, "resources/list"), "result", "resources")
+    assert(!after_remove.exists(r => get_string(r, "uri") == "isabelle://theory/HOL.Wellfounded"),
+      "HOL.Wellfounded should be delisted after scope_remove: " + after_remove.toString)
+  }
 }

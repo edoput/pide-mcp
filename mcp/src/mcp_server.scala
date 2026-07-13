@@ -584,6 +584,12 @@ object MCP_Server {
   def pass_arg(args: List[(String, String)], key: String): String =
     args.collectFirst({ case (`key`, v) => v }).getOrElse("")
 
+  /* scope_add/scope_remove's "patterns" is a json array of strings,
+     json_args's repeated-key encoding (same shape as repl_init's
+     "theories") -- pull every value back out in array order. */
+  def pass_args(args: List[(String, String)], key: String): List[String] =
+    args.collect({ case (`key`, v) => v })
+
   val load_theory_tool: Builtin_Tool =
     Builtin_Tool(
       name = "load_theory",
@@ -707,13 +713,64 @@ object MCP_Server {
       annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
       handler_fn = Some((backend, args) => backend.search_sources(pass_arg(args, "pattern"))))
 
+  /* wave 4 (plans/scope_add, plans/scope_remove, spec "scoping"): the
+     resource scope is a set of theory-name glob patterns controlling
+     what resources/list enumerates -- scope filters DISCOVERY, never
+     ACCESS (resources/read works on any valid uri regardless). Scala
+     state only (MCP_Session.scope_patterns), no bridge. */
+  val scope_add_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "scope_add",
+      fname = "",
+      description =
+        "Add theory-name patterns to the resource scope -- the set of " +
+        "theories that resources/list enumerates. Glob over long names: " +
+        "\"HOL-Library.*\", \"Main\". Matching theories appear in the " +
+        "listing tagged with their availability tier (image/loaded/" +
+        "filesystem). Scope only controls the LISTING: any valid " +
+        "resource uri is readable regardless, and scope_add does NOT " +
+        "load or check anything (use load_theory for semantics). " +
+        "Replies with the added patterns and their current match counts.",
+      input_schema =
+        JSON.Object(
+          "type" -> "object",
+          "properties" ->
+            JSON.Object("patterns" ->
+              JSON.Object("type" -> "array", "items" -> JSON.Object("type" -> "string"))),
+          "required" -> List("patterns")),
+      annotations = idempotent_mutating_annotations,
+      handler_fn = Some((backend, args) => backend.scope_add(pass_args(args, "patterns"))))
+
+  val scope_remove_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "scope_remove",
+      fname = "",
+      description =
+        "Remove theory-name patterns from the resource scope. Patterns " +
+        "are removed literally (the exact strings previously added), not " +
+        "by re-matching -- removing \"HOL-Library.*\" removes that " +
+        "pattern, not individual theories it matched. The implicit scope " +
+        "members (theories loaded with load_theory, active REPLs, named " +
+        "resources) are not removable this way; unload_theory / " +
+        "repl_remove govern those. Replies with the remaining scope.",
+      input_schema =
+        JSON.Object(
+          "type" -> "object",
+          "properties" ->
+            JSON.Object("patterns" ->
+              JSON.Object("type" -> "array", "items" -> JSON.Object("type" -> "string"))),
+          "required" -> List("patterns")),
+      annotations = idempotent_mutating_annotations,
+      handler_fn = Some((backend, args) => backend.scope_remove(pass_args(args, "patterns"))))
+
   val builtins: List[Builtin_Tool] =
     List(repl_list_tool, repl_init_tool, repl_remove_tool, repl_step_tool, repl_state_tool,
       repl_show_tool, repl_text_tool, repl_edit_tool, repl_replay_tool, repl_truncate_tool,
       repl_back_tool, repl_merge_tool, repl_timeout_tool, repl_pin_tool, repl_unpin_tool,
       repl_rebase_tool, sledgehammer_tool, find_theorems_tool,
       load_theory_tool, unload_theory_tool, check_theory_tool,
-      list_sessions_tool, list_theories_tool, search_sources_tool)
+      list_sessions_tool, list_theories_tool, search_sources_tool,
+      scope_add_tool, scope_remove_tool)
 
   /* tool_scope_show/set/include (plans/tool_scope, spec "the agent
      context"): unlike every other builtin above, these read and mutate

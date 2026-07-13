@@ -4,6 +4,34 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-13 (scope_add/scope_remove: the resource scope lands)
+---------------------------------------------------------------
+
+- milestone (spec "scoping"; plans: plans/scope_add, plans/scope_remove,
+  both status DONE): the resource scope — a set of theory-name glob
+  patterns controlling what resources/list enumerates — is now live,
+  scala-side only (MCP_Session.scope_patterns, no ML bridge). scope_add
+  adds patterns and replies with each one's current match count against
+  the full known theory universe (image/loaded/filesystem tiers, D1's
+  theory_map + the session base); scope_remove removes patterns
+  literally (the exact string added, not by re-matching), so removing a
+  theory name that a glob happened to match is a documented no-op.
+  resources/list now lists, tier-tagged, the union of pattern matches
+  and the implicit working set (theories loaded via load_theory/
+  check_theory, already tracked in theory_master_dirs) — scope still
+  never limits resources/read, only the listing. both tools fire
+  notifications/resources/list_changed on an actual change, not on
+  idempotent no-ops (duplicate add, absent remove). distinct from
+  tool_scope_* (2026-07-13, above): that is the agent CONTEXT (which
+  tool set is active); this is the RESOURCE scope (which resources
+  resources/list enumerates) — same "scope" word, different axis, both
+  now implemented and both explicitly cross-reference the distinction
+  in code and plans.
+- deviation from the plan: S1's third implicit member, active REPLs, is
+  not yet folded into resources/list — no scope_add/scope_remove test
+  needed it, and it is plans/scope_show's own claim (T1/T2); see
+  plans/scope_add's dated deviation note.
+
 2026-07-13 (tool_scope: the agent context lands)
 --------------------------------------------------
 

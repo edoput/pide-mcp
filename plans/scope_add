@@ -1,11 +1,22 @@
 scope_add — implementation plan
 ================================
 
-status: planned (2026-07-09). dependency note (2026-07-13): the D1
+status: DONE (2026-07-13). dependency note (2026-07-13): the D1
 theory universe (session structure + tiers) landed 2026-07-12 with
 wave 3 (plans/session_structure, status implemented) — match counting
-and tier tagging below can build on the real resolve_theory/theory_map
-instead of a stub.
+and tier tagging below build on the real resolve_theory/theory_map,
+not a stub.
+
+deviation (2026-07-13): S1's "active repls" implicit scope member is
+NOT modeled in resources/list yet — no scope_add/scope_remove test
+needs it (T4 below only needs the load_theory/unload_theory working
+set, i.e. theory_master_dirs, which already existed). Repl-implicit-
+membership is left for plans/scope_show, which does claim it in its
+own T1/T2. The implicit working set implemented here is exactly:
+theories loaded via load_theory/check_theory (theory_master_dirs) +
+scope_add's patterns, tier-tagged against known_theory_tiers()
+(mcp_session.scala). Named resources were already listed before this
+plan and are unaffected.
 
 wave 4: scope state, scala-side. owns the wave's shared assumption:
 

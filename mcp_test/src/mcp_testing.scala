@@ -150,9 +150,68 @@ class Fake_Backend extends MCP_Backend {
   /* isabelle://named/{name}: a fixed one-entry stand-in for MCP_Resource's
      registry (MCP_Tools.thy), mirroring extra_ml_tools' role for MCP_Tool. */
   var named_resources: List[(String, String)] = List(("greeting", "a static demo resource"))
-  def mcp_resources(): List[(String, String, String)] =
+
+  /* scope_add/scope_remove (plans/scope_add, plans/scope_remove): a small
+     fixed theory universe good enough to test match-counting and tier
+     tagging without a real headless session -- "Image" mirrors the
+     mcp_resource_read fake's image-tier stand-in above, the rest are
+     filesystem tier; "Loaded" (see loaded_theories below) starts loaded,
+     i.e. in the implicit working set, and is not part of this universe
+     map (it gets LoadedTier by mcp_resources' fallback, same as the real
+     backend). */
+  var theory_universe: Map[String, String] = Map(
+    "Image" -> "image",
+    "HOL-Library.Multiset" -> "filesystem",
+    "HOL-Library.FSet" -> "filesystem",
+    "HOL-Library.Rat" -> "filesystem",
+    "Other.Theory" -> "filesystem")
+  var scope_patterns: List[String] = Nil
+
+  def scope_add(patterns: List[String]): MCP_Session.Result = {
+    val current = scope_patterns
+    val distinct_patterns = patterns.distinct
+    val newly_added = distinct_patterns.filterNot(current.contains)
+    if (newly_added.nonEmpty) {
+      scope_patterns = scope_patterns ++ newly_added
+      changed_handler("resources")
+    }
+    val lines =
+      distinct_patterns.map { p =>
+        val count = theory_universe.keys.count(MCP_Session.glob_to_regex(p).matches)
+        val status = if (current.contains(p)) "already in scope" else "added"
+        p + ": " + status + " (" + count + " theories match)"
+      }
+    MCP_Session.Ok(lines.mkString("\n"))
+  }
+
+  def scope_remove(patterns: List[String]): MCP_Session.Result = {
+    val current = scope_patterns
+    val distinct_patterns = patterns.distinct
+    val present = distinct_patterns.filter(current.contains)
+    if (present.nonEmpty) {
+      scope_patterns = scope_patterns.filterNot(present.contains)
+      changed_handler("resources")
+    }
+    val notes =
+      distinct_patterns.map { p =>
+        if (current.contains(p)) p + ": removed" else p + ": not in scope"
+      }
+    val remaining_line =
+      "remaining scope: " + (if (scope_patterns.isEmpty) "(none)" else scope_patterns.mkString(", "))
+    MCP_Session.Ok((notes :+ remaining_line).mkString("\n"))
+  }
+
+  def mcp_resources(): List[(String, String, String)] = {
+    val regexes = scope_patterns.map(MCP_Session.glob_to_regex)
+    val pattern_matched = theory_universe.keys.filter(name => regexes.exists(_.matches(name))).toSet
+    val scoped_theories = (loaded_theories ++ pattern_matched).toList.sorted
     ("isabelle://session", "session", "current session overview") ::
-    named_resources.map { case (name, description) => ("isabelle://named/" + name, name, description) }
+    named_resources.map { case (name, description) => ("isabelle://named/" + name, name, description) } ++
+    scoped_theories.map { name =>
+      val tier = theory_universe.getOrElse(name, "loaded")
+      ("isabelle://theory/" + name, name, "theory (" + tier + ")")
+    }
+  }
 
   private val repl_uri = """\Aisabelle://repl/([^/]+)\z""".r
   private val repl_text_uri = """\Aisabelle://repl/([^/]+)/text\z""".r

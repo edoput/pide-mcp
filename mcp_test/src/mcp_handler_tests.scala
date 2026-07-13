@@ -757,12 +757,19 @@ class MCP_Tool_Scope_Tests extends MCP_Suite {
 
 class MCP_Resources_Tests extends MCP_Suite {
   test("resources/list reports the backend resources") {
+    /* a fresh Fake_Backend seeds loaded_theories = Set("Loaded") (a
+       fixture for the unload_theory error-path tests), which the S1
+       resource-scope implicit working set now surfaces as
+       isabelle://theory/Loaded -- see plans/scope_add. */
     val resources = get_list(rpc("resources/list"), "result", "resources")
-    assertEquals(resources.length, 2, "expected isabelle://session + isabelle://named/greeting")
+    assertEquals(resources.length, 3,
+      "expected isabelle://session + isabelle://named/greeting + isabelle://theory/Loaded")
     assertEquals(get_string(resources.head, "uri"), "isabelle://session")
     assertEquals(get_string(resources.head, "name"), "session")
     assertEquals(get_string(resources(1), "uri"), "isabelle://named/greeting")
     assertEquals(get_string(resources(1), "name"), "greeting")
+    assertEquals(get_string(resources(2), "uri"), "isabelle://theory/Loaded")
+    assertEquals(get_string(resources(2), "description"), "theory (loaded)")
   }
 
   /* isabelle://named/{name}: MCP_Resource's registry (real backing:
@@ -898,6 +905,167 @@ class MCP_Resources_Tests extends MCP_Suite {
     assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
     assert(get_string(reply, "error", "message").contains("not backed yet"),
       "non-image theory entities should still name the gap: " + JSON.Format(reply))
+  }
+}
+
+
+/* scope_add/scope_remove (plans/scope_add, plans/scope_remove): the
+   phase-2 RESOURCE scope -- a set of theory-name glob patterns
+   controlling what resources/list enumerates, distinct from the
+   tool_scope_* family above (the agent CONTEXT). every test shares one
+   Fake_Backend so scope state persists across the add/remove/list
+   calls that make up a scenario. */
+class MCP_Resource_Scope_Tests extends MCP_Suite {
+  test("tools/list includes scope_add/scope_remove with their schemas") {
+    val add = tool_row("scope_add")
+    assertEquals(required_args(add), List("patterns"))
+    assertEquals(property_type(add, "patterns"), "array")
+    assertEquals(annotation(add, "readOnlyHint"), false)
+    assertEquals(annotation(add, "idempotentHint"), true)
+
+    val remove = tool_row("scope_remove")
+    assertEquals(required_args(remove), List("patterns"))
+    assertEquals(property_type(remove, "patterns"), "array")
+  }
+
+  /* T1 (plans/scope_add S1): fresh scope + Fake_Backend -> resources/list
+     shows only isabelle://session, isabelle://named/greeting and the
+     implicit isabelle://theory/Loaded (see the fixed "resources/list
+     reports the backend resources" test above) -- no pattern-matched
+     entries until scope_add runs. */
+  test("fresh scope: resources/list has no pattern-matched entries") {
+    val backend = new Fake_Backend
+    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    assert(!resources.exists(r => get_string(r, "uri") == "isabelle://theory/Image"),
+      "fresh scope should not list the image theory: " + resources.toString)
+  }
+
+  /* T2: match counts in the reply are computed against the full known
+     universe (Fake_Backend.theory_universe), tier included. */
+  test("scope_add reports match counts against the known theory universe") {
+    val backend = new Fake_Backend
+    val text = result_text(call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend))
+    assert(text.contains("HOL-Library.*: added (3 theories match)"),
+      "unexpected scope_add reply: " + text)
+  }
+
+  test("scope_add with a zero-match pattern is accepted, pinned as count 0, not an error") {
+    val backend = new Fake_Backend
+    val reply = call_tool("scope_add", JSON.Object("patterns" -> List("NoSuchPrefix.*")), backend)
+    assert_no_error(reply)
+    assert(result_text(reply).contains("NoSuchPrefix.*: added (0 theories match)"),
+      "zero-match scope_add should still report count 0: " + result_text(reply))
+  }
+
+  /* T3: idempotency -- adding the same pattern twice keeps the same
+     scope (no duplicate listing entries) and the second reply says
+     already present. */
+  test("scope_add is idempotent: adding the same pattern twice reports already-in-scope the second time") {
+    val backend = new Fake_Backend
+    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    val second = call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    assert(result_text(second).contains("HOL-Library.*: already in scope"),
+      "duplicate scope_add should say already in scope: " + result_text(second))
+    assertEquals(backend.scope_patterns, List("HOL-Library.*"), "no duplicate pattern stored")
+  }
+
+  /* the added pattern's matches appear in resources/list, tier-tagged. */
+  test("scope_add's matches appear in resources/list, tier-tagged") {
+    val backend = new Fake_Backend
+    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    val multiset = resources.find(r => get_string(r, "uri") == "isabelle://theory/HOL-Library.Multiset")
+      .getOrElse(fail("HOL-Library.Multiset missing from resources/list: " + resources.toString))
+    assertEquals(get_string(multiset, "description"), "theory (filesystem)")
+  }
+
+  test("scope_add on an image-tier pattern tags it image") {
+    val backend = new Fake_Backend
+    call_tool("scope_add", JSON.Object("patterns" -> List("Image")), backend)
+    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    val image = resources.find(r => get_string(r, "uri") == "isabelle://theory/Image")
+      .getOrElse(fail("Image missing from resources/list: " + resources.toString))
+    assertEquals(get_string(image, "description"), "theory (image)")
+  }
+
+  /* T1 (plans/scope_remove): add then remove restores the previous
+     resources/list exactly. */
+  test("scope_add then scope_remove of the same pattern restores the previous resources/list") {
+    val backend = new Fake_Backend
+    val before = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    call_tool("scope_remove", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    val after = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    assertEquals(after, before, "resources/list should be back to its pre-scope-add state")
+  }
+
+  /* T2 (plans/scope_remove): literal removal semantics -- removing a
+     theory name that happened to match an added glob does not remove
+     the glob itself; the glob remains and its matches stay listed. */
+  test("scope_remove is literal: removing a matched theory name, not the glob, is a no-op reported as not-in-scope") {
+    val backend = new Fake_Backend
+    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    val reply =
+      call_tool("scope_remove", JSON.Object("patterns" -> List("HOL-Library.Multiset")), backend)
+    assert(result_text(reply).contains("HOL-Library.Multiset: not in scope"),
+      "literal removal of a non-pattern name should say not in scope: " + result_text(reply))
+    assertEquals(backend.scope_patterns, List("HOL-Library.*"), "the glob itself must survive")
+    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    assert(resources.exists(r => get_string(r, "uri") == "isabelle://theory/HOL-Library.Multiset"),
+      "Multiset should still be listed: " + resources.toString)
+  }
+
+  /* T3 (plans/scope_remove): implicit members (theories loaded via
+     load_theory, tracked in loaded_theories here) are not removable by
+     scope_remove -- "Loaded" is in scope by load, not by pattern. */
+  test("scope_remove of an implicit (loaded) member's name does not delist it") {
+    val backend = new Fake_Backend
+    val reply = call_tool("scope_remove", JSON.Object("patterns" -> List("Loaded")), backend)
+    assert(result_text(reply).contains("Loaded: not in scope"),
+      "an implicit member's name was never a pattern: " + result_text(reply))
+    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    assert(resources.exists(r => get_string(r, "uri") == "isabelle://theory/Loaded"),
+      "the implicitly-loaded theory should still be listed: " + resources.toString)
+  }
+
+  /* T4 (plans/scope_add): load_theory auto-adds to the implicit working
+     set; unload removes it -- via Fake_Backend.loaded_theories, which
+     mcp_resources() folds into scope regardless of any pattern. */
+  test("load_theory auto-adds to the scope listing; unload_theory removes it") {
+    val backend = new Fake_Backend
+    call_tool("load_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
+    val listed = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    assert(listed.exists(r => get_string(r, "uri") == "isabelle://theory/HOL-Library.Rat"),
+      "load_theory should auto-add to resources/list: " + listed.toString)
+    call_tool("unload_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
+    val after_unload = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    assert(!after_unload.exists(r => get_string(r, "uri") == "isabelle://theory/HOL-Library.Rat"),
+      "unload_theory should remove it from resources/list: " + after_unload.toString)
+  }
+
+  /* list_changed: scope_add/scope_remove fire notifications/resources/
+     list_changed on an actual change; a no-op (duplicate add, absent
+     remove) fires nothing. */
+  test("scope_add fires resources list_changed on an actual change, not on a duplicate") {
+    val backend = new Fake_Backend
+    var seen: List[String] = Nil
+    backend.changed_handler = seen ::= _
+    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    assertEquals(seen, List("resources"), "first add should fire exactly one resources notification")
+    seen = Nil
+    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    assertEquals(seen, Nil, "duplicate add should not fire a notification")
+  }
+
+  test("scope_remove fires resources list_changed on an actual change, not on a no-op") {
+    val backend = new Fake_Backend
+    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    var seen: List[String] = Nil
+    backend.changed_handler = seen ::= _
+    call_tool("scope_remove", JSON.Object("patterns" -> List("NoSuchPattern")), backend)
+    assertEquals(seen, Nil, "removing an absent pattern should not fire a notification")
+    call_tool("scope_remove", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    assertEquals(seen, List("resources"), "removing a present pattern should fire exactly one notification")
   }
 }
 

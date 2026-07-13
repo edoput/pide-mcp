@@ -47,6 +47,15 @@ trait MCP_Backend {
   def resolve_context_theory(name: String): Either[String, String]
   def mcp_resources(): List[(String, String, String)]
   def mcp_resource_read(uri: String): MCP_Session.Result
+  /* scope_add/scope_remove (plans/scope_add, plans/scope_remove, spec
+     "scoping"): the resource scope is a set of theory-name glob patterns,
+     scala-side only, no bridge. mcp_resources() enumerates matches
+     against the full known theory universe (tier-tagged) plus the
+     implicit working set (theories loaded via load_theory/check_theory,
+     tracked independently of scope_patterns); scope never limits
+     mcp_resource_read, only the listing. */
+  def scope_add(patterns: List[String]): MCP_Session.Result
+  def scope_remove(patterns: List[String]): MCP_Session.Result
   def load_theory(name: String, master_dir: String): MCP_Session.Result
   def unload_theory(name: String): MCP_Session.Result
   def check_theory(name: String, master_dir: String): MCP_Session.Result
@@ -113,6 +122,20 @@ object MCP_Session {
   def decode_args(body: XML.Body): List[(String, String)] = {
     import XML.Decode._
     list(pair(string, string))(body)
+  }
+
+  /* scope_add/scope_remove glob patterns ("HOL-Library.*", "Main"): '*'
+     matches any run of characters, everything else (including '.') is
+     literal -- theory long names use '.' as a qualifier separator, not a
+     regex metachar, so it must be escaped like any other literal. */
+  def glob_to_regex(pattern: String): scala.util.matching.Regex = {
+    val sb = new StringBuilder
+    for (c <- pattern) {
+      if (c == '*') sb.append(".*")
+      else if ("\\.+()[]{}|^$?".contains(c)) { sb.append('\\'); sb.append(c) }
+      else sb.append(c)
+    }
+    ("\\A" + sb.toString + "\\z").r
   }
 
   def start(
@@ -418,9 +441,22 @@ class MCP_Session private(
   def mcp_resources(): List[(String, String, String)] = {
     val rows = ml_named_resources()
     val exposed = MCP_Server.exposure(rows.map(_._1))
+    val universe = known_theory_tiers()
+    val regexes = scope_patterns.value.map(MCP_Session.glob_to_regex)
+    val pattern_matched = universe.keys.filter(name => regexes.exists(_.matches(name))).toSet
+    /* the implicit working set: theories loaded via load_theory/
+       check_theory are in scope regardless of any pattern (S1's "loading
+       a theory auto-adds it to scope"); image theories are NOT dumped in
+       by default -- they are the search space patterns filter into, not
+       the default listing. */
+    val scoped_theories = (theory_master_dirs.value.keySet ++ pattern_matched).toList.sorted
     ("isabelle://session", "session", "current session name, dirs, loaded theories") ::
     rows.flatMap { case (name, description) =>
       exposed.get(name).map(x => ("isabelle://named/" + x, x, description))
+    } ++
+    scoped_theories.map { name =>
+      val tier = universe.getOrElse(name, LoadedTier)
+      ("isabelle://theory/" + name, name, "theory (" + tier.name + ")")
     }
   }
 
@@ -700,6 +736,65 @@ class MCP_Session private(
      error path. */
   private val theory_master_dirs: Synchronized[Map[String, String]] =
     Synchronized(Map.empty)
+
+  /* scope_add/scope_remove state: an ordered, duplicate-free list of glob
+     patterns (S1, plans/scope_add). Insertion order is preserved for
+     stable scope_add/scope_remove replies; membership in resources/list
+     is the union of pattern matches with the implicit working set
+     (theory_master_dirs, checked independently below). */
+  private val scope_patterns: Synchronized[List[String]] = Synchronized(Nil)
+
+  /* the full known theory universe, tier-tagged, for scope_add's match
+     counting and resources/list's listing: image tier from the session
+     base, filesystem tier from D1's theory_map, loaded tier for anything
+     tracked in theory_master_dirs that isn't already image tier (checking
+     a filesystem theory promotes it to loaded, not the other way round). */
+  private def known_theory_tiers(): Map[String, Tier] = {
+    val image: Map[String, Tier] =
+      session.resources.session_base.loaded_theories.keys.map(_ -> ImageTier).toMap
+    val filesystem: Map[String, Tier] =
+      theory_map.keys.filterNot(image.contains).map(name => name -> FileSystemTier(theory_map(name)._2)).toMap
+    val loaded: Map[String, Tier] =
+      theory_master_dirs.value.keys.filterNot(k => image.contains(k) || filesystem.contains(k))
+        .map(_ -> LoadedTier).toMap
+    image ++ filesystem ++ loaded
+  }
+
+  def scope_add(patterns: List[String]): MCP_Session.Result = {
+    val universe = known_theory_tiers()
+    val current = scope_patterns.value
+    val distinct_patterns = patterns.distinct
+    val newly_added = distinct_patterns.filterNot(current.contains)
+    if (newly_added.nonEmpty) {
+      scope_patterns.change(_ ++ newly_added)
+      changed_handler.value("resources")
+    }
+    val lines =
+      distinct_patterns.map { p =>
+        val count = universe.keys.count(MCP_Session.glob_to_regex(p).matches)
+        val status = if (current.contains(p)) "already in scope" else "added"
+        p + ": " + status + " (" + count + " theories match)"
+      }
+    MCP_Session.Ok(lines.mkString("\n"))
+  }
+
+  def scope_remove(patterns: List[String]): MCP_Session.Result = {
+    val current = scope_patterns.value
+    val distinct_patterns = patterns.distinct
+    val present = distinct_patterns.filter(current.contains)
+    if (present.nonEmpty) {
+      scope_patterns.change(_.filterNot(present.contains))
+      changed_handler.value("resources")
+    }
+    val notes =
+      distinct_patterns.map { p =>
+        if (current.contains(p)) p + ": removed" else p + ": not in scope"
+      }
+    val remaining = scope_patterns.value
+    val remaining_line =
+      "remaining scope: " + (if (remaining.isEmpty) "(none)" else remaining.mkString(", "))
+    MCP_Session.Ok((notes :+ remaining_line).mkString("\n"))
+  }
 
   private def render_messages(messages: List[(XML.Elem, Position.T)]): List[String] =
     messages.map({ case (tree, pos) =>

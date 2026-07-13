@@ -20,6 +20,7 @@ object MCP_Test {
       classOf[MCP_Tools_Tests],
       classOf[MCP_Tool_Scope_Tests],
       classOf[MCP_Resources_Tests],
+      classOf[MCP_Resource_Scope_Tests],
       classOf[MCP_Codec_Tests])
 
   /* prover-spawning suites, behind -b: heap suites (fresh ML_process

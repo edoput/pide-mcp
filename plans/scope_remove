@@ -1,9 +1,12 @@
 scope_remove — implementation plan
 ===================================
 
-status: planned (2026-07-09)
+status: DONE (2026-07-13)
 
-wave 4; references S1 (plans/scope_add).
+wave 4; references S1 (plans/scope_add). Implemented alongside
+scope_add in the same change (mcp_session.scala's scope_patterns
+state, scope_add/scope_remove methods; mcp_server.scala's
+scope_add_tool/scope_remove_tool builtin rows).
 
 advertised metadata (the builtin table row)
 -------------------------------------------
