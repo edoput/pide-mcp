@@ -56,6 +56,14 @@ trait MCP_Backend {
      mcp_resource_read, only the listing. */
   def scope_add(patterns: List[String]): MCP_Session.Result
   def scope_remove(patterns: List[String]): MCP_Session.Result
+  /* scope_show (plans/scope_show): the read side of S1 -- explicit
+     patterns with match counts, plus every implicit member (theories
+     loaded via load_theory/check_theory, active REPLs, registered named
+     resources). No bridge of its own: patterns/theories/named resources
+     are already scala-tracked state, and REPLs are read by reusing the
+     existing "repls" ir fname (repl_list's own bridge call) rather than
+     adding a new one. */
+  def scope_show(): MCP_Session.Result
   def load_theory(name: String, master_dir: String): MCP_Session.Result
   def unload_theory(name: String): MCP_Session.Result
   def check_theory(name: String, master_dir: String): MCP_Session.Result
@@ -435,9 +443,7 @@ class MCP_Session private(
   }
 
   /* isabelle://session: the cheap always-there overview (name, dirs, loaded
-     theory, loaded theories via Thy_Info.get_names()). no repls/scope yet
-     -- those need the MCP_Session.ir bridge and a scope feature that don't
-     exist yet */
+     theory, loaded theories via Thy_Info.get_names()) */
   def mcp_resources(): List[(String, String, String)] = {
     val rows = ml_named_resources()
     val exposed = MCP_Server.exposure(rows.map(_._1))
@@ -457,8 +463,34 @@ class MCP_Session private(
     scoped_theories.map { name =>
       val tier = universe.getOrElse(name, LoadedTier)
       ("isabelle://theory/" + name, name, "theory (" + tier.name + ")")
-    }
+    } ++
+    active_repl_ids().map(id => ("isabelle://repl/" + id, id, "repl"))
   }
+
+  /* MCP.ir (fname "repls" included) is a protocol command defined ONLY by
+     MCP_Repl.thy (the HOL/Ir layer) -- sessions built on the base
+     MCP_Tools.thy alone (e.g. this project's own "MCP-Tools" test
+     session) never register it. Calling ir() there would send a
+     protocol command nothing answers, leaving the promise unfulfilled
+     forever: a real hang, hit once by mcp_resources()/scope_show()
+     unconditionally calling active_repl_ids() against such a session.
+     Guard on whether MCP_Repl is actually in this session's image
+     (computed once, no protocol round-trip) before ever sending "repls". */
+  private val repl_bridge_available: Boolean =
+    session.resources.session_base.loaded_theories.keys.exists(Long_Name.base_name(_) == "MCP_Repl")
+
+  /* active REPL ids, read by reusing repl_list's own "repls" ir fname
+     rather than adding a new bridge call (plans/scope_show: "no bridge").
+     Ir.repls() (ir/ir.ML) only ever formats human text through `out`, one
+     line per repl: "    ID (n steps..., from ..., ...)" -- the id is the
+     token up to the first " (". */
+  private val repl_line = """\A\s*(\S+) \(.*\)\z""".r
+  private def active_repl_ids(): List[String] =
+    if (!repl_bridge_available) Nil
+    else ir("repls", Nil) match {
+      case MCP_Session.Ok(text) => text.linesIterator.collect({ case repl_line(id) => id }).toList
+      case MCP_Session.Error(_) => Nil
+    }
 
   private val repl_uri = """\Aisabelle://repl/([^/]+)\z""".r
   private val repl_text_uri = """\Aisabelle://repl/([^/]+)/text\z""".r
@@ -794,6 +826,36 @@ class MCP_Session private(
     val remaining_line =
       "remaining scope: " + (if (remaining.isEmpty) "(none)" else remaining.mkString(", "))
     MCP_Session.Ok((notes :+ remaining_line).mkString("\n"))
+  }
+
+  def scope_show(): MCP_Session.Result = {
+    val universe = known_theory_tiers()
+    val patterns = scope_patterns.value
+    val pattern_lines =
+      if (patterns.isEmpty) List("patterns: (none)")
+      else "patterns:" :: patterns.map { p =>
+        val count = universe.keys.count(MCP_Session.glob_to_regex(p).matches)
+        "  " + p + " (" + count + " theories match)"
+      }
+    val regexes = patterns.map(MCP_Session.glob_to_regex)
+    val pattern_matched = universe.keys.filter(name => regexes.exists(_.matches(name))).toSet
+    val scoped_theories = (theory_master_dirs.value.keySet ++ pattern_matched).toList.sorted
+    val theory_lines =
+      if (scoped_theories.isEmpty) List("theories: (none)")
+      else "theories:" :: scoped_theories.map { name =>
+        "  " + name + " (" + universe.getOrElse(name, LoadedTier).name + ")"
+      }
+    val repl_ids = active_repl_ids()
+    val repl_lines =
+      if (repl_ids.isEmpty) List("repls: (none)")
+      else "repls:" :: repl_ids.map("  " + _)
+    val rows = ml_named_resources()
+    val exposed = MCP_Server.exposure(rows.map(_._1))
+    val named_names = rows.flatMap { case (name, _) => exposed.get(name) }
+    val named_lines =
+      if (named_names.isEmpty) List("named resources: (none)")
+      else "named resources:" :: named_names.map("  " + _)
+    MCP_Session.Ok((pattern_lines ++ theory_lines ++ repl_lines ++ named_lines).mkString("\n"))
   }
 
   private def render_messages(messages: List[(XML.Elem, Position.T)]): List[String] =

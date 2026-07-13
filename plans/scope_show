@@ -1,9 +1,32 @@
 scope_show — implementation plan
 =================================
 
-status: planned (2026-07-09)
+status: DONE (2026-07-13)
 
 wave 4; references S1 (plans/scope_add).
+
+deviation (2026-07-13): plans/scope_add's own dated deviation note said
+active REPLs were left out of resources/list, deferred to this plan's
+T1/T2 claim. Closing that gap turned out to require folding
+active_repl_ids() into mcp_resources() too (isabelle://repl/{id}
+rows), not just scope_show's own text -- otherwise T3's "agreement
+with resources/list" can't hold. active_repl_ids() reuses repl_list's
+own "repls" ir fname rather than adding a new bridge call, per this
+plan's "no bridge" backing mechanism below.
+
+found and fixed live: MCP.ir (the "repls" fname included) is a
+protocol command defined only by MCP_Repl.thy (the HOL/Ir layer) --
+sessions built on the base MCP_Tools.thy alone (this project's own
+"MCP-Tools" test session, and any real deployment session that never
+loads MCP_Repl) never register it. The first cut of active_repl_ids()
+called it unconditionally from mcp_resources()/scope_show(), which
+sends a protocol command nothing answers on such a session -- the
+promise is never fulfilled, a real hang (caught by the bridge suite
+before landing, not by a scala-unit case: Fake_Backend has no protocol
+layer to hang on). Fixed with a one-time
+MCP_Session.repl_bridge_available check (is "MCP_Repl" in this
+session's loaded image?) computed at construction, no protocol
+round-trip -- active_repl_ids() short-circuits to Nil when false.
 
 advertised metadata (the builtin table row)
 -------------------------------------------
@@ -64,4 +87,12 @@ T4  full chain.
 done when
 ---------
 
-- T1..T4 green; tools/list shows the row above.
+- T1..T4 green; tools/list shows the row above. -- DONE. T1..T3 as
+  scala-unit (MCP_Scope_Show_Tests, mcp_test/src/mcp_handler_tests.scala);
+  T2's repl/load_theory half and a repl_bridge_available regression
+  guard as [bridge] (MCP_Ir_Bridge_Tests, mcp_test/src/mcp_bridge_tests.scala);
+  T4 as [e2e] (mcp/test/test_mcp.py, "wave 4" block, alongside the
+  scope_add/scope_remove e2e case plans/scope_add's own T5 had been
+  missing until now). Full mcp_test -b and test_mcp.py runs green
+  apart from the 3 pre-existing, unrelated filesystem-tier failures
+  (documented in CHANGELOG's tool_scope entry).

@@ -766,4 +766,35 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     assert(!after_remove.exists(r => get_string(r, "uri") == "isabelle://theory/HOL.Wellfounded"),
       "HOL.Wellfounded should be delisted after scope_remove: " + after_remove.toString)
   }
+
+  /* T2 (plans/scope_show): a real repl (via with_repl) and a real
+     load_theory fixture both show up in scope_show against a live
+     session -- the one thing Fake_Backend's scala-unit T2 cases
+     (Fake_Backend.active_repls, a settable stand-in) can't cover:
+     active_repl_ids() actually parsing session.ir("repls", Nil)'s real
+     text output. Removal of both makes them disappear again. */
+  test("scope_show bridge T2: a real repl and a real load_theory both appear, and disappear on removal") {
+    val handler = new MCP_Server.Handler(session)
+    with_repl("ScopeShowRepl") {
+      val with_repl_text = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
+      assert(with_repl_text.contains("repls:") && with_repl_text.contains("  ScopeShowRepl"),
+        "the live repl should be listed by scope_show: " + with_repl_text)
+
+      with_fixture_dir("ScopeShowLoad" -> wave2_theory("ScopeShowLoad", wave2_good)) { dir =>
+        expect_ok(session.load_theory("ScopeShowLoad", File.standard_path(dir)), "load")
+        val both = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
+        assert(both.contains("  ScopeShowLoad (loaded)"),
+          "the loaded theory should be listed, tier-tagged: " + both)
+        assert(both.contains("  ScopeShowRepl"), "the repl should still be listed: " + both)
+
+        expect_ok(session.unload_theory("ScopeShowLoad"), "unload")
+        val after_unload = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
+        assert(!after_unload.contains("ScopeShowLoad"),
+          "unload_theory should remove it from scope_show: " + after_unload)
+      }
+    }
+    val after_remove = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
+    assert(!after_remove.contains("ScopeShowRepl"),
+      "repl_remove (with_repl's teardown) should remove it from scope_show: " + after_remove)
+  }
 }

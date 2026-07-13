@@ -4,6 +4,42 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-13 (scope_show: the read side of the resource scope lands)
+--------------------------------------------------------------------
+
+- milestone (spec "scoping"; plan: plans/scope_show, status DONE): the
+  scope_show builtin reads S1's state back out — the explicit patterns
+  with their match counts, plus every implicit member: theories loaded
+  via load_theory/check_theory, active REPLs, and registered named
+  resources. Zero-arg like repl_list. No bridge of its own: patterns/
+  theories/named resources were already scala-tracked state from
+  scope_add/scope_remove; active REPL ids are read by reusing
+  repl_list's own "repls" ir fname (MCP_Session.active_repl_ids())
+  rather than adding a new one.
+- this also closes scope_add's own dated deviation: active REPLs are
+  now folded into resources/list too (isabelle://repl/{id} rows), not
+  just scope_show's text — needed for T3's "agreement with
+  resources/list" to hold at all.
+- found and fixed live: MCP.ir (the "repls" fname included) is a
+  protocol command defined only by MCP_Repl.thy (the HOL/Ir layer);
+  sessions built on the base MCP_Tools.thy alone never register it.
+  The first cut called it unconditionally from mcp_resources()/
+  scope_show(), which hangs forever on such a session (the promise for
+  an unanswered protocol command never completes) — caught by the
+  bridge suite (MCP_Bridge_Tests runs over the base "MCP-Tools"
+  session) before landing, not by scala-unit (Fake_Backend has no
+  protocol layer to hang on). Fixed with
+  MCP_Session.repl_bridge_available, a one-time check (is "MCP_Repl"
+  in this session's loaded image?) computed at construction, no
+  protocol round-trip.
+- also lands plans/scope_add's own deferred T5 e2e case (scope_add/
+  scope_remove full chain against resources/list + list_changed),
+  alongside scope_show's T4, in the same "wave 4" block of
+  mcp/test/test_mcp.py.
+- all layers green (mcp_test scala-unit + -b bridge, test_mcp.py e2e)
+  apart from the 3 pre-existing, unrelated filesystem-tier failures
+  already documented in the tool_scope entry below.
+
 2026-07-13 (scope_add/scope_remove: the resource scope lands)
 ---------------------------------------------------------------
 

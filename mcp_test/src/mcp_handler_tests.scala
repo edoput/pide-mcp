@@ -1070,6 +1070,102 @@ class MCP_Resource_Scope_Tests extends MCP_Suite {
 }
 
 
+/* scope_show (plans/scope_show): the read side of S1 -- explicit
+   patterns with match counts, plus every implicit member (loaded
+   theories, active repls, named resources). Zero-arg like repl_list. */
+class MCP_Scope_Show_Tests extends MCP_Suite {
+  test("tools/list includes scope_show with its schema") {
+    val show = tool_row("scope_show")
+    assertEquals(get(show, "inputSchema"), JSON.Object("type" -> "object"))
+    assertEquals(annotation(show, "readOnlyHint"), true)
+    assertEquals(annotation(show, "idempotentHint"), true)
+  }
+
+  /* T1: fresh state -> only the implicit working set (Fake_Backend's
+     "Loaded" theory, no patterns, no repls, the fixed "greeting" named
+     resource). */
+  test("T1: fresh state names only the implicit members") {
+    val backend = new Fake_Backend
+    val text = result_text(call_tool("scope_show", JSON.Object(), backend))
+    assert(text.contains("patterns: (none)"), "no patterns yet: " + text)
+    assert(text.contains("theories:") && text.contains("  Loaded (loaded)"),
+      "the startup theory should be listed as loaded: " + text)
+    assert(text.contains("repls: (none)"), "no repls yet: " + text)
+    assert(text.contains("named resources:") && text.contains("  greeting"),
+      "the fixed named resource should be listed: " + text)
+  }
+
+  /* T2 (patterns): scope_add's pattern shows up with its match count;
+     scope_remove makes it disappear again. */
+  test("T2: a scope_add pattern appears in scope_show; scope_remove removes it") {
+    val backend = new Fake_Backend
+    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    val added = result_text(call_tool("scope_show", JSON.Object(), backend))
+    assert(added.contains("  HOL-Library.* (3 theories match)"),
+      "the added pattern should be listed with its match count: " + added)
+    call_tool("scope_remove", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    val removed = result_text(call_tool("scope_show", JSON.Object(), backend))
+    assert(removed.contains("patterns: (none)"), "the removed pattern should disappear: " + removed)
+  }
+
+  /* T2 (repls): Fake_Backend.active_repls is the settable stand-in for
+     the real backend's ir("repls")-derived list -- a created/removed
+     repl shows up/disappears the same way a loaded theory does. */
+  test("T2: an active repl appears in scope_show; its removal makes it disappear") {
+    val backend = new Fake_Backend
+    backend.active_repls = List("R")
+    val present = result_text(call_tool("scope_show", JSON.Object(), backend))
+    assert(present.contains("repls:") && present.contains("  R"), "R should be listed: " + present)
+    backend.active_repls = Nil
+    val absent = result_text(call_tool("scope_show", JSON.Object(), backend))
+    assert(absent.contains("repls: (none)"), "R should be gone: " + absent)
+  }
+
+  /* T2 (load_theory): the implicit working set tracked via
+     load_theory/check_theory shows up the same way. */
+  test("T2: load_theory's implicit member appears in scope_show; unload_theory removes it") {
+    val backend = new Fake_Backend
+    call_tool("load_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
+    val loaded = result_text(call_tool("scope_show", JSON.Object(), backend))
+    assert(loaded.contains("  HOL-Library.Rat (filesystem)"),
+      "load_theory's theory should be listed, tier-tagged: " + loaded)
+    call_tool("unload_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
+    val unloaded = result_text(call_tool("scope_show", JSON.Object(), backend))
+    assert(!unloaded.contains("HOL-Library.Rat"), "unload_theory should remove it: " + unloaded)
+  }
+
+  /* T3: agreement with resources/list -- every theory/repl scope_show
+     names is also listed by resources/list (as a uri), and vice versa
+     (restricting resources/list to the theory/repl uris it shares with
+     scope_show's vocabulary). */
+  test("T3: scope_show's theories and repls agree with resources/list") {
+    val backend = new Fake_Backend
+    backend.active_repls = List("R")
+    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
+    val shown = result_text(call_tool("scope_show", JSON.Object(), backend))
+    val shown_theories =
+      shown.linesIterator.dropWhile(_ != "theories:").drop(1).takeWhile(_.startsWith("  "))
+        .map(_.trim.takeWhile(_ != ' ')).toSet
+    val shown_repls =
+      shown.linesIterator.dropWhile(_ != "repls:").drop(1).takeWhile(_.startsWith("  "))
+        .map(_.trim).toSet
+    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
+    val listed_theories =
+      resources.flatMap(r => get_string(r, "uri").stripPrefix("isabelle://theory/") match {
+        case s if s != get_string(r, "uri") => Some(s)
+        case _ => None
+      }).toSet
+    val listed_repls =
+      resources.flatMap(r => get_string(r, "uri").stripPrefix("isabelle://repl/") match {
+        case s if s != get_string(r, "uri") => Some(s)
+        case _ => None
+      }).toSet
+    assertEquals(shown_theories, listed_theories, "theories must agree between scope_show and resources/list")
+    assertEquals(shown_repls, listed_repls, "repls must agree between scope_show and resources/list")
+  }
+}
+
+
 /* pure codecs: tools/call json conversion, MCP.ir yxml argument encoding */
 
 class MCP_Codec_Tests extends MCP_Suite {

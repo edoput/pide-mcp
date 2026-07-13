@@ -595,6 +595,54 @@ def test_repl_builtins():
             verdict("wave 2: tools/call unload_theory on an already-unloaded theory is isError",
                     reply.get("result", {}).get("isError", False), json.dumps(reply))
 
+            # scope_add/scope_remove/scope_show e2e (plans/scope_add T5,
+            # plans/scope_show T4): scope_add's pattern match appears in
+            # both resources/list and scope_show, and fires
+            # notifications/resources/list_changed; scope_remove reverses
+            # all three.
+            client.notifications.clear()
+            reply = client.request("tools/call", {"name": "scope_add",
+                "arguments": {"patterns": ["HOL.Wellfounded"]}})
+            verdict("wave 4: tools/call scope_add adds a pattern",
+                    not reply.get("result", {}).get("isError", False), json.dumps(reply))
+            verdict("wave 4: scope_add fires notifications/resources/list_changed",
+                    client.await_notification("notifications/resources/list_changed"),
+                    "notifications seen: %s" % json.dumps(client.notifications))
+
+            reply = client.request("resources/list")
+            resources = reply.get("result", {}).get("resources", [])
+            verdict("wave 4: resources/list reflects the scope_add pattern",
+                    any(r.get("uri") == "isabelle://theory/HOL.Wellfounded" for r in resources),
+                    json.dumps(resources))
+
+            reply = client.request("tools/call", {"name": "scope_show", "arguments": {}})
+            content = reply.get("result", {}).get("content", [])
+            text = content[0].get("text", "") if content else ""
+            verdict("wave 4: scope_show reflects the scope_add pattern",
+                    "HOL.Wellfounded" in text and not reply.get("result", {}).get("isError", False),
+                    json.dumps(reply))
+
+            client.notifications.clear()
+            reply = client.request("tools/call", {"name": "scope_remove",
+                "arguments": {"patterns": ["HOL.Wellfounded"]}})
+            verdict("wave 4: tools/call scope_remove removes the pattern",
+                    not reply.get("result", {}).get("isError", False), json.dumps(reply))
+            verdict("wave 4: scope_remove fires notifications/resources/list_changed",
+                    client.await_notification("notifications/resources/list_changed"),
+                    "notifications seen: %s" % json.dumps(client.notifications))
+
+            reply = client.request("resources/list")
+            resources = reply.get("result", {}).get("resources", [])
+            verdict("wave 4: resources/list no longer lists the removed pattern's match",
+                    not any(r.get("uri") == "isabelle://theory/HOL.Wellfounded" for r in resources),
+                    json.dumps(resources))
+
+            reply = client.request("tools/call", {"name": "scope_show", "arguments": {}})
+            content = reply.get("result", {}).get("content", [])
+            text = content[0].get("text", "") if content else ""
+            verdict("wave 4: scope_show no longer lists the removed pattern",
+                    "HOL.Wellfounded" not in text, json.dumps(reply))
+
             # flagship approximation (plans/check_theory T4): a REPL proves
             # the lemma, repl_text extracts the script, python splices it
             # into a fresh fixture, check_theory confirms it on disk.

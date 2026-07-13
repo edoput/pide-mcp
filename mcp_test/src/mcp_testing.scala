@@ -166,6 +166,12 @@ class Fake_Backend extends MCP_Backend {
     "HOL-Library.Rat" -> "filesystem",
     "Other.Theory" -> "filesystem")
   var scope_patterns: List[String] = Nil
+  /* scope_show (plans/scope_show): a settable stand-in for the real
+     backend's ir("repls", Nil)-derived active_repl_ids() -- good enough
+     to test scope_show's repl line and its resources/list agreement
+     without a real headless session. Empty by default (T1: fresh state
+     has no repls). */
+  var active_repls: List[String] = Nil
 
   def scope_add(patterns: List[String]): MCP_Session.Result = {
     val current = scope_patterns
@@ -210,7 +216,32 @@ class Fake_Backend extends MCP_Backend {
     scoped_theories.map { name =>
       val tier = theory_universe.getOrElse(name, "loaded")
       ("isabelle://theory/" + name, name, "theory (" + tier + ")")
-    }
+    } ++
+    active_repls.map(id => ("isabelle://repl/" + id, id, "repl"))
+  }
+
+  def scope_show(): MCP_Session.Result = {
+    val pattern_lines =
+      if (scope_patterns.isEmpty) List("patterns: (none)")
+      else "patterns:" :: scope_patterns.map { p =>
+        val count = theory_universe.keys.count(MCP_Session.glob_to_regex(p).matches)
+        "  " + p + " (" + count + " theories match)"
+      }
+    val regexes = scope_patterns.map(MCP_Session.glob_to_regex)
+    val pattern_matched = theory_universe.keys.filter(name => regexes.exists(_.matches(name))).toSet
+    val scoped_theories = (loaded_theories ++ pattern_matched).toList.sorted
+    val theory_lines =
+      if (scoped_theories.isEmpty) List("theories: (none)")
+      else "theories:" :: scoped_theories.map { name =>
+        "  " + name + " (" + theory_universe.getOrElse(name, "loaded") + ")"
+      }
+    val repl_lines =
+      if (active_repls.isEmpty) List("repls: (none)")
+      else "repls:" :: active_repls.map("  " + _)
+    val named_lines =
+      if (named_resources.isEmpty) List("named resources: (none)")
+      else "named resources:" :: named_resources.map { case (name, _) => "  " + name }
+    MCP_Session.Ok((pattern_lines ++ theory_lines ++ repl_lines ++ named_lines).mkString("\n"))
   }
 
   private val repl_uri = """\Aisabelle://repl/([^/]+)\z""".r

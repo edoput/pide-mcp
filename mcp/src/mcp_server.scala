@@ -763,6 +763,20 @@ object MCP_Server {
       annotations = idempotent_mutating_annotations,
       handler_fn = Some((backend, args) => backend.scope_remove(pass_args(args, "patterns"))))
 
+  val scope_show_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "scope_show",
+      fname = "",
+      description =
+        "Show the current resource scope: the explicit patterns with " +
+        "their match counts, plus the implicit members -- theories " +
+        "loaded with load_theory, active REPLs, and registered named " +
+        "resources. This is what resources/list will enumerate. Scope " +
+        "never limits resource reads, only the listing.",
+      input_schema = JSON.Object("type" -> "object"),
+      annotations = read_only_annotations,
+      handler_fn = Some((backend, _) => backend.scope_show()))
+
   val builtins: List[Builtin_Tool] =
     List(repl_list_tool, repl_init_tool, repl_remove_tool, repl_step_tool, repl_state_tool,
       repl_show_tool, repl_text_tool, repl_edit_tool, repl_replay_tool, repl_truncate_tool,
@@ -770,7 +784,7 @@ object MCP_Server {
       repl_rebase_tool, sledgehammer_tool, find_theorems_tool,
       load_theory_tool, unload_theory_tool, check_theory_tool,
       list_sessions_tool, list_theories_tool, search_sources_tool,
-      scope_add_tool, scope_remove_tool)
+      scope_add_tool, scope_remove_tool, scope_show_tool)
 
   /* tool_scope_show/set/include (plans/tool_scope, spec "the agent
      context"): unlike every other builtin above, these read and mutate
