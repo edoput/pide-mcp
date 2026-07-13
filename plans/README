@@ -65,11 +65,6 @@ implementation.
 
 status key: [ ] planned only, [x] implemented and green.
 
-process rule (.claude/rules/plan-tasks.md): implementation of a plan
-STARTS by creating a task per implementation step (plus tests +
-close-out) and keeping them live — the plan is the record, the tasks
-are the tracker.
-
 index (wave order from the spec's implementation plan)
 ------------------------------------------------------
 
@@ -121,3 +116,15 @@ wave 4 — scope + navigation:
   - [ ] scope_show             plans/scope_show
   - [ ] find_definition        plans/find_definition   (MCP.ir, name-space lookup)
   - [ ] goto_definition        plans/goto_definition   (scala, snapshot entity markup)
+  - [x] find_theorems (context promotion)  plans/find_theorems,
+        "context promotion" section — repl becomes optional,
+        theory accepted, default = base image (decided 2026-07-12;
+        aligns the finding tools on one context interface. the
+        wave-1 [x] above is the shipped repl-required version.)
+
+flagged, NOT scheduled (no wave):
+  - read_theory                plans/read_theory   (tool mirror of
+        isabelle://theory/{name}, for clients without resource
+        support — see spec "resource-read tool mirrors")
+  - list_entities              plans/list_entities (tool mirror of
+        .../entities, same rationale)

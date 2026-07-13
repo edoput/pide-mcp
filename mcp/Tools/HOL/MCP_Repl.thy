@@ -44,6 +44,7 @@ sig
   val fork_run: string -> (string * string) list -> (string * string) future
   val run: string -> (string * string) list -> string * string
   val reset: unit -> unit
+  val set_self_theory: theory -> unit
 end;
 
 structure MCP_Repl: MCP_REPL =
@@ -53,6 +54,24 @@ struct
   build-time use (the self-test below) so no stale "wrapped" flag persists
   into the heap — see MCP_Output.reset*)
 val reset = MCP_Output.reset;
+
+(* find_theorems context promotion (plans/find_theorems, "context
+   promotion"): the default context (neither repl nor theory given) is
+   "the base image's startup theory" -- the same notion ir.ML's own
+   sledgehammer already relies on (Ir.the_self_theory), captured there
+   for a different reason (an eval needs Ir's OWN ML environment) and
+   not exported by ir.ML's signature (verbatim reuse, Amazon-header
+   constraint). So MCP_Repl captures its own copy the same way: set
+   below, right after this structure closes, mirroring the file-level
+   \<open>Ir.set_self_theory \<^theory>\<close> call. MCP_Repl imports Main, so this
+   theory is a strict descendant of the whole base image -- its global
+   context sees every image fact. *)
+val self_theory: theory option Synchronized.var = Synchronized.var "MCP_Repl.self_theory" NONE;
+fun set_self_theory thy = Synchronized.change self_theory (K (SOME thy));
+fun the_self_theory () =
+  (case Synchronized.value self_theory of
+    SOME thy => thy
+  | NONE => error "MCP_Repl.self_theory not set (see the set_self_theory call below this structure)");
 
 
 (* isabelle://theory/{name}/entities (spec's "concrete resources"):
@@ -94,6 +113,41 @@ fun entities thy_name =
       writeln (StringCvt.padLeft #" " 8 kind ^ "  " ^
                StringCvt.padLeft #" " 6 (string_of_int line) ^ "  " ^ name)) sorted
   end;
+
+
+(* find_theorems context promotion (plans/find_theorems, "context
+   promotion"): a repl-free counterpart to Ir.find_theorems (which stays
+   verbatim in ir.ML -- new ML lives here instead), searching a THEORY's
+   global context rather than a repl's goal-aware proof state. No goal is
+   available, so goal-based criteria (intro/elim/dest/solves) still fail
+   -- Find_Theorems.find_theorems_cmd itself raises "Current goal
+   required for ... search criterion" in that case; the wrapper below
+   only appends a pointer at a repl, reusing ir.ML's own tally/pretty
+   formatting shape so theory- and repl-context results read alike. *)
+fun find_theorems_ctxt ctxt max_results query =
+  let
+    val criteria = Find_Theorems.read_query Position.none query
+    val limit = if max_results > 0 then SOME max_results else NONE
+    val (opt_found, theorems) =
+      Find_Theorems.find_theorems_cmd ctxt NONE limit false criteria
+        handle ERROR msg =>
+          error (if String.isSubstring "goal required" msg
+                 then msg ^ " -- no goal: use a repl mid-proof"
+                 else msg)
+    val returned = length theorems
+    val tally =
+      (case opt_found of
+        NONE => "displaying " ^ string_of_int returned ^ " theorem(s)"
+      | SOME found =>
+          "found " ^ string_of_int found ^ " theorem(s)" ^
+          (if returned < found then " (" ^ string_of_int returned ^ " displayed)" else ""))
+    val lines = map (fn t => Pretty.string_of (Find_Theorems.pretty_thm ctxt t)) theorems
+  in writeln (tally ^ ":\n" ^ String.concatWith "\n" (rev lines)) end;
+
+(*thy_name is already the scala-resolved canonical Thy_Info key -- same
+  spelling contract as entities' thy_name above*)
+fun find_theorems_theory thy_name max_results query =
+  find_theorems_ctxt (Proof_Context.init_global (Thy_Info.get_theory thy_name)) max_results query;
 
 
 (* dispatcher: closed table over Ir, named arguments *)
@@ -162,8 +216,19 @@ fun dispatch fname args =
         (keys ["repl", "timeout_secs"];
          Ir.sledgehammer (get "repl") (get_int_default "timeout_secs" 15))
     | "find_theorems" =>
-        (keys ["repl", "query", "max_results"];
-         Ir.find_theorems (get "repl") (get_int_default "max_results" 40) (get "query"))
+        (keys ["repl", "theory", "query", "max_results"];
+         let val max_results = get_int_default "max_results" 40
+             val query = get "query"
+         in
+           (case AList.lookup (op =) args "theory" of
+             SOME thy_name => find_theorems_theory thy_name max_results query
+           | NONE =>
+               (case AList.lookup (op =) args "repl" of
+                 SOME repl => Ir.find_theorems repl max_results query
+               | NONE =>
+                   find_theorems_ctxt (Proof_Context.init_global (the_self_theory ()))
+                     max_results query))
+         end)
     | "timeout" => (keys ["repl", "secs"]; Ir.timeout (get "repl") (get_int "secs"))
     | "entities" => (keys ["theory_name"]; entities (get "theory_name"))
     | _ => error ("MCP.ir: unknown function " ^ quote fname))
@@ -200,6 +265,11 @@ fun run fname args = Future.join (fork_run fname args);
 
 end;
 \<close>
+
+text \<open>Capture MCP_Repl's own reference point for find_theorems' default
+context (neither repl nor theory given), right after the structure closes
+-- same positioning and rationale as \<open>Ir.set_self_theory \<^theory>\<close> above.\<close>
+ML \<open>MCP_Repl.set_self_theory \<^theory>\<close>
 
 section \<open>Async protocol command for Isabelle/Scala\<close>
 

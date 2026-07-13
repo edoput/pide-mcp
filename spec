@@ -676,7 +676,20 @@ stepping:
 proof search:
 
   sledgehammer          {repl, timeout_secs?}
-  find_theorems         {repl, query, max_results?}
+  find_theorems         {query, repl? | theory?, max_results?}
+
+  find_theorems context promotion (decided 2026-07-12): repl is no
+  longer required. the search needs only a context, not proof state,
+  so the tool takes the same context selectors as find_definition
+  below — repl (that repl's latest state, goal-aware mid-proof) OR
+  theory (a loaded/image theory's global context, normalized per
+  "theory-name spelling"), mutually exclusive, default = the base
+  image's startup theory. this makes the entire read-only surface
+  usable without ever creating a repl; goal-based criteria
+  (intro/solves) still require a repl mid-proof and error cleanly
+  otherwise (behavior already pinned in plans/find_theorems T4).
+  the shipped wave-1 tool required repl; the delta is tracked in
+  plans/find_theorems ("context promotion" section).
 
 navigation (go to definition — reuse PIDE data, no fuzzy search):
 
@@ -929,6 +942,25 @@ later (not this phase): resources/subscribe on diagnostics via
 session.commands_changed — design sketched in "out of scope (phase 3+)"
 below; listChanged on repl creation/removal (scope
 changes already fire it, see scoping above).
+
+resource-read tool mirrors (flagged 2026-07-12, NOT implemented, not
+scheduled): mcp client support for resources is uneven — tools are
+what models call autonomously, resources are often client-mediated
+(pickers, mentions) or absent. if a target client turns out unable to
+read resources, the escape hatch is two builtin tools that are thin
+aliases over the exact backends the templates already use:
+
+  read_theory    {name, lines?}           = isabelle://theory/{name}
+                                            (?lines= slicing included)
+  list_entities  {theory, kind?, prefix?} = .../entities
+
+no new mechanism: same theory-name normalization, same tier
+resolution, same lazy/truncation rules; only the surface duplicates.
+deliberately NOT built now — the known clients read resources, and
+every mirror is a second name for the model to choose between.
+sketches: plans/read_theory, plans/list_entities (status: flagged).
+trigger to revisit: an evals/ failure showing an agent that cannot
+reach theory source or entities through resources/read.
 
 exploring the library universe (theories outside the heap)
 -----------------------------------------------------------
@@ -1284,6 +1316,14 @@ implementation order
       — MCP_Resource entries are plain (name, description, read) with
       no schema of their own (resources don't take input the way tools
       do). See CHANGELOG 2026-07-10.
+- [x] scala+ml: find_theorems context promotion — repl becomes
+      optional, theory (image_theory-normalized) accepted as the
+      alternative context selector, default = base image; schema,
+      handler exclusivity check, dispatcher context resolution (new
+      ML in MCP_Repl.thy, ir.ML stays verbatim). decided 2026-07-12;
+      delta + tests in plans/find_theorems ("context promotion").
+      (read_theory / list_entities tool mirrors are flagged but NOT
+      scheduled — see "resource-read tool mirrors" above.)
 - [ ] navigation: find_definition (ML name-space lookup + defining
       source via segments), goto_definition (scala snapshot cumulate
       over entity markup), isabelle://theory/{name}/entities resource.

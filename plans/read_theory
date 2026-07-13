@@ -1,0 +1,44 @@
+read_theory — flagged tool mirror (NOT scheduled)
+==================================================
+
+status: flagged (2026-07-12), not planned for implementation.
+spec: "resource-read tool mirrors" under "mcp resources".
+
+what it is: a builtin tool alias for the isabelle://theory/{name}
+resource, motivated by uneven mcp-client support for resources —
+tools are model-callable everywhere, resources sometimes only via
+client UI. NOT built now: the known clients read resources, and a
+mirror is a second name for the model to choose between. trigger to
+revisit: an evals/ failure where an agent cannot reach theory source
+through resources/read.
+
+advertised metadata (sketch)
+----------------------------
+
+name          read_theory
+description   "Read a theory's source text. Accepts any theory the
+              session structure knows — image, loaded, or filesystem
+              tier (AFP included when registered). `lines` selects a
+              window, e.g. \"120-180\"; without it an oversized
+              theory returns the first window plus a truncation
+              note. Same content as the isabelle://theory/{name}
+              resource."
+inputSchema   {"type": "object",
+               "properties": {
+                 "name": {"type": "string"},
+                 "lines": {"type": "string"}},
+               "required": ["name"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+
+backing: zero new mechanism. the handler is a thin call into the
+same resolution path resources/read uses for isabelle://theory/{name}
+(image_theory normalization -> tier resolution -> Ir.source /
+snapshot node source / session-structure path map; ?lines= slicing
+and truncation rules included). if implemented, factor the uri
+handler so tool and resource share one function — the tool must
+never grow behavior the resource lacks, or the two surfaces drift.
+
+tests (sketch): [scala unit] row + dispatch + parity with the
+resource read on Fake_Backend; [e2e] read a filesystem-tier theory
+by tool and by resource, assert byte-identical payloads.

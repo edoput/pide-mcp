@@ -321,9 +321,14 @@ class MCP_Tools_Tests extends MCP_Suite {
       "sledgehammer", List("repl" -> "T", "timeout_secs" -> "10"))
   }
 
-  test("tools/list includes find_theorems with an optional max_results property (not in required)") {
+  /* context promotion (plans/find_theorems "context promotion"): query
+     is the only required property now -- repl and theory are both
+     optional, mutually-exclusive context selectors. */
+  test("tools/list includes find_theorems with only query required; repl/theory/max_results optional") {
     val row = tool_row("find_theorems")
-    assertEquals(required_args(row), List("repl", "query"))
+    assertEquals(required_args(row), List("query"))
+    assertEquals(property_type(row, "repl"), "string")
+    assertEquals(property_type(row, "theory"), "string")
     assertEquals(property_type(row, "max_results"), "integer")
   }
 
@@ -340,6 +345,50 @@ class MCP_Tools_Tests extends MCP_Suite {
     assert_dispatch("find_theorems",
       JSON.Object("repl" -> "T", "query" -> "name:conjI", "max_results" -> 3),
       "find_theorems", List("repl" -> "T", "query" -> "name:conjI", "max_results" -> "3"))
+  }
+
+  /* T7 (plans/find_theorems "context promotion"): theory is normalized
+     to the canonical Thy_Info key (Fake_Backend.resolve_context_theory
+     resolves both "Main" and the alternate spelling "HOL.Main" to
+     "Main") BEFORE crossing the bridge -- the fake only ever sees the
+     resolved key, never the client's original spelling. */
+  test("tools/call find_theorems with theory=Main reaches backend.ir with the resolved theory") {
+    assert_dispatch("find_theorems",
+      JSON.Object("theory" -> "Main", "query" -> "name:conjI"),
+      "find_theorems", List("theory" -> "Main", "query" -> "name:conjI"))
+  }
+
+  test("tools/call find_theorems with theory=HOL.Main (alternate spelling) reaches backend.ir with the canonical name Main") {
+    assert_dispatch("find_theorems",
+      JSON.Object("theory" -> "HOL.Main", "query" -> "name:conjI"),
+      "find_theorems", List("theory" -> "Main", "query" -> "name:conjI"))
+  }
+
+  test("tools/call find_theorems with an unknown theory is a status error naming the theory, nothing crosses the bridge") {
+    val backend = new Fake_Backend
+    val reply = call_tool("find_theorems", JSON.Object("theory" -> "Bogus", "query" -> "name:conjI"), backend)
+    assert_is_error(reply)
+    assertEquals(backend.last_ir, None, "nothing should cross the ir bridge on resolution failure")
+  }
+
+  /* T8: default context (neither repl nor theory) -- the headline use
+     case of the promotion, find_theorems reachable with zero repls. */
+  test("tools/call find_theorems with neither repl nor theory reaches backend.ir with just query (default context)") {
+    assert_dispatch("find_theorems",
+      JSON.Object("query" -> "name:conjI"),
+      "find_theorems", List("query" -> "name:conjI"))
+  }
+
+  /* T9: repl and theory together is a handler-side error naming both
+     keys; nothing crosses the bridge. */
+  test("tools/call find_theorems with both repl and theory is an error naming both, nothing crosses the bridge") {
+    val backend = new Fake_Backend
+    val reply =
+      call_tool("find_theorems",
+        JSON.Object("repl" -> "T", "theory" -> "Main", "query" -> "name:conjI"), backend)
+    val msg = assert_is_error(reply)
+    assertEquals(backend.last_ir, None, "nothing should cross the ir bridge when repl and theory are both given")
+    assert(msg.contains("repl") && msg.contains("theory"), "error should name both keys: " + msg)
   }
 
   /* wave 2 (plans/load_theory, plans/unload_theory, plans/check_theory):

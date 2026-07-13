@@ -1,0 +1,46 @@
+list_entities — flagged tool mirror (NOT scheduled)
+====================================================
+
+status: flagged (2026-07-12), not planned for implementation.
+spec: "resource-read tool mirrors" under "mcp resources".
+
+what it is: a builtin tool alias for the
+isabelle://theory/{name}/entities resource, same motivation and same
+non-implementation rationale as plans/read_theory (uneven client
+resource support; mirrors duplicate the surface). trigger to
+revisit: an evals/ failure where an agent cannot reach entities
+through resources/read.
+
+advertised metadata (sketch)
+----------------------------
+
+name          list_entities
+description   "List the entities a theory defines — consts, types,
+              classes, facts, locales — with kinds and positions.
+              Image theories answer from name-space entries, loaded
+              theories from live snapshot markup; filesystem-tier
+              theories answer with their tier (\"not checked —
+              load_theory to get semantics\"). `kind` and `prefix`
+              filter. Same content as the
+              isabelle://theory/{name}/entities resource."
+inputSchema   {"type": "object",
+               "properties": {
+                 "theory": {"type": "string"},
+                 "kind": {"type": "string",
+                          "enum": ["const", "type", "class", "fact",
+                                   "locale"]},
+                 "prefix": {"type": "string"}},
+               "required": ["theory"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+
+backing: zero new mechanism — the handler calls the same
+theory_entities path (mcp_session.scala) the resource uses:
+image_theory normalization, image tier via the MCP.ir "entities"
+fname (Name_Space filtering in MCP_Repl.thy), loaded tier via
+entity-def markup on the snapshot, ?kind=&prefix= filtering. same
+sharing rule as read_theory: one function, two surfaces.
+
+tests (sketch): [scala unit] row + dispatch + parity with the
+resource read; [e2e] entities of an image theory by tool and by
+resource, identical payloads.

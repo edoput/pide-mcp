@@ -91,9 +91,40 @@ class Fake_Backend extends MCP_Backend {
             ("repl", repl) :: ("query", query) :: ("max_results", max) :: Nil) =>
         MCP_Session.Ok(
           "find_theorems " + quote(repl) + " query=" + quote(query) + " max_results=" + max)
+      /* context promotion (plans/find_theorems): theory- and no-context
+         calls -- args always carry the RESOLVED theory (canonical
+         spelling), never the client's original string, so a scala unit
+         test can assert on the resolved key crossing this fake bridge. */
+      case ("find_theorems", ("theory", theory) :: ("query", query) :: Nil) =>
+        MCP_Session.Ok("find_theorems theory=" + quote(theory) + " query=" + quote(query))
+      case ("find_theorems",
+            ("theory", theory) :: ("query", query) :: ("max_results", max) :: Nil) =>
+        MCP_Session.Ok(
+          "find_theorems theory=" + quote(theory) + " query=" + quote(query) + " max_results=" + max)
+      case ("find_theorems", ("query", query) :: Nil) =>
+        MCP_Session.Ok("find_theorems (default context) query=" + quote(query))
+      case ("find_theorems", ("query", query) :: ("max_results", max) :: Nil) =>
+        MCP_Session.Ok(
+          "find_theorems (default context) query=" + quote(query) + " max_results=" + max)
       case _ => MCP_Session.Error("Unknown MCP.ir function " + quote(fname))
     }
   }
+
+  /* find_theorems' theory selector (plans/find_theorems "context
+     promotion"): "Main" and its alternate spelling "HOL.Main" both
+     resolve to the canonical "Main"; "FSOnly" simulates a filesystem-
+     tier theory (known but not loaded, no context to search); anything
+     else is unknown. Good enough for the scala-unit exclusivity/
+     normalization tests -- not meant to model the real resolver. */
+  def resolve_context_theory(name: String): Either[String, String] =
+    name match {
+      case "Main" | "HOL.Main" => Right("Main")
+      case "FSOnly" =>
+        Left(
+          "Unknown theory " + quote(name) + " context: filesystem theory, not yet " +
+            "loaded (no context to search) -- load_theory first")
+      case _ => Left("Unknown theory " + quote(name))
+    }
   /* isabelle://named/{name}: a fixed one-entry stand-in for MCP_Resource's
      registry (MCP_Tools.thy), mirroring extra_ml_tools' role for MCP_Tool. */
   var named_resources: List[(String, String)] = List(("greeting", "a static demo resource"))

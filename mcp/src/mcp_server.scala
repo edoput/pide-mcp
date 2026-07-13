@@ -522,31 +522,60 @@ object MCP_Server {
      quotes) is NOT reimplemented here -- the description teaches the
      quoting contract instead. Revisit only if e2e shows models failing
      at it. */
+  /* context promotion (plans/find_theorems "context promotion", decided
+     2026-07-12): repl is no longer required -- the search needs a
+     context, not proof state. repl and theory are mutually exclusive,
+     handler-enforced below (same pattern find_definition will use);
+     theory is normalized to the canonical Thy_Info key via
+     resolve_context_theory before it crosses the ir bridge, same
+     theory-name spelling rule as every other theory-taking surface. */
   val find_theorems_tool: Builtin_Tool =
     Builtin_Tool(
       name = "find_theorems",
       fname = "find_theorems",
       description =
-        "Search for theorems visible in the REPL's current context. " +
-        "Criteria: name:foo (name pattern, unquoted), intro / elim / " +
-        "dest / solves (goal-based, need a current goal), " +
-        "simp:\"term\" (simplification rules for a term), or " +
-        "\"pattern\" (term pattern). Terms and patterns MUST be " +
-        "quoted: \"_ + _\", \"_ @ _\"; name patterns are NOT quoted: " +
-        "name:append. Prefix a criterion with - to negate it. " +
+        "Search for theorems. Criteria: name:foo (name pattern, " +
+        "unquoted), intro / elim / dest / solves (goal-based, need a " +
+        "current goal), simp:\"term\" (simplification rules for a " +
+        "term), or \"pattern\" (term pattern). Terms and patterns " +
+        "MUST be quoted: \"_ + _\", \"_ @ _\"; name patterns are NOT " +
+        "quoted: name:append. Prefix a criterion with - to negate it. " +
         "Examples: name:conjI, \"_ + _ = _\", simp:\"True\", " +
         "-name:foo. Multiple criteria are space-separated and " +
-        "conjoined.",
+        "conjoined. Context: pass `repl` to search that REPL's " +
+        "current context (goal-aware mid-proof -- needed for " +
+        "intro/elim/dest/solves), or `theory` for a loaded/image " +
+        "theory's global context; default is the base image. " +
+        "Goal-based criteria require a REPL that is mid-proof.",
       input_schema =
         JSON.Object(
           "type" -> "object",
           "properties" ->
             JSON.Object(
-              "repl" -> JSON.Object("type" -> "string"),
               "query" -> JSON.Object("type" -> "string"),
+              "repl" -> JSON.Object("type" -> "string"),
+              "theory" -> JSON.Object("type" -> "string"),
               "max_results" -> JSON.Object("type" -> "integer", "default" -> 40)),
-          "required" -> List("repl", "query")),
-      annotations = read_only_annotations)
+          "required" -> List("query")),
+      annotations = read_only_annotations,
+      handler_fn = Some((backend, args) => {
+        val repl = args.collectFirst({ case ("repl", v) => v })
+        val theory = args.collectFirst({ case ("theory", v) => v })
+        (repl, theory) match {
+          case (Some(r), Some(t)) =>
+            MCP_Session.Error(
+              "find_theorems: repl and theory are mutually exclusive (got repl=" +
+                quote(r) + ", theory=" + quote(t) + ")")
+          case (_, Some(t)) =>
+            backend.resolve_context_theory(t) match {
+              case Right(resolved) =>
+                backend.ir("find_theorems",
+                  args.map({ case ("theory", _) => "theory" -> resolved; case p => p }))
+              case Left(msg) => MCP_Session.Error(msg)
+            }
+          case _ => backend.ir("find_theorems", args)
+        }
+      }))
 
   /* wave 2 (theory management, scala-side): pass_args pulls "name"/
      "master_dir" out of the yxml-shaped pair list json_args already

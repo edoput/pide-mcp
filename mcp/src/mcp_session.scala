@@ -31,6 +31,14 @@ trait MCP_Backend {
      client. Default: drop (Fake_Backend tests set their own). */
   def set_changed_handler(handler: String => Unit): Unit = ()
   def ir(fname: String, args: List[(String, String)]): MCP_Session.Result
+  /* context-taking tools (find_theorems' "context promotion", later
+     find_definition): resolve a client-given theory name to the
+     canonical Thy_Info key the ir bridge needs, same normalization as
+     image_theory/resolve_theory. Right = resolved, ready to cross the
+     bridge; Left = a user-facing error message (unknown name, or a
+     filesystem-tier theory that needs load_theory first -- Thy_Info has
+     no entry for those, so there is no context to search). */
+  def resolve_context_theory(name: String): Either[String, String]
   def mcp_resources(): List[(String, String, String)]
   def mcp_resource_read(uri: String): MCP_Session.Result
   def load_theory(name: String, master_dir: String): MCP_Session.Result
@@ -500,6 +508,17 @@ class MCP_Session private(
   }
 
   private def image_tier(name: String): Boolean = image_theory(name).isDefined
+
+  def resolve_context_theory(name: String): Either[String, String] =
+    resolve_theory(name) match {
+      case Some((resolved, ImageTier)) => Right(resolved)
+      case Some((resolved, LoadedTier)) => Right(resolved)
+      case Some((_, FileSystemTier(_))) =>
+        Left(
+          "Unknown theory " + quote(name) + " context: filesystem theory, not yet " +
+            "loaded (no context to search) -- load_theory first")
+      case None => Left("Unknown theory " + quote(name))
+    }
 
   /* resolve_theory: unified three-tier resolution for filesystem-tier
      resource widening (step 2), load_theory session-qualified resolution

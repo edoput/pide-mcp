@@ -4,6 +4,61 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-12 (find_theorems context promotion: implemented)
+-----------------------------------------------------------
+
+- milestone: the context-promotion delta decided earlier the same day
+  (below) is implemented and green. find_theorems's required set drops
+  to [query]; repl and theory are optional, mutually-exclusive context
+  selectors (handler-enforced, scala side); the default (neither given)
+  searches the base image. scala: MCP_Backend gained
+  resolve_context_theory, normalizing the client's theory spelling to
+  the canonical Thy_Info key (image/loaded tiers only — filesystem-tier
+  and unknown names error before crossing the bridge) via the existing
+  resolve_theory three-tier resolver. ml (MCP_Repl.thy, ir.ML untouched):
+  a new find_theorems_ctxt helper reuses Find_Theorems.find_theorems_cmd
+  against a Proof_Context.init_global context, sharing ir.ML's own
+  tally/pretty formatting shape; the default context is MCP_Repl's own
+  captured self-theory (MCP_Repl.set_self_theory, a second independent
+  capture of \<^theory> mirroring ir.ML's internal, unexported
+  Ir.set_self_theory/the_self_theory). Goal-based criteria (intro/elim/
+  dest/solves) without a repl still error — find_theorems_ctxt wraps
+  Find_Theorems.find_theorems_cmd's own "Current goal required" message
+  with "-- no goal: use a repl mid-proof". T7..T10 green: ML unit
+  (MCP_Repl_Tests.thy), scala unit (mcp_handler_tests.scala, incl.
+  spelling normalization and the exclusivity error), bridge (unchanged
+  T6 still green), plus a live e2e check — find_theorems answers with
+  zero repls on a fresh `isabelle mcp_server -s MCP-HOL`, the headline
+  use case of the promotion. spec checklist item and plans/README
+  checkbox now [x]; details: plans/find_theorems "context promotion".
+
+2026-07-12 (find_theorems context promotion; resource-read tool mirrors flagged)
+--------------------------------------------------------------------------------
+
+- decision (spec "proof search", promotion note): find_theorems drops
+  its mandatory repl argument — signature becomes {query, repl? |
+  theory?, max_results?}, the same context selectors find_definition
+  already specs (repl = that repl's goal-aware context, theory =
+  loaded/image global context normalized per the theory-name spelling
+  rule, default = base image). rationale: the search needs a context,
+  not proof state; this was the one repl-bound tool left in the
+  read-only surface, so its promotion makes exploration fully
+  repl-free. goal-based criteria (intro/solves) still need a repl
+  mid-proof and error cleanly otherwise. delta + tests (T7..T10):
+  plans/find_theorems "context promotion"; new unchecked item in the
+  spec's implementation order. the shipped wave-1 tool is unchanged
+  until that lands.
+- decision (spec "resource-read tool mirrors", new note under "mcp
+  resources"): read_theory {name, lines?} and list_entities {theory,
+  kind?, prefix?} are recorded as flagged-but-NOT-implemented tool
+  aliases over the isabelle://theory/{name} and .../entities backends,
+  the escape hatch if a target mcp client cannot read resources
+  (tools are model-callable everywhere; resources are often
+  client-mediated). deliberately not built: known clients read
+  resources, and mirrors duplicate the surface the model chooses
+  from. sketches in plans/read_theory and plans/list_entities;
+  revisit trigger = an evals/ failure reaching theory content.
+
 2026-07-12 (wave 3 complete: library discovery tools)
 -----------------------------------------------------
 

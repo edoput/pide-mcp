@@ -139,3 +139,102 @@ does not) queue behind an unrelated slow call.
 
 ml unit: MCP_Repl_Tests.thy; scala unit: isabelle mcp_test; bridge
 (T6): isabelle mcp_test -b -d mcp/Tools; e2e (T5): test_mcp.py.
+
+context promotion (decided 2026-07-12): repl? | theory?
+--------------------------------------------------------
+
+status: implemented (2026-07-12) — the shipped tool above required repl;
+this section is the delta. spec: "proof search", promotion note.
+
+implementation notes: the default context (neither repl nor theory) is
+MCP_Repl's OWN captured self-theory (MCP_Repl.set_self_theory, mirroring
+ir.ML's internal Ir.set_self_theory/the_self_theory, which is not
+exported by ir.ML's signature and so unusable from here directly — a
+second, independent capture of the same \<^theory> value, same file-level
+positioning). Theory-context and default-context search share one new
+helper, find_theorems_ctxt (MCP_Repl.thy), which wraps
+Find_Theorems.find_theorems_cmd's own "Current goal required" error with
+"-- no goal: use a repl mid-proof" (both branches, T10). scala-side,
+resolve_context_theory (MCP_Backend trait) resolves the client's theory
+spelling to the canonical Thy_Info key via resolve_theory (image/loaded
+tiers only; filesystem-tier and unknown both error before crossing the
+bridge). T7..T10 green in MCP_Repl_Tests.thy plus mcp_handler_tests.scala
+plus a live e2e check (find_theorems with zero repls on a fresh server).
+
+motivation: the search needs a context, not proof state — requiring
+repl_init before any semantic search was the one repl-bound hole in
+the otherwise repl-free read-only surface. the fix mirrors
+find_definition's already-specced context selectors exactly, so the
+two finding tools present the same interface.
+
+metadata delta (the builtin table row)
+--------------------------------------
+
+inputSchema   required drops to ["query"]; add
+                "theory": {"type": "string"}
+              repl and theory are mutually exclusive — handler-
+              enforced, same as find_definition and
+              repl_init_from_source's locators.
+description   append the context contract: "Context: pass `repl` to
+              search that REPL's current context (goal-aware
+              mid-proof — needed for intro/elim/dest/solves), or
+              `theory` for a loaded/image theory's global context;
+              default is the base image. Goal-based criteria require
+              a REPL that is mid-proof."
+annotations   unchanged (readOnly, idempotent, closed-world).
+
+changes required, by layer
+--------------------------
+
+1. scala (mcp_server.scala builtin row + handler): schema/description
+   as above; exclusivity check (repl + theory both given -> isError,
+   before dispatch); when theory is given, normalize the client
+   spelling through image_theory (the resolver from the entities fix,
+   mcp_session.scala) and forward the RESOLVED canonical key —
+   theory-name spelling rule, same as every other theory-taking
+   surface. omit absent optional pairs (json_args does this already).
+2. ml (MCP_Repl.thy dispatcher — ir.ML stays verbatim, Amazon-header
+   constraint): the "find_theorems" entry grows context resolution
+   instead of passing straight to Ir.find_theorems:
+     repl given    -> Ir.find_theorems as today (last state's
+                      context, goal-aware).
+     theory given  -> Thy_Info.get_theory (canonical key) |>
+                      Proof_Context.init_global; run
+                      Find_Theorems.read_query + find_theorems_cmd
+                      against it with no goal — new ML alongside the
+                      entities function, reusing ir.ML's tally
+                      formatting shape (out "...").
+     neither       -> the startup theory's global context (same
+                      default find_definition specs).
+   goal-based criteria at theory level keep erroring cleanly (T4
+   pinned that); the error text should now say "no goal — use a repl
+   mid-proof".
+3. keys: dispatcher key set becomes ["repl", "theory", "query",
+   "max_results"]; missing-repl is no longer an error path.
+
+assumptions and how to test them (delta)
+-----------------------------------------
+
+T7  theory-context search works from the global context: theory=Main
+    (and the base-name spelling "Main" vs a qualified spelling) with
+    name:conjI returns hits identical to a fresh-repl search.
+    test [ml unit]: dispatch with theory key; [scala unit]: spelling
+    normalized before crossing the bridge (fake sees canonical key).
+T8  default context (neither repl nor theory) searches the base
+    image: name:conjI hits with no repl in existence.
+    test [e2e]: find_theorems {"query": "name:conjI"} on a fresh
+    server, zero repls — the headline use case of the promotion.
+T9  exclusivity: repl and theory together -> isError with a message
+    naming both keys, nothing crosses the bridge.
+    test [scala unit].
+T10 goal-based criteria without a repl error cleanly and the message
+    points at using a repl mid-proof.
+    test [ml unit]: theory-context "intro" -> status error, message
+    pinned.
+
+done when
+---------
+
+- T7..T10 green (plus T1..T6 still green — T5/T6 unchanged by the
+  delta); tools/list shows the widened row; spec checklist item
+  ("find_theorems context promotion") checked; CHANGELOG entry.

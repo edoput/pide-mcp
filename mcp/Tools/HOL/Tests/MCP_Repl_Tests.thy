@@ -1489,6 +1489,53 @@ val (s_rm4, _) = MCP_Repl.run "remove" [("repl", "Tft4")];
 val _ = \<^assert> (s_rm4 = "ok");
 \<close>
 
+section \<open>find_theorems context promotion (plans/find_theorems, "context
+promotion"): T7..T10\<close>
+
+text \<open>T7: theory-context search works from the global context -- both
+the base-name spelling "Main" and its own long form resolve to the same
+theory, and results match a fresh-repl search on the same query.\<close>
+
+ML \<open>
+val (s_ft7a, o_ft7a) = MCP_Repl.run "find_theorems" [("theory", "Main"), ("query", "name:conjI")];
+val _ = \<^assert> (s_ft7a = "ok");
+val _ = \<^assert> (String.isSubstring "conjI" (plain o_ft7a));
+
+val (s_init7, _) = MCP_Repl.run "init" [("repl", "Tft7"), ("theories", main)];
+val _ = \<^assert> (s_init7 = "ok");
+val (s_ft7b, o_ft7b) = MCP_Repl.run "find_theorems" [("repl", "Tft7"), ("query", "name:conjI")];
+val _ = \<^assert> (s_ft7b = "ok");
+val _ = \<^assert> (plain o_ft7a = plain o_ft7b) (*same hits, theory context == fresh repl context*);
+val (s_rm7, _) = MCP_Repl.run "remove" [("repl", "Tft7")];
+val _ = \<^assert> (s_rm7 = "ok");
+\<close>
+
+text \<open>T8: the default context (neither repl nor theory) searches the base
+image -- the headline use case of the promotion: no repl need ever exist.\<close>
+
+ML \<open>
+val (s_ft8, o_ft8) = MCP_Repl.run "find_theorems" [("query", "name:conjI")];
+val _ = \<^assert> (s_ft8 = "ok");
+val _ = \<^assert> (String.isSubstring "conjI" (plain o_ft8));
+\<close>
+
+text \<open>T10: goal-based criteria without a repl (theory context, and the
+default context) error cleanly -- Find_Theorems.find_theorems_cmd's own
+"Current goal required" message, with the promotion's added pointer at
+using a repl mid-proof.\<close>
+
+ML \<open>
+val (s_ft10a, o_ft10a) = MCP_Repl.run "find_theorems" [("theory", "Main"), ("query", "intro")];
+val _ = \<^assert> (s_ft10a = "error");
+val _ = \<^assert> (String.isSubstring "no goal" (plain o_ft10a));
+val _ = \<^assert> (String.isSubstring "repl mid-proof" (plain o_ft10a));
+
+val (s_ft10b, o_ft10b) = MCP_Repl.run "find_theorems" [("query", "intro")];
+val _ = \<^assert> (s_ft10b = "error");
+val _ = \<^assert> (String.isSubstring "no goal" (plain o_ft10b));
+val _ = \<^assert> (String.isSubstring "repl mid-proof" (plain o_ft10b));
+\<close>
+
 section \<open>Output routing (the Private_Output wrappers; spec phase-2 boxes)\<close>
 
 ML \<open>
