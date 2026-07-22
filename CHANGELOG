@@ -174,6 +174,37 @@ record; entries here point at the section that carries the details.
   (Doc.check + Markup.url with a hyperref fragment) when the
   traceability package is built.
 
+2026-07-13 (fix: theory resource reads for loaded/unrecognized names)
+--------------------------------------------------------------------
+
+- found running the full bridge suite (isabelle mcp_test -b) while
+  landing find_definition: three wave-3 resource tests failed
+  (diagnostics/entities/commands+source for names outside the image
+  tier), a regression latent since wave 3 library discovery
+  (6293023c) itself — the tests were written against an intended
+  optimistic contract ("resource reads report state, they don't fail
+  just because a theory hasn't been loaded/indexed") that the
+  implementation never actually matched for two cases: a name absent
+  from theory_map entirely (no filesystem match, e.g. a typo) fell to
+  a bare "Unknown theory" error instead of the same not-yet-backed
+  text a real-but-unloaded filesystem theory gets; and a genuinely
+  wave-2-loaded (non-image) theory's /commands and bare /theory read
+  returned an Ok stub ("... not yet available for wave-2 theories")
+  instead of the documented not-backed-yet error the loaded tier is
+  supposed to give (it has no Thy_Info segments either way).
+- fix: mcp_session.scala's theory_diagnostics/theory_entities merge
+  the `None` (unrecognized name) case into their existing
+  FileSystemTier arm (same optimistic text/error, since load_theory
+  is the actionable next step regardless of which failure mode it
+  turns out to be); theory_commands_uri/theory_source_uri merge
+  LoadedTier and `None` into one "documented template, not backed
+  yet" error, leaving FileSystemTier's own behavior (a real stub for
+  commands, a real file read for source) untouched.
+- verified: confirmed the 3 failures reproduced identically with this
+  session's other changes (ROOT/find_definition) reverted, isolating
+  them as pre-existing before fixing; full mcp_test and mcp_test -b
+  are green after the fix.
+
 2026-07-13 (find_definition: NAME-based lookup lands)
 --------------------------------------------------------------------
 

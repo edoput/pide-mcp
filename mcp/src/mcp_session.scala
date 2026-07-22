@@ -604,10 +604,17 @@ class MCP_Session private(
         resolve_theory(name) match {
           case Some((_, FileSystemTier(_))) =>
             MCP_Session.Ok(name + ": filesystem theory — command map needs load_theory")
-          case Some((_, LoadedTier)) =>
-            MCP_Session.Ok(name + ": loaded theory — command map not yet available for wave-2 theories")
+          /* a genuinely loaded (wave-2) theory and a wholly unrecognized
+             name both lack a Thy_Info-recorded command map -- neither is
+             "unknown" in the sense of resource reads (which report state
+             rather than fail), so both get the documented not-backed-yet
+             text rather than a bespoke error per case. */
           case _ =>
-            MCP_Session.Error("Unknown theory " + quote(name))
+            MCP_Session.Error(
+              "Resource " + quote("isabelle://theory/" + name + "/commands") +
+              " is a documented template but not backed yet (only image theories built " +
+              "with record_theories have a recorded command map); see spec's resource " +
+              "templates section")
         }
       case theory_source_uri(name) if image_tier(name) =>
         ir("source",
@@ -620,10 +627,14 @@ class MCP_Session private(
               case Exn.Exn(exn) =>
                 MCP_Session.Error("Failed to read " + quote(path.toString) + ": " + Exn.message(exn))
             }
-          case Some((_, LoadedTier)) =>
-            MCP_Session.Ok(name + ": loaded theory — source not yet available for wave-2 theories")
+          /* same rationale as /commands above: loaded and unrecognized
+             alike, no recorded source to serve. */
           case _ =>
-            MCP_Session.Error("Unknown theory " + quote(name))
+            MCP_Session.Error(
+              "Resource " + quote("isabelle://theory/" + name) +
+              " is a documented template but not backed yet (only image theories built " +
+              "with record_theories have recorded source); see spec's resource " +
+              "templates section")
         }
       /* isabelle://theory/{name}/entities: image tier via new ML
          (MCP_Repl.thy's entities function, dispatcher fname "entities")
@@ -748,10 +759,13 @@ class MCP_Session private(
             MCP_Session.Ok(if (msgs.isEmpty) header else header + "\n" + msgs.map("  " + _).mkString("\n"))
           case None => MCP_Session.Ok(name + ": loaded theory (status not available)")
         }
-      case Some((_, FileSystemTier(_))) =>
+      /* a wholly unrecognized name is optimistic here too, same as a
+         known-but-unloaded filesystem theory: diagnostics never fails
+         just because a theory hasn't been indexed, and load_theory
+         itself is the actionable next step either way (it will error
+         cleanly there if the name really doesn't exist). */
+      case Some((_, FileSystemTier(_))) | None =>
         MCP_Session.Ok(name + ": filesystem theory — not checked; load_theory to check")
-      case None =>
-        MCP_Session.Error("Unknown theory " + quote(name))
     }
   }
 
@@ -796,13 +810,14 @@ class MCP_Session private(
             MCP_Session.Ok(if (rows.isEmpty) header else header + "\n" + rows.mkString("\n"))
           case None => MCP_Session.Ok(name + ": loaded theory (entities not available)")
         }
-      case Some((_, FileSystemTier(_))) =>
+      /* filesystem tier and a wholly unrecognized name alike: no PIDE
+         snapshot and no image name-space to query, so both get the
+         same documented not-backed-yet text. */
+      case Some((_, FileSystemTier(_))) | None =>
         MCP_Session.Error(
           "Resource " + quote("isabelle://theory/" + name + "/entities") +
           " is a documented template but not backed yet (filesystem theories need load_theory); " +
           "see spec's resource templates section")
-      case None =>
-        MCP_Session.Error("Unknown theory " + quote(name))
     }
   }
 
