@@ -1,0 +1,256 @@
+recap (generated Recap.thy) — implementation plan
+==================================================
+
+status: planned (spec "recap theory", recorded 2026-07-14; this plan
+2026-07-14). NOT scheduled into a wave yet — it depends on nothing
+unbuilt (mcp_tool_command is DONE), so it can land whenever a wave
+opens for it.
+
+the question this plan answers first: scala or ML?
+---------------------------------------------------
+
+ML ONLY. no scala.
+
+the engine is Isabelle/ML under every option — enumerating a theory's
+own facts, printing their statements as re-parseable source, auditing
+oracles/axioms are all prover-side operations with no scala analogue.
+the only real choice is whether to ALSO add a scala builtin row, and
+the answer is no:
+
+- as an ML tool (`mcp_tool recap = run \<open>...\<close>` with params),
+  registration goes through MCP_Tool.declare and the existing registry
+  serves it over tools/list for free — zero scala lines. run_tool
+  already returns (status, TEXT), which is exactly recap's output
+  contract (theory source out, client writes the file).
+- as a scala builtin it would STILL need an ML mirror row (see
+  plans/builtin_activation) and STILL cross to ML for the actual work.
+  the only thing scala buys is "listed even when the context does not
+  import the recap theory". an end-of-session action on a HOL session
+  that already imports MCP-HOL does not need that.
+
+so: a new theory MCP_Recap.thy in the MCP-HOL tree (next to
+MCP_Repl.thy), an ML structure MCP_Recap, one `mcp_tool` declaration.
+if a later wave wants recap available in contexts that don't import it,
+promoting it to a builtin is a mechanical move (mirror row + table row,
+same ML entry point) — do not pre-pay for it.
+
+spec refinement: recap targets THEORIES, not repls
+---------------------------------------------------
+
+the spec's mechanism sketch says "session/repl id in". a repl id is
+NOT a sound input, and this is the plan's load-bearing correction.
+
+a generated Recap.thy is a FILE that imports on-disk theories. it can
+only `by (fact Scheduler.no_starvation)` a fact that exists in a
+theory the recap imports. facts that live only in a repl's transient
+theory (steps taken in-session, never written back) exist in no file:
+a recap naming them cannot build, and one that silently skips them
+recaps nothing. the repl is the workspace, the theory is the record.
+
+therefore the input contract is:
+
+  recap {theories: "Scheduler Tasks", name?: "Recap"} -> theory TEXT
+
+theory names, resolved with Thy_Info.get_theory (the idiom entities /
+find_theorems_theory already use, MCP_Repl.thy:101,159) — an explicit
+param, NOT the ambient tool_scope designation: recap is about a named
+target and the caller should not have to tool_scope_set to name it.
+
+a repl-shaped affordance still exists, and it is the honest one: the
+agent's end-of-session loop is (1) client persists the repl's steps
+into the theory file, (2) load_theory to check it, (3) recap on the
+theory name. recap over an unpersisted repl is refused with that
+sentence, not approximated. (a future `repl` param could recap a
+repl's PENDING facts as commented-out "not yet persisted" entries —
+deferred, and only as a nudge toward step 1.)
+
+design priority: the artifact is SOURCE, not prose
+---------------------------------------------------
+
+the deliverable is a theory file an Isabelle developer AUDITS BY EYE
+and checks with `isabelle build`. it is emphatically NOT an agent's
+prose account of what it proved and how that relates to the goal —
+prose of that kind is unauditable by construction and is the thing
+recap exists to replace. consequences, binding on every step below:
+
+- EVERY claim in the file is a checked Isar construct: the theorems
+  are `by (fact ...)`, the definitions/constants go through @{const}
+  and @{thm} antiquotations (which fail at build time if the entity is
+  gone), the theory list is the `imports` clause. nothing asserts in
+  free text what a construct could assert.
+- the generated source is written for a HUMAN READER: statements
+  restated in full (not `@{thm foo}` handwaving), one theorem per
+  entry, sections per theory, stable order. it should read like a
+  theory a careful person wrote, because a careful person has to read
+  it.
+- the ONLY natural-language content permitted is (a) the linking prose
+  attached to a requirement (see the spec's requirements-traceability
+  section — and that prose is the HUMAN's, quoted from the declared
+  requirement, not the agent's) and (b) the trust audit's plain
+  statements of fact ("rests on: Pure.skip_proof"). no summary, no
+  narrative, no "how this relates to the goal".
+- a recap that cannot restate something honestly comments it out with
+  the reason. it never paraphrases its way past a failure.
+
+soundness vs completeness (why "completely automatic" is justified)
+--------------------------------------------------------------------
+
+the human's verification step is `isabelle build` on the generated
+Recap.thy. under that contract, imperfect term printing costs
+COMPLETENESS, never SOUNDNESS:
+
+- a statement printed too generally, or drifted, makes `by (fact ...)`
+  fail to close the goal -> the build FAILS -> a human looks. loud.
+- a false claim can never build, because the recap proves everything
+  by reference to a real theorem.
+- a missing entry (filtered out) yields a recap that under-claims.
+
+so the tool cannot vouch for something untrue; the worst it does is
+fail to vouch, visibly. the honesty machinery (below) closes the one
+remaining hole — a recap that builds green while resting on `sorry`.
+
+what the recap contains
+-----------------------
+
+for each target theory T (in dependency order):
+
+  theory Recap
+    imports Scheduler Tasks
+  begin
+
+  section \<open>Scheduler\<close>
+
+  text \<open>definitions formalized: @{const eventually_runs}, ...\<close>
+
+  theorem recap_no_starvation:
+    "\<And>t. t \<in> tasks \<Longrightarrow> eventually_runs t"
+    by (fact Scheduler.no_starvation)
+
+  ...
+  end
+
+plus a TRUST AUDIT section, emitted as text (and as a build-visible
+comment): oracles behind each restated theorem (Thm_Deps.all_oracles),
+`sorry` (the skip_proof oracle) called out by name, and axioms
+introduced by the target theories (Theory.all_axioms_of T minus its
+parents'). a recap that rests on a skipped proof SAYS SO in the file
+the human reads. entries whose statement fails the round-trip check
+(below) are emitted COMMENTED OUT with the reason plus an @{thm}
+antiquotation fallback — degraded, never silently dropped.
+
+mechanism
+---------
+
+1. fact enumeration: Facts.dest_static over Global_Theory.facts_of T
+   with the parents' facts_of as the exclusion bases — the spec's
+   "diff against the imports", which Facts.dest_static does natively.
+2. fact FILTER: package noise (foo.simps, foo.induct from datatype /
+   fun) must not enter the recap. Name_Space.is_concealed alone
+   UNDER-FILTERS (those names are user-visible). the kind tag
+   (Thm.get_tags -> Markup.kindN, theoremK/lemmaK/corollaryK vs what
+   packages set) is the likely discriminator — see A2, this is
+   determined empirically, not assumed.
+3. RESTATEMENT (the make-or-break step, see A1): print Thm.prop_of thm
+   as source the recap theory can re-parse. two candidate shapes:
+     (a) un-schematize (Var -> Free) + `theorem name: "..."`;
+     (b) keep schematics verbatim + `schematic_goal name: "?x ..."`.
+   (b) prints the stored prop with no rewrite and may round-trip more
+   faithfully; (a) reads better for a human. the `fact` method
+   instantiates the THM's schematics against the goal, so (a) closes
+   too — which one closes RELIABLY across type-class constraints,
+   binders and custom notation is A1's experiment, not a decision made
+   here. printing runs with markup off and (probably) show_types on —
+   the round-trip decides.
+4. round-trip PRE-FLIGHT, in-process, no build. TWO dimensions, both
+   required — an emitted entry is `theorem X: "<stmt>" by (fact N)`,
+   so the build needs the STATEMENT to re-parse AND the NAME N to
+   resolve:
+   - statement: Syntax.read_prop in T's context on the printed string,
+     then Pattern.matches against the original prop.
+   - name: emit the EXTERNED name (Facts.extern against T's fact
+     space — the name a user would type), not the raw internal long
+     name. because the recap IMPORTS T, T re-exports its facts under
+     that name, so it resolves; the failure mode is emitting the wrong
+     name FORM. check it in-process by looking the emitted name back
+     up in T's fact space and confirming it hits the same thm.
+   entries failing EITHER check are the commented-out ones. with both,
+   the output is trustworthy before the client ever writes a file;
+   with only the first it would be statement-trustworthy and could
+   still fail the build on a name.
+5. trust audit: Thm_Deps.all_oracles on the restated theorems;
+   Theory.all_axioms_of diffed against parents.
+
+   (APIs verified 2026-07-14 against the bundled Isabelle2025-2:
+    Facts.dest_static : bool -> T list -> T -> (string * thm list) list
+      — the exclusion-bases argument is native, Pure/facts.ML:40;
+    Thm_Deps.all_oracles : thm list -> Proofterm.oracle list
+      — Pure/thm_deps.ML:10;
+    Theory.all_axioms_of : theory -> (string * term) list
+      — Pure/theory.ML:25. note all_axioms_of, NOT axioms_of.)
+6. assemble the text: header (imports = the target theory names as
+   written), one section per theory, the audit section, `end`.
+
+name/argument mapping across the layers
+----------------------------------------
+
+  mcp        recap {theories, name?}
+  bridge     MCP.run_tool -> registry row "recap" (ml_run form)
+  engine     MCP_Recap.recap : string list -> string (theory text)
+
+implementation steps
+--------------------
+
+1. MCP_Recap.thy skeleton + enumeration (steps 1-2 above): facts of T
+   minus parents, filtered. [ml unit, MCP-HOL tests: a fixture theory
+   with a datatype, a fun, two lemmas and a definition -> exactly the
+   two lemmas]
+2. restatement + round-trip pre-flight (steps 3-4). the fork in A1 is
+   settled HERE, by the test, before any text assembly. [ml unit over
+   a corpus of statement shapes]
+3. trust audit (step 5). [ml unit: a sorry'd lemma is flagged; an
+   axiomatization is listed]
+4. text assembly + the `mcp_tool recap = run ...` declaration with the
+   theories/name params. [ml unit: golden text for the fixture theory]
+5. bridge: recap over MCP.run_tool in a live session returns text.
+   [mcp_test -b]
+6. THE REAL TEST — build the generated recap: take the fixture
+   theory's recap text, write it to a temp dir with a ROOT, run
+   `isabelle build`, expect green; then mutate the fixture (rename a
+   theorem, weaken a statement) and expect the build to FAIL. this is
+   the only test that exercises the human's actual verification step.
+   [e2e]
+7. close-out: spec section updated (theory-not-repl refinement folded
+   back), CHANGELOG entry, plans/README checkbox.
+
+ASSUMPTIONS -> tests   (ranked by risk)
+----------------------------------------
+
+- A1 RESTATEMENT ROUND-TRIPS [highest risk — the whole tool rests on
+  it]. a printed statement re-parses in the target context to a prop
+  that `by (fact ...)` closes, AND the emitted fact NAME resolves in
+  a context importing T (the externed name, per step 4 — a statement
+  that re-parses under a name that doesn't resolve still fails the
+  build, so the pre-flight must check both or the commented-out/live
+  decision is wrong). corpus must span: schematic vars,
+  type-class-constrained polymorphic statements, binders, custom
+  notation/syntax from the target theory, `\<And>`/`\<Longrightarrow>` mixtures,
+  and a definition-derived equation. the test asserts the round-trip
+  (read_prop + Pattern.matches) AND, for a sample, that the assembled
+  theory builds (step 6). settles the (a)/(b) fork of step 3.
+  [ml unit + e2e]
+- A2 the FACT FILTER discriminates user-stated theorems from package
+  output. enumerate on a theory with datatype + fun + definition +
+  lemmas and confirm the chosen predicate empirically — is_concealed
+  is known insufficient; whether the kind tag suffices is UNVERIFIED.
+  [ml unit, or MCP_Heap_Suite if a heap is needed]
+- A3 the trust-audit APIs actually flag what they must: Thm_Deps
+  .all_oracles reports the skip_proof oracle for a `sorry`'d lemma
+  under the session's normal proof-recording settings (NOT only with
+  full proof terms — verify), and Theory.all_axioms_of minus parents
+  yields exactly an axiomatization's axioms. [ml unit]
+- A4 IMPORT-NAME RESOLUTION: the theory names recap writes into the
+  `imports` clause resolve from the directory the client writes
+  Recap.thy into (session-qualified vs base names). get this wrong and
+  every recap fails to build for a boring reason. [e2e, step 6]
+- A5 recap of a repl is REFUSED, not approximated (the spec
+  refinement, pinned as behavior). [bridge]

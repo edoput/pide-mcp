@@ -94,6 +94,44 @@ record; entries here point at the section that carries the details.
   "Cannot load theory file" for reasons that have nothing to do with
   the code under test.
 
+2026-07-14 (recap planned; theory-not-repl refinement)
+--------------------------------------------------------------------
+
+- plans/recap written for the spec's "recap theory" section (still
+  unscheduled). Two decisions recorded there.
+  (1) ML ONLY, no scala: the engine (fact diff, statement printing,
+  oracle/axiom audit) is prover-side under every option, and the
+  mcp_tool command already registers an ml_run tool whose (status,
+  TEXT) reply IS recap's output contract. A scala builtin would still
+  need an ML mirror row (plans/builtin_activation) and still cross to
+  ML to do the work; it buys only "listed without importing the recap
+  theory", which an end-of-session action does not need. Promoting it
+  later is mechanical.
+  (2) SPEC REFINEMENT — recap targets THEORIES, not repls. The spec's
+  mechanism sketch says "session/repl id in"; a repl id is unsound.
+  A generated Recap.thy is a file that imports on-disk theories and
+  can only `by (fact ...)` facts those files define. A repl's steps
+  live in a transient theory that no file exports, so a recap naming
+  them cannot build. Input is a theory-name list (Thy_Info.get_theory,
+  explicit param, not the ambient tool_scope designation); a repl
+  target is REFUSED with the reason, and the honest loop is persist ->
+  load_theory -> recap. Fold back into the spec when recap is
+  scheduled.
+  Design priority pinned (user, 2026-07-14): the deliverable is SOURCE
+  an Isabelle developer audits by eye, not an agent's prose account of
+  what it proved. Every claim in the generated file is a checked Isar
+  construct (`by (fact ...)`, @{thm}/@{const}, the imports clause);
+  the only natural language allowed is a requirement's own linking
+  prose and the trust audit's statements of fact. An entry that cannot
+  be restated honestly is commented out with the reason, never
+  paraphrased past.
+  Also recorded: recap's failure mode is completeness, not soundness
+  (imperfect printing makes `by (fact)` fail the build, loudly; a
+  false claim can never build), which is what justifies the spec's
+  "completely automatic" optimism -- with the trust audit (oracles /
+  sorry / axioms) closing the one hole, a green build resting on a
+  skipped proof.
+
 2026-07-14 (doc_read implemented)
 --------------------------------------------------------------------
 

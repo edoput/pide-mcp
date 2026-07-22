@@ -138,3 +138,7 @@ flagged, NOT scheduled (no wave):
         support — see spec "resource-read tool mirrors")
   - list_entities              plans/list_entities (tool mirror of
         .../entities, same rationale)
+  - recap                      plans/recap  (generated Recap.thy the
+        human verifies with isabelle build; ML-only, no scala. spec
+        refinement: targets THEORIES, not repls — a repl's transient
+        facts exist in no file, so no recap can import them)
