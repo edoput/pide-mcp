@@ -4,6 +4,96 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-22 (symbol recoding at the client edge: the model sees ⟹, not \<Longrightarrow>)
+----------------------------------------------------------------------------------------
+
+- decision (spec: "symbol recoding at the client edge"): isabelle's
+  convention is ML speaks symbol notation (\<Longrightarrow>,
+  \<open>...\<close>) and scala speaks unicode (⟹, ‹...›), and
+  isabelle/scala enforces it in Pure/PIDE/prover.scala — but only on
+  the NON-protocol channel: message_output branches to protocol_output
+  before applying Symbol.decode, and protocol_command_raw skips the
+  Symbol.encode_yxml that protocol_command_args does. the mcp bridge
+  rides the protocol channel exclusively (protocol_command_raw for
+  MCP.ir, MCP.tools, MCP.run_tool, MCP.read_resource,
+  MCP.check_designation), so it skipped BOTH recodings and carried raw
+  ML-side symbol notation all the way to the mcp client — every proof
+  state, every error, every resource read arrived spelled
+  \<Longrightarrow>. the server now recodes itself, at the client edge:
+  exactly one point in each direction, mirroring phase 1's "yxml on the
+  bridge, json only on the client edge". this qualifies rather than
+  contradicts the "protocol-command chunks are byte-clean" note in the
+  ml-bridge section: byte-cleanliness on the wire is real and still
+  holds; it was never the same thing as speaking the client's alphabet.
+- outbound: Symbol.decode in MCP_Server.text_result and
+  MCP_Server.resource_contents. at the client edge rather than at the
+  per-chunk parse sites because it catches every string regardless of
+  origin, and Symbol.decode is idempotent on already-unicode text (its
+  recoder rewrites only \-initiated sequences and its own output
+  contains none) — verified in Pure/General/symbol.scala's Recoder and
+  pinned by a test, so content that arrived via the DECODED channel
+  (render_messages over snapshot messages) is unharmed by the second
+  pass.
+- inbound: recode = Symbol.encode on the YXML.string_of_body calls in
+  MCP_Session.encode_args and encode_names, so the model may send
+  either alphabet and both reach ML as symbol notation. it goes in as
+  that parameter, never as a pass over an assembled chunk:
+  string_of_body applies recode to TEXT NODES ONLY (yxml.scala,
+  Output_String.string), whereas Symbol.encode over finished yxml would
+  walk its X/Y control bytes.
+- per-call-site audit of the other protocol_command_raw arguments: the
+  bare Bytes(...) values are deliberately left unencoded. request ids
+  are UUIDs; designations are repl ids, theory long names or bundle
+  names; tool and resource names are the EXPOSED mcp names, which the
+  mcp name charset already restricts to [A-Za-z0-9_-]. all ascii by
+  construction, so Symbol.encode would be a no-op on them and adding it
+  would only obscure where the real boundary is. the one argument that
+  can carry model-authored term text is the run_tool / ir payload, and
+  that is encoded because it rides encode_args.
+- CONSEQUENCE, recorded rather than hidden: the client-edge property
+  weakens from byte identity to identity up to symbol normalization —
+  send \<Longrightarrow>, get ⟹ back. byte identity still holds
+  strictly BELOW the decode point, which is where the existing fidelity
+  tests assert it (plans/repl_text T1, plans/repl_step T1 — ml unit and
+  bridge level, both of which read backend results directly and never
+  touch text_result); confirmed green, unchanged. text holding a
+  literal \<foo> that was meant verbatim comes back as the glyph.
+- known limitations, accepted and not fixed here: \<^sub> / \<^sup> /
+  \<^bold> decode to the marker glyphs ⇩ / ⇧ / ❙ (U+21E9/U+21E7/U+2759)
+  rather than typeset sub/superscripts — jEdit does that with font
+  styling and unicode cannot express it; ~72 of the 512 etc/symbols
+  entries have no code: field (mostly \<^const>, \<^cterm>, the ml
+  antiquotation controls) and pass through decode untouched, which is
+  desirable — byte precision preserved exactly where it matters; and
+  tools/list / resources/list DESCRIPTIONS bypass both text_result and
+  resource_contents, so symbol notation inside an mcp_tool's
+  `description \<open>...\<close>` still reaches the client raw, as
+  does the backend-derived message on resources/read's RPC.error
+  branch. those last two are real remaining sites, left open
+  deliberately as a separate scope decision rather than widened in
+  silently.
+- tests: new MCP_Symbol_Tests (scala unit, 10 tests) covering
+  Symbol.decode idempotence on already-unicode text, Symbol.encode as a
+  no-op on already-symbol text, the control-symbol marker glyphs and
+  their exact encode round trip, code-less symbols passing through, the
+  two outbound edges (text_result including its is_error path, and
+  resource_contents), and the end-to-end tools/call round trip in both
+  alphabets. MCP_Codec_Tests's "symbols round-trip byte-clean" claim
+  split in two, because encode_args no longer preserves unicode
+  verbatim: ascii symbol notation still round-trips byte-identical, and
+  unicode is asserted to arrive as symbol notation on the wire.
+- verified: `isabelle mcp_test` green (the first run tripped the
+  pre-existing 30s-timeout flake in MCP_Doc_Catalog_Tests's cold
+  Isar_Ref scan; green in isolation and on re-run, unrelated to this
+  change), `isabelle mcp_test -b` fully green including repl_text T1's
+  byte-fidelity assertion, and mcp/test/test_mcp.py green end to end
+  (0 failures) against a live server. note for future e2e runs through
+  the flatpak: test_mcp.py's fixture dir comes from tempfile.mkdtemp,
+  and the flatpak's private /tmp is invisible to the sandboxed prover —
+  point TMPDIR at a path inside the repo or load_theory reports
+  "Cannot load theory file" for reasons that have nothing to do with
+  the code under test.
+
 2026-07-13 (scope_show: the read side of the resource scope lands)
 --------------------------------------------------------------------
 

@@ -834,14 +834,42 @@ object MCP_Server {
         "error" -> JSON.Object("code" -> code, "message" -> message))
   }
 
+  /* the outbound half of the client-edge recoding boundary (spec:
+     "symbol recoding at the client edge"). Isabelle's convention is ML
+     speaks symbol notation (\<Longrightarrow>) and Scala speaks unicode
+     (==>); Isabelle/Scala enforces it in Pure/PIDE/prover.scala, but
+     ONLY on the non-protocol channel -- message_output decodes ordinary
+     output chunks and deliberately skips PROTOCOL ones. The mcp bridge
+     rides the protocol channel exclusively (protocol_command_raw for
+     MCP.ir/MCP.tools/MCP.run_tool/MCP.read_resource), so nothing
+     upstream ever decodes for us and the client would otherwise see raw
+     \<open>...\<close>.
+
+     Decoding here, at the single point where text becomes an mcp
+     content block, rather than at each per-chunk parse site: it catches
+     every string regardless of which channel produced it, and
+     Symbol.decode is idempotent on already-unicode text (its recoder
+     only rewrites \-initiated sequences, and its own output contains
+     none), so text that DID come through the decoded channel --
+     render_messages over snapshot messages -- is unharmed.
+
+     Consequence, recorded with the decision: the client-edge property
+     is identity up to symbol normalization, not byte identity. Text
+     holding a literal \<foo> meant verbatim comes back as the glyph.
+     Byte fidelity still holds below this point, which is where the
+     ml-unit and bridge fidelity tests (plans/repl_text T1,
+     plans/repl_step T1) assert it. */
   def text_result(text: String, is_error: Boolean = false): JSON.Object.T = {
-    val result = JSON.Object("content" -> List(JSON.Object("type" -> "text", "text" -> text)))
+    val result =
+      JSON.Object("content" ->
+        List(JSON.Object("type" -> "text", "text" -> Symbol.decode(text))))
     if (is_error) result + ("isError" -> true) else result
   }
 
   def resource_contents(uri: String, text: String): JSON.Object.T =
     JSON.Object("contents" ->
-      List(JSON.Object("uri" -> uri, "mimeType" -> "text/plain", "text" -> text)))
+      List(JSON.Object("uri" -> uri, "mimeType" -> "text/plain",
+        "text" -> Symbol.decode(text))))
 
   /* resource templates (spec's "resource templates (resources/templates/
      list)"): static metadata, the same set regardless of backend or

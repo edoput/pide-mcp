@@ -481,6 +481,82 @@ set — true in our headless PIDE session. keep the refusal for now;
 theory loading goes through the scala path below. revisit only if
 Thy_Info-loading inside a headless session proves safe.
 
+symbol recoding at the client edge (decided 2026-07-22)
+-------------------------------------------------------
+
+isabelle's convention at the ml/scala boundary is: ML speaks symbol
+notation (\<Longrightarrow>, \<open>...\<close>), scala speaks unicode
+(⟹, ‹...›). isabelle/scala normally enforces it for us in
+Pure/PIDE/prover.scala — message_output decodes ordinary output chunks
+(Symbol.decode via decode_xml), protocol_command_args encodes outgoing
+arguments (Symbol.encode_yxml). both deliberately skip the PROTOCOL
+channel: message_output branches to protocol_output BEFORE decoding,
+and protocol_command_raw does not encode.
+
+the bridge rides that channel exclusively (protocol_command_raw for
+MCP.ir / MCP.tools / MCP.run_tool / MCP.read_resource /
+MCP.check_designation), so nothing upstream recodes for us and raw
+symbol notation was reaching the mcp client verbatim. this qualifies
+the "protocol-command chunks are byte-clean, so isar text with newlines
+and symbols passes through untouched" note above: byte-cleanliness is
+real and still holds on the wire; it was never the same thing as
+speaking the client's alphabet.
+
+decision: the mcp server does the recoding itself, at the CLIENT EDGE
+— exactly one point in each direction, mirroring phase 1's "yxml on the
+bridge, json only on the client edge".
+
+- outbound (decode, \<foo> -> unicode): MCP_Server.text_result and
+  MCP_Server.resource_contents apply Symbol.decode to the text as it
+  becomes an mcp content block. at the client edge rather than at the
+  per-chunk parse sites, because it catches every string regardless of
+  which channel produced it, and Symbol.decode is idempotent on
+  already-unicode text (its recoder rewrites only \-initiated
+  sequences, and its own output contains none) — so text that DID come
+  through the decoded channel (render_messages over snapshot messages)
+  is unharmed by the second pass.
+- inbound (encode, unicode -> \<foo>): MCP_Session.encode_args and
+  encode_names pass recode = Symbol.encode to YXML.string_of_body,
+  which applies it to TEXT NODES ONLY (Pure/PIDE/yxml.scala,
+  Output_String.string). the recode MUST go in as that parameter and
+  never over an assembled chunk: running Symbol.encode across finished
+  yxml would walk its X/Y control bytes. the model may therefore send
+  either alphabet; both arrive at ML as symbol notation.
+- the bare Bytes(...) arguments of the other protocol_command_raw call
+  sites are deliberately NOT encoded: request ids are UUIDs,
+  designations are repl ids / theory long names / bundle names, tool
+  and resource names are the exposed mcp names, which the mcp name
+  charset restricts to [A-Za-z0-9_-]. all ascii by construction, so
+  Symbol.encode would be a no-op. the one argument that can carry
+  model-authored term text is the run_tool / ir payload, and that IS
+  encoded because it rides encode_args.
+
+consequence, recorded rather than hidden: the CLIENT-EDGE property
+weakens from byte identity to identity up to symbol normalization —
+send \<Longrightarrow>, get ⟹ back. byte identity still holds strictly
+below the decode point, which is where the fidelity tests assert it
+(plans/repl_text T1, plans/repl_step T1, ml unit + bridge); those are
+unaffected. text holding a literal \<foo> that was meant verbatim (a
+tool printing symbol notation as data) comes back as the glyph.
+
+known limitations, accepted:
+
+- the control symbols \<^sub> / \<^sup> / \<^bold> decode to marker
+  glyphs ⇩ / ⇧ / ❙ (U+21E9/U+21E7/U+2759), not to typeset sub- and
+  superscripts. jEdit renders those with font styling; unicode cannot
+  express it. round-tripping through encode is exact.
+- ~72 of the 512 entries in etc/symbols carry no code: field (mostly
+  \<^const>, \<^cterm>, the ml antiquotation controls). they have no
+  unicode to decode to and pass through untouched — desirable: byte
+  precision is preserved exactly where it matters.
+- tools/list and resources/list DESCRIPTIONS do not pass through
+  text_result or resource_contents, so symbol notation written in an
+  mcp_tool's `description \<open>...\<close>` still reaches the client
+  raw; likewise the backend-derived message on resources/read's
+  RPC.error branch. genuine remaining sites, left open deliberately:
+  both are metadata/error paths that bypass the two content edges, and
+  widening the boundary to cover them is a separate decision.
+
 theory loading and checking: two registries, one story
 --------------------------------------------------------
 

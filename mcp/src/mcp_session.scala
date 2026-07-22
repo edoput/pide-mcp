@@ -114,17 +114,31 @@ object MCP_Session {
   /* MCP.ir argument encoding (see the spec's "argument encoding"): named
      args as one yxml chunk holding an association list of (key, value)
      string pairs, list-valued arguments as repeated keys; the ML dispatcher
-     decodes with the mirror MCP_Repl.decode_args */
+     decodes with the mirror MCP_Repl.decode_args.
+
+     The inbound half of the client-edge recoding boundary (spec: "symbol
+     recoding at the client edge"): recode = Symbol.encode turns unicode
+     back into the symbol notation ML speaks, so a model may send either
+     form. YXML.string_of_body applies recode to TEXT NODES ONLY
+     (Pure/PIDE/yxml.scala, Output_String.string) -- which is why the
+     recode goes here as a parameter and never over an assembled chunk:
+     running Symbol.encode across finished yxml would walk its X/Y
+     control bytes. Isabelle/Scala does the same thing one layer down in
+     prover.scala's protocol_command_args (Symbol.encode_yxml), but the
+     bridge uses protocol_command_raw, which skips it. Symbol.encode is a
+     no-op on text that is already symbol notation (pure ascii, so its
+     recoder never fires), so \<open> in a model-authored isar_text
+     survives byte-identical. */
   def encode_args(args: List[(String, String)]): String = {
     import XML.Encode._
-    YXML.string_of_body(list(pair(string, string))(args))
+    YXML.string_of_body(list(pair(string, string))(args), recode = Symbol.encode)
   }
 
   /* bundle names for tool_scope_include, mirroring MCP_Protocol.decode_names
      (a flat yxml list of strings, distinct from encode_args's pairs) */
   def encode_names(names: List[String]): String = {
     import XML.Encode._
-    YXML.string_of_body(list(string)(names))
+    YXML.string_of_body(list(string)(names), recode = Symbol.encode)
   }
 
   def decode_args(body: XML.Body): List[(String, String)] = {
