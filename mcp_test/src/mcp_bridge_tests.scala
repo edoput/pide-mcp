@@ -426,6 +426,57 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
       body(dir)
     }
 
+  /* theory-resource tier matrix (isabelle://theory/{name}[/diagnostics|
+     /entities|/commands]): three of the four tiers are fixed, reusable
+     names -- image and filesystem-but-never-loaded need no per-test
+     setup, only "loaded" is inherently dynamic (load_theory needs a
+     fresh fixture dir per test) and stays inline where it's used.
+
+     tier_image ("MCP_Repl", this suite's own -T theory) was built WITH
+     record_theories (mcp/Tools/ROOT), so it exercises the full feature
+     on /commands and bare /theory, not just diagnostics/entities.
+
+     tier_filesystem ("MCP-HOL-Tests.MCP_Fixture_Nav") is a real,
+     on-disk theory from the sibling MCP-HOL-Tests session: known to
+     THIS session's theory_map (same -d mcp/Tools catalog) but never
+     loaded here, so it is a genuine filesystem-tier example -- unlike
+     the "Wave2Res*Never" names this matrix replaces, which were never
+     real theory_map entries at all and so silently tested the `None`
+     (wholly unrecognized) case while claiming to test "filesystem".
+     Passing it to bare /theory also exercises the FileSystemTier
+     real-file-read code path with real content for the first time.
+
+     tier_unknown matches nothing anywhere: the genuinely-unrecognized
+     case, kept separate and explicit so it can never again masquerade
+     as "filesystem" by accident. */
+  private val tier_image = "MCP_Repl"
+  private val tier_filesystem = "MCP-HOL-Tests.MCP_Fixture_Nav"
+  private val tier_unknown = "NoSuchTheoryWhatsoever12345"
+
+  /* ok=true with contains="" only asserts a non-empty Ok reply (some
+     tiers' exact wording isn't the point of the matrix, e.g. image's
+     raw segment dump); every row still gets an explicit, visible
+     expectation, so a missing/wrong case fails right here instead of
+     going untested -- exactly the shape of bug this matrix exists to
+     catch (see mcp_session.scala's theory_diagnostics/theory_entities/
+     theory_commands_uri/theory_source_uri, and CHANGELOG's "fix:
+     theory resource reads for loaded/unrecognized names"). */
+  private case class Tier_Expect(ok: Boolean, contains: String = "")
+
+  private def assert_tier(suffix: String, tier: String, name: String, expect: Tier_Expect)
+      (implicit loc: munit.Location): Unit = {
+    val uri = "isabelle://theory/" + name + suffix
+    if (expect.ok) {
+      val text = expect_ok(session.mcp_resource_read(uri), tier + " tier (" + uri + ")")
+      if (expect.contains.nonEmpty) {
+        assert(text.contains(expect.contains),
+          tier + " tier: unexpected reply for " + uri + ": " + text)
+      }
+      else assert(text.nonEmpty, tier + " tier: empty reply for " + uri)
+    }
+    else expect_error(session.mcp_resource_read(uri), containing = expect.contains)
+  }
+
   test("wave 2: load_theory T1 -- a well-formed fixture under master_dir loads and reports ok") {
     with_fixture_dir("Wave2Good1" -> wave2_theory("Wave2Good1", wave2_good)) { dir =>
       val text = expect_ok(session.load_theory("Wave2Good1", File.standard_path(dir)))
@@ -500,14 +551,16 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     }
   }
 
-  test("wave 2 resources: isabelle://theory/{name}/diagnostics -- image, loaded and filesystem tiers") {
-    val image = expect_ok(session.mcp_resource_read("isabelle://theory/Main/diagnostics"))
-    assert(image.contains("checked at build time"), "image tier: unexpected reply: " + image)
-
-    val filesystem =
-      expect_ok(session.mcp_resource_read("isabelle://theory/Wave2ResNever/diagnostics"))
-    assert(filesystem.contains("load_theory to check"),
-      "filesystem tier: unexpected reply: " + filesystem)
+  test("wave 2 resources: isabelle://theory/{name}/diagnostics -- all four tiers") {
+    assert_tier("/diagnostics", "image", tier_image, Tier_Expect(true, "checked at build time"))
+    /* filesystem and unknown are DELIBERATELY the same expectation:
+       diagnostics never fails just because a theory hasn't been
+       indexed, so both get the same optimistic "try load_theory"
+       text -- see mcp_session.scala's theory_diagnostics. */
+    assert_tier("/diagnostics", "filesystem", tier_filesystem,
+      Tier_Expect(true, "not checked; load_theory to check"))
+    assert_tier("/diagnostics", "unknown", tier_unknown,
+      Tier_Expect(true, "not checked; load_theory to check"))
 
     with_fixture_dir(
       "Wave2ResOk" -> wave2_theory("Wave2ResOk", wave2_good),
@@ -542,9 +595,18 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
       "HOL's entities should list conjI as a fact: " + text)
     assert(!text.contains("  rev\n") && !text.split("\\s+").contains("rev"),
       "entities must be filtered to HOL's own definitions, not include List.rev: " + text)
+  }
 
-    val filesystem = session.mcp_resource_read("isabelle://theory/Wave2ResEntNever/entities")
-    expect_error(filesystem, containing = "not backed yet")
+  test("wave 2 resources: isabelle://theory/{name}/entities -- all four tiers") {
+    /* image tier's own content correctness (conjI, filtering) is the
+       test above; this one is purely about tier coverage, so the
+       empty-table image example (MCP_Repl, an ML-only theory) is fine
+       -- entities always prints its header even with no rows. */
+    assert_tier("/entities", "image", tier_image, Tier_Expect(true, "kind"))
+    /* filesystem and unknown are DELIBERATELY the same expectation --
+       see mcp_session.scala's theory_entities. */
+    assert_tier("/entities", "filesystem", tier_filesystem, Tier_Expect(false, "not backed yet"))
+    assert_tier("/entities", "unknown", tier_unknown, Tier_Expect(false, "not backed yet"))
   }
 
   /* image-tier name normalization (mcp_session.scala's image_theory):
@@ -613,11 +675,36 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
       containing = "No recorded segments")
   }
 
-  test("wave 2 resources: isabelle://theory/{name} and .../commands -- non-image (loaded/filesystem) still not backed") {
-    expect_error(session.mcp_resource_read("isabelle://theory/Wave2ResSrcNever"),
-      containing = "not backed yet")
-    expect_error(session.mcp_resource_read("isabelle://theory/Wave2ResSrcNever/commands"),
-      containing = "not backed yet")
+  test("wave 2 resources: isabelle://theory/{name}/commands -- all four tiers") {
+    /* image: MCP_Repl has real recorded segments (see the retracted-
+       KNOWN-GAP test above for the detailed regression pin); this row
+       only asserts the tier dispatches to a non-empty Ok. */
+    assert_tier("/commands", "image", tier_image, Tier_Expect(true))
+    /* filesystem is its OWN case here (unlike diagnostics/entities): a
+       real, on-disk, never-loaded theory gets an actionable stub, not
+       an error -- see mcp_session.scala's theory_commands_uri. */
+    assert_tier("/commands", "filesystem", tier_filesystem,
+      Tier_Expect(true, "command map needs load_theory"))
+    /* loaded and unknown are DELIBERATELY the same expectation here:
+       a headless use_theories load has no Thy_Info-recorded segments
+       either, same as a name theory_map has never heard of. */
+    assert_tier("/commands", "unknown", tier_unknown, Tier_Expect(false, "not backed yet"))
+
+    with_fixture_dir("Wave2ResCmd" -> wave2_theory("Wave2ResCmd", wave2_good)) { dir =>
+      expect_ok(session.load_theory("Wave2ResCmd", File.standard_path(dir)), "load Wave2ResCmd")
+      assert_tier("/commands", "loaded", "Wave2ResCmd", Tier_Expect(false, "not backed yet"))
+    }
+  }
+
+  test("wave 2 resources: bare isabelle://theory/{name} (source) -- all four tiers") {
+    assert_tier("", "image", tier_image, Tier_Expect(true, "theory MCP_Repl"))
+    /* filesystem genuinely reads the file off disk here -- MCP_Fixture_Nav
+       is a real theory on this session's search path, never loaded, so
+       this is the FileSystemTier code path with real content, not a
+       stand-in for "unknown name" (see mcp_session.scala's
+       theory_source_uri and the CHANGELOG entry this matrix follows). */
+    assert_tier("", "filesystem", tier_filesystem, Tier_Expect(true, "theory MCP_Fixture_Nav"))
+    assert_tier("", "unknown", tier_unknown, Tier_Expect(false, "not backed yet"))
 
     with_fixture_dir("Wave2ResSrc" -> wave2_theory("Wave2ResSrc", wave2_good)) { dir =>
       expect_ok(session.load_theory("Wave2ResSrc", File.standard_path(dir)), "load Wave2ResSrc")
@@ -625,8 +712,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
          recorded segments for a headless use_theories load, only for
          the classical batch-mode loader (see mcp_session.scala's
          comment on theory_source_uri/theory_commands_uri). */
-      expect_error(session.mcp_resource_read("isabelle://theory/Wave2ResSrc"),
-        containing = "not backed yet")
+      assert_tier("", "loaded", "Wave2ResSrc", Tier_Expect(false, "not backed yet"))
     }
   }
 
