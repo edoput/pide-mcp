@@ -94,6 +94,26 @@ record; entries here point at the section that carries the details.
   "Cannot load theory file" for reasons that have nothing to do with
   the code under test.
 
+2026-07-14 (doc_list implemented)
+--------------------------------------------------------------------
+
+- plans/doc_list landed (wave 5, first of the pair): new
+  mcp/src/doc_catalog.scala, Doc_Catalog.make(structure) a pure
+  function of Sessions.Structure -- Doc.contents() sections joined to
+  their doc-group source session via Info.document_variants (already
+  parsed by Sessions.Structure into stripped variant names, so D1's
+  planned manual ":"/"=" splitting turned out unnecessary -- verified
+  against src/Doc/ROOT: document_variants = "isar-ref"/"logics-ZF"/
+  "main" match the Contents entries exactly). D2 (ML_Settings.init()
+  degrading to release_notes()++main_contents() on failure) landed as
+  planned. New builtin tool doc_list {pattern?} in mcp_server.scala,
+  scala-only (no MCP.ir, no ML), not scope-filtered. T1..T5 all green;
+  T2 retargeted mid-implementation (see plans/doc_list) since the
+  parsing claim it was written against turned out to already be
+  Sessions.Structure's own correct behavior, not code this tool adds --
+  retested against Doc_Catalog.join, the pure variant-name-to-session
+  fold, instead.
+
 2026-07-14 (documentation for the agent: manuals, requirements, recap)
 --------------------------------------------------------------------
 

@@ -316,6 +316,14 @@ class Fake_Backend extends MCP_Backend {
     MCP_Session.Ok("   theory name\n   HOL.Main\n   HOL.Nat")
   def search_sources(pattern: String): MCP_Session.Result =
     MCP_Session.Ok("   matching theories\n   HOL.Main")
+  private val fake_doc_catalog: List[Doc_Catalog.Section] =
+    List(Doc_Catalog.Section("Isabelle Reference Manuals",
+      List(
+        Doc_Catalog.Entry(
+          "isar-ref", "The Isabelle/Isar Reference Manual", "Isar_Ref", Path.current),
+        Doc_Catalog.Entry("NEWS", "NEWS", "plain", Path.current))))
+  def doc_list(pattern: String): MCP_Session.Result =
+    MCP_Session.Ok(Doc_Catalog.render(fake_doc_catalog, pattern))
   def stop(): Unit = stopped = true
 }
 

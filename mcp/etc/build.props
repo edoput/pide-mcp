@@ -13,6 +13,7 @@ requirements = \
 # list of scala or java files to include in this module
 sources = \
   src/mcp-main.scala \
+  src/doc_catalog.scala \
   src/mcp_session.scala \
   src/mcp_server.scala
 

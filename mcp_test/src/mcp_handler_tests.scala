@@ -506,6 +506,40 @@ class MCP_Tools_Tests extends MCP_Suite {
       "search_sources should return results or be non-empty")
   }
 
+  /* wave 5 (plans/doc_list): the documentation catalog tool. Like the
+     wave 3 tools above, bypasses the MCP.ir bridge and calls
+     backend.doc_list() directly; pattern is optional (empty = list
+     everything, unlike search_sources' empty-means-nothing). */
+
+  test("tools/list includes doc_list with an optional pattern parameter") {
+    val row = tool_row("doc_list")
+    assertEquals(required_args(row), List())
+    assertEquals(property_type(row, "pattern"), "string")
+    assertEquals(annotation(row, "readOnlyHint"), true)
+    assertEquals(annotation(row, "idempotentHint"), true)
+    assertEquals(annotation(row, "openWorldHint"), false)
+  }
+
+  test("tools/call doc_list reaches backend.doc_list, not backend.ir") {
+    val backend = new Fake_Backend
+    val reply = call_tool("doc_list", JSON.Object(), backend)
+    assert(backend.last_ir.isEmpty, "doc_list must not touch the ir bridge")
+    assert_no_error(reply)
+    val content = get_list(reply, "result", "content")
+    assert(content.nonEmpty, "result content should not be empty")
+    val text = get_string(content.head, "text")
+    assert(text.contains("isar-ref"), "doc_list should mention the isar-ref manual")
+    assert(text.contains("source: Isar_Ref"), "doc_list should name the source session")
+  }
+
+  test("tools/call doc_list with a pattern filters entry names") {
+    val backend = new Fake_Backend
+    val reply = call_tool("doc_list", JSON.Object("pattern" -> "isar*"), backend)
+    val text = get_string(get_list(reply, "result", "content").head, "text")
+    assert(text.contains("isar-ref"), "pattern isar* should keep isar-ref")
+    assert(!text.contains("NEWS"), "pattern isar* should filter out NEWS")
+  }
+
   test("tools/list: a colliding ML tool does not shadow the repl_list builtin") {
     val backend = new Fake_Backend
     backend.extra_ml_tools =
@@ -1199,6 +1233,80 @@ class MCP_Codec_Tests extends MCP_Suite {
     val decoded =
       MCP_Session.decode_args(YXML.parse_body(YXML.Source(MCP_Session.encode_args(args))))
     assertEquals(decoded, args)
+  }
+}
+
+
+/* wave 5 (plans/doc_list): Doc_Catalog is a pure function of
+   Sessions.Structure -- runs against the REAL bundled distribution's
+   structure and Doc.contents(), no fake catalog, no headless PIDE
+   session needed (Sessions.load_structure alone is cheap). */
+
+class MCP_Doc_Catalog_Tests extends MCP_Suite {
+  private def real_structure(): Sessions.Structure =
+    Sessions.load_structure(MCP_Test_Config.options, dirs = MCP_Test_Config.session_dirs)
+
+  private lazy val catalog: List[Doc_Catalog.Section] = Doc_Catalog.make(real_structure())
+
+  private def entry(name: String): Doc_Catalog.Entry =
+    catalog.flatMap(_.entries).find(_.name == name)
+      .getOrElse(fail("no catalog entry named " + quote(name)))
+
+  /* T1: the join claim, three naming shapes -- hyphen vs underscore,
+     case + hyphen, and a name collision with the theory Main (the join
+     is over doc SESSIONS only, so "main" unambiguously means the Main
+     manual, not the HOL theory). */
+  test("T1: isar-ref joins to session Isar_Ref") {
+    assertEquals(entry("isar-ref").source, "Isar_Ref")
+  }
+
+  test("T1: logics-ZF joins to session Logics_ZF") {
+    assertEquals(entry("logics-ZF").source, "Logics_ZF")
+  }
+
+  test("T1: main joins to session Main") {
+    assertEquals(entry("main").source, "Main")
+  }
+
+  /* T2 (revised, see plans/doc_list): Doc_Catalog.join is the pure fold
+     doing the mapping -- test it directly over synthetic
+     (session, variant-names) pairs, no Sessions.Structure involved. */
+  test("T2: join maps every variant name to the session") {
+    val m = Doc_Catalog.join(Map.empty, "My_Doc", List("a", "b"))
+    assertEquals(m, Map("a" -> "My_Doc", "b" -> "My_Doc"))
+  }
+
+  test("T2: join across sessions accumulates into one map") {
+    val m0 = Doc_Catalog.join(Map.empty, "Sess_A", List("x"))
+    val m1 = Doc_Catalog.join(m0, "Sess_B", List("y", "z"))
+    assertEquals(m1, Map("x" -> "Sess_A", "y" -> "Sess_B", "z" -> "Sess_B"))
+  }
+
+  /* T3: plain entries (release notes) -- NEWS is readable directly, not
+     via a doc session. */
+  test("T3: NEWS is a plain entry, not joined to a session") {
+    assertEquals(entry("NEWS").source, "plain")
+  }
+
+  /* T4: filtering is probe-safe -- a real pattern narrows the listing,
+     an unmatched one is an EMPTY listing, not an error. */
+  test("T4: pattern isar* returns exactly the isar-ref entry") {
+    val text = Doc_Catalog.render(catalog, "isar*")
+    assert(text.contains("isar-ref"), "isar-ref should be listed")
+    assert(!text.contains("logics-ZF"), "logics-ZF should be filtered out")
+    assert(!text.contains("NEWS"), "NEWS should be filtered out")
+  }
+
+  test("T4: an unmatched pattern is an empty listing, not an error") {
+    val text = Doc_Catalog.render(catalog, "zzz_no_such_entry_zzz*")
+    assert(text.contains("no matching documentation entries"),
+      "unmatched pattern should report an empty listing")
+  }
+
+  test("T4: empty pattern lists everything") {
+    val all = Doc_Catalog.render(catalog, "")
+    assert(all.contains("isar-ref") && all.contains("NEWS"),
+      "empty pattern should list both manuals and plain entries")
   }
 }
 

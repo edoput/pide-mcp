@@ -105,6 +105,23 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
     expect_error(session.mcp_resource_read("isabelle://named/no_such_resource"),
       containing = "no_such_resource")
   }
+
+  /* T5 (plans/doc_list): the full chain over a live server -- tools/list
+     advertises doc_list, tools/call reaches the real Doc_Catalog built
+     from this session's own Sessions.Structure at startup. */
+  test("bridge: tools/list advertises doc_list, tools/call names the source session") {
+    val handler = new MCP_Server.Handler(session)
+    val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
+    assert(tools.exists(t => get_string(t, "name") == "doc_list"),
+      "doc_list missing from tools/list: " + tools.toString)
+
+    val reply = call_tool_on(handler, "doc_list", JSON.Object())
+    assert_no_error(reply)
+    val text = result_text(reply)
+    assert(text.contains("isar-ref"), "doc_list should list the isar-ref manual: " + text)
+    assert(text.contains("source: Isar_Ref"),
+      "doc_list should name Isar_Ref as isar-ref's source session: " + text)
+  }
 }
 
 

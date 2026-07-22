@@ -713,6 +713,33 @@ object MCP_Server {
       annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
       handler_fn = Some((backend, args) => backend.search_sources(pass_arg(args, "pattern"))))
 
+  /* wave 5 (plans/doc_list, spec "documentation for the agent"): the
+     Doc.contents() catalog (manuals, release notes, examples), joined per
+     entry to the doc session doc_read will serve chapters from. Not
+     scope-filtered: catalog items, not theories -- discovery is never
+     scoped (spec "scope note"). */
+  val doc_list_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "doc_list",
+      fname = "",
+      description =
+        "List the Isabelle documentation catalog: the manuals, release " +
+        "notes, and examples shipped with the distribution (what " +
+        "`isabelle doc` shows). Each entry reports name, title, its " +
+        "catalog section, and how it is readable: manuals name the " +
+        "source session whose theory files doc_read serves (chapter-" +
+        "level plain text -- never the pdf); plain-text entries (NEWS, " +
+        "examples) are read directly. Grep across manuals with " +
+        "search_sources using the source session names. Glob `pattern` " +
+        "filters entry names.",
+      input_schema =
+        JSON.Object(
+          "type" -> "object",
+          "properties" -> JSON.Object("pattern" -> JSON.Object("type" -> "string")),
+          "required" -> List()),
+      annotations = read_only_annotations,
+      handler_fn = Some((backend, args) => backend.doc_list(pass_arg(args, "pattern"))))
+
   /* wave 4 (plans/scope_add, plans/scope_remove, spec "scoping"): the
      resource scope is a set of theory-name glob patterns controlling
      what resources/list enumerates -- scope filters DISCOVERY, never
@@ -784,7 +811,8 @@ object MCP_Server {
       repl_rebase_tool, sledgehammer_tool, find_theorems_tool,
       load_theory_tool, unload_theory_tool, check_theory_tool,
       list_sessions_tool, list_theories_tool, search_sources_tool,
-      scope_add_tool, scope_remove_tool, scope_show_tool)
+      scope_add_tool, scope_remove_tool, scope_show_tool,
+      doc_list_tool)
 
   /* tool_scope_show/set/include (plans/tool_scope, spec "the agent
      context"): unlike every other builtin above, these read and mutate

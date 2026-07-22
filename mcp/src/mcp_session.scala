@@ -70,6 +70,11 @@ trait MCP_Backend {
   def list_sessions_info(): MCP_Session.Result
   def list_theories_info(session: String): MCP_Session.Result
   def search_sources(pattern: String): MCP_Session.Result
+  /* doc_list (plans/doc_list, wave 5, spec "documentation for the agent"):
+     the Doc.contents() catalog joined to doc sessions, computed once at
+     startup (Doc_Catalog.make); not scope-filtered (catalog items, not
+     theories -- discovery is never scoped). */
+  def doc_list(pattern: String): MCP_Session.Result
   def stop(): Unit
 }
 
@@ -250,6 +255,11 @@ class MCP_Session private(
   private val base_names: Map[String, List[String]] = {
     theory_map.keys.groupBy(Long_Name.base_name).view.mapValues(_.toList.sorted).toMap
   }
+
+  /* wave 5 (plans/doc_list): the documentation catalog, computed once at
+     startup alongside the maps above (same lifecycle, same rationale --
+     pure parsing, no heaps). */
+  private val doc_catalog: List[Doc_Catalog.Section] = Doc_Catalog.make(structure)
 
   private val tools_promises =
     Synchronized(List.empty[Promise[List[MCP_Session.Tool_Row]]])
@@ -1017,6 +1027,11 @@ class MCP_Session private(
     val header = "   matching theories"
     MCP_Session.Ok(if (matches.isEmpty) header + " (no matches)" else header + "\n" + matches.map("   " + _).mkString("\n"))
   }
+
+  /* doc_list: the memoized catalog, glob-filtered and rendered -- see
+     Doc_Catalog.render for the filtering/rendering rules. */
+  def doc_list(pattern: String): MCP_Session.Result =
+    MCP_Session.Ok(Doc_Catalog.render(doc_catalog, pattern))
 
   def stop(): Unit = { session.stop(); () }
 }

@@ -22,7 +22,8 @@ object MCP_Test {
       classOf[MCP_Resources_Tests],
       classOf[MCP_Resource_Scope_Tests],
       classOf[MCP_Scope_Show_Tests],
-      classOf[MCP_Codec_Tests])
+      classOf[MCP_Codec_Tests],
+      classOf[MCP_Doc_Catalog_Tests])
 
   /* prover-spawning suites, behind -b: heap suites (fresh ML_process
      per ml() call) first -- cheaper than the PIDE-session suites */
