@@ -577,6 +577,63 @@ object MCP_Server {
         }
       }))
 
+  /* find_definition (plans/find_definition): NAME-based lookup across the
+     prover's name spaces (consts, types, classes, facts, locales,
+     methods, attributes). Context selector shape and its mutual-
+     exclusivity/normalization are exactly find_theorems' context
+     promotion, reused verbatim -- resolve_context_theory was already
+     generalized for this ("later find_definition", MCP_Backend). */
+  val find_definition_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "find_definition",
+      fname = "find_definition",
+      description =
+        "Find where a name is defined. Looks the name up in the " +
+        "prover's name spaces -- constants, types, classes, facts, " +
+        "locales, methods, attributes -- so it works for anything any " +
+        "command introduced (definition, fun, datatype, typedef, " +
+        "record, inductive, locale, ...). `kind` restricts the search " +
+        "(const | type | class | fact | locale | method | attribute); " +
+        "omitted searches all. Context: pass `repl` to search in that " +
+        "REPL's context, or `theory` for a loaded/image theory's " +
+        "global context; default is the base image. Each hit reports " +
+        "kind, full internal name, the definition position, and -- " +
+        "when the defining theory has recorded segments or a loaded " +
+        "document -- the complete defining source block (the whole " +
+        "datatype/fun/typedef command, showing constructors and " +
+        "fields the name space alone cannot).",
+      input_schema =
+        JSON.Object(
+          "type" -> "object",
+          "properties" ->
+            JSON.Object(
+              "name" -> JSON.Object("type" -> "string"),
+              "kind" -> JSON.Object(
+                "type" -> "string",
+                "enum" -> List("const", "type", "class", "fact", "locale", "method", "attribute")),
+              "repl" -> JSON.Object("type" -> "string"),
+              "theory" -> JSON.Object("type" -> "string")),
+          "required" -> List("name")),
+      annotations = read_only_annotations,
+      handler_fn = Some((backend, args) => {
+        val repl = args.collectFirst({ case ("repl", v) => v })
+        val theory = args.collectFirst({ case ("theory", v) => v })
+        (repl, theory) match {
+          case (Some(r), Some(t)) =>
+            MCP_Session.Error(
+              "find_definition: repl and theory are mutually exclusive (got repl=" +
+                quote(r) + ", theory=" + quote(t) + ")")
+          case (_, Some(t)) =>
+            backend.resolve_context_theory(t) match {
+              case Right(resolved) =>
+                backend.ir("find_definition",
+                  args.map({ case ("theory", _) => "theory" -> resolved; case p => p }))
+              case Left(msg) => MCP_Session.Error(msg)
+            }
+          case _ => backend.ir("find_definition", args)
+        }
+      }))
+
   /* wave 2 (theory management, scala-side): pass_args pulls "name"/
      "master_dir" out of the yxml-shaped pair list json_args already
      produces, so these three tools reuse the same argument encoding as
@@ -845,7 +902,7 @@ object MCP_Server {
     List(repl_list_tool, repl_init_tool, repl_remove_tool, repl_step_tool, repl_state_tool,
       repl_show_tool, repl_text_tool, repl_edit_tool, repl_replay_tool, repl_truncate_tool,
       repl_back_tool, repl_merge_tool, repl_timeout_tool, repl_pin_tool, repl_unpin_tool,
-      repl_rebase_tool, sledgehammer_tool, find_theorems_tool,
+      repl_rebase_tool, sledgehammer_tool, find_theorems_tool, find_definition_tool,
       load_theory_tool, unload_theory_tool, check_theory_tool,
       list_sessions_tool, list_theories_tool, search_sources_tool,
       scope_add_tool, scope_remove_tool, scope_show_tool,

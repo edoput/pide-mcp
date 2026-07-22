@@ -1,13 +1,42 @@
 find_definition — implementation plan
 ======================================
 
-status: planned (2026-07-09). dependency note (2026-07-13): the
-context-selector interface this plan specs (repl? | theory?, default
-= base image, theory spelling normalized) is now IMPLEMENTED for
-find_theorems (context promotion, 2026-07-12) — reuse
-MCP_Backend.resolve_context_theory and the MCP_Repl.thy self-theory
-capture rather than re-deriving them; see plans/find_theorems
-"context promotion" and CHANGELOG 2026-07-12.
+status: done (2026-07-13). T1..T6 green; see CHANGELOG 2026-07-13
+"find_definition: NAME-based lookup lands".
+
+dependency note (2026-07-13): the context-selector interface this plan
+specs (repl? | theory?, default = base image, theory spelling
+normalized) was already IMPLEMENTED for find_theorems (context
+promotion, 2026-07-12) — reused verbatim: MCP_Backend.resolve_context_theory
+and the MCP_Repl.thy self-theory capture, no re-deriving.
+
+implementation notes (2026-07-13)
+----------------------------------
+
+T1..T3 (kind coverage, type-space, probe-safe unknown name / closed-enum
+bad kind) and T4 (context selection) are ml-unit assertions in
+MCP_Repl_Tests.thy. T5 (source-block enrichment) splits: the two
+GRACEFUL branches (a repl-inline definition; HOL.List's "rev", built
+without record_theories) are ml-unit too, but the POSITIVE branch (a
+record_theories theory's hit carrying the whole defining command) can't
+be exercised by a same-build ml-unit self-test — a session's OWN
+theories are not Thy_Info-registered during their own build (only
+already-built/heap-loaded parent-session theories are, e.g.
+MCP-HOL.MCP_Repl inside MCP-HOL-Tests), so the fixture theory
+(mcp/Tools/HOL/Tests/MCP_Fixture_Nav.thy, session MCP-HOL-Tests now
+built with record_theories too) is verified instead via a live
+`isabelle mcp_server -s MCP-HOL-Tests -T MCP_Fixture_Nav` probe
+(both the theory's long name and its base-name spelling resolve and
+return the full "definition nav_test_const :: nat where ..." text).
+T6 (full chain) is the same live probe, plus scala-unit dispatch/
+exclusivity/normalization tests in mcp_handler_tests.scala mirroring
+find_theorems' T7..T9 pattern (with matching Fake_Backend.ir cases in
+mcp_testing.scala).
+
+kind ambiguity, live-probed: "simp" with no repl/theory and no kind
+returns THREE hits (Pure.simp and HOL.simp as method, Pure.simp as
+attribute) — an ambiguous short name is a search, not a compile, so
+every space's every match comes back, never a guess.
 
 wave 4, navigation: NAME-based lookup, ML side via MCP.ir — this adds
 a NEW fname to the dispatcher (the first beyond the mirrored ir.ML

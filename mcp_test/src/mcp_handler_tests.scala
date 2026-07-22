@@ -391,6 +391,54 @@ class MCP_Tools_Tests extends MCP_Suite {
     assert(msg.contains("repl") && msg.contains("theory"), "error should name both keys: " + msg)
   }
 
+  /* find_definition (plans/find_definition): the context selector shape
+     (repl | theory, mutually exclusive, resolved via
+     resolve_context_theory) is exactly find_theorems' context
+     promotion, reused verbatim -- see T7..T9 above for the same
+     coverage pattern. */
+  test("tools/list includes find_definition with only name required; kind/repl/theory optional") {
+    val row = tool_row("find_definition")
+    assertEquals(required_args(row), List("name"))
+    assertEquals(property_type(row, "kind"), "string")
+    assertEquals(property_type(row, "repl"), "string")
+    assertEquals(property_type(row, "theory"), "string")
+    assertEquals(annotation(row, "readOnlyHint"), true)
+    assertEquals(annotation(row, "idempotentHint"), true)
+  }
+
+  test("tools/call find_definition with just name reaches backend.ir with exactly [(\"name\", ...)]") {
+    assert_dispatch("find_definition", JSON.Object("name" -> "rev"),
+      "find_definition", List("name" -> "rev"))
+  }
+
+  test("tools/call find_definition with kind reaches backend.ir with the pair present") {
+    assert_dispatch("find_definition", JSON.Object("name" -> "rev", "kind" -> "const"),
+      "find_definition", List("name" -> "rev", "kind" -> "const"))
+  }
+
+  test("tools/call find_definition with theory=HOL.Main (alternate spelling) reaches backend.ir with the canonical name Main") {
+    assert_dispatch("find_definition",
+      JSON.Object("name" -> "rev", "theory" -> "HOL.Main"),
+      "find_definition", List("name" -> "rev", "theory" -> "Main"))
+  }
+
+  test("tools/call find_definition with an unknown theory is a status error naming the theory, nothing crosses the bridge") {
+    val backend = new Fake_Backend
+    val reply = call_tool("find_definition", JSON.Object("name" -> "rev", "theory" -> "Bogus"), backend)
+    assert_is_error(reply)
+    assertEquals(backend.last_ir, None, "nothing should cross the ir bridge on resolution failure")
+  }
+
+  test("tools/call find_definition with both repl and theory is an error naming both, nothing crosses the bridge") {
+    val backend = new Fake_Backend
+    val reply =
+      call_tool("find_definition",
+        JSON.Object("name" -> "rev", "repl" -> "T", "theory" -> "Main"), backend)
+    val msg = assert_is_error(reply)
+    assertEquals(backend.last_ir, None, "nothing should cross the ir bridge when repl and theory are both given")
+    assert(msg.contains("repl") && msg.contains("theory"), "error should name both keys: " + msg)
+  }
+
   /* wave 2 (plans/load_theory, plans/unload_theory, plans/check_theory):
      these three tools bypass the MCP.ir bridge entirely -- they call
      backend.load_theory/unload_theory/check_theory directly, not

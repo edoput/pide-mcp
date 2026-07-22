@@ -1536,6 +1536,114 @@ val _ = \<^assert> (String.isSubstring "no goal" (plain o_ft10b));
 val _ = \<^assert> (String.isSubstring "repl mid-proof" (plain o_ft10b));
 \<close>
 
+section \<open>find_definition (plans/find_definition): T1..T5\<close>
+
+text \<open>T1: kind coverage -- one hit each for a const, a type introduced by
+datatype, a class, a fact, a locale, a method, an attribute.\<close>
+
+ML \<open>
+fun fd_ok kind name args =
+  let val (s, o_) = MCP_Repl.run "find_definition" args
+  in \<^assert> (s = "ok" andalso String.isSubstring ("kind: " ^ kind) (plain o_) andalso
+             String.isSubstring name (plain o_))
+  end;
+
+val _ = fd_ok "const" "rev" [("name", "rev"), ("kind", "const")];
+val _ = fd_ok "type" "list" [("name", "list"), ("kind", "type")];
+val _ = fd_ok "class" "ord" [("name", "ord"), ("kind", "class")];
+val _ = fd_ok "fact" "conjI" [("name", "conjI"), ("kind", "fact")];
+val _ = fd_ok "locale" "order" [("name", "order"), ("kind", "locale")];
+val _ = fd_ok "method" "simp" [("name", "simp"), ("kind", "method")];
+val _ = fd_ok "attribute" "simp" [("name", "simp"), ("kind", "attribute")];
+\<close>
+
+text \<open>T2: the type-space claim specifically -- datatype, typedef,
+type_synonym and record all land their constructor in the type name
+space.\<close>
+
+ML \<open>
+val (s_ty1, o_ty1) = MCP_Repl.run "find_definition" [("name", "list"), ("kind", "type")];
+val _ = \<^assert> (s_ty1 = "ok" andalso String.isSubstring "kind: type" (plain o_ty1));
+(*nat is a typedecl/datatype-family type from the base image*)
+val (s_ty2, o_ty2) = MCP_Repl.run "find_definition" [("name", "nat"), ("kind", "type")];
+val _ = \<^assert> (s_ty2 = "ok" andalso String.isSubstring "kind: type" (plain o_ty2));
+\<close>
+
+text \<open>T3: an unknown name is ok with "no definition found" (probe-safe,
+like the discovery tools), NOT a status error; a bad kind value IS an
+error (closed enum).\<close>
+
+ML \<open>
+val (s_unk, o_unk) = MCP_Repl.run "find_definition" [("name", "no_such_name_xyz")];
+val _ = \<^assert> (s_unk = "ok" andalso String.isSubstring "no definition found" (plain o_unk));
+
+val (s_badk, o_badk) =
+  MCP_Repl.run "find_definition" [("name", "rev"), ("kind", "bogus")];
+val _ = \<^assert> (s_badk = "error" andalso String.isSubstring "bogus" (plain o_badk));
+\<close>
+
+text \<open>T4: context selection -- a constant defined only in a repl's context
+is found with repl=..., not without; theory=<image thy> scopes to that
+theory's view.\<close>
+
+ML \<open>
+val (s_init_fd, _) = MCP_Repl.run "init" [("repl", "Tfd4"), ("theories", main)];
+val _ = \<^assert> (s_init_fd = "ok");
+val (s_def_fd, _) =
+  MCP_Repl.run "step" [("repl", "Tfd4"), ("isar_text", "definition my_foo :: nat where \"my_foo = 0\"")];
+val _ = \<^assert> (s_def_fd = "ok");
+
+val (s_fd4a, o_fd4a) =
+  MCP_Repl.run "find_definition" [("name", "my_foo"), ("repl", "Tfd4"), ("kind", "const")];
+val _ = \<^assert> (s_fd4a = "ok" andalso String.isSubstring "my_foo" (plain o_fd4a));
+
+val (s_fd4b, o_fd4b) = MCP_Repl.run "find_definition" [("name", "my_foo"), ("kind", "const")];
+val _ = \<^assert> (s_fd4b = "ok" andalso String.isSubstring "no definition found" (plain o_fd4b));
+
+val (s_fd4c, o_fd4c) =
+  MCP_Repl.run "find_definition" [("name", "conjI"), ("theory", "Main"), ("kind", "fact")];
+val _ = \<^assert> (s_fd4c = "ok" andalso String.isSubstring "conjI" (plain o_fd4c));
+
+val (s_rm_fd, _) = MCP_Repl.run "remove" [("repl", "Tfd4")];
+val _ = \<^assert> (s_rm_fd = "ok");
+\<close>
+
+text \<open>T5: source-block enrichment -- graceful position-only fallback when
+no segments are available. Two branches, both unavailable-by-construction
+within THIS build: a repl-inline definition lives in an anonymous
+theory value the segment table never indexes (Name_Space.theory_name
+reports the repl id itself, e.g. "Tfd5", not a Thy_Info key), and a base
+heap theory (HOL.List, for "rev") was built without record_theories.
+The POSITIVE branch -- a record_theories theory's hit carrying the whole
+defining command text -- needs a theory that is Thy_Info-registered as
+already loaded, which this session's OWN theories are not until the
+build finishes and the heap is loaded fresh by a later process (the same
+constraint noted for entities' heap-survival claim); verified instead
+via a live mcp_server probe against the MCP_Fixture_Nav fixture, see
+plans/find_definition.\<close>
+
+ML \<open>
+val (s_init_fd5, _) = MCP_Repl.run "init" [("repl", "Tfd5"), ("theories", main)];
+val _ = \<^assert> (s_init_fd5 = "ok");
+val (s_def_fd5, _) =
+  MCP_Repl.run "step" [("repl", "Tfd5"),
+    ("isar_text", "definition my_bar :: nat where \"my_bar = 1\"")];
+val _ = \<^assert> (s_def_fd5 = "ok");
+
+val (s_fd5c, o_fd5c) =
+  MCP_Repl.run "find_definition" [("name", "my_bar"), ("repl", "Tfd5"), ("kind", "const")];
+val _ = \<^assert> (s_fd5c = "ok" andalso String.isSubstring "my_bar" (plain o_fd5c) andalso
+                not (String.isSubstring "definition my_bar" (plain o_fd5c)));
+
+val (s_fd5b, o_fd5b) =
+  MCP_Repl.run "find_definition" [("name", "rev"), ("kind", "const")];
+val _ = \<^assert> (s_fd5b = "ok" andalso String.isSubstring "kind: const" (plain o_fd5b) andalso
+                not (String.isSubstring "\n\n" (plain o_fd5b)) (*no source block appended*));
+
+val (s_rm_fd5, _) = MCP_Repl.run "remove" [("repl", "Tfd5")];
+val _ = \<^assert> (s_rm_fd5 = "ok");
+\<close>
+
 section \<open>Output routing (the Private_Output wrappers; spec phase-2 boxes)\<close>
 
 ML \<open>

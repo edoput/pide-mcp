@@ -128,6 +128,17 @@ class Fake_Backend extends MCP_Backend {
       case ("find_theorems", ("query", query) :: ("max_results", max) :: Nil) =>
         MCP_Session.Ok(
           "find_theorems (default context) query=" + quote(query) + " max_results=" + max)
+      /* find_definition (plans/find_definition): reuses find_theorems'
+         context-promotion resolver, so a "theory" pair (when present)
+         is always already the resolved canonical spelling. */
+      case ("find_definition", ("name", name) :: Nil) =>
+        MCP_Session.Ok("find_definition name=" + quote(name))
+      case ("find_definition", ("name", name) :: ("kind", kind) :: Nil) =>
+        MCP_Session.Ok("find_definition name=" + quote(name) + " kind=" + quote(kind))
+      case ("find_definition", ("name", name) :: ("theory", theory) :: Nil) =>
+        MCP_Session.Ok("find_definition name=" + quote(name) + " theory=" + quote(theory))
+      case ("find_definition", ("name", name) :: ("repl", repl) :: Nil) =>
+        MCP_Session.Ok("find_definition name=" + quote(name) + " repl=" + quote(repl))
       case _ => MCP_Session.Error("Unknown MCP.ir function " + quote(fname))
     }
   }

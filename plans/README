@@ -116,7 +116,7 @@ wave 4 — scope + navigation:
   - [x] scope_add              plans/scope_add
   - [x] scope_remove           plans/scope_remove
   - [x] scope_show             plans/scope_show
-  - [ ] find_definition        plans/find_definition   (MCP.ir, name-space lookup)
+  - [x] find_definition        plans/find_definition   (MCP.ir, name-space lookup)
   - [ ] goto_definition        plans/goto_definition   (scala, snapshot entity markup)
   - [x] find_theorems (context promotion)  plans/find_theorems,
         "context promotion" section — repl becomes optional,

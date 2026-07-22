@@ -159,6 +159,97 @@ fun find_theorems_theory thy_name max_results query =
   find_theorems_ctxt (Proof_Context.init_global (Thy_Info.get_theory thy_name)) max_results query;
 
 
+(* find_definition (plans/find_definition): NAME-based lookup across the
+   prover's authoritative name spaces -- constants, types, classes, facts,
+   locales, methods, attributes -- so it works for anything any command
+   introduced. Context resolution mirrors find_theorems' context promotion
+   (repl | theory | default self theory), but only a Proof.context is
+   needed here (no goal-aware proof state), so repl's case is just
+   Ir.context_of instead of Ir.find_theorems' own last_state access. *)
+
+val find_definition_kinds =
+  ["const", "type", "class", "fact", "locale", "method", "attribute"];
+
+fun find_definition_space ctxt "const" = Sign.const_space (Proof_Context.theory_of ctxt)
+  | find_definition_space ctxt "type" = Sign.type_space (Proof_Context.theory_of ctxt)
+  | find_definition_space ctxt "class" = Sign.class_space (Proof_Context.theory_of ctxt)
+  | find_definition_space ctxt "fact" = Global_Theory.fact_space (Proof_Context.theory_of ctxt)
+  | find_definition_space ctxt "locale" = Locale.locale_space (Proof_Context.theory_of ctxt)
+  | find_definition_space ctxt "method" = Method.method_space (Context.Proof ctxt)
+  | find_definition_space ctxt "attribute" = Attrib.attribute_space (Context.Proof ctxt)
+  | find_definition_space _ kind = error ("find_definition: unknown kind " ^ quote kind);
+
+(*accept both internal ("List.rev") and extern ("rev") spellings -- exact
+  key first, then every entry whose base name matches; a search, not a
+  compile, so an ambiguous short name returns ALL matches rather than
+  erroring or guessing one*)
+fun find_definition_hits ctxt kind name =
+  let
+    val space = find_definition_space ctxt kind
+    val names = Name_Space.get_names space
+    val candidates =
+      if member (op =) names name then [name]
+      else filter (fn n => Long_Name.base_name n = name) names
+  in
+    map (fn n =>
+      let
+        val {pos, ...} = Name_Space.the_entry space n
+        val def_thy = Name_Space.theory_name {long = true} space n
+      in (kind, n, def_thy, pos) end) candidates
+  end;
+
+(*enrich a hit with the whole defining source command, when the defining
+  theory has recorded segments (record_theories=true) -- graceful
+  fallback to position-only otherwise (heap theories with no segments,
+  e.g. HOL.List). Segments partition the source contiguously, so the
+  segment containing `line` is the last one whose own start line is
+  still <= line; reads Thy_Info.get_theory_segments directly (not
+  Ir.find_source, which raises a user-facing error on the missing case --
+  here that case is silent, not an error).*)
+fun find_definition_source_block def_thy line =
+  (case try Thy_Info.get_theory_segments def_thy of
+    NONE => NONE
+  | SOME segs =>
+      let
+        fun start_line ({span = Command_Span.Span (_, toks), ...}: Document_Output.segment) =
+          (case find_first (fn t => is_some (Position.line_of (Token.pos_of t))) toks of
+            SOME t => the_default 0 (Position.line_of (Token.pos_of t))
+          | NONE => 0)
+        val lined = map (fn seg => (start_line seg, seg)) segs
+        val candidates = filter (fn (l, _) => l <= line) lined
+      in
+        (case try List.last candidates of
+          SOME (_, {span = Command_Span.Span (_, toks), ...}) =>
+            SOME (String.concatWith "" (map Token.unparse toks))
+        | _ => NONE)
+      end);
+
+fun find_definition_format_hit (kind, name, def_thy, pos) =
+  let
+    val line = the_default 0 (Position.line_of pos)
+    val file = the_default def_thy (Position.file_of pos)
+    val header = "kind: " ^ kind ^ "\nname: " ^ name ^ "\nposition: " ^ file ^ ":" ^ string_of_int line
+  in
+    (case find_definition_source_block def_thy line of
+      SOME text => header ^ "\n\n" ^ text
+    | NONE => header)
+  end;
+
+(*probe-safe: an unknown name is "no definition found", not an error --
+  the closed kind enum is checked by the dispatcher before this runs*)
+fun find_definition ctxt kind_opt name =
+  let
+    val kinds = the_default find_definition_kinds (Option.map single kind_opt)
+    val hits = maps (fn k => find_definition_hits ctxt k name) kinds
+  in
+    (case hits of
+      [] =>
+        writeln ("no definition found for " ^ quote name ^
+          (case kind_opt of SOME k => " (kind " ^ k ^ ")" | NONE => ""))
+    | _ => writeln (String.concatWith "\n\n---\n\n" (map find_definition_format_hit hits)))
+  end;
+
+
 (* dispatcher: closed table over Ir, named arguments *)
 
 (*one yxml chunk holding an association list of (key, value) string pairs —
@@ -240,6 +331,25 @@ fun dispatch fname args =
          end)
     | "timeout" => (keys ["repl", "secs"]; Ir.timeout (get "repl") (get_int "secs"))
     | "entities" => (keys ["theory_name"]; entities (get "theory_name"))
+    | "find_definition" =>
+        (keys ["name", "kind", "repl", "theory"];
+         let
+           val name = get "name"
+           val kind_opt =
+             (case AList.lookup (op =) args "kind" of
+               NONE => NONE
+             | SOME k =>
+                 if member (op =) find_definition_kinds k then SOME k
+                 else err ("bad kind " ^ quote k ^ " (expected one of " ^
+                   commas_quote find_definition_kinds ^ ")"))
+           val ctxt =
+             (case AList.lookup (op =) args "theory" of
+               SOME thy_name => Proof_Context.init_global (Thy_Info.get_theory thy_name)
+             | NONE =>
+                 (case AList.lookup (op =) args "repl" of
+                   SOME repl => Ir.context_of repl
+                 | NONE => Proof_Context.init_global (the_self_theory ())))
+         in find_definition ctxt kind_opt name end)
     | _ => error ("MCP.ir: unknown function " ^ quote fname))
   end;
 

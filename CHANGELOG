@@ -174,6 +174,46 @@ record; entries here point at the section that carries the details.
   (Doc.check + Markup.url with a hyperref fragment) when the
   traceability package is built.
 
+2026-07-13 (find_definition: NAME-based lookup lands)
+--------------------------------------------------------------------
+
+- milestone (spec "navigation"; plan: plans/find_definition, status
+  DONE): the find_definition builtin looks a name up across the
+  prover's authoritative name spaces (consts, types, classes, facts,
+  locales, methods, attributes) instead of guessing from text, so it
+  works for anything any command introduced. `kind` narrows the
+  search to one space; omitted, all seven are searched and an
+  ambiguous short name (e.g. "simp", both a method and an attribute,
+  and registered by both Pure and HOL) returns every match rather
+  than guessing one — a search, not a compile.
+- context selectors (`repl` | `theory`, mutually exclusive, default
+  the base image) reuse find_theorems' context-promotion machinery
+  verbatim: MCP_Backend.resolve_context_theory normalizes the
+  client's theory spelling scala-side before it crosses the bridge;
+  the ML dispatcher only needs a Proof.context, so the repl branch is
+  a plain Ir.context_of instead of find_theorems' own goal-aware
+  last-state access.
+- source-block enrichment: when the defining theory has recorded
+  segments (record_theories=true, already-built heap), a hit carries
+  the whole defining command text, not just kind/name/position — the
+  same segment machinery entities/source already rely on. Verified
+  live against a real MCP-HOL-Tests heap (isabelle mcp_server -s
+  MCP-HOL-Tests): a fixture datatype/definition's hit text/1-1 in
+  practice matched. A repl-inline definition's entry lives in an
+  anonymous, Thy_Info-untracked theory value (Name_Space.theory_name
+  reports the repl id itself, not a Thy_Info key), and a base heap
+  theory built without record_theories (HOL.List) has no segments at
+  all — both are graceful position-only, not an error.
+- new ML surface lives in MCP_Repl.thy (find_definition_* functions),
+  not ir.ML, which stays a verbatim reuse (Amazon-header constraint):
+  this is the first plan to grow the ML surface as new code rather
+  than a pass-through to Ir.
+- test fixture: mcp/Tools/HOL/Tests/MCP_Fixture_Nav.thy, a small
+  on-disk theory built with record_theories (MCP-HOL-Tests session
+  now sets that option too, so its own theories carry segments once
+  loaded fresh by a later process — never the production MCP-HOL
+  heap the server loads).
+
 2026-07-13 (scope_show: the read side of the resource scope lands)
 --------------------------------------------------------------------
 
