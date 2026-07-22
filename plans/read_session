@@ -1,0 +1,31 @@
+read_session — resource-read tool mirror (DECIDED, planned)
+===========================================================
+
+status: DECIDED 2026-07-15, planned (wave TBD).
+spec: "resource-read tool mirrors" under "mcp resources".
+umbrella: plans/resource_tool_mirrors.
+
+what it is: a builtin tool alias for the isabelle://session resource —
+the running-session overview: name, dirs, loaded theories (Thy_Info
+names + PIDE nodes with status), active repls, current scope. the cheap
+always-there overview; reading it triggers no proving or file io.
+
+advertised metadata (sketch)
+----------------------------
+
+name          read_session
+description   "Overview of the running session: name, directories,
+              loaded theories with status, active REPLs, current
+              resource scope. Cheap and side-effect-free. Same content
+              as the isabelle://session resource."
+inputSchema   {"type": "object"}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+
+backing: zero new mechanism — the same backing the isabelle://session
+read uses (Ir.theories + scala session state). one function, two
+surfaces.
+
+tests (sketch): [scala unit] row + dispatch + parity with the resource
+read on Fake_Backend; [e2e] read session by tool and by resource,
+byte-identical payloads.

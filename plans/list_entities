@@ -1,15 +1,17 @@
-list_entities — flagged tool mirror (NOT scheduled)
-====================================================
+list_entities — resource-read tool mirror (DECIDED, planned)
+============================================================
 
-status: flagged (2026-07-12), not planned for implementation.
+status: DECIDED 2026-07-15, planned (wave TBD). supersedes the
+2026-07-12 "flagged, not scheduled" note.
 spec: "resource-read tool mirrors" under "mcp resources".
+umbrella: plans/resource_tool_mirrors.
 
 what it is: a builtin tool alias for the
-isabelle://theory/{name}/entities resource, same motivation and same
-non-implementation rationale as plans/read_theory (uneven client
-resource support; mirrors duplicate the surface). trigger to
-revisit: an evals/ failure where an agent cannot reach entities
-through resources/read.
+isabelle://theory/{name}/entities resource, same motivation as
+plans/read_theory (the mirror set is the model-invoked surface for a
+fully-autonomous-proving mode; primary usage still reaches resources
+by human @-mention; autonomous resource-reading unverified). ships
+registered-but-inactive; the autonomous_proving bundle activates it.
 
 advertised metadata (sketch)
 ----------------------------

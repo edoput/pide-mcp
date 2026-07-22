@@ -1,0 +1,83 @@
+resource_tool_mirrors — umbrella (DECIDED 2026-07-15, planned)
+==============================================================
+
+status: DECIDED 2026-07-15, planned (wave TBD).
+spec: "resource-read tool mirrors" under "mcp resources".
+per-tool plans: plans/read_theory, plans/read_commands,
+plans/read_diagnostics, plans/list_entities, plans/read_session,
+plans/read_named.
+
+why (the two operating assumptions)
+-----------------------------------
+
+- PRIMARY (human-in-the-loop): the main usage, ~1-year horizon, is a
+  human directing the model through claude code; the user @-mentions
+  resources when needed. autonomous resource-reading is NOT required
+  for this mode.
+- SECONDARY, UNVERIFIED — MUST BE RESOLVED: we assume claude code lets
+  the model enumerate/read resources autonomously. named check: does
+  the client surface resources to the model on its own, or only via
+  user @server:uri? if NEGATIVE, resources in default mode are
+  human-mention-only, which forces the choice of exposing resources by
+  default vs. shipping these mirrors active-by-default.
+
+the mirror set (one tool per readable resource)
+-----------------------------------------------
+
+  read_theory      {name, lines?}            = isabelle://theory/{name}
+  read_commands    {theory, start?, count?}  = .../commands
+  read_diagnostics {theory}                  = .../diagnostics
+  list_entities    {theory, kind?, prefix?}  = .../entities
+  read_session     {}                        = isabelle://session
+  read_named       {name}                    = isabelle://named/{name}
+
+already covered, NO mirror added: isabelle://repl/{id} and .../text are
+already served by the repl_show / repl_text builtins (same Ir.show /
+Ir.text backing).
+
+shared design
+-------------
+
+1. one function, two surfaces. factor each uri-read handler so the tool
+   and the resource call the SAME code. a mirror must never grow
+   behavior its resource lacks — that is how the surfaces drift. this
+   is the load-bearing invariant of the whole feature; every per-tool
+   plan restates it and every per-tool test pins parity.
+2. no new backend: theory-name normalization (image_theory), tier
+   resolution, lazy/truncation/slicing all reused as-is.
+3. activation (tools half): the mirrors are builtin tools, so they get
+   mirror rows in the ML registry (the "builtin tools in the activation
+   layer" drift gate REQUIRES them) and obey [[mcp_tools add/del]] /
+   bundles. ship REGISTERED-BUT-INACTIVE so human-in-the-loop
+   tools/list stays uncluttered. one bundle activates the set:
+
+     bundle autonomous_proving = [[mcp_tools add: read_theory
+       read_commands read_diagnostics list_entities read_session
+       read_named]]
+
+   the theory carrying this bundle is designated as the agent context
+   (tool_scope) for an autonomous-proving run.
+4. resource suppression (resources half — MECHANISM OPEN): no existing
+   mechanism hides templates (resource scope is scope_add over theory
+   names; templates are not per-name entities). likely shape: a
+   disposition on the designated agent-context theory that makes
+   resources/list + resources/templates/list return empty. SETTLE HERE
+   before implementing — this is the one genuinely new mechanism.
+
+open questions
+--------------
+
+- Q1 (blocking the whole point of default vs. autonomous): resolve the
+  SECONDARY assumption — does claude code read resources autonomously?
+- Q2: resource-suppression mechanism (item 4).
+- Q3: wave slotting in the spec implementation order (left open per the
+  user's "we now need" without a when).
+
+tests (shape; per-tool plans carry the specifics)
+-------------------------------------------------
+
+- [scala unit] each mirror: row + dispatch + PARITY with its resource
+  read over Fake_Backend.
+- [e2e] read by tool and by resource, assert byte-identical payloads.
+- [drift gate] each new builtin has its ML mirror row (existing
+  builtin_activation gate covers this once the tools land).

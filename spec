@@ -1031,24 +1031,98 @@ session.commands_changed — design sketched in "out of scope (phase 3+)"
 below; listChanged on repl creation/removal (scope
 changes already fire it, see scoping above).
 
-resource-read tool mirrors (flagged 2026-07-12, NOT implemented, not
-scheduled): mcp client support for resources is uneven — tools are
-what models call autonomously, resources are often client-mediated
-(pickers, mentions) or absent. if a target client turns out unable to
-read resources, the escape hatch is two builtin tools that are thin
-aliases over the exact backends the templates already use:
+resource-read tool mirrors (DECIDED 2026-07-15, planned; supersedes
+the 2026-07-12 "flagged, not scheduled" note)
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 
-  read_theory    {name, lines?}           = isabelle://theory/{name}
-                                            (?lines= slicing included)
-  list_entities  {theory, kind?, prefix?} = .../entities
+two operating assumptions govern the resource surface. they interlock;
+record them together, not as floating notes.
 
-no new mechanism: same theory-name normalization, same tier
-resolution, same lazy/truncation rules; only the surface duplicates.
-deliberately NOT built now — the known clients read resources, and
-every mirror is a second name for the model to choose between.
-sketches: plans/read_theory, plans/list_entities (status: flagged).
-trigger to revisit: an evals/ failure showing an agent that cannot
-reach theory source or entities through resources/read.
+- PRIMARY (human-in-the-loop): the current — and, on a ~1-year horizon,
+  the expected main — usage is a HUMAN directing the model through the
+  client (claude code). when a resource is needed, the USER mentions it
+  (the client-mediated @server:uri path). autonomous resource-reading
+  by the model is NOT required for this mode to work: the human is the
+  agent that pulls resources into context. this is why the resource
+  surface exists as resources and not as tools — its designed consumer
+  (the human, via the client's picker/mention UI) matches the mcp
+  resource control model exactly.
+- SECONDARY — RESOLVED POSITIVE (2026-07-15, tested against claude
+  code / this client): claude code DOES let the MODEL enumerate
+  (resources/list) and read (resources/read) resources autonomously,
+  mid-turn, without a human mention. the client exposes three
+  model-invokable tools for this — ListMcpResourcesTool,
+  ReadMcpResourceTool, ReadMcpResourceDirTool — and a mid-turn test
+  drove ListMcpResourcesTool(server=isabelle) and two
+  ReadMcpResourceTool reads (isabelle://session, isabelle://named/
+  greeting) with no user @-mention of any uri; all three returned
+  content. so the resource surface is NOT fixed into human-in-the-loop
+  only: in claude code an unattended agent reaches it directly. the
+  named check resolves the model-facing way, which RELIEVES (does not
+  eliminate) the pressure toward mirrors — the mirror decision below
+  still stands for clients that surface resources to the human ONLY, and
+  for a mode that wants the read surface as tools the model is nudged to
+  call. (was: UNVERIFIED, MUST BE RESOLVED; same shape as the "host has
+  file tools" assumption under "editing theories".)
+
+decision: build a builtin TOOL mirror for every readable resource, so
+a fully-autonomous-proving mode can hide the resource surface and serve
+the equivalent tools instead — tools being the primitive whose control
+model (model-invoked) matches an unattended agent. "we now need the
+equivalent tools" elevates these from flagged→required; wave slotting
+in the implementation order is left open (see plans/README).
+
+the mirror set (one tool per readable resource):
+
+  read_theory      {name, lines?}            = isabelle://theory/{name}
+  read_commands    {theory, start?, count?}  = .../commands
+  read_diagnostics {theory}                  = .../diagnostics
+  list_entities    {theory, kind?, prefix?}  = .../entities
+  read_session     {}                        = isabelle://session
+  read_named       {name}                    = isabelle://named/{name}
+
+already covered — do NOT add mirrors: isabelle://repl/{id} and
+.../text already have tool twins, repl_show / repl_text (same Ir.show /
+Ir.text backing). read_diagnostics is genuinely distinct from
+load_theory/check_theory: it reads the CURRENT diagnostics across tiers
+without re-loading. naming: read_* for the new tools; list_entities
+keeps its enumeration-flavored name (plan-level, not worth churn).
+
+no new backend: each mirror is a thin call into the exact resolution
+path resources/read already uses (theory-name normalization, tier
+resolution, lazy/truncation/slicing). the hard rule — factor each uri
+handler so tool and resource share ONE function; a mirror must never
+grow behavior its resource lacks, or the two surfaces drift.
+
+activation (the tools half — clean, rides the phase-3 activation layer):
+the mirrors are new BUILTIN tools, so once they exist they mirror into
+the ML registry and obey [[mcp_tools add/del]] / bundles like every
+other builtin (the drift gate at "builtin tools in the activation
+layer" requires their mirror rows). they ship REGISTERED-BUT-INACTIVE
+by default, so human-in-the-loop tools/list stays uncluttered; the
+bundle
+  bundle autonomous_proving = [[mcp_tools add: read_theory read_commands
+    read_diagnostics list_entities read_session read_named]]
+activates them. the theory carrying this bundle is what an
+autonomous-proving run designates as its agent context (tool_scope).
+NOTE this does NOT contradict "resources are NOT mirrored" under
+"builtin tools in the activation layer": that line forbids mirroring
+resource TEMPLATES into the tool-activation registry; these mirrors are
+first-class tools that happen to read the same data.
+
+resource suppression (the resources half — mechanism DEFERRED to the
+plan): hiding the resource surface has no existing mechanism — resource
+scope is scope_add patterns over theory NAMES, and templates are not
+per-name entities the activation attribute can touch. likely shape: a
+disposition on the designated agent-context theory (the autonomous_proving
+theory) that makes resources/list and resources/templates/list return
+empty for that context. sketch only; settle the mechanism in the plan.
+
+plans: plans/read_theory, plans/read_commands, plans/read_diagnostics,
+plans/list_entities, plans/read_session, plans/read_named (per-tool),
+under the umbrella plans/resource_tool_mirrors (assumptions, the shared
+uri-handler factoring, the autonomous_proving bundle, resource
+suppression).
 
 exploring the library universe (theories outside the heap)
 -----------------------------------------------------------
@@ -1562,8 +1636,10 @@ implementation order
       handler exclusivity check, dispatcher context resolution (new
       ML in MCP_Repl.thy, ir.ML stays verbatim). decided 2026-07-12;
       delta + tests in plans/find_theorems ("context promotion").
-      (read_theory / list_entities tool mirrors are flagged but NOT
-      scheduled — see "resource-read tool mirrors" above.)
+      (the resource-read tool mirrors — read_theory, read_commands,
+      read_diagnostics, list_entities, read_session, read_named — are
+      now DECIDED/planned, not flagged; see "resource-read tool
+      mirrors" above and plans/resource_tool_mirrors.)
 - [ ] navigation: find_definition (ML name-space lookup + defining
       source via segments), goto_definition (scala snapshot cumulate
       over entity markup), isabelle://theory/{name}/entities resource.

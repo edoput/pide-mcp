@@ -1,0 +1,40 @@
+read_commands — resource-read tool mirror (DECIDED, planned)
+============================================================
+
+status: DECIDED 2026-07-15, planned (wave TBD).
+spec: "resource-read tool mirrors" under "mcp resources".
+umbrella: plans/resource_tool_mirrors.
+
+what it is: a builtin tool alias for the
+isabelle://theory/{name}/commands resource — the navigation map
+(Ir.source_map: index, keyword, line, offset, file per command), how an
+agent picks attach points for repl_init_from_source.
+
+advertised metadata (sketch)
+----------------------------
+
+name          read_commands
+description   "List a theory's Isar commands as a navigation map —
+              index, keyword, line, offset, file per command — the
+              attach points for repl_init_from_source. `start`/`count`
+              window the list. Same content as the
+              isabelle://theory/{name}/commands resource."
+inputSchema   {"type": "object",
+               "properties": {
+                 "theory": {"type": "string"},
+                 "start":  {"type": "integer"},
+                 "count":  {"type": "integer"}},
+               "required": ["theory"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+
+backing: zero new mechanism — the same resolution path
+isabelle://theory/{name}/commands uses (image_theory normalization ->
+tier -> Ir.source_map via MCP.ir; ?start=&count= windowing). filesystem
+tier inherits whatever the resource answers (the open /commands spike in
+plans/session_structure applies identically — the mirror does not
+resolve it, it shares it). one function, two surfaces.
+
+tests (sketch): [scala unit] row + dispatch + parity with the resource
+read on Fake_Backend; [e2e] read commands by tool and by resource,
+byte-identical payloads.

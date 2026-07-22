@@ -132,12 +132,23 @@ wave 5 — documentation (Doc catalog + src/Doc sources, scala side;
         over chapter .thy sources; plain entries windowed; depends
         on doc_list's Doc_Catalog — implement doc_list first)
 
+resource-read tool mirrors (DECIDED 2026-07-15, planned; wave TBD —
+  umbrella plans/resource_tool_mirrors, spec "resource-read tool
+  mirrors"). one builtin tool per readable resource, so a fully-
+  autonomous-proving mode can hide resources and serve tools instead.
+  ship registered-but-inactive; the autonomous_proving bundle
+  activates the set. two operating assumptions recorded: PRIMARY
+  human-in-the-loop (user @-mentions resources); SECONDARY, UNVERIFIED
+  — claude code reads resources autonomously (must be resolved):
+  - [ ] read_theory            plans/read_theory   (= isabelle://theory/{name})
+  - [ ] read_commands          plans/read_commands (= .../commands)
+  - [ ] read_diagnostics       plans/read_diagnostics (= .../diagnostics)
+  - [ ] list_entities          plans/list_entities (= .../entities)
+  - [ ] read_session           plans/read_session  (= isabelle://session)
+  - [ ] read_named             plans/read_named    (= isabelle://named/{name})
+  (repl/{id} and /text need no mirror — repl_show/repl_text already are.)
+
 flagged, NOT scheduled (no wave):
-  - read_theory                plans/read_theory   (tool mirror of
-        isabelle://theory/{name}, for clients without resource
-        support — see spec "resource-read tool mirrors")
-  - list_entities              plans/list_entities (tool mirror of
-        .../entities, same rationale)
   - recap                      plans/recap  (generated Recap.thy the
         human verifies with isabelle build; ML-only, no scala. spec
         refinement: targets THEORIES, not repls — a repl's transient

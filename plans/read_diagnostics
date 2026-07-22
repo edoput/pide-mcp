@@ -1,0 +1,39 @@
+read_diagnostics — resource-read tool mirror (DECIDED, planned)
+===============================================================
+
+status: DECIDED 2026-07-15, planned (wave TBD).
+spec: "resource-read tool mirrors" under "mcp resources".
+umbrella: plans/resource_tool_mirrors.
+
+what it is: a builtin tool alias for the
+isabelle://theory/{name}/diagnostics resource — errors/warnings with
+positions from the current PIDE snapshot.
+
+genuinely distinct from load_theory/check_theory: those (re)load and
+report; read_diagnostics reads the CURRENT diagnostics across tiers
+WITHOUT re-loading. keep it — it is not redundant with the theory tools.
+
+advertised metadata (sketch)
+----------------------------
+
+name          read_diagnostics
+description   "Read a theory's current errors and warnings with
+              positions, without re-loading. Loaded theories answer
+              from the live snapshot; image theories report \"checked
+              at build time\"; filesystem-tier theories report \"not
+              checked — load_theory to check\". Same content as the
+              isabelle://theory/{name}/diagnostics resource."
+inputSchema   {"type": "object",
+               "properties": {"theory": {"type": "string"}},
+               "required": ["theory"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+
+backing: zero new mechanism — the same theory_diagnostics path
+(mcp_session.scala) the resource uses: image_theory normalization, the
+three-tier answer (image / loaded via live snapshot / filesystem). one
+function, two surfaces.
+
+tests (sketch): [scala unit] row + dispatch + parity with the resource
+read; [e2e] diagnostics of a loaded theory by tool and by resource,
+byte-identical payloads.

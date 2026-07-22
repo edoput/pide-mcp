@@ -1,16 +1,19 @@
-read_theory — flagged tool mirror (NOT scheduled)
-==================================================
+read_theory — resource-read tool mirror (DECIDED, planned)
+==========================================================
 
-status: flagged (2026-07-12), not planned for implementation.
+status: DECIDED 2026-07-15, planned (wave TBD). supersedes the
+2026-07-12 "flagged, not scheduled" note.
 spec: "resource-read tool mirrors" under "mcp resources".
+umbrella: plans/resource_tool_mirrors (assumptions, shared uri-handler
+factoring, autonomous_proving bundle, resource suppression).
 
 what it is: a builtin tool alias for the isabelle://theory/{name}
-resource, motivated by uneven mcp-client support for resources —
-tools are model-callable everywhere, resources sometimes only via
-client UI. NOT built now: the known clients read resources, and a
-mirror is a second name for the model to choose between. trigger to
-revisit: an evals/ failure where an agent cannot reach theory source
-through resources/read.
+resource. rationale (updated 2026-07-15): the primary human-in-the-loop
+mode reaches resources by user @-mention, and it is UNVERIFIED whether
+claude code lets the model read resources autonomously; the mirror
+tools are the model-invoked surface a fully-autonomous-proving mode
+serves in place of resources. ships registered-but-inactive; the
+autonomous_proving bundle activates it.
 
 advertised metadata (sketch)
 ----------------------------

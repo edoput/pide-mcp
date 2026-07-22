@@ -1,0 +1,42 @@
+read_named — resource-read tool mirror (DECIDED, planned)
+=========================================================
+
+status: DECIDED 2026-07-15, planned (wave TBD).
+spec: "resource-read tool mirrors" under "mcp resources".
+umbrella: plans/resource_tool_mirrors.
+
+what it is: a builtin tool alias for the isabelle://named/{name}
+resource — user-registered resources from the mcp_resource command
+(named facts read at read time, diagnostic-command output, ML
+generators). content is computed at read time, so dynamic fact
+collections stay current.
+
+advertised metadata (sketch)
+----------------------------
+
+name          read_named
+description   "Read a user-registered named resource (from the
+              mcp_resource command): a named fact collection,
+              diagnostic-command output, or an ML generator, evaluated
+              at read time. Same content as the isabelle://named/{name}
+              resource."
+inputSchema   {"type": "object",
+               "properties": {"name": {"type": "string"}},
+               "required": ["name"]}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+
+backing: zero new mechanism — the same MCP_Resource read path
+(MCP.read_resource, MCP_Session.ml_read_resource) the
+isabelle://named/{name} read uses. one function, two surfaces.
+
+note: read_named is a mirror of the READ; it does NOT enumerate the
+named resources (that is resources/list, which lists named resources
+concretely). if an autonomous mode also needs to DISCOVER named
+resources without resources/list, that is a separate list-flavored
+mirror — flag it in plans/resource_tool_mirrors if an eval shows the
+need; not built now.
+
+tests (sketch): [scala unit] row + dispatch + parity with the resource
+read (over a registered demo resource, e.g. "greeting"); [e2e] read a
+named resource by tool and by resource, byte-identical payloads.

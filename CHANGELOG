@@ -94,6 +94,66 @@ record; entries here point at the section that carries the details.
   "Cannot load theory file" for reasons that have nothing to do with
   the code under test.
 
+2026-07-15 (SECONDARY resource-autonomy assumption: RESOLVED POSITIVE)
+--------------------------------------------------------------------
+
+- Tested the SECONDARY, MUST-BE-RESOLVED assumption from the
+  "resource-read tool mirrors" spec section against claude code (the
+  live client). RESULT: claude code DOES surface MCP resources to the
+  model. It exposes model-invokable ListMcpResourcesTool /
+  ReadMcpResourceTool / ReadMcpResourceDirTool; a mid-turn test listed
+  the isabelle server's resources and read isabelle://session and
+  isabelle://named/greeting with no human @-mention of any uri.
+- Consequence: the resource surface is NOT locked into a human-in-the-
+  loop-only workflow — in claude code an unattended agent reaches
+  resources/list and resources/read directly. This RELIEVES (does not
+  eliminate) the pressure toward the mirror tools; the mirror decision
+  below still stands for clients that expose resources to the human
+  only and for a fully-autonomous mode that prefers a tool surface.
+- Spec updated in place: the SECONDARY bullet now reads RESOLVED
+  POSITIVE with the evidence.
+
+2026-07-15 (resource-read tool mirrors: decided + planned)
+--------------------------------------------------------------------
+
+- Resolved a design concern the user raised: why run BOTH resources and
+  tools, and are we using resources for the problem they solve. Answer
+  recorded in the spec's "resource-read tool mirrors" section. MCP's
+  primitives split by CONTROL: tools are model-invoked, resources are
+  application/user-invoked (canonically a human picks them). Our
+  tool/resource CUT is sound; the mismatch was AUDIENCE — we aimed a
+  read surface (annotations.audience ["assistant"], lazy/scoped/sliced)
+  at the model, on a primitive whose designed consumer is the human.
+- Two operating assumptions now recorded, interlocked:
+  (1) PRIMARY, human-in-the-loop — the main usage on a ~1-year horizon
+  is a human directing the model through claude code; the user
+  @-mentions resources when needed, so autonomous resource-reading is
+  NOT required for this mode.
+  (2) SECONDARY, UNVERIFIED, MUST BE RESOLVED — we assume claude code
+  lets the model enumerate/read resources autonomously. Named check:
+  does the client surface resources to the model on its own, or only
+  via user @server:uri? Negative resolution forces expose-by-default
+  vs. mirrors-active-by-default.
+- Decision: build a builtin TOOL mirror for every readable resource, so
+  a fully-autonomous-proving mode can hide the resource surface and
+  serve the equivalent tools (model-invoked) instead. The mirror set:
+  read_theory, read_commands, read_diagnostics, list_entities,
+  read_session, read_named. isabelle://repl/{id} and /text need no
+  mirror — repl_show/repl_text already are the twins. This elevates the
+  2026-07-12 "flagged, NOT scheduled" note to DECIDED/planned (wave
+  TBD). Mirrors ship registered-but-inactive; a bundle
+  autonomous_proving = [[mcp_tools add: ...]] activates them, riding the
+  phase-3 activation layer (this does NOT contradict "resources are NOT
+  mirrored" there — that forbids mirroring resource TEMPLATES; these are
+  first-class tools). Resource-suppression mechanism is the one new
+  piece, DEFERRED to the plan. Invariant: one uri-handler function, two
+  surfaces — a mirror never grows behavior its resource lacks.
+- Plans: plans/resource_tool_mirrors (umbrella) + per-tool
+  plans/read_theory, plans/read_commands, plans/read_diagnostics,
+  plans/list_entities, plans/read_session, plans/read_named;
+  plans/README updated; the implementation-order back-reference
+  (find_theorems item) corrected.
+
 2026-07-14 (recap planned; theory-not-repl refinement)
 --------------------------------------------------------------------
 
