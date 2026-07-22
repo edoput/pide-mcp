@@ -19,7 +19,8 @@ object Main {
 Usage: isabelle mcp_server [OPTIONS]
 
   Options are:
-    -d DIR       include session directory (default: $ISABELLE_MCP_HOME/Tools)
+    -d DIR       include session directory (the component's own sessions,
+                 MCP-Tools and MCP-HOL, are always known)
     -s SESSION   session with the MCP tool registry (default: MCP-Tools)
     -T THEORY    theory registering the MCP tools (default: MCP_Tools)
 
@@ -34,14 +35,10 @@ Usage: isabelle mcp_server [OPTIONS]
       val more_args = getopts(args)
       if (more_args.nonEmpty) getopts.usage()
 
-      val dirs =
-        if (session_dirs.isEmpty) List(Path.explode("$ISABELLE_MCP_HOME/Tools"))
-        else session_dirs
-
       val options = Options.init()
       val progress = new Console_Progress(stderr = true)
 
-      MCP_Server.run(options, session_name, dirs, theory, progress = progress)
+      MCP_Server.run(options, session_name, session_dirs, theory, progress = progress)
     })
 }
 

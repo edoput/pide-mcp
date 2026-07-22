@@ -202,10 +202,17 @@ object MCP_Session {
 
     /* theories already in the session image keep their protocol commands
        (defined at build time, persisted in the heap); anything else is
-       loaded into the running session */
+       loaded into the running session. The image qualifies theories by
+       their DEFINING session (MCP_Tools lives in the image as
+       "MCP-Tools.MCP_Tools" even when the running session is MCP-HOL),
+       so an unqualified -T must also match by base name -- otherwise the
+       default configuration only works when a -d happens to make the
+       theory file findable on disk. */
     val loaded =
       resources.loaded_theory(theory) ||
-      resources.loaded_theory(Long_Name.qualify(session_name, theory))
+      resources.loaded_theory(Long_Name.qualify(session_name, theory)) ||
+      (!Long_Name.is_qualified(theory) &&
+        resources.session_base.loaded_theories.keys.exists(Long_Name.base_name(_) == theory))
     if (!loaded) {
       val master_dir =
         session_dirs.headOption.map(File.standard_path).getOrElse("")

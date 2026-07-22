@@ -174,6 +174,50 @@ record; entries here point at the section that carries the details.
   (Doc.check + Markup.url with a hyperref fragment) when the
   traceability package is built.
 
+2026-07-13 (distribution: component registration is the whole install)
+-----------------------------------------------------------------------
+
+- decision: registering the mcp/ component must be the only setup a
+  user ever does — no -d flags pointing into this repository, in any
+  configuration. Mechanism: a top-level ROOTS catalog at mcp/ (one
+  line, "Tools"); Isabelle's Sessions.load_structure merges every
+  registered component directory that carries ROOT/ROOTS into the
+  global session namespace (Sessions.directories, sessions.scala), so
+  MCP-Tools/MCP-HOL become resolvable everywhere: isabelle build,
+  the server's own build/resources/structure, and user ROOT files
+  (which can now use MCP-HOL as a parent session directly).
+- this exposed a latent bug: MCP_Session.start's "already in the
+  image" check for the -T registry theory tried only the verbatim and
+  running-session-qualified spellings, but the image keys theories by
+  their DEFINING session ("MCP-Tools.MCP_Tools" in an MCP-HOL image).
+  It only ever worked because the default -d made the .thy findable
+  on disk for the use_theories fallback. Fixed with a unique
+  base-name match over loaded_theories (same normalization as
+  image_theory), for unqualified -T only.
+- mcp-main's special default -d ($ISABELLE_MCP_HOME/Tools) is gone:
+  redundant now, and it removes the "any -d replaces the default"
+  footgun that silently broke MCP-HOL resolution the moment a user
+  added their own project directory. README rewritten accordingly
+  (install pre-build is a bare `isabelle build -b MCP-HOL`; .mcp.json
+  example is `-s MCP-HOL -d .`).
+- verified end to end against a live server: (a) no -d, unrelated
+  cwd; (b) only `-d .` in a user project whose ROOT bases a session
+  on MCP-HOL — user session appears in list_sessions next to ours;
+  (c) ad-hoc user tool via repl_init/repl_step (mcp_tool in a repl) +
+  tool_scope_set repl → served in tools/list and callable.
+- KNOWN GAP (decision pending): tool_scope_set on a wave-2 LOADED
+  theory (load_theory'd, not in the image) Scala-resolves fine but
+  every ML-side use fails "Unknown theory ... in MCP designation" —
+  document-model theories are not in Thy_Info, and document.ML
+  exports no by-name theory access, so ML cannot build the context.
+  Options: honest early error at tool_scope_set steering to the repl
+  route; or real support by loading ML-side via Thy_Info.use_theories
+  (Ir.load_theory exists, but needs name/master_dir plumbing across
+  the bridge). The test sessions (MCP-Tools-Tests/MCP-HOL-Tests) also
+  become globally visible through the catalog — cosmetic; splitting
+  them into non-cataloged ROOT files touches the dev workflow
+  (mcp_test -b fixtures, rebuild rule) and is left as a follow-up.
+
 2026-07-13 (fix: theory resource reads for loaded/unrecognized names)
 --------------------------------------------------------------------
 

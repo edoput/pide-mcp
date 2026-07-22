@@ -32,11 +32,15 @@ Installation
 
        isabelle components -u /path/to/isabelle-mcp/mcp
 
+   This also makes the `MCP-Tools` and `MCP-HOL` sessions globally
+   known to Isabelle (the component carries a session catalog), so no
+   `-d` flags pointing into this repository are ever needed.
+
 3. Pre-build the proving session so the first agent connection does
    not wait for a full HOL build (the server builds missing heaps
    itself, but HOL from scratch takes a while):
 
-       isabelle build -b -d /path/to/isabelle-mcp/mcp/Tools MCP-HOL
+       isabelle build -b MCP-HOL
 
 4. (Optional) smoke-test the installation end to end:
 
@@ -58,8 +62,9 @@ launches and owns this process — you rarely run it by hand.
 
 Options:
 
-    -d DIR       include a session directory (repeatable; default:
-                 $ISABELLE_MCP_HOME/Tools)
+    -d DIR       include a session directory (repeatable; only needed
+                 for your own sessions — MCP-Tools and MCP-HOL are
+                 always known once the component is registered)
     -s SESSION   session to run (default: MCP-Tools, the minimal
                  Pure-based registry — for actual proving you want
                  MCP-HOL, which is HOL plus the repl/search tools)
@@ -85,10 +90,9 @@ and reports per-theory ok/error status with positions. After edits,
 **A project with a ROOT file** (its own session): start the server
 with your project directory added,
 
-    isabelle mcp_server -s MCP-HOL -d /path/to/isabelle-mcp/mcp/Tools -d /path/to/your/project
+    isabelle mcp_server -s MCP-HOL -d /path/to/your/project
 
-(note: passing any `-d` replaces the default, so keep the
-`mcp/Tools` entry). Your session then appears in the discovery tools
+Your session then appears in the discovery tools
 — `list_sessions`, `list_theories`, `search_sources` — and theories
 load by session-qualified name: `load_theory {"name":
 "MySession.MyTheory"}`.
@@ -103,7 +107,7 @@ Configuring the agent
 Any MCP client that supports stdio servers works. For Claude Code,
 from your project directory:
 
-    claude mcp add isabelle -- isabelle mcp_server -s MCP-HOL -d /path/to/isabelle-mcp/mcp/Tools -d .
+    claude mcp add isabelle -- isabelle mcp_server -s MCP-HOL -d .
 
 or equivalently in `.mcp.json`:
 
@@ -111,12 +115,14 @@ or equivalently in `.mcp.json`:
       "mcpServers": {
         "isabelle": {
           "command": "isabelle",
-          "args": ["mcp_server", "-s", "MCP-HOL",
-                   "-d", "/path/to/isabelle-mcp/mcp/Tools",
-                   "-d", "."]
+          "args": ["mcp_server", "-s", "MCP-HOL", "-d", "."]
         }
       }
     }
+
+(drop `-d .` if the project has no ROOT file of its own — plain
+theory directories are reached through `load_theory`'s `master_dir`
+argument instead).
 
 Use an absolute path for `"command"` if `isabelle` is not on the
 client's PATH. The first connection blocks until the session heap is
@@ -144,9 +150,17 @@ theory. A minimal registration theory:
 
     end
 
-Add the theory to a session of your own (based on `MCP-HOL`) and run
-the server with `-s YourSession`. Tools registered mid-session emit
-`tools/list_changed` notifications, so the agent picks them up live.
+Add the theory to a session of your own (based on `MCP-HOL` —
+usable as a parent in any ROOT file once the component is
+registered) and run the server with `-s YourSession -d
+/path/to/your/project`.
+
+Tools can also be registered ad hoc, without building a session: step
+the registration through a repl (`repl_init` with `MCP-HOL.MCP`
+among the imports, then `mcp_tool ...` via `repl_step`)
+and point the tool scope at it with `tool_scope_set`. Tools
+registered mid-session emit `tools/list_changed` notifications, so
+the agent picks them up live.
 There are further forms — string functions, ML run functions with
 typed parameters — documented in `mcp/Tools/MCP_Tools.thy`.
 
