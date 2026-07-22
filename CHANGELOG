@@ -174,6 +174,33 @@ record; entries here point at the section that carries the details.
   (Doc.check + Markup.url with a hyperref fragment) when the
   traceability package is built.
 
+2026-07-13 (MCP-HOL.MCP: the HOL-anchored registration entry point)
+--------------------------------------------------------------------
+
+- found debugging a user theory (ctree): importing the Pure-based
+  MCP-Tools.MCP_Tools next to HOL-Library theories made the first
+  codatatype raise SIMPLIFIER ("Congruence not a meta-equality",
+  [case_cong]). Mechanism: Context.begin_thy's make_parents drops
+  imports subsumed by other imports (Main is a proper subtheory of
+  any HOL-Library theory), so the Pure-based registry silently
+  becomes the FIRST merged parent; theory data folds left-to-right
+  from the first parent and merge_ss keeps mk_rews (HOL's mk_cong,
+  which meta-fies Trueprop-eq congruences) from the left argument
+  only — the merged theory runs on Pure's cong setup and
+  datatype/codatatype's add_eqcong dies. Bisected live through the
+  server's own repl + load_theory tools; each link verified.
+- decision: users never import MCP-Tools.MCP_Tools directly. New
+  theory mcp/Tools/HOL/MCP.thy ("MCP-HOL.MCP", in the MCP-HOL
+  session) imports Main FIRST and re-exports the mcp_tool/
+  mcp_resource commands; since its own simpset carries HOL's
+  mk_rews, it is safe in any import position. Verified: previously
+  fatal first-position import + mcp_tool registration, and the exact
+  ctree-shaped import list, both load clean through the server.
+- README's extension examples now import MCP-HOL.MCP (with a comment
+  naming the pitfall); the isabelle-ml skill's "Contexts and context
+  data" topic records the parent-merge-order pitfall with MCP.thy as
+  the local worked example.
+
 2026-07-13 (distribution: component registration is the whole install)
 -----------------------------------------------------------------------
 

@@ -14,6 +14,7 @@ session "MCP-HOL" in "HOL" = HOL +
   sessions
     "MCP-Tools"
   theories
+    MCP
     MCP_Repl
 
 session "MCP-HOL-Tests" in "HOL/Tests" = "MCP-HOL" +

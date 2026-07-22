@@ -137,8 +137,16 @@ they are visible to the agent when the running session imports that
 theory. A minimal registration theory:
 
     theory My_Tools
-      imports "MCP-Tools.MCP_Tools"
+      imports "MCP-HOL.MCP"
     begin
+
+    (* import "MCP-HOL.MCP", not "MCP-Tools.MCP_Tools": the latter is
+       Pure-based, and a Pure-based import can silently become the
+       first merged parent of a HOL theory (Isabelle drops imports
+       subsumed by other imports), losing HOL's simplifier setup --
+       the next datatype/codatatype then fails with "Congruence not a
+       meta-equality". MCP-HOL.MCP is HOL-anchored and safe in any
+       import position; see its header for the full mechanism. *)
 
     (* wrap a diagnostic Isar command as a tool; the description is
        mandatory and the command name is quoted *)
