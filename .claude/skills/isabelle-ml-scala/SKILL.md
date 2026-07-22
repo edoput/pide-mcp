@@ -25,9 +25,21 @@ Isabelle has two implementation languages with distinct roles:
   Reference: `isabelle doc system`, chapter "Isabelle/Scala systems
   programming" (source: `src/Doc/System/Scala.thy`).
 
-In this repo the distribution lives at
-`Isabelle2025-2_linux/Isabelle2025-2`; use its `bin/isabelle` for all
-commands below.
+In this repo the bundled distribution at
+`Isabelle2025-2_linux/Isabelle2025-2` is **reference sources only** —
+never execute its `bin/isabelle`. Run every Isabelle command through the
+flatpak:
+
+```
+flatpak run --command=isabelle de.tum.in.isabelle.Isabelle <args>
+```
+
+The two installs ship different Poly/ML binaries and share
+`$ISABELLE_HOME_USER/heaps`, and a root session's build digest is the
+SHA1 of the `poly` binary, so alternating between them invalidates Pure
+and forces a full Pure → HOL rebuild every time. Where the reference
+files below write `isabelle <cmd>`, that names the command — always
+invoke it through the flatpak above.
 
 ## References
 
@@ -51,6 +63,17 @@ When developing isabelle component in scala that interop with ML, consult `refer
 
 - calling scala functions from ML
 - calling ML functions from scala
+
+When text crosses between ML and scala — terms, proof states, theory
+source, anything carrying `\<Longrightarrow>` or a cartouche — consult
+`references/symbol-recoding.md` for:
+
+- the ML-speaks-notation / scala-speaks-unicode convention
+- which channels recode for you and which do not (the protocol channel
+  recodes in NEITHER direction — the usual trap)
+- the `Symbol.decode` / `encode` / `*_yxml` api, and the `recode`
+  parameter on the yxml serialiser
+- which parts of the distribution already recode, and where
 
 When testing isabelle component in scala and ML, consult `references/testing.md` for:
 

@@ -41,7 +41,7 @@ Pitfalls verified in practice:
   running the tool itself) rebuilds out-of-date modules first.
   Up-to-date checks use SHA1 digests stored in
   `META-INF/isabelle/shasum` inside the jar.
-- Explicit build: `isabelle scala_build` (`-f` force, `-q` quiet).
+- Explicit build: `isabelle scala_build` (`-q` quiet). Avoid `-f` (force) — it fails under flatpak with `Read-only file system` when trying to rebuild `isabelle.jar` in the read-only image.
   Compile errors surface here.
 - `isabelle` with no arguments lists all available tools — grep it to
   confirm registration.

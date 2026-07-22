@@ -61,6 +61,25 @@ configuration options.
 Sources: `src/Pure/context.ML`, `src/Pure/Isar/proof_context.ML`,
 `src/Pure/config.ML`.
 
+**Pitfall — parent merge order (2026-07-13, hit via a user's
+codatatype).** `Context.begin_thy` first DROPS imports that are proper
+subtheories of other imports (`make_parents`, `src/Pure/context.ML`),
+then merges each data slot folding left-to-right from the first
+surviving parent (`Theory_Data` functor, same file). Merge functions
+that keep one side take the FIRST parent's value — notably the
+simplifier's `mk_rews` record (`merge_ss`,
+`src/Pure/raw_simplifier.ML`), which carries HOL's `mk_cong`.
+Concrete failure: `imports Main "MCP-Tools.MCP_Tools"
+"HOL-Library.X"` — `Main` is subsumed by `X` and dropped, the
+Pure-based registry becomes the first parent, HOL's cong
+preprocessing is lost, and the next `datatype`/`codatatype` raises
+`SIMPLIFIER ("Congruence not a meta-equality", [case_cong ...])`.
+Rule: a Pure-based theory must never end up as the first parent of a
+HOL theory; give users a HOL-anchored wrapper to import instead —
+local example `mcp/Tools/HOL/MCP.thy` (`MCP-HOL.MCP`), which imports
+`Main` first and documents the mechanism, is exactly that wrapper for
+the `mcp_tool`/`mcp_resource` commands.
+
 ### Names, bindings, name spaces
 Manual: `src/Doc/Implementation/Prelim.thy` §"Names" — basic names,
 indexnames, qualified names, `binding`, name spaces.
@@ -156,6 +175,14 @@ Hard-won facts (2026-07-11, all hit while building `mcp_tool`):
   `Theory.local_setup (fn lthy => ...)` around the user source, then
   `Context.proof_map`. Wrap `ML_Syntax.make_binding` output in
   `ML_Syntax.atomic` when splicing it as an argument.
+  Use when the Isar command receives ML text from a cartouche: consult
+  `references/method-setup-idiom.md` for the full pattern — the Pure
+  originals (`Method.method_setup`, `Attrib.attribute_setup`), the
+  local `ml_declaration` generalization in `mcp/Tools/MCP_Tools.thy`,
+  the splicing rules (user code as tokens via `ML_Lex.read_source`,
+  data only through `ML_Syntax.print_*` printers), and a survey of
+  every Pure command taking ML text, including the context-data-slot
+  variant for extracting a compiled value back out.
 - **Programmatic command execution**: `Outer_Syntax.parse_text thy
   (K thy) pos text` + `fold (Toplevel.command_exception false)` over
   `Toplevel.make_state (SOME thy)`. Parse at `Position.line 1`, NEVER
