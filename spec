@@ -1636,6 +1636,12 @@ implementation order
       teach the tier answers (filesystem = "not checked", image =
       "checked at build time") and that diagnostics are read-time
       snapshot queries — re-reading is always safe and cheap.
+- [x] scala: documentation tools doc_list / doc_read — Doc.contents()
+      catalog joined to src/Doc source sessions via document_variants,
+      table-of-contents + section reads over the chapter .thy files,
+      plain-entry (NEWS) windowed reads, pdf-only honest fallback.
+      no ML involved. see "documentation for the agent" above;
+      plans/doc_list, plans/doc_read (wave 5).
 - [ ] record results here
 
 testing

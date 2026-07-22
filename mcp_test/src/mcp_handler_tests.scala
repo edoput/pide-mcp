@@ -540,6 +540,30 @@ class MCP_Tools_Tests extends MCP_Suite {
     assert(!text.contains("NEWS"), "pattern isar* should filter out NEWS")
   }
 
+  /* wave 5 (plans/doc_read): reads a doc_list entry. Fake_Backend has no
+     real catalog behind doc_read (see mcp_testing.scala), so these tests
+     only exercise the wiring (schema, dispatch bypasses ir) -- the actual
+     toc/section/window logic is tested directly against real doc sources
+     in MCP_Doc_Read_Tests. */
+
+  test("tools/list includes doc_read with name required, section/lines optional") {
+    val row = tool_row("doc_read")
+    assertEquals(required_args(row), List("name"))
+    assertEquals(property_type(row, "name"), "string")
+    assertEquals(property_type(row, "section"), "string")
+    assertEquals(property_type(row, "lines"), "string")
+    assertEquals(annotation(row, "readOnlyHint"), true)
+    assertEquals(annotation(row, "idempotentHint"), true)
+    assertEquals(annotation(row, "openWorldHint"), false)
+  }
+
+  test("tools/call doc_read reaches backend.doc_read, not backend.ir") {
+    val backend = new Fake_Backend
+    val reply = call_tool("doc_read", JSON.Object("name" -> "isar-ref"), backend)
+    assert(backend.last_ir.isEmpty, "doc_read must not touch the ir bridge")
+    assert_no_error(reply)
+  }
+
   test("tools/list: a colliding ML tool does not shadow the repl_list builtin") {
     val backend = new Fake_Backend
     backend.extra_ml_tools =
@@ -1307,6 +1331,112 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
     val all = Doc_Catalog.render(catalog, "")
     assert(all.contains("isar-ref") && all.contains("NEWS"),
       "empty pattern should list both manuals and plain entries")
+  }
+}
+
+
+/* plans/doc_read: heading scan / toc / section slicing / plain-entry
+   windowing, all pure functions of file paths -- run against the REAL
+   Isar_Ref chapter sources (Sessions.deps is the only non-cheap step here,
+   same one the server itself already pays once at startup). */
+
+class MCP_Doc_Read_Tests extends MCP_Suite {
+  private def real_structure(): Sessions.Structure =
+    Sessions.load_structure(MCP_Test_Config.options, dirs = MCP_Test_Config.session_dirs)
+
+  private lazy val deps: Sessions.Deps =
+    Sessions.deps(real_structure(), progress = MCP_Test_Config.progress)
+
+  private lazy val isar_ref_files: List[Path] =
+    deps("Isar_Ref").proper_session_theories.map(_.path)
+
+  private lazy val isar_ref_toc: List[Doc_Catalog.Heading] = Doc_Catalog.toc(isar_ref_files)
+
+  private lazy val news_path: Path =
+    Doc_Catalog.make(real_structure()).flatMap(_.entries).find(_.name == "NEWS")
+      .getOrElse(fail("no NEWS entry in the catalog")).path
+
+  /* T1: toc claim -- headings from ALL chapter files, both chapter and
+     section levels present, every row carrying file + line. */
+  test("T1: Isar_Ref toc has more than 40 rows spanning multiple files") {
+    assert(isar_ref_toc.length > 40,
+      "expected > 40 headings in Isar_Ref, got " + isar_ref_toc.length)
+    assert(isar_ref_toc.map(_.file).distinct.length > 1,
+      "expected headings from more than one chapter file")
+  }
+
+  test("T1: toc includes both chapter and section levels, all with a line") {
+    assert(isar_ref_toc.exists(_.level == 0), "expected at least one chapter heading")
+    assert(isar_ref_toc.exists(_.level == 1), "expected at least one section heading")
+    assert(isar_ref_toc.forall(_.line > 0), "every heading should carry a positive line")
+  }
+
+  /* T2: a pinned section (Spec.thy's "Defining theories \label{sec:begin-
+     thy}", spanning up to the next section "Local theory targets") --
+     text contains a phrase from its body and stops before the next
+     section's title. */
+  test("T2: section extraction stops at the next same-level heading") {
+    Doc_Catalog.find_section(isar_ref_toc, "Defining theories") match {
+      case Doc_Catalog.Unique(heading) =>
+        val in_file = isar_ref_toc.filter(_.file == heading.file)
+        val text = Doc_Catalog.section_text(in_file, heading)
+        assert(text.contains("definition--statement--proof elements"),
+          "section text should contain a phrase from Spec.thy's body: " + text.take(200))
+        assert(!text.contains("Local theory targets"),
+          "section text should stop before the next section's title")
+      case other => fail("expected a unique match for \"Defining theories\", got " + other)
+    }
+  }
+
+  /* T3: it is a search, not a compile -- ambiguous/unknown queries never
+     guess. "proof" matches many section titles across Isar_Ref. */
+  test("T3: an ambiguous section query returns candidates, not text") {
+    Doc_Catalog.find_section(isar_ref_toc, "proof") match {
+      case Doc_Catalog.Ambiguous(candidates) => assert(candidates.length > 1)
+      case other => fail("expected Ambiguous for \"proof\", got " + other)
+    }
+  }
+
+  test("T3: an unknown section query is No_Match, not an error") {
+    assertEquals(
+      Doc_Catalog.find_section(isar_ref_toc, "zzz_no_such_section_zzz"), Doc_Catalog.No_Match)
+  }
+
+  /* T4: plain entries -- lines windows exactly; section is an argument
+     error surfaced by MCP_Session.doc_read (Fake_Backend has no real
+     plain file, so this exercises Doc_Catalog.plain_read directly against
+     NEWS). */
+  test("T4: plain_read with an explicit lines window returns exactly that window") {
+    val Right(text) = Doc_Catalog.plain_read(news_path, "1-5"): @unchecked
+    assertEquals(split_lines(text).length, 5)
+  }
+
+  test("T4: plain_read rejects a malformed lines range") {
+    assert(Doc_Catalog.plain_read(news_path, "not-a-range").isLeft)
+  }
+
+  /* T5: truncation -- a chapter-level section (the toplevel chapter
+     heading itself, spanning the whole file) truncates at the window with
+     the "narrow" note. */
+  test("T5: a chapter-sized section read truncates with a narrow-the-section note") {
+    val chapter = isar_ref_toc.find(_.level == 0).getOrElse(fail("no chapter heading found"))
+    val in_file = isar_ref_toc.filter(_.file == chapter.file)
+    val text = Doc_Catalog.section_text(in_file, chapter)
+    assert(text.contains("truncated") && text.contains("narrow the section"),
+      "a whole-chapter read should exceed the window and truncate: " + text.takeRight(200))
+  }
+
+  /* T6 (D1a canary): every heading-command occurrence in the bundled
+     Isar_Ref sources is found by the line-anchored scanner -- guards
+     against a future distribution reformatting headings onto multiple
+     physical lines, which the scanner would silently miss. The reference
+     count is a plain line-start check, independent of the scanner's own
+     cartouche-matching regex. */
+  test("T6: scanner heading count matches a raw line-start count") {
+    val command = """^(chapter|section|subsection|subsubsection)\b""".r
+    val raw_count =
+      isar_ref_files.map(f => split_lines(File.read(f)).count(l => command.findFirstIn(l).isDefined)).sum
+    assertEquals(isar_ref_toc.length, raw_count)
   }
 }
 

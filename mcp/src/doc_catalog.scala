@@ -82,4 +82,135 @@ object Doc_Catalog {
       "text -- never the pdf) or a plain-text entry (release notes, examples) directly; " +
       "search_sources over a manual's source session name greps its chapters."
   }
+
+
+  /* doc_read (plans/doc_read): toc + section reads over a manual's chapter
+     sources, plain-entry windowed reads. Pure functions of file paths/
+     content, so they are unit-testable directly against the bundled
+     distribution's real doc sources (plans/doc_read T1..T6) -- no fake
+     catalog, no headless session needed (same rationale as make() above). */
+
+  /* the window cap for oversized reads (spec "large reads are sliceable...
+     a read without parameters on an oversized resource returns the first
+     window ... instead of the full payload" -- the spec pins the RULE but
+     no concrete size anywhere in the codebase; this is the first tool to
+     implement it, so DOC_READ_WINDOW is established HERE, not reused from
+     elsewhere (there is nothing to reuse yet). Chapter-sized manual
+     sections and NEWS are both meant to truncate under this cap; narrowing
+     the request (a more specific section, an explicit lines= window) is
+     the documented way past it. */
+  val window_lines: Int = 200
+
+  private def truncate(all_lines: List[String], note_hint: String): String = {
+    if (all_lines.length <= window_lines) all_lines.mkString("\n")
+    else {
+      val shown = all_lines.take(window_lines)
+      shown.mkString("\n") +
+        "\n\n[truncated, " + (all_lines.length - window_lines) + " more lines; " + note_hint + "]"
+    }
+  }
+
+  /* D1a: line-anchored heading scan (the outer-syntax-span spike never
+     landed, per the plan's own decision rule -- ship (a) with the line-
+     initial caveat pinned by T6). Headings in the bundled doc sources are
+     hand-formatted, one command per line: "section \<open>Title \label{l}\<close>"
+     -- command and title cartouche on the same physical line, with an
+     optional trailing \label{...} folded into the cartouche, stripped
+     here for a clean title (D2: a heading not matching this shape is
+     dropped, never crashes the toc). */
+  sealed case class Heading(level: Int, title: String, file: Path, line: Int)
+
+  private val heading_line =
+    """^(chapter|section|subsection|subsubsection)\s+\\<open>(.*)\\<close>\s*$""".r
+  private val trailing_label = """\s*\\label\{[^}]*\}\s*$""".r
+
+  def heading_level(command: String): Int =
+    command match {
+      case "chapter" => 0
+      case "section" => 1
+      case "subsection" => 2
+      case "subsubsection" => 3
+    }
+
+  def scan_headings(file: Path): List[Heading] = {
+    val lines = split_lines(File.read(file))
+    lines.zipWithIndex.flatMap { case (line, i) =>
+      line match {
+        case heading_line(command, raw_title) =>
+          val title = trailing_label.replaceAllIn(raw_title, "").trim
+          Some(Heading(heading_level(command), title, file, i + 1))
+        case _ => None
+      }
+    }
+  }
+
+  def toc(files: List[Path]): List[Heading] = files.flatMap(scan_headings)
+
+  def render_toc(headings: List[Heading]): String =
+    if (headings.isEmpty) "(no headings found)"
+    else
+      headings.map(h =>
+        "  " * h.level + h.title + "  [" + h.file.file_name + ":" + h.line + "]").mkString("\n")
+
+  /* section lookup: case-insensitive substring match on titles within ONE
+     manual's toc, resolved against the whole distinct match set -- "it is
+     a search, not a compile" (plans/doc_read): unique -> read that
+     section's text; ambiguous -> the candidate rows, not a guess; none ->
+     an honest "no section matching" reply (probe-safe, matching doc_list's
+     unmatched-pattern rule). */
+  sealed abstract class Section_Lookup
+  case class Unique(heading: Heading) extends Section_Lookup
+  case class Ambiguous(candidates: List[Heading]) extends Section_Lookup
+  case object No_Match extends Section_Lookup
+
+  def find_section(headings: List[Heading], query: String): Section_Lookup = {
+    val q = query.toLowerCase
+    val candidates = headings.filter(_.title.toLowerCase.contains(q))
+    candidates match {
+      case List(one) => Unique(one)
+      case Nil => No_Match
+      case many => Ambiguous(many)
+    }
+  }
+
+  /* section text: from the matched heading's line to the next heading of
+     the SAME OR HIGHER level (i.e. level <= the matched one) within the
+     same file, or the end of the file if none -- a nested subsection
+     stays inside its parent's slice. Every bundled manual chapter is one
+     file (D1's assumption), so cross-file spans are not needed. */
+  def section_text(headings_in_file: List[Heading], heading: Heading): String = {
+    val content = split_lines(File.read(heading.file))
+    val start = heading.line - 1
+    val end =
+      headings_in_file
+        .filter(h => h.line > heading.line && h.level <= heading.level)
+        .map(_.line - 1)
+        .sorted
+        .headOption
+        .getOrElse(content.length)
+    truncate(content.slice(start, end), "narrow the section")
+  }
+
+  /* plain-entry reads (NEWS, COPYRIGHT, examples): `lines` windows exactly
+     like the spec's isabelle://theory/{name}?lines=120-180 -- a 1-based,
+     inclusive "start-stop" range. No `lines` given: the oversized-read
+     rule (first window_lines + truncation note) applies, same as an
+     unparameterized manual section read; an explicit `lines` request is
+     never truncated further -- the caller asked for exactly that. */
+  def plain_read(path: Path, lines: String): Either[String, String] = {
+    val content = split_lines(File.read(path))
+    if (lines.isEmpty) Right(truncate(content, "use lines=\"" + (window_lines + 1) + "-...\""))
+    else
+      lines match {
+        case Lines_Range(from_s, to_s) =>
+          val from = from_s.toInt
+          val to = to_s.toInt
+          if (from < 1 || to < from) Left("Bad lines range " + quote(lines) + ": expected start-stop, start >= 1, stop >= start")
+          else Right(content.slice(from - 1, to).mkString("\n"))
+        case _ =>
+          Left("Bad lines range " + quote(lines) + ": expected \"start-stop\", e.g. \"120-180\"")
+      }
+  }
+
+  private val Lines_Range = """^(\d+)-(\d+)$""".r
 }

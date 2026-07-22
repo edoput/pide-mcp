@@ -94,6 +94,29 @@ record; entries here point at the section that carries the details.
   "Cannot load theory file" for reasons that have nothing to do with
   the code under test.
 
+2026-07-14 (doc_read implemented)
+--------------------------------------------------------------------
+
+- plans/doc_read landed (wave 5, second of the pair): Doc_Catalog
+  (mcp/src/doc_catalog.scala) gained the toc/section/plain-window
+  machinery, all pure functions of file paths so they are unit-tested
+  directly against the bundled distribution's real doc sources (no
+  fake catalog, no headless session) -- Heading scan is D1a, the
+  line-anchored regex over "command \<open>Title \label{l}\<close>", since
+  the outer-syntax-span spike (D1b) never landed; T6 pins a raw
+  line-start count as the canary against a future distribution
+  reformatting headings across lines. D3 revised during
+  implementation: there was no existing ?lines=/window-cap code to
+  reuse anywhere in the tree (isabelle://theory/{name} reads whole
+  files today) -- doc_read is the first tool to implement the spec's
+  oversized-read rule, so it establishes Doc_Catalog.window_lines =
+  200 as the cap rather than reusing one. New builtin tool doc_read
+  {name, section?, lines?} in mcp_server.scala, scala-only (no
+  MCP.ir, no ML); section and lines are mutually exclusive
+  (handler-enforced). T1..T7 all green (scala-unit against real
+  Isar_Ref sources + NEWS, one bridge case for the full
+  doc_list -> doc_read(toc) -> doc_read(section) chain).
+
 2026-07-14 (doc_list implemented)
 --------------------------------------------------------------------
 

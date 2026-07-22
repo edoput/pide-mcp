@@ -324,6 +324,14 @@ class Fake_Backend extends MCP_Backend {
         Doc_Catalog.Entry("NEWS", "NEWS", "plain", Path.current))))
   def doc_list(pattern: String): MCP_Session.Result =
     MCP_Session.Ok(Doc_Catalog.render(fake_doc_catalog, pattern))
+  /* doc_read has no fake catalog behind it -- the real toc/section-slicing/
+     windowing logic (Doc_Catalog.scan_headings/section_text/plain_read) is
+     pure and tested directly against the bundled distribution's real doc
+     sources (MCP_Doc_Catalog_Tests), not through Fake_Backend; this stub
+     only exists to satisfy MCP_Backend's interface for dispatch-level
+     tests (tools/list, tool_scope, ...) that never call it. */
+  def doc_read(name: String, section: String, lines: String): MCP_Session.Result =
+    MCP_Session.Ok("doc_read is not backed by " + getClass.getSimpleName)
   def stop(): Unit = stopped = true
 }
 

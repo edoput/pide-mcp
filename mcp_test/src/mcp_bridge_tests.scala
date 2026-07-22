@@ -122,6 +122,27 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
     assert(text.contains("source: Isar_Ref"),
       "doc_list should name Isar_Ref as isar-ref's source session: " + text)
   }
+
+  /* T7 (plans/doc_read): the full lookup workflow -- doc_list names the
+     source session, doc_read without `section` gives the toc, doc_read
+     with `section` gives that section's text. */
+  test("bridge: doc_list -> doc_read (toc) -> doc_read (section) over a live server") {
+    val handler = new MCP_Server.Handler(session)
+
+    val toc_reply = call_tool_on(handler, "doc_read", JSON.Object("name" -> "isar-ref"))
+    assert_no_error(toc_reply)
+    val toc_text = result_text(toc_reply)
+    assert(toc_text.contains("Defining theories"),
+      "isar-ref toc should list the \"Defining theories\" section: " + toc_text)
+
+    val section_reply =
+      call_tool_on(handler, "doc_read",
+        JSON.Object("name" -> "isar-ref", "section" -> "Defining theories"))
+    assert_no_error(section_reply)
+    val section_text = result_text(section_reply)
+    assert(section_text.contains("definition--statement--proof elements"),
+      "isar-ref section read should return Spec.thy's body text: " + section_text.take(200))
+  }
 }
 
 

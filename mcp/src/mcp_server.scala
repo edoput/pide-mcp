@@ -740,6 +740,43 @@ object MCP_Server {
       annotations = read_only_annotations,
       handler_fn = Some((backend, args) => backend.doc_list(pass_arg(args, "pattern"))))
 
+  /* wave 5 (plans/doc_read, spec "documentation for the agent"): reads a
+     doc_list entry from its plain-text source -- manuals resolve through
+     the catalog to their src/Doc session's chapter .thy files (toc
+     without `section`, that section's source text with it); NEWS/examples
+     are plain files (`lines` windows them). Never the pdf. */
+  val doc_read_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "doc_read",
+      fname = "",
+      description =
+        "Read Isabelle documentation from its plain-text sources. `name` " +
+        "is a doc_list entry (e.g. \"isar-ref\", \"system\", \"NEWS\"). " +
+        "For manuals: without `section`, returns the table of contents -- " +
+        "chapter and section headings with their source file and line; " +
+        "with `section`, returns that section's source text (substring " +
+        "match on headings; an ambiguous match lists the candidates). " +
+        "Manual text is Isar theory source -- prose with antiquotations " +
+        "-- not the rendered pdf. For plain-text entries (NEWS, examples), " +
+        "returns file content; `lines` (e.g. \"120-180\") windows it. Long " +
+        "sections are truncated with a note; narrow with a more specific " +
+        "`section` or use search_sources over the manual's source " +
+        "session. `section` and `lines` are mutually exclusive -- section " +
+        "addresses manuals, lines addresses plain entries.",
+      input_schema =
+        JSON.Object(
+          "type" -> "object",
+          "properties" ->
+            JSON.Object(
+              "name" -> JSON.Object("type" -> "string"),
+              "section" -> JSON.Object("type" -> "string"),
+              "lines" -> JSON.Object("type" -> "string")),
+          "required" -> List("name")),
+      annotations = read_only_annotations,
+      handler_fn = Some((backend, args) =>
+        backend.doc_read(
+          pass_arg(args, "name"), pass_arg(args, "section"), pass_arg(args, "lines"))))
+
   /* wave 4 (plans/scope_add, plans/scope_remove, spec "scoping"): the
      resource scope is a set of theory-name glob patterns controlling
      what resources/list enumerates -- scope filters DISCOVERY, never
@@ -812,7 +849,7 @@ object MCP_Server {
       load_theory_tool, unload_theory_tool, check_theory_tool,
       list_sessions_tool, list_theories_tool, search_sources_tool,
       scope_add_tool, scope_remove_tool, scope_show_tool,
-      doc_list_tool)
+      doc_list_tool, doc_read_tool)
 
   /* tool_scope_show/set/include (plans/tool_scope, spec "the agent
      context"): unlike every other builtin above, these read and mutate

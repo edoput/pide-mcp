@@ -75,6 +75,12 @@ trait MCP_Backend {
      startup (Doc_Catalog.make); not scope-filtered (catalog items, not
      theories -- discovery is never scoped). */
   def doc_list(pattern: String): MCP_Session.Result
+  /* doc_read (plans/doc_read, wave 5): resolves `name` through the same
+     Doc_Catalog doc_list serves. section addresses manuals (toc without
+     it, that section's source text with it); lines addresses plain
+     entries (NEWS, examples); the two are mutually exclusive, enforced
+     by the handler before any catalog lookup. */
+  def doc_read(name: String, section: String, lines: String): MCP_Session.Result
   def stop(): Unit
 }
 
@@ -260,6 +266,29 @@ class MCP_Session private(
      startup alongside the maps above (same lifecycle, same rationale --
      pure parsing, no heaps). */
   private val doc_catalog: List[Doc_Catalog.Section] = Doc_Catalog.make(structure)
+
+  /* wave 5 (plans/doc_read): a manual's chapter toc, memoized per source
+     session -- the sources are read-only distribution files, so scanning
+     is done lazily (only manuals doc_read is actually asked about pay the
+     cost) and cached forever once computed. */
+  private val doc_toc_cache: Synchronized[Map[String, List[Doc_Catalog.Heading]]] =
+    Synchronized(Map.empty)
+
+  private def manual_files(session_name: String): List[Path] =
+    deps.get(session_name) match {
+      case Some(base) => base.proper_session_theories.map(_.path)
+      case None => Nil
+    }
+
+  private def manual_toc(session_name: String): List[Doc_Catalog.Heading] =
+    doc_toc_cache.change_result { cache =>
+      cache.get(session_name) match {
+        case Some(toc) => (toc, cache)
+        case None =>
+          val toc = Doc_Catalog.toc(manual_files(session_name))
+          (toc, cache + (session_name -> toc))
+      }
+    }
 
   private val tools_promises =
     Synchronized(List.empty[Promise[List[MCP_Session.Tool_Row]]])
@@ -1032,6 +1061,69 @@ class MCP_Session private(
      Doc_Catalog.render for the filtering/rendering rules. */
   def doc_list(pattern: String): MCP_Session.Result =
     MCP_Session.Ok(Doc_Catalog.render(doc_catalog, pattern))
+
+  /* doc_read (plans/doc_read): resolve `name` through the catalog
+     doc_list serves, then dispatch on entry kind -- manual (source
+     session), plain (direct file), pdf only (no plain-text source). No
+     ir call: file reads only, through the deps path map (same shape as
+     the filesystem-tier theory resource read). */
+  def doc_read(name: String, section: String, lines: String): MCP_Session.Result = {
+    if (section.nonEmpty && lines.nonEmpty)
+      return MCP_Session.Error(
+        "doc_read: \"section\" and \"lines\" are mutually exclusive -- section addresses " +
+        "manuals, lines addresses plain-text entries")
+
+    doc_catalog.flatMap(_.entries).find(_.name == name) match {
+      case None =>
+        MCP_Session.Ok(
+          "no documentation entry " + quote(name) + "; call doc_list to see the catalog")
+
+      case Some(entry) if entry.source == "pdf only" =>
+        if (section.nonEmpty || lines.nonEmpty)
+          MCP_Session.Error(
+            "doc_read: " + quote(name) + " has no plain-text source in this distribution " +
+            "(pdf only at " + entry.path.toString + "); section/lines do not apply")
+        else
+          MCP_Session.Ok(
+            "pdf only at " + entry.path.toString + "; no plain-text source in this " +
+            "distribution -- the host agent can read the pdf directly.")
+
+      case Some(entry) if entry.source == "plain" =>
+        if (section.nonEmpty)
+          MCP_Session.Error(
+            "doc_read: " + quote(name) + " is a plain-text entry -- it has no sections " +
+            "(use \"lines\" to window it, or omit both for the first window)")
+        else
+          Doc_Catalog.plain_read(entry.path, lines) match {
+            case Right(text) => MCP_Session.Ok(text)
+            case Left(msg) => MCP_Session.Error("doc_read: " + msg)
+          }
+
+      case Some(entry) => // manual: entry.source names the doc session
+        if (lines.nonEmpty)
+          MCP_Session.Error(
+            "doc_read: " + quote(name) + " is a manual -- \"lines\" addresses plain-text " +
+            "entries; use \"section\" instead (omit both for the table of contents)")
+        else {
+          val toc = manual_toc(entry.source)
+          if (section.isEmpty) MCP_Session.Ok(Doc_Catalog.render_toc(toc))
+          else
+            Doc_Catalog.find_section(toc, section) match {
+              case Doc_Catalog.Unique(heading) =>
+                val headings_in_file = toc.filter(_.file == heading.file)
+                MCP_Session.Ok(Doc_Catalog.section_text(headings_in_file, heading))
+              case Doc_Catalog.Ambiguous(candidates) =>
+                MCP_Session.Ok(
+                  "ambiguous section " + quote(section) + ", matches:\n" +
+                  Doc_Catalog.render_toc(candidates))
+              case Doc_Catalog.No_Match =>
+                MCP_Session.Ok(
+                  "no section matching " + quote(section) + " in " + quote(name) +
+                  "; call doc_read without \"section\" for the table of contents")
+            }
+        }
+    }
+  }
 
   def stop(): Unit = { session.stop(); () }
 }
