@@ -94,6 +94,43 @@ record; entries here point at the section that carries the details.
   "Cannot load theory file" for reasons that have nothing to do with
   the code under test.
 
+2026-07-14 (documentation for the agent: manuals, requirements, recap)
+--------------------------------------------------------------------
+
+- new spec section "documentation for the agent (manuals,
+  requirements, recap)" under phase 2. three decisions:
+- doc_list / doc_read (SCHEDULED, wave 5; plans/doc_list,
+  plans/doc_read): the agent reads the manuals' theory SOURCES
+  (src/Doc/<Manual>/*.thy — plain text, one file per chapter), never
+  the pdfs. catalog from isabelle.Doc.contents() (doc/Contents),
+  joined to source sessions through the startup session structure
+  (src/Doc is on the top-level ROOTS; document_variants is the join
+  key). tools, not resources — documentation lookup happens
+  autonomously mid-proof. search_sources already covers grepping the
+  manuals (doc sessions are ordinary sessions in the structure).
+- requirements traceability (recorded, NOT scheduled): external pdfs
+  stay client-side; the server owns the formal side of the link. a
+  lightweight ML package — `requirement` command into theory data,
+  [satisfies REQ] attribute, print_requirements diagnostic (exposed
+  over MCP for free via mcp_tool) — plus the trust audit
+  (thm_oracles/sorry/axiomatization). Isabelle/DOF studied and
+  rejected as a dependency (heavyweight external component); its
+  data-model shape is the template.
+- recap theory (recorded, NOT scheduled): autonomous sessions end
+  with a CHECKED Recap.thy — claimed theorems restated and proved
+  `by (fact name)`, so `isabelle build` re-verifies existence AND
+  statement; generation is a future `recap` builtin returning theory
+  TEXT (client writes the file, per the editing policy), with the
+  trust audit in the reply. doubles as ground truth for long tasks.
+- two verified mechanisms folded in (research agent, same day): the
+  Doc catalog is USER-EXTENSIBLE ($ISABELLE_DOCS + per-dir Contents
+  file — a project's papers/ folder enters doc_list with zero server
+  code, and @{doc your-paper} becomes build-time-checked); @{doc}
+  cannot address a page/section (the markup chain carries none), so
+  requirement source pointers get a custom @{doc_section} antiquotation
+  (Doc.check + Markup.url with a hyperref fragment) when the
+  traceability package is built.
+
 2026-07-13 (scope_show: the read side of the resource scope lands)
 --------------------------------------------------------------------
 

@@ -1,0 +1,193 @@
+doc_read — implementation plan
+==============================
+
+status: implemented and green (2026-07-14). spec section:
+"documentation for the agent (manuals, requirements, recap)".
+wave 5 (documentation), pure scala — no MCP.ir, no ML. depends on
+doc_list's Doc_Catalog (plans/doc_list Q1); implement doc_list
+first.
+
+the tool reads documentation from its PLAIN-TEXT SOURCES, never the
+pdf: manuals resolve through the catalog to their src/Doc session's
+chapter .thy files; NEWS/examples are plain files. the response
+discipline is the lazy design used everywhere: no section argument
+returns the table of contents (the map, small), a section argument
+returns that section's text (the territory, capped).
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          doc_read
+description   "Read Isabelle documentation from its plain-text
+              sources. `name` is a doc_list entry (e.g. \"isar-ref\",
+              \"system\", \"NEWS\"). For manuals: without `section`,
+              returns the table of contents — chapter and section
+              headings with their source file and line; with
+              `section`, returns that section's source text
+              (substring match on headings; an ambiguous match
+              lists the candidates). Manual text is Isar theory
+              source — prose with antiquotations — not the rendered
+              pdf. For plain-text entries (NEWS, examples), returns
+              file content; `lines` (e.g. \"120-180\") windows it.
+              Long sections are truncated with a note; narrow with
+              a more specific `section` or use search_sources over
+              the manual's source session."
+inputSchema   {"type": "object",
+               "properties": {
+                 "name": {"type": "string"},
+                 "section": {"type": "string"},
+                 "lines": {"type": "string"}},
+               "required": ["name"]}
+              (section and lines are mutually exclusive — section
+              addresses manuals, lines addresses plain entries;
+              handler-enforced, like find_definition's repl/theory.)
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+outputSchema  none.
+
+backing mechanism
+-----------------
+
+resolve `name` through Doc_Catalog (plans/doc_list). three entry
+kinds, three behaviors:
+
+manual (source session resolved):
+  files: the session's theory sources in canonical order from the
+  startup deps (Sessions.Deps -> session_theories + their paths —
+  the same path map isabelle://theory/{name} resolution uses; one
+  file per chapter in the doc sessions).
+  toc: scan each file for heading commands (chapter | section |
+  subsection | subsubsection) with their titles; reply rows
+  {level, title, file, line}. computed lazily per manual, memoized
+  (the sources are read-only distribution files).
+  section read: match `section` against heading titles,
+  case-insensitive substring. unique match -> the text from that
+  heading to the next heading of the same or higher level (or end
+  of file), truncation-capped (first window + "truncated, N more
+  lines; narrow the section" note — the oversized-read rule from
+  the resources design). multiple matches -> the matching toc rows
+  ("it is a search, not a compile" — never guess). no match ->
+  ok with "no section matching ..." + a hint to call without
+  section (probe-safe).
+
+plain entry (non-pdf path: NEWS, COPYRIGHT, examples):
+  file content; `lines` windows exactly like isabelle://theory's
+  ?lines= (reuse the parsing + truncation rules, not new ones).
+  `section` on a plain entry -> argument error (there are no
+  headings; the exclusivity story stays simple).
+
+pdf only (no source session, pdf path — possible for user-extended
+catalog entries; every bundled manual has sources):
+  honest reply: "pdf only at <path>; no plain-text source in this
+  distribution — the host agent can read the pdf directly." ok
+  status, probe-safe.
+
+unknown name -> ok with "no documentation entry ..." + nearest
+doc_list hint (probe-safe, matching the discovery tools).
+
+details to settle first
+-----------------------
+
+D1  heading extraction mechanism. two candidates:
+    (a) line-anchored scan: a heading command at the start of a
+        line (^chapter/^section/... followed by whitespace or an
+        opening delimiter) with the title read from the following
+        cartouche ‹...› or quoted string. the doc sources are
+        hand-formatted prose theories; headings there are
+        line-initial in practice.
+    (b) token-based: outer-syntax token stream (isabelle.Token /
+        Thy_Header + the session base's overall_syntax from deps),
+        taking command tokens named chapter/section/... — immune to
+        formatting, and the same machinery the
+        plans/session_structure filesystem-/commands spike needs.
+    decision rule: if that spike has landed its scala-side
+    outer-syntax spans by the time this is implemented, REUSE it
+    (b); otherwise ship (a) with the line-initial caveat pinned in
+    a test (T6 guards against silent breakage across distribution
+    upgrades). do not build (b) from scratch just for this tool.
+D2  heading commands with markers/attributes (chapter \<open>..\<close>,
+    section \<^marker>...): the doc sources use plain forms today;
+    (a) must at least skip an optional target/marker before the
+    title or tolerate extraction failure per-heading (drop the row,
+    never crash the toc).
+D3  cap sizes (revised 2026-07-14 during implementation): there was
+    nothing to reuse — no ?lines= parser and no window constant
+    exist anywhere in the codebase yet (isabelle://theory/{name}
+    reads the whole file via start=0/stop=-1). doc_read is the
+    FIRST tool to implement the spec's oversized-read rule, so it
+    establishes Doc_Catalog.window_lines = 200 as the cap, applied
+    to manual section reads and parameterless plain-entry reads
+    alike; a chapter-sized section is EXPECTED to truncate — the
+    note says how to narrow (a more specific section, or an
+    explicit lines= for plain entries).
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "doc_read",
+                    {"name": "isar-ref", "section": "induction"}
+  scala builtin row handler: exclusivity check (section|lines),
+                    Doc_Catalog resolution, kind dispatch as above.
+                    NO backend.ir call — file reads only, through
+                    the deps path map. same shape as the
+                    filesystem-tier theory resource read.
+
+implementation steps
+--------------------
+
+1. heading scan (D1a or D1b per the decision rule) + toc as a pure
+   function file-content -> rows; memoization keyed by manual.
+2. section slicing (match, unique/ambiguous/none, cap per D3).
+3. builtin row + handler (exclusivity, kind dispatch, plain-entry
+   lines reuse).
+4. tests below; rebuild per rules.
+5. close-out: spec checkbox (wave-5 item), plans/README status,
+   CHANGELOG entry.
+
+assumptions and how to test them
+--------------------------------
+
+(scala-unit in mcp_test/src/mcp_handler_tests.scala — the real
+distribution sources are available in-environment; bridge in
+mcp_test/src/mcp_bridge_tests.scala. see plans/README "testing
+process".)
+
+T1  toc claim: doc_read {"name": "isar-ref"} returns headings from
+    ALL chapter files of Isar_Ref (assert > 40 rows, at least one
+    row per .thy file, every row carrying file + line, levels
+    include chapter AND section).
+    test [scala unit]: real sources.
+T2  section extraction: a pinned section of a bundled manual (pick
+    one at implementation time and hard-pin title + a contained
+    phrase) returns text containing the phrase and NOT containing
+    the following same-level heading's title.
+    test [scala unit].
+T3  search-not-compile: an ambiguous `section` substring returns
+    the candidate rows, not text; an unknown section and an unknown
+    `name` are ok-status "no ..." replies, not errors.
+    test [scala unit]: all three.
+T4  plain entries: doc_read {"name": "NEWS", "lines": "1-40"}
+    returns exactly that window; `section` on NEWS is an argument
+    error; section+lines together is an argument error.
+    test [scala unit]: all three.
+T5  truncation (D3): a chapter-level section read truncates at the
+    window with the "narrow" note.
+    test [scala unit].
+T6  the D1a line-initial assumption (only if (a) ships): every
+    heading command occurrence in the bundled Isar_Ref sources is
+    found by the scanner — count(scanner) equals a raw token-level
+    or grep-established count pinned at implementation time. this
+    is the canary for distribution upgrades reformatting the docs.
+    test [scala unit].
+T7  full chain: the lookup workflow over a live server —
+    doc_list -> doc_read {"name": "isar-ref"} (toc) ->
+    doc_read {name, section} (text).
+    test [bridge]: one case, three calls.
+
+done when
+---------
+
+- T1..T7 green (T6 iff D1a); tools/list shows the row; the
+  isabelle-mcp-exploring skill gains the documentation lookup
+  workflow (doc_list -> doc_read -> search_sources) when it is
+  written.

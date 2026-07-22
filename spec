@@ -1158,6 +1158,147 @@ load_theory (slow, per-theory) or an AFP session heap as base image.
 without a local AFP there is nothing to serve — fetching sources is
 the host agent's job (web tools), not the server's.
 
+documentation for the agent (manuals, requirements, recap)
+-----------------------------------------------------------
+
+decided 2026-07-14 (CHANGELOG same date). three related concerns.
+the first (doc_list/doc_read) is scheduled — wave 5 in the
+implementation order and plans/README; the other two are recorded
+design directions, NOT scheduled (no plan files yet).
+
+manuals as tools: doc_list / doc_read
+. . . . . . . . . . . . . . . . . . .
+
+the distribution's manuals are generated from theory sources that
+ship with it: src/Doc/<Manual>/*.thy — plain text, one file per
+chapter, sectioned by chapter/section headings, greppable (Isar_Ref
+is ~10 files, ~674KB total). the pdfs in doc/ are the human
+rendering; the agent never reads them. the structured catalog
+already exists: isabelle.Doc.contents() (Pure/Tools/doc.scala)
+parses doc/Contents into sections and entries {name, title, path} —
+the same data the jEdit documentation panel shows — plus release
+notes (NEWS, plain text) and examples. the doc-entry name maps to
+its source session with no new enumeration machinery: src/Doc is on
+the distribution's top-level ROOTS, so the session structure the
+server already computes at startup contains every doc session
+(session group "doc"), and each carries document_variants =
+"<doc name>" ("Isar_Ref" -> "isar-ref", "Logics_ZF" -> "logics-ZF")
+— the join key.
+
+tools, not resources (the resource-read tool mirrors reasoning,
+applied in reverse: tools are what models call autonomously, and
+documentation lookup happens mid-proof, unprompted):
+
+  doc_list  {pattern?}         the Doc.contents() catalog: name,
+                               title, section, whether plain-text
+                               sources exist for doc_read (glob-
+                               filtered over entry names).
+  doc_read  {name, section?,   read documentation from its sources.
+             lines?}           manual entries: no section -> table
+                               of contents (chapter/section headings
+                               with positions); section -> that
+                               section's source text, truncation-
+                               capped. plain entries (NEWS,
+                               examples): file content with lines
+                               windowing. pdf-only entries (no
+                               source in the bundle): honest "pdf
+                               only at <path>" reply, probe-safe.
+
+search: no new machinery — the doc sessions are in the session
+structure, so search_sources {pattern, sessions: ["Isar_Ref"]}
+already greps the manuals; doc_list's reply names the source
+session per entry to make that reachable.
+
+the catalog is user-extensible (verified 2026-07-14 against
+doc.scala): Doc.dirs() reads $ISABELLE_DOCS, a colon-separated path
+list, each directory contributing entries via a plain-text Contents
+file (Section headers + "name title" lines; entries resolve to
+<dir>/<name> or <name>.pdf, non-pdf plain-text entries legal). a
+project's papers/ folder registered that way (the mcp component's
+etc/settings can carry ISABELLE_DOCS="$ISABELLE_DOCS:...") shows up
+in doc_list with zero server code, and @{doc your-paper} becomes
+build-time-checked in theories. pickup is settings-time, not
+per-repo dynamic — if dynamic discovery ever matters it is a
+doc_list extension, not a Doc-catalog feature.
+
+scope note: doc entries are catalog items, not theories; they do
+not enter the resource scope and doc_list is not scope-filtered
+(same footing as list_sessions — discovery is never scoped, only
+the resources listing is).
+
+details: plans/doc_list, plans/doc_read.
+
+requirements traceability (recorded 2026-07-14, not scheduled)
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+
+context: agent sessions will start from external documents (pdfs of
+ideas to formalize) and must end in work a human can verify against
+those documents. external documents stay CLIENT-side — the host
+agent reads pdfs natively; a server-side pdf parser buys nothing.
+the server owns the formal side of the link only.
+
+direction: a lightweight ML package in the MCP-Tools/MCP-HOL tree —
+
+  - a `requirement` command declaring an id + prose + source pointer
+    ("REQ-3", ‹the scheduler never starves a task›, ‹source.pdf
+    §4.2›) into theory data;
+  - a [satisfies REQ-3] attribute on theorems (+ a declaration hook
+    for definitions/constants);
+  - a print_requirements diagnostic emitting the traceability
+    matrix: requirement -> linked entities, plus UNCOVERED
+    requirements. being a diagnostic command, the existing mcp_tool
+    machinery exposes it over MCP for free — no new builtin.
+
+honesty machinery the matrix must include (an unaudited matrix is
+not ground truth for autonomous proving): thm_oracles / Thm_Deps to
+flag theorems resting on oracles or sorry (skip_proofs), and
+axiomatization detection over the session's theories.
+
+linking INTO the source document (verified 2026-07-14): @{doc name}
+checks only a catalog name — the markup chain (Markup.doc ->
+jedit_editor.hyperlink_doc -> Isabelle_System.pdf_viewer) carries
+no page/section anywhere. the clean path is a custom antiquotation,
+@{doc_section "req-source" "3.2"}: Doc.check-validate the name like
+@{doc} does, emit Markup.url with a hyperref fragment
+(#page=/#nameddest=) IDE-side and \href document-side — a few dozen
+lines of ML, same checked-reference shape as `requirement` /
+[satisfies]. combined with the extensible catalog above (the source
+pdf registered as a doc entry), requirement source pointers become
+checked references instead of prose.
+
+prior art: Isabelle/DOF (Brucker & Wolff) solves exactly this —
+ontology-typed text elements (text*[req1::requirement]‹...›),
+machine-checked references between informal requirements and formal
+entities, certification ontologies (CENELEC 50128). it is an
+external component with its own release cadence and latex
+toolchain: steal its data-model shape, do not depend on it.
+
+recap theory (recorded 2026-07-14, not scheduled)
+. . . . . . . . . . . . . . . . . . . . . . . . .
+
+autonomous sessions should end with a CHECKED recap, not a prose
+summary. shape: a generated Recap.thy importing the session's
+theories that restates each claimed theorem and proves it by
+reference —
+
+  theorem recap_no_starvation: "\<And>t. t \<in> tasks \<Longrightarrow> eventually_runs t"
+    by (fact Scheduler.no_starvation)
+
+`by (fact ...)` fails at build time if the named theorem is missing
+OR its statement drifted, so `isabelle build` on the recap is the
+human's verification step. antiquotations (@{thm}, @{const}) carry
+the softer entries (formalized definitions, theory list); the
+requirements data above supplies the linking prose per entry. the
+recap doubles as ground truth for long tasks: a fresh session
+load_theory's Recap.thy and knows exactly what is established.
+
+mechanism sketch: a `recap` builtin — session/repl id in, Recap.thy
+TEXT out; the client writes the file (the "server never writes
+theory files" policy holds). ML side enumerates the new facts by
+diffing Global_Theory.facts_of against the imports; the reply also
+carries the trust audit (oracles, sorries, axioms) so a recap that
+rests on a skipped proof says so.
+
 editing theories and persisting changes
 ----------------------------------------
 

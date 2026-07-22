@@ -124,6 +124,14 @@ wave 4 — scope + navigation:
         aligns the finding tools on one context interface. the
         wave-1 [x] above is the shipped repl-required version.)
 
+wave 5 — documentation (Doc catalog + src/Doc sources, scala side;
+  spec "documentation for the agent", decided 2026-07-14):
+  - [x] doc_list               plans/doc_list  (Doc.contents()
+        catalog joined to doc sessions via document_variants)
+  - [x] doc_read               plans/doc_read  (toc + section reads
+        over chapter .thy sources; plain entries windowed; depends
+        on doc_list's Doc_Catalog — implement doc_list first)
+
 flagged, NOT scheduled (no wave):
   - read_theory                plans/read_theory   (tool mirror of
         isabelle://theory/{name}, for clients without resource

@@ -1,0 +1,159 @@
+doc_list — implementation plan
+==============================
+
+status: implemented and green (2026-07-14). spec section:
+"documentation for the agent (manuals, requirements, recap)".
+wave 5 (documentation), pure scala — no MCP.ir, no ML.
+
+the tool exposes the distribution's documentation CATALOG:
+isabelle.Doc.contents() (Pure/Tools/doc.scala) parsed from
+doc/Contents (+ release notes from ISABELLE_DOCS_RELEASE_NOTES,
+examples from ISABELLE_DOCS_EXAMPLES), joined per entry to the
+source session that generates it, so doc_read and search_sources
+are reachable from the listing.
+
+advertised metadata (the builtin table row)
+-------------------------------------------
+
+name          doc_list
+description   "List the Isabelle documentation catalog: the manuals,
+              release notes, and examples shipped with the
+              distribution (what `isabelle doc` shows). Each entry
+              reports name, title, its catalog section, and how it
+              is readable: manuals name the source session whose
+              theory files doc_read serves (chapter-level plain
+              text — never the pdf); plain-text entries (NEWS,
+              examples) are read directly. Grep across manuals with
+              search_sources using the source session names. Glob
+              `pattern` filters entry names."
+inputSchema   {"type": "object",
+               "properties": {
+                 "pattern": {"type": "string"}},
+               "required": []}
+annotations   {"readOnlyHint": true, "idempotentHint": true,
+               "openWorldHint": false}
+outputSchema  none. reply body: catalog sections in order, each
+              entry one line —
+                <name>  <title>  [source: <session>|plain|pdf only]
+              plus a closing hint line naming doc_read.
+
+not scope-filtered: doc entries are catalog items, not theories
+(spec "scope note" — discovery is never scoped). scope_show /
+resources/list are unaffected.
+
+backing mechanism
+-----------------
+
+computed ONCE at server startup alongside the session-structure deps
+object (same lifecycle, same rationale — pure parsing, no heaps):
+
+1. catalog: Doc.contents(ML_Settings.init()) -> Contents(sections),
+   each Section {title, important, entries}, Entry {name, path,
+   title}. release_notes() and examples() entries have non-pdf
+   paths (plain text); main_contents() entries are the manuals
+   (path.pdf when no plain file exists).
+2. source join: from the startup Sessions.Structure, the sessions
+   in group "doc" (src/Doc is on the distribution's top-level
+   ROOTS, so they are already enumerated — verified: session
+   headers read `session Isar_Ref (doc) in "Isar_Ref" = HOL +`).
+   for each, options.string("document_variants") gives the doc
+   name(s); build map variant-name -> session-name. join:
+   entry.name in map -> source session; entry.path non-pdf ->
+   "plain"; neither -> "pdf only".
+3. filtering: pattern is the same glob machinery list_sessions
+   uses over entry names; no pattern = everything. unknown pattern
+   -> empty listing, ok (probe-safe, it is a search).
+
+user-extended catalogs come for free: Doc.dirs() reads
+$ISABELLE_DOCS (colon-separated; each dir contributes via its own
+Contents file), so a papers/ folder registered through a
+component's etc/settings shows up with zero server code (spec,
+"the catalog is user-extensible"). such entries normally join as
+"plain" or "pdf only" (no doc session) — no special casing.
+
+details to settle first
+-----------------------
+
+D1  document_variants parsing: the option value is a ":"-separated
+    variant list, each variant "name" or "name=tags" (see
+    Document_Build in Pure). the doc sessions all use a single bare
+    name, but parse properly: split on ":", take the part before
+    "=" of each, map EVERY variant name to the session (harmless
+    for singletons, correct for multi-variant sessions).
+Q1  where the catalog struct lives: mcp_session.scala already owns
+    the startup structure/deps; a small Doc_Catalog object in
+    mcp/src (own file or inside mcp_session.scala) keeping
+    {sections, entry -> source resolution} — decide when writing,
+    doc_read consumes the same object (its plan assumes it).
+D2  Doc.contents needs ML_Settings (the examples section expands
+    $ML_SOURCES): ML_Settings.init() at startup, once. if init
+    proves awkward in the server context, degrade to
+    release_notes() ++ main_contents() and drop examples — pin
+    which in the implementation notes.
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp client edge   tools/call "doc_list", {"pattern": "isar*"}
+  scala builtin row handler reads the memoized catalog, applies the
+                    glob, renders the listing. NO backend.ir call,
+                    NO protocol command — same shape as
+                    list_sessions.
+
+implementation steps
+--------------------
+
+1. Doc_Catalog: startup construction (catalog + variant join, D1,
+   D2), unit-testable as a pure function of
+   (Doc.Contents, Sessions.Structure).
+2. builtin row + handler (glob filter, rendering).
+3. tests below; rebuild per rules.
+4. close-out: spec checkbox ("implementation order", wave-5 item),
+   plans/README status, CHANGELOG entry.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process: scala-unit cases in
+mcp_test/src/mcp_handler_tests.scala, bridge cases in
+mcp_test/src/mcp_bridge_tests.scala extending MCP_Session_Suite —
+see plans/README "testing process". mcp_test runs inside the
+isabelle environment, so the REAL Doc.contents() and session
+structure of the bundled distribution are available to scala-unit
+tests directly; no fake catalog needed for the join claims.)
+
+T1  the join claim: every pdf manual in the bundled distribution
+    resolves to a source session. assert at minimum the three
+    naming shapes: "isar-ref" -> Isar_Ref (hyphen vs underscore),
+    "logics-ZF" -> Logics_ZF (case + hyphen), "main" -> Main
+    (name collision with the theory Main — the join is over doc
+    sessions only, so no ambiguity).
+    test [scala unit]: real Doc.contents() + real structure.
+T2  variant parsing (D1, revised 2026-07-14 during implementation):
+    Sessions.Structure already parses document_variants into
+    List[Document_Build.Document_Variant] with .name stripped of any
+    "=tags" suffix (Info.document_variants) -- no manual ":"/"="
+    splitting needed, so this is no longer a claim about our own code.
+    Retargeted at Doc_Catalog.join, the pure fold that maps every
+    variant name to its session: a session with variant names
+    ["a", "b"] (as "a:b=t" parses to) ends up with both "a" -> sess
+    and "b" -> sess in the map.
+    test [scala unit]: pure, over synthetic (session, variant-names)
+    pairs -- no Sessions.Structure needed.
+T3  plain entries: NEWS appears (release notes section) with a
+    non-pdf path, rendered "plain", readable by doc_read.
+    test [scala unit]: real catalog contains NEWS as plain.
+T4  filtering is probe-safe: pattern "isar*" returns exactly the
+    isar-ref entry; pattern "zzz*" returns an EMPTY listing with ok
+    status, not an error.
+    test [scala unit]: both.
+T5  full chain: tools/list advertises the row above; tools/call
+    doc_list over a live server returns a listing containing
+    isar-ref with its source session named.
+    test [bridge]: one MCP_Session_Suite case.
+
+done when
+---------
+
+- T1..T5 green; tools/list shows the row; the doc_read plan's
+  catalog assumption (its I-reference to Doc_Catalog) holds.
