@@ -518,6 +518,18 @@ class MCP_Session private(
   override def set_changed_handler(handler: String => Unit): Unit =
     changed_handler.change(_ => handler)
 
+  /* inbound symbol encoding, per call site (spec: "symbol recoding at the
+     client edge"): the yxml payloads go through MCP_Session.encode_args /
+     encode_names, which carry recode = Symbol.encode. The bare Bytes(...)
+     arguments below are deliberately NOT encoded -- request ids are
+     UUIDs, designations are repl ids / theory long names / bundle names,
+     and tool and resource names are the exposed mcp names, which the
+     mcp name charset already restricts to [A-Za-z0-9_-]. All ascii by
+     construction, so Symbol.encode would be a no-op on them; the one
+     argument that can carry model-authored term text is the run_tool /
+     ir argument payload, and that IS encoded because it rides
+     encode_args. */
+
   def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply = {
     val promise = Future.promise[MCP_Session.Tools_Reply]
     tools_promises.change(promise :: _)

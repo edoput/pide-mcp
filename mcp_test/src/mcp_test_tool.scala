@@ -24,6 +24,7 @@ object MCP_Test {
       classOf[MCP_Resource_Scope_Tests],
       classOf[MCP_Scope_Show_Tests],
       classOf[MCP_Codec_Tests],
+      classOf[MCP_Symbol_Tests],
       classOf[MCP_Locator_Tests],
       classOf[MCP_Doc_Catalog_Tests],
       classOf[MCP_Doc_Read_Tests])

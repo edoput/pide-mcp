@@ -1525,17 +1525,122 @@ class MCP_Codec_Tests extends MCP_Suite {
       Nil: List[(String, String)])
   }
 
-  test("MCP.ir args: repeated keys, newlines and symbols round-trip byte-clean") {
+  /* was "round-trip byte-clean" before the client-edge recoding boundary
+     landed: encode_args now carries recode = Symbol.encode, so the
+     property splits in two -- ascii symbol notation is still byte-clean
+     (this test), unicode is normalized INTO symbol notation on the wire
+     (the next one, and MCP_Symbol_Tests). */
+  test("MCP.ir args: repeated keys, newlines and ascii symbol notation round-trip byte-clean") {
     val args =
       List(
         "repl" -> "T",
         "theories" -> "HOL.Main",
         "theories" -> "HOL-Library.Multiset",
         "isar_text" -> "lemma \"x + y = y + (x::nat)\"\n  by simp",
-        "isar_text" -> "have \"A \\<Longrightarrow> A\" ⇒ α")
+        "isar_text" -> "have \"A \\<Longrightarrow> A\" \\<Rightarrow> \\<alpha>")
     val decoded =
       MCP_Session.decode_args(YXML.parse_body(YXML.Source(MCP_Session.encode_args(args))))
     assertEquals(decoded, args)
+  }
+
+  test("MCP.ir args: unicode is normalized to symbol notation on the wire") {
+    val decoded =
+      MCP_Session.decode_args(YXML.parse_body(YXML.Source(
+        MCP_Session.encode_args(List("isar_text" -> "have \"A ⟹ A\" ⇒ α ‹inner›")))))
+    assertEquals(decoded,
+      List("isar_text" ->
+        "have \"A \\<Longrightarrow> A\" \\<Rightarrow> \\<alpha> \\<open>inner\\<close>"))
+  }
+}
+
+
+/* the client-edge recoding boundary (spec: "symbol recoding at the
+   client edge"). ML speaks symbol notation, the mcp client speaks
+   unicode, and the protocol channel the bridge rides recodes in NEITHER
+   direction (Pure/PIDE/prover.scala skips Symbol.decode for PROTOCOL
+   chunks and protocol_command_raw skips Symbol.encode_yxml), so the
+   mcp server does it itself: Symbol.decode in text_result /
+   resource_contents, recode = Symbol.encode in encode_args /
+   encode_names. */
+
+class MCP_Symbol_Tests extends MCP_Suite {
+  private val unicode = "have \"A ⟹ A\" ⇒ α ‹inner›"
+  private val notation = "have \"A \\<Longrightarrow> A\" \\<Rightarrow> \\<alpha> \\<open>inner\\<close>"
+
+  /* the property text_result's placement relies on: decoding text that
+     is ALREADY unicode must not change it, so content that arrived via
+     the non-protocol channel (render_messages over snapshot messages,
+     which Isabelle decoded upstream) survives a second decode intact */
+  test("Symbol.decode is idempotent on already-decoded text") {
+    assertEquals(Symbol.decode(unicode), unicode)
+    assertEquals(Symbol.decode(Symbol.decode(notation)), Symbol.decode(notation))
+    assertEquals(Symbol.decode(notation), unicode)
+  }
+
+  test("Symbol.encode is a no-op on text that is already symbol notation") {
+    assertEquals(Symbol.encode(notation), notation)
+    assertEquals(Symbol.encode(unicode), notation)
+  }
+
+  /* the known limitation: sub/superscript and bold CONTROL symbols
+     decode to marker glyphs, not to typeset text -- jEdit does that
+     with font styling and unicode cannot express it */
+  test("control symbols decode to marker glyphs, and round-trip through encode") {
+    val decoded = Symbol.decode("x\\<^sub>1 y\\<^sup>2 \\<^bold>z")
+    assertEquals(decoded, "x⇩" + "1 y⇧" + "2 ❙z")
+    assertEquals(Symbol.encode(decoded), "x\\<^sub>1 y\\<^sup>2 \\<^bold>z")
+  }
+
+  /* symbols with no code: field in etc/symbols (mostly \<^const>,
+     \<^cterm>, the ml antiquotation controls) have no unicode to decode
+     to and must pass through untouched -- byte precision preserved
+     exactly where it matters */
+  test("symbols without a unicode code pass through decode unchanged") {
+    val text = "\\<^const>foo \\<^cterm>bar"
+    assertEquals(Symbol.decode(text), text)
+  }
+
+  test("text_result decodes symbol notation for the client") {
+    assertEquals(
+      get_string(get_list(MCP_Server.text_result(notation), "content").head, "text"),
+      unicode)
+  }
+
+  test("text_result decodes error text too") {
+    val result = MCP_Server.text_result(notation, is_error = true)
+    assertEquals(get_string(get_list(result, "content").head, "text"), unicode)
+    assertEquals(get(result, "isError"), true)
+  }
+
+  test("resource_contents decodes symbol notation for the client") {
+    assertEquals(
+      get_string(get_list(MCP_Server.resource_contents("isabelle://repl/T", notation),
+        "contents").head, "text"),
+      unicode)
+  }
+
+  test("text_result leaves already-unicode text alone") {
+    assertEquals(
+      get_string(get_list(MCP_Server.text_result(unicode), "content").head, "text"),
+      unicode)
+  }
+
+  /* end to end over the handler: repl_step's fake echoes isar_text back,
+     so what the client sees is exactly what the outbound edge produced.
+     Note this exercises the OUTBOUND half only -- the fake backend is
+     handed the args before encode_args runs (that lives in the real
+     MCP_Session), which is why the inbound half is asserted at the
+     codec level above. */
+  test("tools/call: symbol notation coming back from the prover reaches the client as unicode") {
+    val reply = call_tool("repl_step", JSON.Object("repl" -> "T", "isar_text" -> notation))
+    assert_no_error(reply)
+    assertEquals(result_text(reply), unicode)
+  }
+
+  test("tools/call: unicode sent by the model survives the round trip as unicode") {
+    val reply = call_tool("repl_step", JSON.Object("repl" -> "T", "isar_text" -> unicode))
+    assert_no_error(reply)
+    assertEquals(result_text(reply), unicode)
   }
 }
 
