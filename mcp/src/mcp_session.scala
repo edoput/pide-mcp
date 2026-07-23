@@ -25,7 +25,7 @@ trait MCP_Backend {
      (tool_scope_include) before the tool set is read. Exposed
      (client-visible) names are computed scala-side (MCP_Server.exposure)
      and params expand into JSON schemas at tools/list time. */
-  def ml_tools(designation: String = "", bundles: List[String] = Nil): List[MCP_Session.Tool_Row]
+  def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply
   def ml_run(name: String, args: List[(String, String)],
     designation: String = "", bundles: List[String] = Nil): MCP_Session.Result
   /* validate a candidate designation without committing to it
@@ -102,6 +102,14 @@ object MCP_Session {
     form: String,
     params: List[Tool_Param])
 
+  /* MCP.tools' wire shape (plans/builtin_activation): ml rows (active,
+     non-builtin ML tools) plus a builtins section -- (base name, active)
+     for EVERY registered Builtin-form mirror in MCP_Tools.thy, inactive
+     included, so an empty section is distinguishable from "every mirror
+     del'd" (the AVAILABILITY FLOOR guardrail: empty -> scala serves the
+     full builtin table). */
+  case class Tools_Reply(rows: List[Tool_Row], builtin_activation: List[(String, Boolean)])
+
   def decode_tools(body: XML.Body): List[Tool_Row] = {
     import XML.Decode._
     list(pair(string, pair(string, pair(string,
@@ -110,6 +118,12 @@ object MCP_Session {
         Tool_Row(name, description, form,
           params.map({ case (n, (t, (r, (d, ds)))) => Tool_Param(n, t, r, d, ds) }))
       })
+  }
+
+  def decode_tools_reply(body: XML.Body): Tools_Reply = {
+    import XML.Decode._
+    val (rows, activation) = pair(decode_tools, list(pair(string, bool)))(body)
+    Tools_Reply(rows, activation)
   }
 
   def decode_resources(body: XML.Body): List[(String, String)] = {
@@ -298,7 +312,7 @@ class MCP_Session private(
     }
 
   private val tools_promises =
-    Synchronized(List.empty[Promise[List[MCP_Session.Tool_Row]]])
+    Synchronized(List.empty[Promise[MCP_Session.Tools_Reply]])
   private val changed_handler: Synchronized[String => Unit] =
     Synchronized(_ => ())
   private val theories_promises =
@@ -316,7 +330,7 @@ class MCP_Session private(
 
   private object Handler extends Session.Protocol_Handler {
     private def tools_result(msg: Prover.Protocol_Output): Boolean = {
-      val tools = MCP_Session.decode_tools(YXML.parse_body(msg.chunk))
+      val tools = MCP_Session.decode_tools_reply(YXML.parse_body(msg.chunk))
       tools_promises.change { promises =>
         promises.reverse.foreach(_.fulfill(tools))
         Nil
@@ -431,8 +445,8 @@ class MCP_Session private(
   override def set_changed_handler(handler: String => Unit): Unit =
     changed_handler.change(_ => handler)
 
-  def ml_tools(designation: String = "", bundles: List[String] = Nil): List[MCP_Session.Tool_Row] = {
-    val promise = Future.promise[List[MCP_Session.Tool_Row]]
+  def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply = {
+    val promise = Future.promise[MCP_Session.Tools_Reply]
     tools_promises.change(promise :: _)
     session.protocol_command_raw("MCP.tools",
       List(Bytes(designation), Bytes(MCP_Session.encode_names(bundles))))

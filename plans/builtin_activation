@@ -1,15 +1,22 @@
 builtin activation unification — implementation plan
 =====================================================
 
-status: planned (decided 2026-07-13; spec: phase 3 "builtin tools in
-the activation layer"; CHANGELOG same date). no new mcp tool — this
-is a feature plan (like mcp_tool_registry): the existing activation
-layer (attribute, bundles, tool_scope) grows to govern the scala
-builtins. depends on plans/mcp_tool_registry (DONE — the registry,
-forms, and the MCP.tools designation argument) and composes with
-plans/tool_scope (the designation decides which context's activation
-filters the builtin listing; either plan can land first, this one
-reads the designation MCP.tools already takes).
+status: DONE (decided 2026-07-13, implemented 2026-07-16; spec: phase 3
+"builtin tools in the activation layer"; CHANGELOG same date). no new
+mcp tool — this is a feature plan (like mcp_tool_registry): the
+existing activation layer (attribute, bundles, tool_scope) grows to
+govern the scala builtins. depends on plans/mcp_tool_registry (DONE —
+the registry, forms, and the MCP.tools designation argument) and
+composes with plans/tool_scope (DONE — the designation decides which
+context's activation filters the builtin listing; tool_scope landed
+first, this plan read the designation MCP.tools already took).
+
+all five implementation steps landed; all A1..A6 assumptions have
+tests (A6 in particular: tool_scope's designation/bundles machinery
+already governs which context's mirror activation MCP.tools serves,
+exercised by the "del'd builtin mirror is unlisted but stays
+callable" bridge and e2e tests below). see the spec's implementation
+order entry (2026-07-16) for the landed shape in detail.
 
 the decision, restated for implementation
 -------------------------------------------
@@ -102,10 +109,25 @@ ASSUMPTIONS -> tests
   existing collision tests extended].
 - A4 drift gate: mirror set == table set both ways over the live
   bridge — fails when a builtin is added scala-side without a
-  mirror, or a mirror outlives a removed builtin [bridge].
+  mirror, or a mirror outlives a removed builtin [bridge]. The gate
+  reads MCP_Server.all_builtin_names, which sources the tool_scope
+  trio from a hand-maintained literal (tool_scope_builtin_names) since
+  those three close over per-connection state and cannot be listed
+  statically; a scala-unit test welds that literal to what a fresh
+  Handler actually serves, so a new connection-state tool added
+  without updating both the literal and the mirror still fails a test
+  rather than silently escaping the bridge gate [scala unit].
 - A5 asymmetric callability: del'd builtin callable, del'd ML tool
-  refused with "Inactive MCP tool" [bridge + e2e].
-- A6 tool_scope interaction (once plans/tool_scope lands): a del in
-  a theory affects designations importing it; switching designation
-  switches the builtin listing accordingly [bridge, deferred to the
-  tool_scope wave if this plan lands first].
+  refused (uncallable) [bridge + e2e]. NOTE: the ML tool half is
+  refused as "Undefined mcp tool" via the exposed-name path (an
+  inactive row drops out of MCP_Tool.active entirely, so tools/call's
+  name resolution never finds it), not "Inactive MCP tool" — that
+  message is MCP_Protocol.run_tool's own, reachable only by dispatch
+  on the internal name directly, which the ml-unit suite covers
+  separately.
+- A6 tool_scope interaction (plans/tool_scope landed first): a del in
+  a repl-local context affects only designations reading that
+  context; switching designation (tool_scope_set) switches the
+  builtin listing accordingly, without touching the shared MCP_Tools
+  theory other connections/tests read [bridge + e2e: "a del'd builtin
+  mirror is unlisted but stays callable"].

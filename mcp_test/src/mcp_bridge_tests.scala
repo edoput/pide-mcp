@@ -18,7 +18,7 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
      (shortened) names exist only in the scala layer above
      (MCP_Server.exposure, unit-tested in mcp_handler_tests.scala) */
   test("bridge: ml_tools lists shout under its full internal name with form tag and params") {
-    val tools = session.ml_tools()
+    val tools = session.ml_tools().rows
     val shout = tools.find(_.name == "MCP_Tools.shout")
       .getOrElse(fail("MCP_Tools.shout not in " + tools.toString))
     assertEquals(shout.description, "uppercase the input")
@@ -57,9 +57,27 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
      designation -- tools_body has no (status, output) wrapper today, so
      an uncaught ML exception there could leave the "MCP.tools_result"
      promise unfulfilled forever instead of erroring gracefully. */
+  /* AVAILABILITY FLOOR (plans/builtin_activation): a designation
+     resolution failure degrades to the empty pair on the wire (both
+     sections empty), not the bare "[]" the old flat shape used --
+     otherwise decoding an empty chunk as a pair would throw inside the
+     promise-completing message handler and hang tools/list forever. */
   test("bridge: ml_tools on an unknown designation does not hang") {
     val tools = session.ml_tools(designation = "No_Such_Theory")
-    assertEquals(tools, Nil)
+    assertEquals(tools.rows, Nil)
+    assertEquals(tools.builtin_activation, Nil)
+  }
+
+  /* DRIFT GATE (plans/builtin_activation, A4): the ML mirror name set
+     (MCP_Tools.thy's "Builtin tool mirrors" section) must equal the
+     scala builtin table's name set (MCP_Server.all_builtin_names), both
+     directions -- a builtin added scala-side without a mirror, or a
+     mirror outliving a removed builtin, fails this over the live
+     bridge (a Fake_Backend cannot catch either half, since it never
+     round-trips the real MCP_Tools.thy). */
+  test("bridge: builtin mirror name set matches the scala builtin table, both directions") {
+    val mirrors = session.ml_tools().builtin_activation.map(_._1).toSet
+    assertEquals(mirrors, MCP_Server.all_builtin_names.toSet)
   }
 
   test("bridge: isabelle://session resource reads the loaded theory") {
@@ -812,6 +830,33 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
         call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "ScopeBundle")))
       assert(!tool_names().contains("bundle_tool"),
         "bundle_tool still visible after a re-set cleared the bundles: " + tool_names())
+    }
+  }
+
+  /* ASYMMETRIC CALLABILITY (plans/builtin_activation, A5): a del'd
+     builtin mirror is unlisted but still callable -- Isabelle/Scala
+     dispatches builtin names BEFORE consulting activation (tools/call
+     precedence), unlike a del'd ML tool (refused, "Inactive MCP
+     tool"). The del here is LOCAL to this repl's context (an ordinary
+     [[mcp_tools del: ...]] declaration), so it never touches the
+     shared MCP_Tools theory other tests read. */
+  test("tool_scope bridge: a del'd builtin mirror is unlisted but stays callable") {
+    with_repl("ScopeBuiltinDel", theories = List("MCP-HOL.MCP_Repl")) {
+      expect_ok(
+        session.ir("step",
+          List("repl" -> "ScopeBuiltinDel", "isar_text" -> "declare [[mcp_tools del: repl_list]]")),
+        "deactivating the repl_list builtin mirror")
+
+      val handler = new MCP_Server.Handler(session)
+      assert_no_error(
+        call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "ScopeBuiltinDel")))
+
+      val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
+      assert(!tools.exists(t => get_string(t, "name") == "repl_list"),
+        "repl_list still listed after del: " + tools.toString)
+
+      val reply = call_tool_on(handler, "repl_list", JSON.Object())
+      assert_no_error(reply)
     }
   }
 

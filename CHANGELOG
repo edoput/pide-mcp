@@ -94,6 +94,69 @@ record; entries here point at the section that carries the details.
   "Cannot load theory file" for reasons that have nothing to do with
   the code under test.
 
+2026-07-16 (builtin activation unification: implemented)
+----------------------------------------------------------
+
+- milestone (spec phase 3 "builtin tools in the activation layer",
+  decided 2026-07-13; plan: plans/builtin_activation, status DONE):
+  every scala builtin now has an ML mirror row (MCP_Tool.form Builtin,
+  tag "builtin", one folded MCP_Tool.declare pass at the end of
+  MCP_Tools.thy; run slot errors "builtin tool: dispatched
+  Isabelle/Scala-side" if ever invoked directly), so [[mcp_tools
+  add/del: ...]], bundles, print_mcp_tools and tool_scope_* govern
+  builtins exactly like user tools. mechanics: MCP.tools' wire shape
+  grows from a flat row list to a PAIR (ml rows, builtins section);
+  the builtins section is (base name, active) for every registered
+  mirror, inactive included, so "hidden" (registered, del'd) is
+  distinguishable from "absent" (no mirror at all). scala:
+  MCP_Session.Tools_Reply(rows, builtin_activation) replaces the bare
+  row list end to end (trait, promise, Fake_Backend); the merge rule
+  hides a builtin iff its mirror is explicitly (name, false), so an
+  empty or missing section hides nothing — the AVAILABILITY FLOOR
+  falls out with no special-cased wire shape. Found and fixed live: the
+  designation-resolution-failure branch of MCP.tools (already
+  crash-safe since tool_scope) used to emit the bare empty list "[]";
+  feeding that to a PAIR decoder would throw inside the promise-
+  completing message handler and hang tools/list forever — the floor
+  case now emits MCP_Protocol.empty_tools_body, a properly-shaped
+  empty pair (caught before it could regress, via the bridge test that
+  exercises an unknown designation). The exposure() RESERVED name set
+  stays the FULL builtin table regardless of activation — only the
+  LISTING is filtered — so a del'd builtin's bare name can never be
+  grabbed by a same-named ML tool (ASYMMETRIC CALLABILITY holds: a
+  del'd builtin is unlisted but dispatches exactly as before, since
+  tools/call precedes activation entirely and is otherwise unchanged;
+  a del'd ML tool drops out of MCP_Tool.active and is refused via
+  exposed-name resolution failure, not "Inactive MCP tool" — that
+  message is reachable only by dispatching the internal name directly,
+  a distinction recorded as a spec refinement in the plan's A5). DRIFT
+  GATE: a live-bridge test pins the ML mirror name set
+  (MCP_Tools.thy's "Builtin tool mirrors" section) equal to the scala
+  table's name set (new MCP_Server.all_builtin_names, the one
+  authoritative list beyond `builtins`, covering the per-connection
+  tool_scope_* trio too, since those three close over per-connection
+  state and cannot be listed statically like `builtins`) — a builtin
+  added scala-side without a mirror, or an orphaned mirror, now fails
+  a test instead of silently drifting; a scala-unit test welds the
+  hand-maintained tool_scope_* name literal to what a fresh Handler
+  actually serves, closing the one blind spot the live-bridge gate
+  can't see on its own (a new connection-state tool added without
+  updating both the literal and the mirror). all four layers green:
+  ml unit (MCP-Tools-Tests: mirror del/add round trip, run-slot error,
+  hidden-vs-absent via the builtins section); scala unit
+  (mcp_handler_tests.scala: empty-floor serves the full table, an
+  explicit (name, false) hides exactly that builtin, (name, true) is a
+  no-op, a hidden builtin still dispatches, the tool_scope literal
+  matches a live Handler);
+  bridge (mcp_bridge_tests.scala: the drift gate, and a repl-local del
+  — declare [[mcp_tools del: ...]] inside one repl's context, never
+  touching the shared MCP_Tools theory — leaves a builtin unlisted but
+  callable under that repl's tool_scope_set); e2e (test_mcp.py, new
+  test_builtin_activation: a del'd builtin (repl_list) stays callable
+  though unlisted, a del'd ML tool is refused and unlisted; 95/95
+  passing). spec's implementation-order item checked off with the
+  landed shape recorded in detail.
+
 2026-07-15 (SECONDARY resource-autonomy assumption: RESOLVED POSITIVE)
 --------------------------------------------------------------------
 

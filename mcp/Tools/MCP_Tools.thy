@@ -142,7 +142,7 @@ section \<open>MCP tool registry\<close>
 ML \<open>
 signature MCP_TOOL =
 sig
-  datatype form = String_Fun | Diag_Wrap | Method_Wrap
+  datatype form = String_Fun | Diag_Wrap | Method_Wrap | Builtin
   val form_tag: form -> string
   type param =
     {name: string, typ: string, required: bool, default: string option, description: string}
@@ -165,11 +165,12 @@ end;
 structure MCP_Tool: MCP_TOOL =
 struct
 
-datatype form = String_Fun | Diag_Wrap | Method_Wrap;
+datatype form = String_Fun | Diag_Wrap | Method_Wrap | Builtin;
 
 fun form_tag String_Fun = "string_fun"
   | form_tag Diag_Wrap = "diag_wrap"
-  | form_tag Method_Wrap = "method_wrap";
+  | form_tag Method_Wrap = "method_wrap"
+  | form_tag Builtin = "builtin";
 
 type param =
   {name: string, typ: string, required: bool, default: string option, description: string};
@@ -941,6 +942,7 @@ sig
   val decode_args: string -> (string * string) list
   val decode_names: string -> string list
   val tools_body: Proof.context -> XML.body
+  val empty_tools_body: XML.body
   val theories_body: unit -> XML.body
   val run_tool: Proof.context -> string -> (string * string) list -> string * string
   val resources_body: Proof.context -> XML.body
@@ -1012,18 +1014,53 @@ fun decode_names yxml =
 
 (*rows are (full internal name, description, form tag, params);
   Isabelle/Scala computes the exposed (shortened, sanitized) names —
-  see MCP_Server.exposure — and expands params into a JSON schema*)
+  see MCP_Server.exposure — and expands params into a JSON schema.
+  Builtin-form rows (the scala builtin table's ML mirrors below, spec
+  phase 3 "builtin tools in the activation layer") carry no real
+  params and are EXCLUDED here -- they enter the builtins section
+  instead, so they never reach exposure-name computation (guardrail
+  A3, plans/builtin_activation).*)
+val encode_param =
+  let open XML.Encode in pair string (pair string (pair bool (pair (option string) string))) end;
+
+fun encode_row (name, tool: MCP_Tool.tool) =
+  let open XML.Encode in
+    pair string (pair string (pair string (list encode_param)))
+      (name, (#description tool, (MCP_Tool.form_tag (#form tool),
+        map (fn p => (#name p, (#typ p, (#required p, (#default p, #description p)))))
+          (#params tool))))
+  end;
+
+(*(base name, active): the BASE name, not the theory-qualified full
+  name, so it matches the scala builtin table's bare names directly
+  (the drift gate, plans/builtin_activation). ALL registered mirrors,
+  inactive included, so scala can tell "hidden" (registered, del'd)
+  from "absent" (no mirror at all) -- the AVAILABILITY FLOOR
+  guardrail: an empty section means scala serves its full table.*)
+fun encode_builtin (name, active) =
+  let open XML.Encode in pair string bool (Long_Name.base_name name, active) end;
+
 fun tools_body ctxt =
   let
-    open XML.Encode;
-    val encode_param =
-      pair string (pair string (pair bool (pair (option string) string)));
-    fun encode_row (name, tool: MCP_Tool.tool) =
-      pair string (pair string (pair string (list encode_param)))
-        (name, (#description tool, (MCP_Tool.form_tag (#form tool),
-          map (fn p => (#name p, (#typ p, (#required p, (#default p, #description p)))))
-            (#params tool))));
-  in list encode_row (MCP_Tool.active (Context.Proof ctxt)) end;
+    val context = Context.Proof ctxt;
+    val ml_rows =
+      MCP_Tool.active context
+      |> filter (fn (_, tool) => #form tool <> MCP_Tool.Builtin);
+    val builtin_rows =
+      MCP_Tool.list context
+      |> filter (fn (_, tool) => #form tool = MCP_Tool.Builtin)
+      |> map (fn (name, _) => (name, MCP_Tool.is_active context name));
+  in
+    let open XML.Encode in pair (list encode_row) (list encode_builtin) (ml_rows, builtin_rows) end
+  end;
+
+(*the availability floor's empty shape (MCP.tools, designation
+  resolution failure, MCP_Protocol.designated_context_safe = NONE):
+  still a PAIR -- the wire shape scala always expects -- with both
+  sections empty, so scala's decoder degrades to the full builtin
+  table (and zero ML tools) without a special-cased wire shape.*)
+val empty_tools_body : XML.body =
+  let open XML.Encode in pair (list encode_row) (list encode_builtin) ([], []) end;
 
 (*theories loaded in this session -- heap image theories plus anything
   loaded on top of it; backs the isabelle://session resource*)
@@ -1082,7 +1119,7 @@ val _ =
         [(case MCP_Protocol.designated_context_safe designation
             (MCP_Protocol.decode_names bundles_yxml) of
            SOME ctxt => MCP_Protocol.tools_body ctxt
-         | NONE => [])]);
+         | NONE => MCP_Protocol.empty_tools_body)]);
 
 val _ =
   Protocol_Command.define "MCP.theories"
@@ -1173,5 +1210,67 @@ mcp_tool shout = \<open>String.map Char.toUpper\<close>
 
 mcp_resource greeting = \<open>K "hello from MCP_Resource"\<close>
   (description \<open>a static demo resource\<close>)
+
+section \<open>Builtin tool mirrors\<close>
+
+text \<open>The scala builtin table (mcp_server.scala, spec phase 3 "builtin
+tools in the activation layer"; plans/builtin_activation) is mirrored
+here so activation (\<open>[[mcp_tools add/del: ...]]\<close>, bundles) is uniform
+across both implementation substrates -- builtins keep their scala
+table (descriptions, json schemas, dispatch); only their NAMES also
+live here. A mirror carries no real params or run body: Isabelle/Scala
+dispatches builtin calls BEFORE consulting activation (tools/call
+precedence, kept deliberately -- ASYMMETRIC CALLABILITY, a del'd
+builtin stays callable, only unlisted), so \<^verbatim>\<open>run\<close> here is
+unreachable in practice and errors loudly if ever invoked directly.
+The DRIFT GATE (plans/builtin_activation, tested over the live bridge)
+pins this list against the live scala table -- keep both in sync by
+hand when a builtin is added, renamed, or removed.\<close>
+
+ML \<open>
+val _ =
+  Context.>> (Context.map_theory (Named_Target.theory_map (fn lthy =>
+    lthy
+    |> fold (fn (name, description) => fn lthy =>
+        lthy
+        |> MCP_Tool.declare (Binding.name name)
+            {description = description, params = [], form = MCP_Tool.Builtin,
+             run = fn _ => fn _ => error "builtin tool: dispatched Isabelle/Scala-side"}
+        |> #2)
+      [("repl_list", "List all open REPL proof sessions."),
+       ("repl_init", "Create a new REPL proof session that imports the given theories."),
+       ("repl_init_from_source", "Create a new REPL rooted at a specific command inside an existing theory."),
+       ("repl_remove", "Remove a REPL and all sub-REPLs forked from it."),
+       ("repl_step", "Apply one Isar command to a REPL and print the resulting proof state."),
+       ("repl_state", "Print the proof/theory state of a REPL at a given index."),
+       ("repl_show", "Describe one REPL: origin, timeout, pin status, and its steps."),
+       ("repl_text", "Print the concatenated Isar text of all steps in a REPL."),
+       ("repl_edit", "Replace a REPL step with new Isar text and re-execute from there."),
+       ("repl_replay", "Re-execute all stale steps in a REPL, in order."),
+       ("repl_truncate", "Discard all REPL steps after a given index."),
+       ("repl_back", "Revert the last successful REPL step."),
+       ("repl_merge", "Merge a sub-REPL back into its parent."),
+       ("repl_timeout", "Set the per-step timeout in seconds for one REPL."),
+       ("repl_pin", "Pin (snapshot) a REPL's current theory state."),
+       ("repl_unpin", "Remove a REPL's pin."),
+       ("repl_rebase", "Re-resolve a REPL's init specs against current pin versions."),
+       ("sledgehammer", "Run Sledgehammer on the REPL's current proof state."),
+       ("find_theorems", "Search for theorems by name, goal-relevance, or term pattern."),
+       ("find_definition", "Find where a name is defined across the prover's name spaces."),
+       ("load_theory", "Load and check a theory from disk into the running session."),
+       ("unload_theory", "Unload a theory that was loaded with load_theory."),
+       ("check_theory", "Re-read a theory file from disk and check it."),
+       ("list_sessions", "List all Isabelle sessions known to the server."),
+       ("list_theories", "List all theories in a given Isabelle session."),
+       ("search_sources", "Search for theories by substring match on their long name."),
+       ("scope_add", "Add theory-name patterns to the resource scope."),
+       ("scope_remove", "Remove theory-name patterns from the resource scope."),
+       ("scope_show", "Show the current resource scope, explicit and implicit."),
+       ("doc_list", "List the Isabelle documentation catalog."),
+       ("doc_read", "Read Isabelle documentation from its plain-text sources."),
+       ("tool_scope_show", "Show the current tool scope (agent context)."),
+       ("tool_scope_set", "Set the tool scope to a theory or a repl."),
+       ("tool_scope_include", "Open bundles in the current tool scope.")])));
+\<close>
 
 end

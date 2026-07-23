@@ -35,6 +35,11 @@ object MCP_Test_Config {
 class Fake_Backend extends MCP_Backend {
   var stopped = false
   var extra_ml_tools: List[MCP_Session.Tool_Row] = Nil
+  /* (plans/builtin_activation) settable builtin activation section --
+     empty by default, matching the AVAILABILITY FLOOR (no mirror
+     registered -> scala serves the full builtin table); tests set this
+     to (name, false) pairs to simulate a del'd mirror. */
+  var builtin_activation: List[(String, Boolean)] = Nil
   var last_ir: Option[(String, List[(String, String)])] = None
   var changed_handler: String => Unit = _ => ()
   override def set_changed_handler(handler: String => Unit): Unit =
@@ -43,10 +48,12 @@ class Fake_Backend extends MCP_Backend {
      Handler's exposure() shortens "MCP_Tools.shout" to "shout" and
      resolves tools/call back to the internal name; the params expand
      into the mvp {input :: string} schema */
-  def ml_tools(designation: String, bundles: List[String]): List[MCP_Session.Tool_Row] =
-    MCP_Session.Tool_Row("MCP_Tools.shout", "uppercase the input", "string_fun",
-      List(MCP_Session.Tool_Param("input", "string", true, None, "tool input"))) ::
-    extra_ml_tools
+  def ml_tools(designation: String, bundles: List[String]): MCP_Session.Tools_Reply =
+    MCP_Session.Tools_Reply(
+      MCP_Session.Tool_Row("MCP_Tools.shout", "uppercase the input", "string_fun",
+        List(MCP_Session.Tool_Param("input", "string", true, None, "tool input"))) ::
+      extra_ml_tools,
+      builtin_activation)
   def ml_run(name: String, args: List[(String, String)],
       designation: String, bundles: List[String]): MCP_Session.Result =
     if (name == "MCP_Tools.shout") {

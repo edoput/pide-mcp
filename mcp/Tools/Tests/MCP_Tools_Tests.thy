@@ -106,17 +106,22 @@ section \<open>Protocol payloads\<close>
 
 ML \<open>
 (*tools_body encodes what XML.Decode recovers -- mirrors the Scala side;
-  rows carry (full internal name, description, form tag, params), active
-  only*)
-fun decode_full body =
+  now a PAIR: ml rows (full internal name, description, form tag,
+  params; active, non-builtin only) and a builtins section (base name,
+  active) for every registered Builtin-form mirror
+  (plans/builtin_activation).*)
+fun decode_row_list body =
   let open XML.Decode in
     list (pair string (pair string (pair string
       (list (pair string (pair string (pair bool (pair (option string) string))))))))
       body
   end;
-fun decode_tools body = map (fn (n, (d, (f, _))) => (n, d, f)) (decode_full body);
+fun decode_builtin_list body = let open XML.Decode in list (pair string bool) body end;
+fun decode_full body =
+  let open XML.Decode in pair decode_row_list decode_builtin_list body end;
+fun decode_tools body = map (fn (n, (d, (f, _))) => (n, d, f)) (#1 (decode_full body));
 
-val full_rows = decode_full (MCP_Protocol.tools_body \<^context>);
+val (full_rows, builtin_rows) = decode_full (MCP_Protocol.tools_body \<^context>);
 val rows = map (fn (n, (d, (f, _))) => (n, d, f)) full_rows;
 \<^assert> (member (op =) rows ("MCP_Tools.shout", "uppercase the input", "string_fun"));
 \<^assert> (exists (fn (n, _, _) => n = "MCP_Fixture_A.alpha") rows);
@@ -126,6 +131,34 @@ val rows = map (fn (n, (d, (f, _))) => (n, d, f)) full_rows;
 val (_, (_, (_, shout_params))) =
   the (find_first (fn (n, _) => n = "MCP_Tools.shout") full_rows);
 \<^assert> (shout_params = [("input", ("string", (true, (NONE, "tool input"))))]);
+
+(*A1: builtin mirrors are ordinary registry entries -- del/add round trip
+  through the plain [[mcp_tools ...]] attribute like any other tool, and
+  the run slot errors with the builtin message if ever invoked directly.
+  A2 (first half): mirrors never enter the ml row list -- Builtin rows
+  never reach exposure-name computation.*)
+\<^assert> (not (exists (fn (n, _, _) => n = "MCP_Tools.repl_list") rows));
+\<^assert> (member (op =) builtin_rows ("repl_list", true));
+\<^assert> (member (op =) builtin_rows ("tool_scope_include", true));
+\<^assert> (MCP_Tool.is_active (Context.Proof \<^context>) "MCP_Tools.repl_list");
+\<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
+  MCP_Tool.run \<^context> "MCP_Tools.repl_list" [])));
+\<close>
+
+declare [[mcp_tools del: repl_list]]
+ML \<open>
+(*del hides the mirror from the builtins section (active = false) but
+  the row stays registered -- A2 (second half): "hidden" (registered,
+  del'd) is distinguishable from "absent" (no mirror at all)*)
+val (_, builtin_rows_del) = decode_full (MCP_Protocol.tools_body \<^context>);
+\<^assert> (member (op =) builtin_rows_del ("repl_list", false));
+\<^assert> (MCP_Tool.defined (Context.Proof \<^context>) "MCP_Tools.repl_list");
+\<^assert> (not (MCP_Tool.is_active (Context.Proof \<^context>) "MCP_Tools.repl_list"));
+\<close>
+declare [[mcp_tools add: repl_list]]
+ML \<open>
+val (_, builtin_rows_readd) = decode_full (MCP_Protocol.tools_body \<^context>);
+\<^assert> (member (op =) builtin_rows_readd ("repl_list", true));
 \<close>
 
 ML \<open>\<^assert> (MCP_Protocol.run_tool \<^context> "MCP_Tools.shout" [("input", "abc")] = ("ok", "ABC"))\<close>

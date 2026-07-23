@@ -908,6 +908,19 @@ object MCP_Server {
       scope_add_tool, scope_remove_tool, scope_show_tool,
       doc_list_tool, doc_read_tool)
 
+  /* tool_scope_show/set/include (below) are per-connection Builtin_Tool
+     values (Handler.tool_scope_builtins), so their names are listed here
+     separately -- the one authoritative name list beyond `builtins`,
+     kept in sync BY HAND with the three name = "..." literals below.
+     Used for the exposure() reserved set (Handler.handle, tools/list)
+     and as the drift-gate target (plans/builtin_activation, tested over
+     the live bridge: mirror name set in MCP_Tools.thy == this list ++
+     builtins.map(_.name), both directions). */
+  val tool_scope_builtin_names: List[String] =
+    List("tool_scope_show", "tool_scope_set", "tool_scope_include")
+
+  val all_builtin_names: List[String] = builtins.map(_.name) ++ tool_scope_builtin_names
+
   /* tool_scope_show/set/include (plans/tool_scope, spec "the agent
      context"): unlike every other builtin above, these read and mutate
      the CONNECTION's tool scope, not backend/prover state -- Builtin_Tool
@@ -1084,7 +1097,7 @@ object MCP_Server {
                   ") -- use tool_scope_set to point it at a valid theory or repl\n" +
                 "Included bundles: " + bundles_text)
             case MCP_Session.Ok(_) =>
-              val rows = backend.ml_tools(scope_designation, scope_bundles)
+              val rows = backend.ml_tools(scope_designation, scope_bundles).rows
               MCP_Session.Ok(
                 "Tool scope: " + format_designation(scope_designation) + "\n" +
                 "Included bundles: " + bundles_text + "\n" +

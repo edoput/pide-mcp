@@ -130,6 +130,27 @@ class MCP_Tools_Tests extends MCP_Suite {
     }
   }
 
+  /* MCP_Server.all_builtin_names (the drift gate's target, plans/
+     builtin_activation) sources the tool_scope trio from a hand-
+     maintained literal (tool_scope_builtin_names) rather than the
+     live per-connection Handler.tool_scope_builtins instances, since
+     those close over connection state and cannot be listed statically.
+     Weld the literal to reality here so a new connection-state tool
+     added without updating it (and so without a mirror) fails a test
+     immediately, rather than silently escaping the live-bridge gate. */
+  test("MCP_Server.tool_scope_builtin_names matches what a fresh Handler actually serves") {
+    /* everything tools/list serves beyond `builtins` and Fake_Backend's
+       one fixed ml row ("shout") MUST be exactly the tool_scope trio --
+       an extra connection-state tool added to Handler.tool_scope_builtins
+       without updating the literal (and so without a mirror) shows up
+       here as an unexpected name, caught before it could silently
+       escape the drift gate (which reads the literal, not the live
+       instances). */
+    val names = get_list(rpc("tools/list"), "result", "tools").map(get_string(_, "name")).toSet
+    val extra = names -- MCP_Server.builtins.map(_.name).toSet - "shout"
+    assertEquals(extra, MCP_Server.tool_scope_builtin_names.toSet)
+  }
+
   test("tools/call repl_list reaches backend.ir with (\"repls\", Nil)") {
     assert_dispatch("repl_list", JSON.Object(), "repls", Nil)
   }
@@ -622,6 +643,46 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(get_string(matches.head, "description"),
       MCP_Server.repl_list_tool.description,
       "colliding ml tool shadowed the builtin description")
+  }
+
+  /* plans/builtin_activation: the merge filter over Fake_Backend's
+     settable builtin_activation section. */
+
+  test("tools/list: an empty builtins section serves the full builtin table (availability floor)") {
+    val backend = new Fake_Backend
+    backend.builtin_activation = Nil
+    val names = get_list(rpc("tools/list", backend = backend), "result", "tools")
+      .map(get_string(_, "name")).toSet
+    for (n <- MCP_Server.all_builtin_names) assert(names(n), n + " missing from the floor listing")
+  }
+
+  test("tools/list: a builtin marked (name, false) is hidden from the listing") {
+    val backend = new Fake_Backend
+    backend.builtin_activation = List("repl_list" -> false)
+    val names = get_list(rpc("tools/list", backend = backend), "result", "tools")
+      .map(get_string(_, "name")).toSet
+    assert(!names("repl_list"), "repl_list should be hidden")
+    assert(names("repl_init"), "repl_init should still be listed (only repl_list was del'd)")
+  }
+
+  test("tools/list: a builtin marked (name, true) is listed (no different from absent)") {
+    val backend = new Fake_Backend
+    backend.builtin_activation = List("repl_list" -> true)
+    val names = get_list(rpc("tools/list", backend = backend), "result", "tools")
+      .map(get_string(_, "name")).toSet
+    assert(names("repl_list"), "repl_list should be listed")
+  }
+
+  /* ASYMMETRIC CALLABILITY (A5): a hidden builtin dispatches exactly
+     like a listed one -- tools/call precedes activation entirely, so
+     the merge filter (tools/list only) never touches it. */
+  test("tools/call: a builtin hidden via (name, false) is still callable") {
+    val backend = new Fake_Backend
+    backend.builtin_activation = List("repl_list" -> false)
+    val reply = call_tool("repl_list", JSON.Object(), backend)
+    assertEquals(backend.last_ir, Some(("repls", Nil)),
+      "backend did not see the expected repls args")
+    assert_no_error(reply)
   }
 
   /* exposure: the pure exposed-name function over full internal names

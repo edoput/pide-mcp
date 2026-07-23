@@ -2671,16 +2671,37 @@ implementation order
       and the HOL first-user (value) — MCP-Tools-Tests is Pure-based.
       SURFACE CORRECTIONS (outer lexer, see the phase-2 command item):
       quoted command names, plural activation attribute.
-- [ ] builtin activation unification (decided 2026-07-13): ml mirror
-      rows for every scala builtin (form Builtin, tag "builtin", run
-      slot errors); MCP.tools payload grows the (name, active)
-      builtins section; scala merge filters builtin table rows by
-      mirror activation, with the empty-section availability floor
-      (full table served when the designated context has no
-      mirrors); unlisted-but-callable pinned for builtins,
-      unlisted-and-uncallable re-pinned for ML tools; drift gate
-      (mirror name set == builtin table name set, both directions).
-      plan: plans/builtin_activation.
+- [x] builtin activation unification (decided 2026-07-13, done
+      2026-07-16): ml mirror rows for every scala builtin (form
+      Builtin, tag "builtin", run slot errors "builtin tool:
+      dispatched Isabelle/Scala-side"), declared in one folded
+      MCP_Tool.declare pass at the end of MCP_Tools.thy; MCP.tools'
+      wire shape grows from a flat row list to a PAIR (ml rows,
+      builtins section); the builtins section is (base name, active)
+      for every registered Builtin-form row, inactive included, so
+      "hidden" (registered, del'd) is distinguishable from "absent"
+      (no mirror). scala: MCP_Session.Tools_Reply(rows,
+      builtin_activation) replaces the bare row list end to end
+      (trait, promise, Fake_Backend); the merge rule hides iff
+      explicitly (name, false), so an empty/missing section hides
+      nothing and the availability floor falls out with no special
+      case (MCP_Protocol.empty_tools_body covers the designation-
+      resolution-failure branch, which must stay a PAIR too --
+      feeding the old bare "[]" to a pair decoder would have hung the
+      "MCP.tools_result" promise, caught by a bridge test). The
+      exposure() RESERVED set stays the FULL builtin table regardless
+      of activation -- only the LISTING is filtered -- so a del'd
+      builtin's bare name can never be grabbed by a same-named ML
+      tool. tools/call is unchanged: builtin dispatch already
+      preceded activation. all four layers green: MCP-Tools-Tests
+      (mirror del/add round trip, run-slot error, hidden-vs-absent);
+      scala unit (empty-floor, hidden-filter, listed-true, hidden-
+      still-callable, all against Fake_Backend.builtin_activation);
+      bridge (drift gate over the live MCP_Tools.thy mirrors vs.
+      MCP_Server.all_builtin_names, a repl-local del leaves a builtin
+      unlisted yet callable); test_mcp.py (a del'd builtin stays
+      callable though unlisted, a del'd ML tool is refused). plan:
+      plans/builtin_activation.
 - [ ] method_wrap: mcp_tool (method), Method.check_name validation,
       repl-step execution; generic {repl, args} schema (closure
       derivation demoted — see the eisbach section). import Eisbach
