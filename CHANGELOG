@@ -94,6 +94,30 @@ record; entries here point at the section that carries the details.
   "Cannot load theory file" for reasons that have nothing to do with
   the code under test.
 
+2026-07-21 (development environment: one Isabelle install, via flatpak)
+-------------------------------------------------------------------------
+
+- Isabelle commands go through the flatpak
+  (`flatpak run --command=isabelle de.tum.in.isabelle.Isabelle ...`); the
+  bundled Isabelle2025-2_linux/ tree in this repo is REFERENCE SOURCES
+  ONLY, not an executable. .claude/rules/scala-rebuild.md updated to
+  match.
+- why, since the symptom was mysterious: alternating between the two
+  installs forced a full Pure -> HOL -> session rebuild every time. A
+  root session's build digest is
+  SHA1.shasum_meta_info(SHA1.digest(ml_settings.polyml_exe)) —
+  src/Pure/Build/store.scala, make_shasum with no ancestors — i.e. the
+  SHA1 of the `poly` BINARY. The two installs ship different poly
+  binaries (repo e6f0bf7a…, flatpak 5a02d78d…, which are exactly the two
+  <meta_info> digests recorded in the respective Pure.db files), so each
+  considers the other's Pure stale. Both share
+  $ISABELLE_HOME_USER/heaps, and Store.input_dirs is [user, system] with
+  try_open_database taking the FIRST hit and never falling back — so
+  whichever install ran last leaves its heaps in user space and shadows
+  the other's perfectly valid system heaps. Not a bug in this project and
+  not an Isabelle defect; the documented consequence of pointing two
+  distributions at one user heap directory.
+
 2026-07-16 (repl_init_from_source: command/segment-target attach lands)
 -------------------------------------------------------------------------
 
