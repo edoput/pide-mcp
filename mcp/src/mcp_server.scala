@@ -1102,10 +1102,58 @@ object MCP_Server {
         "command output, or an ML generator's result)."))
 
 
+  /* server startup and readiness (plans/readiness, spec "server startup
+     and readiness"): MCP_Session.start (build_heap + start_session +
+     use_theories) runs on a background thread instead of gating serve()'s
+     first stdin read -- the prover genuinely cannot start without a built
+     heap, so the only move is to stop making the CLIENT wait for it.
+     Not_Ready carries a short human progress string ("building
+     SESSION" / "starting session SESSION"); Ready carries the live
+     backend once build+boot succeed; Failed is terminal for the process
+     (no retry loop -- restarting the server is the recovery). */
+  sealed abstract class Readiness
+  case class Not_Ready(progress: String) extends Readiness
+  case class Ready(backend: MCP_Backend) extends Readiness
+  case class Failed(message: String) extends Readiness
+
+
   /* request handling: pure JSON in, JSON out — no I/O, no session,
      unit-testable against any MCP_Backend */
 
-  class Handler(backend: MCP_Backend) {
+  class Handler(
+    readiness: () => Readiness,
+    session_name: String = "",
+    session_dirs: List[Path] = Nil,
+    theory: String = ""
+  ) {
+    /* pre-readiness Handler(backend) construction (every existing test and
+       serve() call site): the backend is live from the start, so this is
+       just Ready(backend) with no session identity to report -- session
+       identity only matters for the Not_Ready/Failed messages below,
+       which this shape never produces. */
+    def this(backend: MCP_Backend) = this(() => Ready(backend))
+
+    /* the not-ready/failed tool-call and resource-read text (spec "server
+       startup and readiness"): named by session, not by a generic
+       placeholder, so a client watching multiple servers can tell them
+       apart. */
+    private def not_ready_text(progress: String): String =
+      "session " + session_name + " is not ready: " + progress + ". This tool needs " +
+      "the prover; retry shortly. Read isabelle://session for status."
+
+    private def failed_text(message: String): String =
+      "session " + session_name + " failed to start: " + message + ". The server " +
+      "cannot serve prover-backed tools; restart it after fixing the build."
+
+    /* isabelle://session while not ready (spec): the same overview shape
+       the real backend reports when Ready, minus the Thy_Info round trip
+       nothing can answer yet. */
+    private def session_state_text(status: String): String =
+      "session: " + session_name + "\n" +
+      "dirs: " + session_dirs.map(_.implode).mkString(", ") + "\n" +
+      "theory: " + theory + "\n" +
+      "status: " + status
+
     /* the AGENT CONTEXT (spec): "" = default (the -T theory); a bare
        canonical theory long name; "repl:ID". Connection state, like the
        phase-2 resource scope -- reset per connection, not persisted. */
@@ -1260,26 +1308,59 @@ object MCP_Server {
 
         case Some("tools/list") =>
           val all_builtins = builtins ++ tool_scope_builtins
-          val builtin_names = all_builtins.map(_.name).toSet
-          val builtin_json =
-            all_builtins.map(t =>
-              JSON.Object(
-                "name" -> t.name,
-                "description" -> t.description,
-                "inputSchema" -> t.input_schema,
-                "annotations" -> t.annotations))
-          val rows = backend.ml_tools(scope_designation, scope_bundles)
-          val exposed = exposure(rows.map(_.name), builtin_names)
-          val ml_json =
-            rows.flatMap(row =>
-              exposed.get(row.name).map(x =>
-                JSON.Object(
-                  "name" -> x,
-                  "description" -> row.description,
-                  "inputSchema" -> ml_tool_schema(row.params)) ++
-                JSON.Object.apply(
-                  ml_tool_annotations(row.form).toList.map("annotations" -> _)*)))
-          Some(RPC.response(id, JSON.Object("tools" -> (builtin_json ++ ml_json))))
+          readiness() match {
+            /* not ready / failed (plans/readiness): no prover to ask, so
+               the reply is the static builtin table alone -- an
+               ML-registered tool the server has never seen cannot be
+               described. Deliberately NOT filtered by activation either
+               (that needs backend.ml_tools() too): a client that lists
+               early sees every builtin; the ML rows and any hidden-builtin
+               narrowing appear on its next tools/list once ready. */
+            case Not_Ready(_) | Failed(_) =>
+              val builtin_json =
+                all_builtins.map(t =>
+                  JSON.Object(
+                    "name" -> t.name,
+                    "description" -> t.description,
+                    "inputSchema" -> t.input_schema,
+                    "annotations" -> t.annotations))
+              Some(RPC.response(id, JSON.Object("tools" -> builtin_json)))
+
+            case Ready(backend) =>
+              /* the RESERVED set for exposure() stays the FULL table
+                 regardless of activation: a del'd builtin is hidden but
+                 still callable (ASYMMETRIC CALLABILITY), so its bare name
+                 must stay reserved -- otherwise a same-named ML tool could
+                 grab the bare name while builtin dispatch precedence
+                 (tools/call below) still shadows it into being uncallable. */
+              val builtin_names = all_builtins.map(_.name).toSet
+              val reply = backend.ml_tools(scope_designation, scope_bundles)
+              val rows = reply.rows
+              /* hide iff explicitly (name, false): an empty/missing section
+                 (no mirror registered -- broken -T theory, no MCP_Tools
+                 import) hides nothing, which IS the availability floor
+                 (plans/builtin_activation) -- no special case needed. */
+              val hidden = reply.builtin_activation.collect({ case (n, false) => n }).toSet
+              val visible_builtins = all_builtins.filterNot(t => hidden(t.name))
+              val builtin_json =
+                visible_builtins.map(t =>
+                  JSON.Object(
+                    "name" -> t.name,
+                    "description" -> t.description,
+                    "inputSchema" -> t.input_schema,
+                    "annotations" -> t.annotations))
+              val exposed = exposure(rows.map(_.name), builtin_names)
+              val ml_json =
+                rows.flatMap(row =>
+                  exposed.get(row.name).map(x =>
+                    JSON.Object(
+                      "name" -> x,
+                      "description" -> row.description,
+                      "inputSchema" -> ml_tool_schema(row.params)) ++
+                    JSON.Object.apply(
+                      ml_tool_annotations(row.form).toList.map("annotations" -> _)*)))
+              Some(RPC.response(id, JSON.Object("tools" -> (builtin_json ++ ml_json))))
+          }
 
         case Some("tools/call") =>
           val params = JSON.value(json, "params").getOrElse(JSON.Object())
@@ -1291,40 +1372,63 @@ object MCP_Server {
                   case Some(obj: JSON.Object.T @unchecked) => obj
                   case _ => JSON.Object()
                 }
-              (builtins ++ tool_scope_builtins).find(_.name == name) match {
-                case Some(tool) =>
-                  tool.handler(backend, json_args(arguments)) match {
-                    case MCP_Session.Ok(text) =>
-                      Some(RPC.response(id, text_result(text)))
-                    case MCP_Session.Error(message) =>
-                      Some(RPC.response(id, text_result(message, is_error = true)))
-                  }
-                case None =>
-                  /* resolve the exposed name back to the full internal
-                     name through the same map tools/list used; unknown
-                     names pass through for the ML side's error. Arguments
-                     go over as named pairs; missing/ill-typed values are
-                     the ML validator's job (typed errors name the arg). */
-                  val exposed =
-                    exposure(backend.ml_tools(scope_designation, scope_bundles).map(_.name),
-                      (builtins ++ tool_scope_builtins).map(_.name).toSet)
-                  val internal =
-                    exposed.collectFirst({ case (i, x) if x == name => i }).getOrElse(name)
-                  backend.ml_run(internal, json_args(arguments), scope_designation, scope_bundles) match {
-                    case MCP_Session.Ok(text) =>
-                      Some(RPC.response(id, text_result(text)))
-                    case MCP_Session.Error(message) =>
-                      Some(RPC.response(id, text_result(message, is_error = true)))
+              readiness() match {
+                /* not ready / failed (plans/readiness): the call is
+                   well-formed and will succeed later, so this is a
+                   tool-level failure the agent can retry (isError), not a
+                   json-rpc error -- the name is not even looked up, since
+                   nothing prover-backed can run regardless of which tool
+                   was named. */
+                case Not_Ready(progress) =>
+                  Some(RPC.response(id, text_result(not_ready_text(progress), is_error = true)))
+                case Failed(message) =>
+                  Some(RPC.response(id, text_result(failed_text(message), is_error = true)))
+                case Ready(backend) =>
+                  (builtins ++ tool_scope_builtins).find(_.name == name) match {
+                    case Some(tool) =>
+                      tool.handler(backend, json_args(arguments)) match {
+                        case MCP_Session.Ok(text) =>
+                          Some(RPC.response(id, text_result(text)))
+                        case MCP_Session.Error(message) =>
+                          Some(RPC.response(id, text_result(message, is_error = true)))
+                      }
+                    case None =>
+                      /* resolve the exposed name back to the full internal
+                         name through the same map tools/list used; unknown
+                         names pass through for the ML side's error. Arguments
+                         go over as named pairs; missing/ill-typed values are
+                         the ML validator's job (typed errors name the arg). */
+                      val exposed =
+                        exposure(backend.ml_tools(scope_designation, scope_bundles).rows.map(_.name),
+                          (builtins ++ tool_scope_builtins).map(_.name).toSet)
+                      val internal =
+                        exposed.collectFirst({ case (i, x) if x == name => i }).getOrElse(name)
+                      backend.ml_run(internal, json_args(arguments), scope_designation, scope_bundles) match {
+                        case MCP_Session.Ok(text) =>
+                          Some(RPC.response(id, text_result(text)))
+                        case MCP_Session.Error(message) =>
+                          Some(RPC.response(id, text_result(message, is_error = true)))
+                      }
                   }
               }
           }
 
         case Some("resources/list") =>
-          val resources =
-            backend.mcp_resources().map({ case (uri, name, description) =>
-              JSON.Object("uri" -> uri, "name" -> name, "description" -> description)
-            })
-          Some(RPC.response(id, JSON.Object("resources" -> resources)))
+          readiness() match {
+            /* not ready / failed (plans/readiness): isabelle://session is
+               the one resource that always exists and needs no backend --
+               it is the read that answers "what is this server doing". */
+            case Not_Ready(_) | Failed(_) =>
+              Some(RPC.response(id, JSON.Object("resources" -> List(
+                JSON.Object("uri" -> "isabelle://session", "name" -> "session",
+                  "description" -> "current session name, dirs, loaded theories")))))
+            case Ready(backend) =>
+              val resources =
+                backend.mcp_resources().map({ case (uri, name, description) =>
+                  JSON.Object("uri" -> uri, "name" -> name, "description" -> description)
+                })
+              Some(RPC.response(id, JSON.Object("resources" -> resources)))
+          }
 
         case Some("resources/templates/list") =>
           Some(RPC.response(id, JSON.Object("resourceTemplates" -> resource_templates)))
@@ -1334,10 +1438,28 @@ object MCP_Server {
           JSON.string(params, "uri") match {
             case None => Some(RPC.error(id, RPC.INVALID_PARAMS, "Missing resource uri"))
             case Some(uri) =>
-              backend.mcp_resource_read(uri) match {
-                case MCP_Session.Ok(text) => Some(RPC.response(id, resource_contents(uri, text)))
-                case MCP_Session.Error(message) =>
-                  Some(RPC.error(id, RPC.INVALID_PARAMS, message))
+              readiness() match {
+                case Ready(backend) =>
+                  backend.mcp_resource_read(uri) match {
+                    case MCP_Session.Ok(text) => Some(RPC.response(id, resource_contents(uri, text)))
+                    case MCP_Session.Error(message) =>
+                      Some(RPC.error(id, RPC.INVALID_PARAMS, message))
+                  }
+                /* not ready / failed (plans/readiness): isabelle://session
+                   reports the state instead of the Thy_Info listing (which
+                   needs a round trip nothing can answer yet); every other
+                   uri names the state as a protocol-level error, same
+                   error shape a genuinely unknown uri would get. */
+                case Not_Ready(progress) =>
+                  if (uri == "isabelle://session")
+                    Some(RPC.response(id,
+                      resource_contents(uri, session_state_text("not ready (" + progress + ")"))))
+                  else Some(RPC.error(id, RPC.INVALID_PARAMS, not_ready_text(progress)))
+                case Failed(message) =>
+                  if (uri == "isabelle://session")
+                    Some(RPC.response(id,
+                      resource_contents(uri, session_state_text("failed (" + message + ")"))))
+                  else Some(RPC.error(id, RPC.INVALID_PARAMS, failed_text(message)))
               }
           }
 
@@ -1355,15 +1477,23 @@ object MCP_Server {
   }
 
 
-  /* server loop over injectable streams (tests drive it with strings) */
+  /* server loop over injectable streams (tests drive it with strings).
 
+     No default arguments here (Scala forbids two overloads that both
+     declare them) -- the backend-only overload below carries the
+     defaults instead, and run() passes everything explicitly. */
   def serve(
-    backend: MCP_Backend,
+    readiness: () => Readiness,
     in: BufferedReader,
     out: PrintStream,
-    progress: Progress = new Progress
+    progress: Progress,
+    session_name: String,
+    session_dirs: List[Path],
+    theory: String,
+    install_changed_sender: (String => Unit) => Unit,
+    on_shutdown: () => Unit
   ): Unit = {
-    val handler = new Handler(backend)
+    val handler = new Handler(readiness, session_name, session_dirs, theory)
 
     /* replies and server-initiated notifications interleave on stdout:
        writes are line-atomic via the lock */
@@ -1376,8 +1506,13 @@ object MCP_Server {
     /* MCP.tools_changed / MCP.resources_changed (MCP_Tool.declare in a
        theory loaded at runtime) -> notifications/{tools,resources}/
        list_changed; capability listChanged: true is declared at
-       initialize */
-    backend.set_changed_handler(what =>
+       initialize. install_changed_sender hands the sender to whoever
+       owns the backend -- immediately for the backend-only overload
+       below (the backend already exists), or the readiness cell's
+       Ready-publish path in run() (plans/readiness 3a: serve() itself
+       runs before any backend exists, so there is nothing to register
+       the sender ON here). */
+    install_changed_sender(what =>
       print_json(JSON.Object(
         "jsonrpc" -> "2.0", "method" -> ("notifications/" + what + "/list_changed"))))
 
@@ -1392,14 +1527,30 @@ object MCP_Server {
       }
     }
     finally {
-      progress.echo("Shutting down backend ...")
-      backend.stop()
+      progress.echo("Shutting down ...")
+      on_shutdown()
     }
   }
 
+  def serve(
+    backend: MCP_Backend,
+    in: BufferedReader,
+    out: PrintStream,
+    progress: Progress = new Progress
+  ): Unit =
+    serve(() => Ready(backend), in, out, progress,
+      session_name = "", session_dirs = Nil, theory = "",
+      install_changed_sender = backend.set_changed_handler,
+      on_shutdown = () => backend.stop())
 
-  /* stdio server on a headless PIDE session */
 
+  /* stdio server on a headless PIDE session (plans/readiness, spec
+     "server startup and readiness"): serve() starts reading stdin
+     immediately; MCP_Session.build/boot run on a background thread,
+     publishing into `cell` as they progress. The prover genuinely
+     cannot start without a built heap, so this does not make the build
+     itself any faster -- it only stops the json-rpc loop, and so
+     `initialize`, from being gated on it. */
   def run(
     options: Options,
     session_name: String,
@@ -1407,11 +1558,69 @@ object MCP_Server {
     theory: String,
     progress: Progress = new Progress
   ): Unit = {
-    val mcp_session =
-      MCP_Session.start(options, session_name, session_dirs, theory, progress = progress)
-    progress.echo("MCP server ready")
+    /* changed_sender: the list_changed notifier serve() installs on
+       entry (3a) -- there is no backend yet to register it on until the
+       Ready transition below picks it up. shutting_down: the latch 3b
+       needs so a session that finishes booting AFTER stdin has already
+       closed gets stopped instead of stored/served (see the race
+       analysis at each change_result call below). */
+    case class State(
+      readiness: Readiness,
+      changed_sender: Option[String => Unit],
+      shutting_down: Boolean)
+    val cell = Synchronized(State(Not_Ready("building " + session_name), None, false))
+
+    /* fire-and-forget: Command_Line.tool (the isabelle launcher) calls
+       sys.exit once run() returns, which happens as soon as serve() sees
+       EOF -- independent of this thread. That forcibly ends the process
+       (and any ML process this thread may have spawned) even if the
+       build is still in flight, so there is deliberately no interrupt
+       handling here: an interrupted Build.build can leave a partial
+       heap, and the process is exiting anyway (plan step 3b). */
+    Future.fork {
+      Exn.capture {
+        MCP_Session.build(options, session_name, session_dirs, progress)
+        cell.change(s => s.copy(readiness = Not_Ready("starting session " + session_name)))
+        MCP_Session.boot(options, session_name, session_dirs, theory, progress)
+      } match {
+        case Exn.Res(session) =>
+          /* publish Ready and wire list_changed under the SAME lock
+             on_shutdown uses below: if stdin already closed and
+             shutting_down is set, stop the session just booted instead
+             of storing it -- the two change_results serialize through
+             Synchronized, so exactly one of "store it" / "stop it
+             instead" happens, never both and never neither. */
+          val abandoned =
+            cell.change_result { s =>
+              if (s.shutting_down) (true, s)
+              else {
+                s.changed_sender.foreach(session.set_changed_handler)
+                (false, s.copy(readiness = Ready(session)))
+              }
+            }
+          if (abandoned) session.stop() else progress.echo("MCP server ready")
+        case Exn.Exn(exn) =>
+          cell.change(s => s.copy(readiness = Failed(Exn.message(exn))))
+      }
+    }
 
     val stdin = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))
-    serve(mcp_session, stdin, System.out, progress = progress)
+    progress.echo(
+      "Serving stdin; session " + quote(session_name) + " building in the background ...")
+    serve(
+      () => cell.value.readiness,
+      stdin, System.out, progress,
+      session_name = session_name, session_dirs = session_dirs, theory = theory,
+      install_changed_sender = sender => cell.change(s => s.copy(changed_sender = Some(sender))),
+      on_shutdown = () => {
+        val to_stop =
+          cell.change_result { s =>
+            s.readiness match {
+              case Ready(backend) => (Some(backend), s.copy(shutting_down = true))
+              case _ => (None, s.copy(shutting_down = true))
+            }
+          }
+        to_stop.foreach(_.stop())
+      })
   }
 }

@@ -85,6 +85,102 @@ class MCP_Protocol_Tests extends MCP_Suite {
 }
 
 
+/* server startup and readiness (plans/readiness, spec "server startup and
+   readiness"): Handler resolves a () => Readiness thunk PER CALL instead
+   of taking a live backend at construction, so the json-rpc loop never
+   blocks on the prover build. A1-A6 below. */
+
+class MCP_Readiness_Tests extends MCP_Suite {
+  test("A1: initialize never touches the backend, in any readiness state") {
+    val throwing = new Throwing_Backend
+    var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building MCP-HOL")
+    val handler = new MCP_Server.Handler(() => state)
+    get(rpc_on(handler, "initialize"), "result", "capabilities", "tools")
+
+    /* the stronger half of the claim: even once the thunk resolves to a
+       backend that throws on ANY call, initialize still must not touch
+       it -- this is the scenario that would have caught the mvp's
+       ordering bug, where the handshake itself waited on the prover. */
+    state = MCP_Server.Ready(throwing)
+    get(rpc_on(handler, "initialize"), "result", "capabilities", "tools")
+  }
+
+  test("A2: tools/list answers while not ready with exactly the static builtin table") {
+    val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
+    val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
+    assertEquals(tools.map(t => get_string(t, "name")).toSet,
+      MCP_Server.all_builtin_names.toSet)
+    /* Not_Ready carries no backend at all (case class Not_Ready(progress:
+       String)) -- ml_tools() being "not called" is not just an
+       assertion, it is structurally impossible here. */
+  }
+
+  test("A3: tools/call while not ready is isError (not a json-rpc error), naming the progress") {
+    val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
+    val reply = call_tool_on(handler, "repl_list", JSON.Object())
+    assert(JSON.value(reply, "id").isDefined, "reply must echo the request id")
+    val text = assert_is_error(reply)
+    assert(text.contains("building MCP-HOL"),
+      "expected the progress string in the not-ready text: " + text)
+  }
+
+  test("A4: Failed is reported distinctly from Not_Ready, carrying the failure message") {
+    val handler = new MCP_Server.Handler(() => MCP_Server.Failed("boom"))
+    val text = assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
+    assert(text.contains("failed"), "expected \"failed\" in the failed-state text: " + text)
+    assert(text.contains("boom"), "expected the failure message: " + text)
+  }
+
+  test("A5: Handler holds no cached backend -- a readiness transition is observed immediately") {
+    var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building")
+    val handler = new MCP_Server.Handler(() => state)
+    assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
+    state = MCP_Server.Ready(new Fake_Backend)
+    assert_no_error(call_tool_on(handler, "repl_list", JSON.Object()))
+  }
+
+  test("A6: isabelle://session reports the readiness state, then the backend's text once ready") {
+    var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building MCP-HOL")
+    val handler =
+      new MCP_Server.Handler(() => state,
+        session_name = "MCP-HOL", session_dirs = Nil, theory = "MCP_Repl")
+
+    val not_ready_text =
+      get_string(
+        get_list(rpc_on(handler, "resources/read", JSON.Object("uri" -> "isabelle://session")),
+          "result", "contents").head,
+        "text")
+    assert(not_ready_text.contains("session: MCP-HOL"), "missing session line: " + not_ready_text)
+    assert(not_ready_text.contains("theory: MCP_Repl"), "missing theory line: " + not_ready_text)
+    assert(not_ready_text.contains("not ready"), "missing not-ready status: " + not_ready_text)
+    assert(not_ready_text.contains("building MCP-HOL"), "missing progress string: " + not_ready_text)
+
+    state = MCP_Server.Ready(new Fake_Backend)
+    val ready_text =
+      get_string(
+        get_list(rpc_on(handler, "resources/read", JSON.Object("uri" -> "isabelle://session")),
+          "result", "contents").head,
+        "text")
+    assert(ready_text.contains("session: TEST"), "expected the real backend's own text: " + ready_text)
+  }
+
+  test("resources/list while not ready enumerates only isabelle://session") {
+    val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building"))
+    val resources = get_list(rpc_on(handler, "resources/list"), "result", "resources")
+    assertEquals(resources.map(r => get_string(r, "uri")), List("isabelle://session"))
+  }
+
+  test("resources/read on a non-session uri while not ready is a protocol error naming the state") {
+    val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
+    val reply =
+      rpc_on(handler, "resources/read", JSON.Object("uri" -> "isabelle://theory/Main"))
+    assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
+    val message = get_string(reply, "error", "message")
+    assert(message.contains("building MCP-HOL"), "expected the progress string: " + message)
+  }
+}
+
+
 /* tools: ML-registry tools, the builtin table rows, and their dispatch */
 
 class MCP_Tools_Tests extends MCP_Suite {

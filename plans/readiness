@@ -1,0 +1,318 @@
+readiness — implementation plan
+================================
+
+status: IMPLEMENTED (2026-07-21)
+
+infrastructure plan (not a single tool): the server's startup
+lifecycle. spec section "server startup and readiness".
+
+the defect
+----------
+
+MCP_Server.run (mcp/src/mcp_server.scala) is:
+
+    val mcp_session = MCP_Session.start(options, session_name, ...)
+    progress.echo("MCP server ready")
+    serve(mcp_session, stdin, System.out, ...)
+
+MCP_Session.start (mcp/src/mcp_session.scala) runs Build.build with
+build_heap = true, then Headless.Resources.start_session, then
+use_theories for a theory outside the image. Only after all of that
+does serve() read its first line. So `initialize` — the mcp handshake,
+which the client sends first and which must be cheap — blocks for the
+whole build. On a cold heap that is minutes; if Pure/HOL are stale it
+is tens of minutes. The client sees a process that accepted stdin and
+said nothing, and times out.
+
+The build itself is not the bug and is not being removed. The ordering
+is the bug: the json-rpc loop is gated on the prover.
+
+Note the prover genuinely CANNOT start without a built heap —
+Headless.Resources.start_session boots from store.session_heaps(...),
+so there is nothing to make lazy on the ML side. The only move
+available is to stop making the CLIENT wait for it.
+
+backing mechanism
+-----------------
+
+  serve() starts first; build + boot move to a background thread
+  publishing into a Synchronized readiness state that Handler reads.
+
+  sealed abstract class Readiness
+  case class  Not_Ready(progress: String) extends Readiness
+  case class  Ready(backend: MCP_Backend) extends Readiness
+  case class  Failed(message: String)     extends Readiness
+
+Handler currently takes `backend: MCP_Backend` at construction
+(mcp_server.scala:1080) and every builtin's handler_fn takes a
+backend. That signature is kept — what changes is who supplies it:
+Handler takes a `() => Readiness` and resolves a backend per call, so
+the ~20 handler_fn rows in the builtin table need no edit.
+
+state transitions (background thread):
+
+  Not_Ready("building " + session_name)   at construction
+  Not_Ready("starting session")           after Build.build returns ok
+  Ready(session)                          after start_session (+ any
+                                          use_theories) returns
+  Failed(msg)                             on error from either
+
+Failed is terminal for the process: no retry loop, no rebuild-on-
+demand. Restarting the server is the recovery, and the message says
+what failed. (A retry tool is a plausible later addition; it is not in
+this plan, because a build that failed once with the same sources
+fails again, and the interesting failures — a stale heap from another
+Isabelle install, a genuine theory error — need a human anyway.)
+
+method behavior by state
+------------------------
+
+  method                       Not_Ready / Failed        Ready
+  ---------------------------  ------------------------  ----------
+  initialize                   normal reply              normal
+  notifications/*              normal (no reply)         normal
+  tools/list                   full static builtin list  as today
+                               (ML rows omitted — they
+                               need the prover; see
+                               "ml rows" below)
+  resources/templates/list     normal (static)           normal
+  resources/list               isabelle://session only   as today
+  resources/read               session uri: state text;  as today
+                               anything else: isError
+  tools/call                   isError, state message    as today
+
+The tool list is not filtered by readiness (spec: hiding relies on
+clients honouring list_changed, which many cache through). The
+list_changed notification keeps its existing job — runtime
+MCP_Tool.declare — and is NOT fired on readiness transitions.
+
+ml rows: tools/list today merges the static builtin table with
+backend.ml_tools() rows. Not_Ready has no prover to ask, so the reply
+is the builtin table alone. This is the one place where the advertised
+set genuinely changes across the transition, and it is the honest
+answer: an ML-registered tool the server has never seen cannot be
+described. A client that listed early sees the builtins; the ML rows
+appear on its next tools/list.
+
+the not-ready tool result:
+
+    session MCP-HOL is not ready: building MCP-HOL. This tool needs
+    the prover; retry shortly. Read isabelle://session for status.
+
+and for Failed:
+
+    session MCP-HOL failed to start: <message>. The server cannot
+    serve prover-backed tools; restart it after fixing the build.
+
+isabelle://session while Not_Ready reports the state instead of the
+Thy_Info listing (which needs a round trip):
+
+    session: MCP-HOL
+    dirs: ...
+    theory: MCP_Repl
+    status: not ready (building MCP-HOL)
+
+implementation steps
+--------------------
+
+1. Readiness ADT + Synchronized cell in MCP_Server; split
+   MCP_Session.start into the build half and the boot half so the
+   background thread can publish a progress string between them.
+   No behavior change yet (run still awaits the thread).
+
+2. Handler takes () => Readiness; a `with_backend` helper resolves it
+   and short-circuits to the not-ready/failed MCP_Session.Error for
+   every tools/call path. resources/read and resources/list get the
+   same gate, with isabelle://session special-cased to report state.
+   tools/list drops ml_tools() when not ready.
+
+3. run() stops awaiting: start the thread, call serve() immediately.
+   The stderr Console_Progress feed is unchanged (it is the operator's
+   view, not the client's).
+
+   3a. RE-WIRE list_changed. serve() currently registers the
+   notification callback at the top:
+
+       backend.set_changed_handler(what => print_json(...))
+
+   with serve() ahead of backend creation there is no backend to
+   register on, and the MCP_Tool.declare notifications this plan
+   promises to preserve would silently stop working. The registration
+   must move into the Ready transition: the background thread, on
+   publishing Ready(session), calls session.set_changed_handler(...).
+   Since print_json is a closure defined INSIDE serve() (it holds the
+   out-stream lock), serve() must hand that sender to the readiness
+   cell — e.g. the cell carries an Option[String => Unit] that serve()
+   installs on entry and the Ready publish path picks up, with the
+   ordering handled either way (thread wins the race: it finds the
+   sender already there; serve wins: it registers on the backend that
+   is already Ready). Whichever shape, the test is T8 below.
+
+   3b. SHUTDOWN while not ready. serve()'s finally calls
+   backend.stop(). With serve() running during the build there is now
+   a real window where stdin closes with no backend to stop and a
+   background thread still building or booting a prover. Teardown
+   becomes readiness-aware: no-op when Not_Ready/Failed, stop() when
+   Ready. The in-flight thread is DETACHED, not interrupted — an
+   interrupted Build.build can leave a partial heap, and the process
+   is exiting anyway; the ML process it may have spawned is killed by
+   the exit. (Interrupting cleanly is a possible refinement, not a
+   requirement: nothing outlives the process.) Race to handle: the
+   thread may publish Ready after serve() has already torn down, which
+   would leak a booted prover — the readiness cell needs a "shutting
+   down" latch that the publish path checks, stopping the session it
+   just built instead of storing it.
+
+4. tests (below).
+
+5. test_mcp.py: assert the handshake is fast. It currently tolerates
+   600s for the FIRST reply, which is exactly the behavior being
+   removed. Three changes, and the first two are about not measuring
+   the wrong thing:
+
+   - PRE-BUILD THE JAR. scala_build (rebuilding mcp/lib/mcp.jar) runs
+     in the isabelle tool launcher BEFORE Main is entered, so it is
+     outside serve() and no readiness work can make it fast. The
+     "initialize is fast" assertion only holds for a WARM JAR with a
+     COLD SESSION HEAP. The spec's fresh-build note (phase 1 results,
+     ~line 190) cleans both; this assertion needs the jar left alone.
+   - MOVE THE shout ASSERTION. test_mcp.py asserts a tool named
+     "shout" is in tools/list. shout is an ML-registered row, and an
+     early tools/list returns builtins only (see "ml rows" above), so
+     that assertion must run AFTER readiness, not against the first
+     listing.
+   - keep the generous timeout only for the first prover-backed
+     tools/call, which may still wait out a cold build.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process: [scala unit] cases are munit suites in
+mcp_test/src/mcp_handler_tests.scala over Fake_Backend
+(mcp_test/src/mcp_testing.scala); [bridge] cases in
+mcp_test/src/mcp_bridge_tests.scala extending MCP_Session_Suite; see
+plans/README. run: isabelle mcp_test [-b] [-t PATTERN].)
+
+A1. initialize does not depend on the backend.
+    T1 [scala unit]: drive Handler with a readiness thunk fixed at
+    Not_Ready("building"); assert initialize returns the normal
+    capabilities reply, and that the thunk's backend is never
+    dereferenced (Fake_Backend variant that throws on any call —
+    the strongest form of the claim, and the one that would have
+    caught the current ordering bug).
+
+A2. tools/list answers while not ready, with the builtin table.
+    T2 [scala unit]: same fixed-Not_Ready handler; assert the reply
+    lists exactly MCP_Server.all_builtin_names and no ml rows, and
+    that ml_tools() was not called.
+
+A3. a prover-backed tools/call while not ready is an isError result,
+    not a json-rpc error, and names the state.
+    T3 [scala unit]: assert isError true, the text contains the
+    progress string, and the response carries the request id (a
+    result, not an error object).
+
+A4. Failed is reported distinctly from Not_Ready.
+    T4 [scala unit]: readiness thunk at Failed("boom"); assert the
+    tools/call text says failed and carries "boom".
+
+A5. the transition is observable without restarting the handler.
+    T5 [scala unit]: a mutable thunk flipped from Not_Ready to
+    Ready(Fake_Backend) between two tools/call lines; assert the
+    first is isError and the second succeeds. This is the claim that
+    Handler holds no cached backend.
+
+A6. isabelle://session reads in both states.
+    T6 [scala unit]: Not_Ready -> the status text, no backend call;
+    Ready -> today's text.
+
+A7. the real server serves stdin before its session is up.
+    T7 [bridge]: this is the acceptance claim and the one no unit test
+    reaches — Fake_Backend has no build. Spawn `isabelle mcp_server`
+    against a session whose heap has been cleaned (JAR PRE-BUILT, see
+    step 5), write initialize immediately, assert a reply well inside
+    the build window. Cheapest honest form: MCP-Tools (Pure-based,
+    builds in seconds but still non-zero); asserting the reply arrives
+    before the build could have finished is fragile — prefer asserting
+    the reply arrives AND a tools/call in the same window returns the
+    not-ready isError, which is only possible if serve() ran first.
+    Belongs in test_mcp.py (step 5) rather than munit if spawning a
+    process from a bridge suite proves awkward.
+
+A8. list_changed survives the reorder.
+    T8 [bridge]: with the server Ready, declare a tool at runtime
+    (MCP_Tool.declare, the existing tools_changed path) and assert a
+    notifications/tools/list_changed line reaches the client. This is
+    a REGRESSION guard for step 3a — the notification works today and
+    the reorder is exactly what would silently break it, so the case
+    must exist BEFORE step 3 lands, not after.
+
+A9. closing stdin during the build exits cleanly.
+    T9 [bridge or test_mcp.py]: spawn against a cleaned heap, close
+    stdin while still Not_Ready, assert the process exits without a
+    stack trace and leaves no orphaned prover. Covers step 3b.
+
+open questions
+--------------
+
+- should a Failed server exit instead of serving errors forever? Left
+  as serve-errors here: an mcp client that spawned the process sees a
+  clean explanation on every call, where an exit is just a broken
+  pipe. Revisit if it proves confusing in practice.
+
+- the prover-free tools (doc_list, doc_read, list_sessions,
+  list_theories, search_sources) could answer during the build — they
+  are pure scala over Sessions.Structure/Deps/Store and Doc_Catalog.
+  Doing so needs those maps extracted out of the MCP_Session
+  constructor (which takes a live Headless.Session) into a cold
+  backend the readiness state can hold from the start. Deliberately
+  deferred: it is a genuine refactor, and "error until ready" is what
+  this plan owes. Recorded in the spec section as the follow-up.
+
+results (2026-07-21)
+---------------------
+
+all green except one deliberately-deferred test:
+
+- steps 1-3 (incl. 3a/3b) implemented as designed: mcp_session.scala's
+  start() split into build()/boot(); mcp_server.scala gained the
+  Readiness ADT and Handler(() => Readiness) (a Handler(backend)
+  secondary constructor keeps every existing call site, including every
+  prior mcp_test suite, unchanged); serve() takes the thunk plus an
+  install_changed_sender/on_shutdown pair so run() can wire list_changed
+  and teardown through the Synchronized readiness cell described in 3a/
+  3b; run() forks build+boot and serves stdin immediately.
+- T1-T6 [scala unit]: MCP_Readiness_Tests in mcp_handler_tests.scala,
+  registered in mcp_test_tool.scala. All green, including the
+  Throwing_Backend variant of A1 (mcp_testing.scala) that proves
+  initialize never touches the backend even once readiness resolves to
+  one that would explode on any call.
+- T7/A7 and T8/A8: folded into test_mcp.py (step 5) rather than a bridge
+  suite, per the plan's own fallback ("if spawning a process from a
+  bridge suite proves awkward") — spawning `isabelle mcp_server` IS the
+  bridge here. `main()`'s handshake now asserts a fast reply
+  (MCP_HANDSHAKE_TIMEOUT, default 60s) and polls (wait_for_shout) for
+  the ML-registered row instead of assuming the old blocking handshake
+  already waited; test_repl_builtins()/test_builtin_activation() (the
+  MCP-HOL/MCP_Repl path, which can rebuild HOL from scratch) needed the
+  same fix (wait_for_ready) — their first tools/call was failing
+  Not_Ready immediately without it, which is exactly A7's claim
+  demonstrated as a side effect. A8 (list_changed survives the reorder)
+  is exercised the same way: "phase 3: registration pushed
+  notifications/tools/list_changed" in test_repl_builtins() goes through
+  the real run()/serve() background-thread Ready-transition, not just
+  the pre-existing Fake_Backend-level "serve wires the changed handler"
+  scala-unit test.
+- full verification run: `isabelle mcp_test` (unit, incl. the six new
+  cases) green; `isabelle mcp_test -b` (bridge, incl. MCP_Session_Suite
+  over the split start()) green; `test_mcp.py` against the flatpak
+  Isabelle, MCP_HANDSHAKE_TIMEOUT default, both the MCP-Tools mvp path
+  and the MCP-HOL/MCP_Repl path from a cold HOL build — 98/98 assertions
+  green (0 failures).
+- T9/A9 NOT covered by a dedicated test: closing stdin mid-build exits
+  cleanly with no orphaned prover. The mechanism is plausible by
+  construction (Command_Line.tool force-exits the process on return
+  regardless of the background thread — verified by reading, not by
+  test — see CHANGELOG) but unverified against a real cold build with
+  stdin closed mid-flight. Left as follow-up, along with the open
+  question above (prover-free tools answering during the build).

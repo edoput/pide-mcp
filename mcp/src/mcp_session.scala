@@ -231,13 +231,17 @@ object MCP_Session {
     ("\\A" + sb.toString + "\\z").r
   }
 
-  def start(
+  /* the build half (plans/readiness): runs on the background thread while
+     the json-rpc loop is already serving stdin. Split out of start() so
+     MCP_Server.run can publish a progress string between build and boot;
+     start() below stays the synchronous build+boot convenience the test
+     suites (MCP_Session_Suite) use directly. */
+  def build(
     options: Options,
     session_name: String,
     session_dirs: List[Path],
-    theory: String,
     progress: Progress = new Progress
-  ): MCP_Session = {
+  ): Unit = {
     val build_results =
       Build.build(options, selection = Sessions.Selection.session(session_name),
         progress = progress, build_heap = true, dirs = session_dirs)
@@ -245,7 +249,19 @@ object MCP_Session {
       error("Failed to build session " + quote(session_name) + ": " +
         Process_Result.RC.print(build_results.rc))
     }
+  }
 
+  /* the boot half (plans/readiness): assumes build() already produced a
+     current heap. Headless.Resources.start_session boots from
+     store.session_heaps -- there is nothing lazy left on the ML side, this
+     is the earliest the prover can come up. */
+  def boot(
+    options: Options,
+    session_name: String,
+    session_dirs: List[Path],
+    theory: String,
+    progress: Progress = new Progress
+  ): MCP_Session = {
     val resources =
       Headless.Resources.make(options, session_name, session_dirs = session_dirs,
         progress = progress)
@@ -285,6 +301,17 @@ object MCP_Session {
     }
 
     mcp_session
+  }
+
+  def start(
+    options: Options,
+    session_name: String,
+    session_dirs: List[Path],
+    theory: String,
+    progress: Progress = new Progress
+  ): MCP_Session = {
+    build(options, session_name, session_dirs, progress)
+    boot(options, session_name, session_dirs, theory, progress)
   }
 }
 

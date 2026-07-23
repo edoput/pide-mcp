@@ -6,10 +6,25 @@ stdio, and checks that a tool registered in Isabelle/ML can be listed
 and executed in the prover.
 
 Environment:
-  ISABELLE            path to the isabelle executable
-                      (default: the bundled Isabelle2025-2_linux distribution)
-  MCP_TEST_TIMEOUT    per-reply timeout in seconds (default: 600; the first
-                      reply may take minutes on a cold build)
+  ISABELLE              path to the isabelle executable
+                        (default: the bundled Isabelle2025-2_linux distribution)
+  MCP_TEST_TIMEOUT      per-reply timeout in seconds (default: 600) for
+                        prover-backed replies -- the FIRST tools/call that
+                        actually reaches the prover may still take minutes
+                        on a cold session-heap build (plans/readiness: the
+                        build itself was never removed, only moved off the
+                        json-rpc loop).
+  MCP_HANDSHAKE_TIMEOUT per-reply timeout in seconds (default: 60) for
+                        `initialize` specifically: the handshake must be
+                        fast REGARDLESS of session-heap state, since it no
+                        longer waits on the prover (spec "server startup
+                        and readiness"). NOTE this assertion needs a WARM
+                        mcp.jar -- `isabelle mcp_server` recompiles the jar
+                        (scala_build) in the isabelle launcher BEFORE
+                        Main/run() is even entered, so no readiness work
+                        can make a cold scala_build fast; run
+                        `isabelle scala_build` once beforehand (or just
+                        run this suite twice) if timing out here.
 
 Exit code 0 iff all assertions pass; prints one verdict line per case.
 """
@@ -22,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import queue
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,6 +45,7 @@ DEFAULT_ISABELLE = os.path.join(
     PROJECT_ROOT, "Isabelle2025-2_linux", "Isabelle2025-2", "bin", "isabelle")
 ISABELLE = os.environ.get("ISABELLE", DEFAULT_ISABELLE)
 TIMEOUT = float(os.environ.get("MCP_TEST_TIMEOUT", "600"))
+HANDSHAKE_TIMEOUT = float(os.environ.get("MCP_HANDSHAKE_TIMEOUT", "60"))
 
 failures = 0
 
@@ -105,6 +122,55 @@ class Client:
         return False
 
 
+def wait_for_shout(client, timeout=TIMEOUT):
+    """Poll tools/list until the ML-registered "shout" tool appears.
+
+    plans/readiness: the FIRST tools/list (right after initialize) may
+    still answer Not_Ready -- the static builtin table only, no ML rows,
+    since there is no prover yet to ask (spec "server startup and
+    readiness"). "shout" is an ML-registered row, so its appearance IS
+    the client-observable readiness signal; this is the generous,
+    cold-build-tolerant wait, kept separate from the now-fast handshake.
+    Each individual tools/list reply comes back immediately regardless of
+    state, so polling costs nothing but the sleep between tries.
+    """
+    deadline = time.monotonic() + timeout
+    reply, tools = None, []
+    while True:
+        reply = client.request("tools/list", timeout=10)
+        tools = reply.get("result", {}).get("tools", [])
+        if any(t.get("name") == "shout" for t in tools):
+            return reply, tools
+        if time.monotonic() >= deadline:
+            return reply, tools
+        time.sleep(0.5)
+
+
+def wait_for_ready(client, probe_name="repl_list", probe_args=None, timeout=TIMEOUT):
+    """Poll a prover-backed builtin until the backend is Ready.
+
+    plans/readiness: unlike the mvp (where the whole handshake blocked
+    until the session was up), the FIRST tools/call after initialize may
+    now return the Not_Ready isError while the session heap builds in
+    the background -- repl_list is a harmless, read-only probe for it.
+    Generous, cold-build-tolerant timeout; each individual reply comes
+    back immediately regardless of state, so polling only costs the
+    sleep between tries.
+    """
+    deadline = time.monotonic() + timeout
+    reply = None
+    while True:
+        reply = client.request("tools/call",
+            {"name": probe_name, "arguments": probe_args or {}}, timeout=10)
+        content = reply.get("result", {}).get("content", [])
+        text = content[0].get("text", "") if content else ""
+        if not (" is not ready:" in text or " failed to start:" in text):
+            return reply
+        if time.monotonic() >= deadline:
+            return reply
+        time.sleep(0.5)
+
+
 def test_repl_builtins():
     """tools/call on the repl_* builtins, end to end through the full
     JSON-RPC -> Handler -> Builtin_Tool -> MCP.ir -> prover path -- the one
@@ -157,6 +223,14 @@ def test_repl_builtins():
             "clientInfo": {"name": "test_mcp", "version": "0"},
         })
         client.send("notifications/initialized", notification=True)
+
+        # plans/readiness: MCP-HOL builds HOL if the heap is stale, which
+        # can take minutes -- the FIRST tools/call below must wait for
+        # that instead of assuming the mvp's old blocking handshake
+        # already did.
+        reply = wait_for_ready(client)
+        verdict("repl builtins: server becomes ready within the timeout",
+                not reply.get("result", {}).get("isError", False), json.dumps(reply))
 
         reply = client.request("tools/list")
         tools = reply.get("result", {}).get("tools", [])
@@ -811,27 +885,41 @@ def main():
 
     client = Client([ISABELLE, "mcp_server"])
     try:
-        # initialize handshake (generous timeout: cold build + session start)
+        # initialize handshake (plans/readiness, spec "server startup and
+        # readiness"): must be fast NOW, regardless of session-heap state
+        # -- the json-rpc loop is no longer gated on the prover build.
+        # Supersedes the mvp's "generous 600s timeout for the first
+        # reply", which was exactly the blocking behavior this decision
+        # removed; see HANDSHAKE_TIMEOUT's docstring note re: a cold
+        # mcp.jar (scala_build), which is unrelated and still slow.
+        start = time.monotonic()
         reply = client.request("initialize", {
             "protocolVersion": "2025-03-26",
             "capabilities": {},
             "clientInfo": {"name": "test_mcp", "version": "0"},
-        })
+        }, timeout=HANDSHAKE_TIMEOUT)
+        elapsed = time.monotonic() - start
         result = reply.get("result", {})
         verdict("initialize", "protocolVersion" in result and "serverInfo" in result
                 and "tools" in result.get("capabilities", {}),
                 json.dumps(reply) if "result" not in reply else "")
+        verdict("initialize is fast, not gated on the prover build (%.1fs)" % elapsed,
+                elapsed < HANDSHAKE_TIMEOUT, "%.1fs >= %gs timeout" % (elapsed, HANDSHAKE_TIMEOUT))
         client.send("notifications/initialized", notification=True)
 
         # ping
         reply = client.request("ping")
         verdict("ping", reply.get("result") == {})
 
-        # tools/list: the ML-registered demo tool must be present
-        reply = client.request("tools/list")
-        tools = reply.get("result", {}).get("tools", [])
+        # tools/list: the ML-registered demo tool must be present. Polled,
+        # not asserted on the first reply -- that first reply may still be
+        # Not_Ready (builtins only, no ML rows; see wait_for_shout) while
+        # the session heap builds/boots in the background. This is where
+        # the mvp's generous cold-build timeout still applies.
+        reply, tools = wait_for_shout(client)
         shout = [t for t in tools if t.get("name") == "shout"]
-        verdict("tools/list has shout", bool(shout), json.dumps(tools))
+        verdict("tools/list has shout (polled until the backend is ready)",
+                bool(shout), json.dumps(tools))
         verdict("shout has input schema",
                 bool(shout) and shout[0].get("inputSchema", {}).get("type") == "object")
 

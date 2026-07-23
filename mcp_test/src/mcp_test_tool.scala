@@ -17,6 +17,7 @@ object MCP_Test {
   val unit_suites: List[Class[? <: munit.Suite]] =
     List(
       classOf[MCP_Protocol_Tests],
+      classOf[MCP_Readiness_Tests],
       classOf[MCP_Tools_Tests],
       classOf[MCP_Tool_Scope_Tests],
       classOf[MCP_Resources_Tests],

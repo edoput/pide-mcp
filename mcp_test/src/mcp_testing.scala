@@ -376,6 +376,38 @@ class Fake_Backend extends MCP_Backend {
 }
 
 
+/* plans/readiness A1: the strongest available form of "this code path
+   does not depend on the backend" -- every method throws, so a test
+   that drives Handler through it and still succeeds proves the claim
+   by actually exercising the failure mode, not just by inspecting that
+   Not_Ready/Failed carry no backend field. */
+class Throwing_Backend extends MCP_Backend {
+  private def boom: Nothing = throw new RuntimeException("backend touched unexpectedly")
+  def ml_tools(designation: String, bundles: List[String]): MCP_Session.Tools_Reply = boom
+  def ml_run(name: String, args: List[(String, String)],
+      designation: String, bundles: List[String]): MCP_Session.Result = boom
+  def check_designation(designation: String, bundles: List[String]): MCP_Session.Result = boom
+  def ir(fname: String, args: List[(String, String)]): MCP_Session.Result = boom
+  def resolve_context_theory(name: String): Either[String, String] = boom
+  def init_from_source(repl: String, theory: String,
+      offset: Option[Int], pattern: Option[String], index: Option[Int]): MCP_Session.Result = boom
+  def mcp_resources(): List[(String, String, String)] = boom
+  def mcp_resource_read(uri: String): MCP_Session.Result = boom
+  def scope_add(patterns: List[String]): MCP_Session.Result = boom
+  def scope_remove(patterns: List[String]): MCP_Session.Result = boom
+  def scope_show(): MCP_Session.Result = boom
+  def load_theory(name: String, master_dir: String): MCP_Session.Result = boom
+  def unload_theory(name: String): MCP_Session.Result = boom
+  def check_theory(name: String, master_dir: String): MCP_Session.Result = boom
+  def list_sessions_info(): MCP_Session.Result = boom
+  def list_theories_info(session: String): MCP_Session.Result = boom
+  def search_sources(pattern: String): MCP_Session.Result = boom
+  def doc_list(pattern: String): MCP_Session.Result = boom
+  def doc_read(name: String, section: String, lines: String): MCP_Session.Result = boom
+  def stop(): Unit = boom
+}
+
+
 /* base suite: json access and jsonrpc/handler helpers over Fake_Backend */
 
 abstract class MCP_Suite extends munit.FunSuite {

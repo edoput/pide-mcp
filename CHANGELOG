@@ -94,6 +94,63 @@ record; entries here point at the section that carries the details.
   "Cannot load theory file" for reasons that have nothing to do with
   the code under test.
 
+2026-07-21 (server readiness: the json-rpc loop stops waiting on the prover)
+----------------------------------------------------------------------------
+
+- decision (spec: "server startup and readiness"; plan: plans/readiness,
+  status IMPLEMENTED): MCP_Server.run built the session heap and booted the
+  prover BEFORE serve() read its first line, so `initialize` itself
+  blocked for the length of the build — minutes cold, tens of minutes if
+  Pure/HOL were stale — which a client cannot tell apart from a hang.
+  The build is not the problem and is not being removed (the prover
+  genuinely cannot start without a heap: Headless.Resources.start_session
+  boots from store.session_heaps). The ordering is. The server now serves
+  immediately and carries a readiness state — Not_Ready(progress) /
+  Ready(backend) / Failed(message) — with build and boot on a background
+  thread. initialize, tools/list and the template list answer in every
+  state; a prover-backed tools/call while not ready returns an isError
+  result naming the state (a tool-level, retryable failure, NOT a
+  json-rpc error — the call is well formed and will succeed later);
+  isabelle://session reports the state. The tool list is deliberately NOT
+  filtered by readiness: hiding tools relies on clients re-fetching after
+  notifications/tools/list_changed, which many cache through, and a tool
+  that returns a clear transient error beats one that never appears —
+  list_changed keeps its existing job (runtime MCP_Tool.declare) and is
+  not driven by readiness transitions. The server keeps OWNING the build
+  rather than merely probing for a heap, because an mcp client has no
+  shell to run `isabelle build -b` itself. Supersedes phase 1's blocking
+  "generous startup timeout, default 600s", which survives only as
+  test_mcp.py's own socket timeout.
+- deferred with the decision, both recorded rather than dropped:
+  streaming build progress to the client (the Console_Progress feed is on
+  stderr, invisible over stdio), and splitting the backend so the
+  prover-free tools (doc_list, doc_read, list_sessions, list_theories,
+  search_sources — pure scala over Sessions.Structure/Deps/Store and the
+  doc catalog) can answer DURING the build instead of erroring. The
+  latter is the natural follow-up; it needs those maps lifted out of an
+  MCP_Session constructor that takes a live Headless.Session.
+- implementation: MCP_Session.start split into build()/boot() (start()
+  survives as their synchronous composition, unchanged for
+  MCP_Session_Suite); MCP_Server.Handler now resolves a `() => Readiness`
+  per call instead of taking a live backend at construction (a
+  Handler(backend) convenience constructor keeps every prior call site
+  working unchanged); run() forks build+boot onto a background thread
+  behind a Synchronized readiness cell with a "shutting down" latch (a
+  session that finishes booting after stdin has already closed is
+  stopped instead of stored — see plans/readiness step 3b for the race
+  argument) and serves stdin immediately. Verified: mcp_test's scala-unit
+  suite gained MCP_Readiness_Tests (A1-A6, all green); the full bridge
+  suite (isabelle mcp_test -b) is unaffected; test_mcp.py's handshake
+  assertion now requires a fast reply (seconds, not the old 600s
+  tolerance) and the "shout"/repl-builtins assertions poll for readiness
+  instead of assuming the old blocking handshake already waited — full
+  run (both the MCP-Tools mvp path and the MCP-HOL/MCP_Repl path,
+  including a from-scratch HOL build) is green. Not yet covered by a
+  dedicated test: A9 (closing stdin mid-build exits with no orphaned
+  prover) — plausible by construction (Command_Line.tool force-exits the
+  process on return regardless of the background thread) but unverified
+  against a real cold build; left as follow-up.
+
 2026-07-21 (development environment: one Isabelle install, via flatpak)
 -------------------------------------------------------------------------
 

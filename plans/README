@@ -8,7 +8,9 @@ rather than a single tool: mcp_tool_registry (the registry pivot),
 tool_scope (the tool_scope_* builtin family), mcp_tool_command (the
 mcp_tool/mcp_resource outer syntax + params machinery),
 builtin_activation (scala builtins mirrored into the ML registry so
-one activation layer governs both kinds, decided 2026-07-13). each plan pins down, for one tool:
+one activation layer governs both kinds, decided 2026-07-13), and
+readiness (the server startup lifecycle -- serve() stops waiting on
+the prover build, decided and implemented 2026-07-21). each plan pins down, for one tool:
 
 - advertised metadata: exposed name, description text, inputSchema
   (json property names = the yxml pair keys of the argument encoding),
@@ -147,6 +149,12 @@ resource-read tool mirrors (DECIDED 2026-07-15, planned; wave TBD —
   - [ ] read_session           plans/read_session  (= isabelle://session)
   - [ ] read_named             plans/read_named    (= isabelle://named/{name})
   (repl/{id} and /text need no mirror — repl_show/repl_text already are.)
+
+server lifecycle (infrastructure, no tool of its own):
+  - [ ] readiness              plans/readiness  (serve stdin before the
+        session is built; Not_Ready/Ready/Failed state, prover-backed
+        tools error until ready. decided 2026-07-21, spec "server
+        startup and readiness")
 
 flagged, NOT scheduled (no wave):
   - recap                      plans/recap  (generated Recap.thy the

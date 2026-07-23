@@ -169,6 +169,10 @@ components / deliverables
    - exit code 0 iff all assertions pass; prints a one-line verdict per case
    - generous startup timeout: the first reply may take minutes on a cold
      build (scala_build + session load); make it configurable, default 600s.
+     (the SERVER no longer blocks that way — see "server startup and
+     readiness", decided 2026-07-21. this stays as test_mcp.py's own
+     socket timeout, since the acceptance test still waits for a
+     genuinely ready server before asserting on tool results.)
 
 implementation order
 --------------------
@@ -398,6 +402,62 @@ sessions and file layout
   -o record_theories=true — document as optional, don't require it.
 - server default stays -s MCP-Tools for now; agentic runs use
   `isabelle mcp_server -s MCP-HOL`. flip the default when phase 2 lands.
+
+server startup and readiness (decided 2026-07-21)
+--------------------------------------------------
+
+supersedes the mvp's blocking startup (phase 1's "generous startup
+timeout, default 600s" under test_mcp.py, which stays only as that
+program's socket timeout). plan: plans/readiness.
+
+the mvp's MCP_Server.run builds the session heap and boots the prover
+BEFORE serving stdin, so `initialize` itself blocks for as long as the
+build takes — minutes on a cold heap, tens of minutes if HOL must be
+rebuilt. an mcp client cannot distinguish that from a hung server, and
+most give up before the handshake completes. the json-rpc loop must
+never be gated on the prover.
+
+decision: the server serves immediately and carries a READINESS state;
+the build and prover boot run on a background thread.
+
+  Not_Ready(progress)   building or booting; progress is a short human
+                        string ("building HOL", "starting session")
+  Ready(backend)        the MCP_Backend is live
+  Failed(message)       build or boot failed; terminal until restart
+
+- protocol methods that describe the server — initialize, tools/list,
+  resources/list, resources/templates/list — answer from the first
+  line read, in every state. capabilities and the advertised tool set
+  do not depend on the prover.
+- tools/call for a prover-backed tool while Not_Ready returns an
+  isError result naming the state and the progress string, not a
+  json-rpc error: the call is well-formed and will succeed later, so
+  it is a tool-level failure the agent can retry, not a protocol
+  fault. Failed says so, and says the build failed.
+- the tool list is NOT filtered by readiness. hiding tools until ready
+  would rely on clients re-fetching after notifications/tools/
+  list_changed, which many cache through; a tool that returns a clear
+  transient error beats one that never appears. list_changed keeps its
+  existing job (runtime MCP_Tool.declare) and is not driven by
+  readiness transitions.
+- isabelle://session reports the readiness state, so an agent has a
+  read that answers "what is this server doing" before any tool works.
+- the server owns the build (Build.build on the background thread,
+  same call the mvp made inline). an mcp client has no shell to run
+  `isabelle build -b` itself, so a probe-only server would strand it.
+  a build that is already current costs a few seconds and the state
+  goes straight to Ready — the common case is unchanged.
+
+not in this decision, deliberately: streaming build progress to the
+client (the Console_Progress feed is on stderr, invisible over stdio,
+and mcp has no server-initiated progress channel we already use), and
+splitting the backend so that the prover-free tools (doc_list,
+doc_read, list_sessions, list_theories, search_sources — pure scala
+over Sessions.Structure/Deps/Store and the doc catalog) can answer
+while the build runs. the latter is a real improvement and a real
+refactor: those maps sit behind an MCP_Session constructor that takes
+a live Headless.Session. recorded here as the follow-up, gated on the
+minimal readiness state landing first.
 
 ml bridge: async protocol command (the key new mechanism)
 ---------------------------------------------------------
