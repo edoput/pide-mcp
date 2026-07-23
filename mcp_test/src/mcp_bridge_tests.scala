@@ -966,4 +966,112 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     assert(!after_remove.contains("ScopeShowRepl"),
       "repl_remove (with_repl's teardown) should remove it from scope_show: " + after_remove)
   }
+
+  /* repl_init_from_source (plans/repl_init_from_source): T3, T4, T5.
+     T1 (exactly-one-locator) and T2 (the pure resolver) are covered
+     scala-unit only (mcp_handler_tests.scala's dispatch tests and
+     MCP_Locator_Tests) -- everything below needs a live PIDE session or
+     this suite's own -T theory's recorded segments. */
+
+  /* T3: Ir.init_from_document requires the command to be executed and
+     finished. load_theory is synchronous (use_theories blocks until the
+     whole document is checked), so every command our own resolver can
+     ever pick is already finished -- there is no public way to reach a
+     genuinely "still being evaluated" command through session.
+     init_from_source. What IS reachable, and what this pins instead, is
+     the sibling guard one layer down: an inaccessible command_id (never
+     assigned in this node at all) is caught by init_from_document's own
+     Exn.capture branch and reported as a clean status error, not a
+     hang or an uncaught exception -- extracting a real node_name from a
+     successful attach (the engine echoes it back in "from document ...
+     command N") rather than guessing Isabelle's node-naming convention. */
+  test("repl_init_from_source T3: an inaccessible command_id is a status error, not a hang") {
+    with_fixture_dir(
+      "InitFromSrcT3" -> wave2_theory("InitFromSrcT3", "lemma init_from_src_t3: \"True\" by simp")
+    ) { dir =>
+      expect_ok(session.load_theory("InitFromSrcT3", File.standard_path(dir)), "load")
+      val created =
+        expect_ok(
+          session.init_from_source("T3a", "InitFromSrcT3", None, Some("lemma init_from_src_t3"), None),
+          "attach by pattern")
+      expect_ok(session.ir("remove", List("repl" -> "T3a")))
+
+      val node_name =
+        """from document "([^"]+)" command""".r.findFirstMatchIn(created)
+          .getOrElse(fail("could not extract node_name from create reply: " + created)).group(1)
+
+      expect_error(
+        session.ir("init_from_document",
+          List("repl" -> "T3b", "node_name" -> node_name, "command_id" -> "0")),
+        containing = "Cannot access command")
+    }
+  }
+
+  /* T4: the image-tier segment fallback (MCP_Repl.thy's
+     init_from_segment) against this suite's own -T theory, whose
+     segments were recorded at build time (record_theories, tier_image
+     above) and DO survive into this live process (the retracted-gap
+     test above). offset 0 always lands in segment 0 regardless of its
+     exact text, so it needs no fragile byte-offset arithmetic; pattern
+     targets a command known to appear exactly once. */
+  test("repl_init_from_source T4: image-tier segment fallback resolves offset/pattern/index against recorded segments") {
+    val by_pattern =
+      expect_ok(
+        session.init_from_source("SegPat", "MCP_Repl", None, Some("Ir.set_self_theory"), None),
+        "attach by pattern to a segment")
+    assert(by_pattern.contains("Created REPL"), "unexpected reply: " + by_pattern)
+    expect_ok(session.ir("step", List("repl" -> "SegPat", "isar_text" -> "lemma segpat_t4: True")))
+    expect_ok(session.ir("step", List("repl" -> "SegPat", "isar_text" -> "by simp")))
+    val listing = repl_listing()
+    assert(listing.contains("SegPat"), "SegPat missing from repl_list: " + listing)
+    expect_ok(session.ir("remove", List("repl" -> "SegPat")))
+
+    expect_ok(session.init_from_source("SegIdx", "MCP_Repl", None, None, Some(0)), "attach by index 0")
+    expect_ok(session.ir("remove", List("repl" -> "SegIdx")))
+
+    expect_ok(session.init_from_source("SegOff", "MCP_Repl", Some(0), None, None), "attach by offset 0")
+    expect_ok(session.ir("remove", List("repl" -> "SegOff")))
+
+    expect_error(
+      session.init_from_source("SegBad", "MCP_Repl", None, Some("no_such_segment_text_xyz"), None),
+      containing = "not found")
+  }
+
+  /* T5: full chain over the PIDE-snapshot (loaded-tier) branch -- load
+     a fixture whose lemma and its proof are separate commands, attach
+     by pattern to the lemma statement (AFTER semantics: the open-goal
+     state right after that command, before its own on-disk "by"), step
+     the SAME closing tactic through the fresh REPL, and confirm it is
+     listed, steppable, its text readable, and removable. */
+  test("repl_init_from_source T5: e2e attach-by-pattern on a loaded theory, step, text, remove") {
+    with_fixture_dir(
+      "InitFromSrcT5" ->
+        wave2_theory("InitFromSrcT5",
+          "definition init_src_t5_const :: nat where \"init_src_t5_const = 1\"\n\n" +
+          "lemma init_src_t5_lemma: \"init_src_t5_const = 1\"\n" +
+          "  by (simp add: init_src_t5_const_def)")
+    ) { dir =>
+      expect_ok(session.load_theory("InitFromSrcT5", File.standard_path(dir)), "load")
+
+      val created =
+        expect_ok(
+          session.init_from_source("T5", "InitFromSrcT5", None, Some("lemma init_src_t5_lemma"), None),
+          "attach by pattern")
+      assert(created.contains("Created REPL") && created.contains("[proof]"),
+        "attach should land right after the lemma statement, mid-proof: " + created)
+
+      expect_ok(
+        session.ir("step",
+          List("repl" -> "T5", "isar_text" -> "by (simp add: init_src_t5_const_def)")),
+        "closing the goal from the attach point")
+
+      val listing = repl_listing()
+      assert(listing.contains("T5"), "T5 missing from repl_list: " + listing)
+
+      val text = expect_ok(session.ir("text", List("repl" -> "T5")))
+      assert(text.contains("by (simp"), "repl_text should include the step: " + text)
+
+      expect_ok(session.ir("remove", List("repl" -> "T5")))
+    }
+  }
 }

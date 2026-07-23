@@ -79,7 +79,7 @@ wave 0 — shared infrastructure (prerequisites, not tools):
 wave 1 — repl lifecycle + stepping + proof search (MCP.ir bridge):
   - [x] repl_list              plans/repl_list   (pilot: full template)
   - [x] repl_init              plans/repl_init
-  - [ ] repl_init_from_source  plans/repl_init_from_source
+  - [x] repl_init_from_source  plans/repl_init_from_source
   - [ ] repl_fork              plans/repl_fork
   - [x] repl_remove            plans/repl_remove
   - [x] repl_step              plans/repl_step

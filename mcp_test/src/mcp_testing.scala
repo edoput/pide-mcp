@@ -165,6 +165,28 @@ class Fake_Backend extends MCP_Backend {
             "loaded (no context to search) -- load_theory first")
       case _ => Left("Unknown theory " + quote(name))
     }
+  /* repl_init_from_source (plans/repl_init_from_source): good enough for
+     the scala-unit exclusivity/dispatch tests -- "Main" simulates a
+     resolved, always-locatable theory (so the fake never needs a real
+     snapshot), "FSOnly" the filesystem-tier "not yet loaded" case, and
+     the recorded call is exposed via last_ir so tests can assert the
+     backend actually saw the resolved locator. */
+  def init_from_source(repl: String, theory: String,
+      offset: Option[Int], pattern: Option[String], index: Option[Int]): MCP_Session.Result =
+    theory match {
+      case "Main" | "HOL.Main" =>
+        val locator =
+          offset.map("offset=" + _).orElse(pattern.map("pattern=" + _)).orElse(index.map("index=" + _))
+            .getOrElse("")
+        last_ir = Some(("init_from_source", List("repl" -> repl, "theory" -> theory) ++
+          List("locator" -> locator)))
+        MCP_Session.Ok("Created REPL " + quote(repl) + " from " + quote(theory) + " " + locator)
+      case "FSOnly" =>
+        MCP_Session.Error(
+          "Unknown theory " + quote(theory) + " context: filesystem theory, not yet " +
+            "loaded (no context to attach to) -- load_theory first")
+      case _ => MCP_Session.Error("Unknown theory " + quote(theory))
+    }
   /* isabelle://named/{name}: a fixed one-entry stand-in for MCP_Resource's
      registry (MCP_Tools.thy), mirroring extra_ml_tools' role for MCP_Tool. */
   var named_resources: List[(String, String)] = List(("greeting", "a static demo resource"))

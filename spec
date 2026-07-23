@@ -1888,8 +1888,9 @@ the finer-grained test inventories.
          (write the file between load and check: purge-then-reload
          must force a re-read; a stale snapshot would report the old
          state)
-   - [ ] repl_init_from_source: offset and pattern resolve to the
+   - [x] repl_init_from_source: offset and pattern resolve to the
          same command id; a repl initialized there can step
+         (2026-07-16: MCP_Ir_Bridge_Tests T3..T5, plans/repl_init_from_source)
    - [ ] goto_definition over Nav_Test.thy: a use of the fun-defined
          constant -> position inside the fun block; a type annotation
          of the datatype -> the datatype block; the entity kind

@@ -250,6 +250,64 @@ fun find_definition ctxt kind_opt name =
   end;
 
 
+(* repl_init_from_source (plans/repl_init_from_source), image-tier branch:
+   the PIDE-snapshot half of locator resolution (offset/pattern/index ->
+   command) happens scala-side, over Document.Node.command_iterator --
+   see mcp_session.scala's MCP_Session.Locator. Image theories with
+   recorded segments have no PIDE document, so the analogous resolution
+   happens here instead, against Thy_Info.get_theory_segments text (the
+   same source find_definition_source_block reads), then forwarded to
+   Ir.init as a "thy_name:idx" spec -- the same path a literal Thy:idx
+   spec already takes. Segments partition the source contiguously (see
+   find_definition_source_block), so concatenating segment texts in
+   order gives an offset space that is internally consistent for the
+   offset locator; pattern uses "first segment whose source contains
+   it", mirroring the snapshot side's "first command whose source
+   contains it" -- neither locator needs to reproduce the original
+   file's exact byte layout, only a stable, order-preserving one. *)
+fun init_from_segment_texts thy_name =
+  (case try Thy_Info.get_theory_segments thy_name of
+    NONE =>
+      error ("No recorded segments for " ^ quote thy_name ^
+        ". Rebuild the session heap with: isabelle build -o record_theories=true -b <SESSION>")
+  | SOME segs =>
+      map (fn {span = Command_Span.Span (_, toks), ...} : Document_Output.segment =>
+        String.concatWith "" (map Token.unparse toks)) segs);
+
+fun init_from_segment_index thy_name offset_opt pattern_opt index_opt =
+  let
+    val texts = init_from_segment_texts thy_name
+    val n = length texts
+  in
+    case (offset_opt, pattern_opt, index_opt) of
+      (SOME off, NONE, NONE) =>
+        let
+          val (starts, _) = fold_map (fn text => fn pos => (pos, pos + String.size text)) texts 0
+          val bounds = starts ~~ texts |> map (fn (s, t) => (s, s + String.size t))
+        in
+          (case find_index (fn (s, e) => off >= s andalso off < e) bounds of
+            ~1 => error ("Offset " ^ string_of_int off ^ " is not inside any segment of " ^ quote thy_name)
+          | i => i)
+        end
+    | (NONE, SOME pat, NONE) =>
+        (case find_index (String.isSubstring pat) texts of
+          ~1 => error ("Pattern " ^ quote pat ^ " not found in " ^ quote thy_name)
+        | i => i)
+    | (NONE, NONE, SOME idx) =>
+        let val idx' = if idx < 0 then n + idx else idx
+        in
+          if idx' < 0 orelse idx' >= n
+          then error ("Index " ^ string_of_int idx ^ " out of range (0.." ^ string_of_int (n - 1) ^ ")")
+          else idx'
+        end
+    | _ => error "init_from_segment: exactly one of offset/pattern/index is required"
+  end;
+
+fun init_from_segment repl thy_name offset_opt pattern_opt index_opt =
+  let val idx = init_from_segment_index thy_name offset_opt pattern_opt index_opt
+  in Ir.init repl [thy_name ^ ":" ^ string_of_int idx] end;
+
+
 (* dispatcher: closed table over Ir, named arguments *)
 
 (*one yxml chunk holding an association list of (key, value) string pairs —
@@ -285,6 +343,12 @@ fun dispatch fname args =
     | "init_from_document" =>
         (keys ["repl", "node_name", "command_id"];
          Ir.init_from_document (get "repl") (get "node_name") (get_int "command_id"))
+    | "init_from_segment" =>
+        (keys ["repl", "theory_name", "offset", "pattern", "index"];
+         init_from_segment (get "repl") (get "theory_name")
+           (case AList.lookup (op =) args "offset" of NONE => NONE | SOME v => SOME (int "offset" v))
+           (AList.lookup (op =) args "pattern")
+           (case AList.lookup (op =) args "index" of NONE => NONE | SOME v => SOME (int "index" v)))
     | "fork" =>
         (keys ["repl", "new_repl", "state_idx"];
          Ir.fork (get "repl") (get "new_repl") (get_int "state_idx"))

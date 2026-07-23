@@ -45,6 +45,13 @@ trait MCP_Backend {
      filesystem-tier theory that needs load_theory first -- Thy_Info has
      no entry for those, so there is no context to search). */
   def resolve_context_theory(name: String): Either[String, String]
+  /* repl_init_from_source (plans/repl_init_from_source): create `repl`
+     rooted at the command/segment `theory` resolves the given locator
+     to. Callers have already checked exactly one of offset/pattern/
+     index is set (MCP_Session.Locator.exactly_one) -- this only needs
+     to resolve tier and locator, then dispatch to the right ir fname. */
+  def init_from_source(repl: String, theory: String,
+    offset: Option[Int], pattern: Option[String], index: Option[Int]): MCP_Session.Result
   def mcp_resources(): List[(String, String, String)]
   def mcp_resource_read(uri: String): MCP_Session.Result
   /* scope_add/scope_remove (plans/scope_add, plans/scope_remove, spec
@@ -175,6 +182,45 @@ object MCP_Session {
      matches any run of characters, everything else (including '.') is
      literal -- theory long names use '.' as a qualifier separator, not a
      regex metachar, so it must be escaped like any other literal. */
+  /* shared locator resolution (plans/repl_init_from_source step 2: "PURE
+     where possible ... unit-tests without a prover"), reused by
+     repl_init_from_source's PIDE-snapshot branch and (planned) by
+     goto_definition. Items are pre-extracted (id, offset, length,
+     source) so the same function serves any ordered list of addressable
+     spans -- a Document.Node's commands here, an offset/pattern/index
+     triple picks exactly one by construction once exactly_one has
+     already been checked. */
+  object Locator {
+    case class Item(id: Long, offset: Text.Offset, length: Int, source: String)
+
+    def exactly_one(offset: Option[Int], pattern: Option[String], index: Option[Int]): Either[String, Unit] = {
+      val n = List(offset.isDefined, pattern.isDefined, index.isDefined).count(identity)
+      if (n == 0) Left("exactly one of offset, pattern, index is required")
+      else if (n > 1) Left("exactly one of offset, pattern, index is required (got more than one)")
+      else Right(())
+    }
+
+    def resolve(items: List[Item], offset: Option[Int], pattern: Option[String],
+        index: Option[Int]): Either[String, Long] =
+      (offset, pattern, index) match {
+        case (Some(o), None, None) =>
+          items.find(it => o >= it.offset && o < it.offset + it.length) match {
+            case Some(it) => Right(it.id)
+            case None => Left("offset " + o + " is not inside any command")
+          }
+        case (None, Some(p), None) =>
+          items.find(_.source.contains(p)) match {
+            case Some(it) => Right(it.id)
+            case None => Left("pattern " + quote(p) + " not found")
+          }
+        case (None, None, Some(i)) =>
+          val idx = if (i < 0) items.length + i else i
+          if (idx >= 0 && idx < items.length) Right(items(idx).id)
+          else Left("index " + i + " out of range (0.." + (items.length - 1) + ")")
+        case _ => Left("exactly one of offset, pattern, index is required")
+      }
+  }
+
   def glob_to_regex(pattern: String): scala.util.matching.Regex = {
     val sb = new StringBuilder
     for (c <- pattern) {
@@ -717,6 +763,52 @@ class MCP_Session private(
           "Unknown theory " + quote(name) + " context: filesystem theory, not yet " +
             "loaded (no context to search) -- load_theory first")
       case None => Left("Unknown theory " + quote(name))
+    }
+
+  /* repl_init_from_source: loaded tier has a live PIDE snapshot, so the
+     locator resolves against its command list (MCP_Session.Locator,
+     command ids from Document.Node.command_iterator) and the REPL is
+     created via the "init_from_document" ir fname -- the state AFTER
+     the located command (Ir.init_from_document's eval_result_state).
+     Image tier has no PIDE document; the analogous resolution happens
+     ML-side against Thy_Info.get_theory_segments (MCP_Repl.thy's
+     init_from_segment, dispatcher fname "init_from_segment") since
+     segment text is only ever available in that process. Filesystem
+     tier and unknown names have no context to attach to. */
+  def init_from_source(repl: String, theory: String,
+      offset: Option[Int], pattern: Option[String], index: Option[Int]): MCP_Session.Result =
+    resolve_theory(theory) match {
+      case Some((resolved, LoadedTier)) =>
+        theory_master_dirs.value.get(resolved) match {
+          case Some(master_dir) =>
+            val node_name =
+              session.resources.import_name(
+                Sessions.DRAFT, session.master_directory(master_dir), resolved)
+            val snapshot = session.snapshot(node_name)
+            val items =
+              snapshot.node.command_iterator(Text.Range.full).toList
+                .filter({ case (cmd, _) => cmd.is_proper })
+                .map({ case (cmd, off) => MCP_Session.Locator.Item(cmd.id, off, cmd.length, cmd.source) })
+            MCP_Session.Locator.resolve(items, offset, pattern, index) match {
+              case Right(command_id) =>
+                ir("init_from_document",
+                  List("repl" -> repl, "node_name" -> node_name.node, "command_id" -> command_id.toString))
+              case Left(msg) => MCP_Session.Error("repl_init_from_source: " + msg)
+            }
+          case None =>
+            MCP_Session.Error(quote(resolved) + ": loaded theory (no snapshot available)")
+        }
+      case Some((resolved, ImageTier)) =>
+        ir("init_from_segment",
+          List("repl" -> repl, "theory_name" -> resolved) ++
+            offset.toList.map(o => "offset" -> o.toString) ++
+            pattern.toList.map(p => "pattern" -> p) ++
+            index.toList.map(i => "index" -> i.toString))
+      case Some((_, FileSystemTier(_))) =>
+        MCP_Session.Error(
+          "Unknown theory " + quote(theory) + " context: filesystem theory, not yet " +
+            "loaded (no context to attach to) -- load_theory first")
+      case None => MCP_Session.Error("Unknown theory " + quote(theory))
     }
 
   /* resolve_theory: unified three-tier resolution for filesystem-tier

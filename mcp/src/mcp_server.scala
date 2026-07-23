@@ -218,6 +218,51 @@ object MCP_Server {
           "required" -> List("repl", "theories")),
       annotations = mutating_annotations)
 
+  /* repl_init_from_source (plans/repl_init_from_source): the only
+     wave-1 tool whose scala handler is more than a pass-through -- the
+     client speaks (theory, offset | pattern | index), the exactly-one-
+     locator check happens here (schema can't express it, same shape as
+     find_theorems/find_definition's repl/theory exclusivity), and the
+     resolution itself (tier, then command/segment lookup) is
+     MCP_Session.init_from_source's job. */
+  val repl_init_from_source_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "repl_init_from_source",
+      fname = "",
+      description =
+        "Create a new REPL proof session rooted at a specific command " +
+        "inside an existing theory, so you can step from the middle of " +
+        "a proof or after a definition instead of rebuilding context " +
+        "from imports. Give the theory's long name plus exactly one " +
+        "locator: `offset` (character offset into the source), " +
+        "`pattern` (a literal source substring; its first occurrence " +
+        "picks the command), or `index` (command/segment index). Works " +
+        "on theories loaded with load_theory (PIDE document) and on " +
+        "image theories with recorded segments. The REPL starts at the " +
+        "state AFTER the located command.",
+      input_schema =
+        JSON.Object(
+          "type" -> "object",
+          "properties" -> JSON.Object(
+            "repl" -> JSON.Object("type" -> "string"),
+            "theory" -> JSON.Object("type" -> "string"),
+            "offset" -> JSON.Object("type" -> "integer"),
+            "pattern" -> JSON.Object("type" -> "string"),
+            "index" -> JSON.Object("type" -> "integer")),
+          "required" -> List("repl", "theory")),
+      annotations = mutating_annotations,
+      handler_fn = Some((backend, args) => {
+        val repl = pass_arg(args, "repl")
+        val theory = pass_arg(args, "theory")
+        val offset = args.collectFirst({ case ("offset", v) => v.toInt })
+        val pattern = args.collectFirst({ case ("pattern", v) => v })
+        val index = args.collectFirst({ case ("index", v) => v.toInt })
+        MCP_Session.Locator.exactly_one(offset, pattern, index) match {
+          case Left(msg) => MCP_Session.Error("repl_init_from_source: " + msg)
+          case Right(()) => backend.init_from_source(repl, theory, offset, pattern, index)
+        }
+      }))
+
   val repl_remove_tool: Builtin_Tool =
     Builtin_Tool(
       name = "repl_remove",
@@ -899,7 +944,7 @@ object MCP_Server {
       handler_fn = Some((backend, _) => backend.scope_show()))
 
   val builtins: List[Builtin_Tool] =
-    List(repl_list_tool, repl_init_tool, repl_remove_tool, repl_step_tool, repl_state_tool,
+    List(repl_list_tool, repl_init_tool, repl_init_from_source_tool, repl_remove_tool, repl_step_tool, repl_state_tool,
       repl_show_tool, repl_text_tool, repl_edit_tool, repl_replay_tool, repl_truncate_tool,
       repl_back_tool, repl_merge_tool, repl_timeout_tool, repl_pin_tool, repl_unpin_tool,
       repl_rebase_tool, sledgehammer_tool, find_theorems_tool, find_definition_tool,

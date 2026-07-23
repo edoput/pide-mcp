@@ -94,6 +94,43 @@ record; entries here point at the section that carries the details.
   "Cannot load theory file" for reasons that have nothing to do with
   the code under test.
 
+2026-07-16 (repl_init_from_source: command/segment-target attach lands)
+-------------------------------------------------------------------------
+
+- milestone (wave 1, plan: plans/repl_init_from_source, status DONE):
+  a new builtin tool creates a REPL rooted at a command inside an
+  existing theory instead of a fresh import — {repl, theory, offset? |
+  pattern? | index?}, exactly one locator, handler-enforced (schema
+  can't express it). Loaded (PIDE-checked) theories resolve scala-side
+  over a new shared MCP_Session.Locator (pure Item(id, offset, length,
+  source) + exactly_one/resolve, unit-tested standalone with no
+  backend or prover — the reusable half of "command-target resolution"
+  the spec calls out, meant for goto_definition too) walking Document.
+  Node.command_iterator, then dispatch to the existing
+  "init_from_document" ir fname. Image theories with recorded segments
+  have no PIDE document, so that branch is new ML instead (MCP_Repl.
+  thy's init_from_segment, dispatcher fname "init_from_segment"):
+  offset/pattern/index resolved against Thy_Info.get_theory_segments
+  text with the same semantics (pattern = first segment containing it;
+  offset = position in the segments' concatenated text, valid since
+  segments partition the source contiguously), then forwarded to
+  Ir.init as a literal "thy_name:idx" spec — the segment-text
+  resolution genuinely can't be shared with the scala Locator (segment
+  text only exists in the process that recorded it), so it is a
+  separate implementation of the same shape, not a shared call. open
+  question resolved: AFTER semantics were kept as specced (Ir.init_
+  from_document's existing eval_result_state) — a bridge test attaches
+  at a lemma statement and confirms the created REPL lands in the open
+  goal state ("[proof]"), its own result, not its predecessor's; the
+  mid-proof "attach at the failing command" workflow is client-side
+  (pattern the command before the one to fix). T1/T2 (locator
+  enforcement, pure resolver) are scala-unit (mcp_handler_tests.scala,
+  MCP_Locator_Tests); T3..T5 (inaccessible-command status error,
+  image-tier segment fallback, full loaded-tier attach/step/text/
+  remove chain) are bridge tests against MCP-HOL's own -T MCP_Repl
+  theory, reusing the same recorded-segments fixture the retracted
+  segments-gap tests already established works live.
+
 2026-07-16 (builtin activation unification: implemented)
 ----------------------------------------------------------
 

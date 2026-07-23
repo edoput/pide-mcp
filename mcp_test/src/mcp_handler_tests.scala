@@ -460,6 +460,80 @@ class MCP_Tools_Tests extends MCP_Suite {
     assert(msg.contains("repl") && msg.contains("theory"), "error should name both keys: " + msg)
   }
 
+  /* repl_init_from_source (plans/repl_init_from_source): T1 (exactly-
+     one-locator, handler-side, same shape as find_theorems/
+     find_definition's repl/theory exclusivity) and T2's dispatch half
+     (theory resolves to what Fake_Backend.init_from_source sees) --
+     T2's pure resolver coverage (offset/pattern/index -> id, plus the
+     not-found/out-of-range error cases) is MCP_Locator_Tests below,
+     over MCP_Session.Locator directly (no backend needed at all). */
+  test("tools/list includes repl_init_from_source with repl/theory required; offset/pattern/index optional") {
+    val row = tool_row("repl_init_from_source")
+    assertEquals(required_args(row), List("repl", "theory"))
+    assertEquals(property_type(row, "offset"), "integer")
+    assertEquals(property_type(row, "pattern"), "string")
+    assertEquals(property_type(row, "index"), "integer")
+  }
+
+  test("tools/call repl_init_from_source with no locator is an error naming the rule, backend never called") {
+    val backend = new Fake_Backend
+    val reply =
+      call_tool("repl_init_from_source", JSON.Object("repl" -> "R", "theory" -> "Main"), backend)
+    val msg = assert_is_error(reply)
+    assertEquals(backend.last_ir, None, "nothing should reach the backend when no locator is given")
+    assert(msg.contains("exactly one"), "error should name the exactly-one-locator rule: " + msg)
+  }
+
+  test("tools/call repl_init_from_source with two locators is an error naming the rule, backend never called") {
+    val backend = new Fake_Backend
+    val reply =
+      call_tool("repl_init_from_source",
+        JSON.Object("repl" -> "R", "theory" -> "Main", "offset" -> 0, "pattern" -> "lemma"), backend)
+    val msg = assert_is_error(reply)
+    assertEquals(backend.last_ir, None, "nothing should reach the backend when two locators are given")
+    assert(msg.contains("exactly one"), "error should name the exactly-one-locator rule: " + msg)
+  }
+
+  test("tools/call repl_init_from_source with pattern reaches backend.init_from_source with the resolved locator") {
+    val backend = new Fake_Backend
+    val reply =
+      call_tool("repl_init_from_source",
+        JSON.Object("repl" -> "R", "theory" -> "Main", "pattern" -> "lemma foo"), backend)
+    assert_no_error(reply)
+    assertEquals(backend.last_ir,
+      Some(("init_from_source",
+        List("repl" -> "R", "theory" -> "Main", "locator" -> "pattern=lemma foo"))))
+  }
+
+  test("tools/call repl_init_from_source with offset reaches backend.init_from_source with the resolved locator") {
+    val backend = new Fake_Backend
+    val reply =
+      call_tool("repl_init_from_source",
+        JSON.Object("repl" -> "R", "theory" -> "Main", "offset" -> 42), backend)
+    assert_no_error(reply)
+    assertEquals(backend.last_ir,
+      Some(("init_from_source", List("repl" -> "R", "theory" -> "Main", "locator" -> "offset=42"))))
+  }
+
+  test("tools/call repl_init_from_source with index reaches backend.init_from_source with the resolved locator") {
+    val backend = new Fake_Backend
+    val reply =
+      call_tool("repl_init_from_source",
+        JSON.Object("repl" -> "R", "theory" -> "Main", "index" -> 0), backend)
+    assert_no_error(reply)
+    assertEquals(backend.last_ir,
+      Some(("init_from_source", List("repl" -> "R", "theory" -> "Main", "locator" -> "index=0"))))
+  }
+
+  test("tools/call repl_init_from_source on a filesystem-tier theory is a status error naming load_theory") {
+    val backend = new Fake_Backend
+    val reply =
+      call_tool("repl_init_from_source",
+        JSON.Object("repl" -> "R", "theory" -> "FSOnly", "index" -> 0), backend)
+    val msg = assert_is_error(reply)
+    assert(msg.contains("load_theory"), "error should point at load_theory: " + msg)
+  }
+
   /* wave 2 (plans/load_theory, plans/unload_theory, plans/check_theory):
      these three tools bypass the MCP.ir bridge entirely -- they call
      backend.load_theory/unload_theory/check_theory directly, not
@@ -1366,6 +1440,68 @@ class MCP_Codec_Tests extends MCP_Suite {
     val decoded =
       MCP_Session.decode_args(YXML.parse_body(YXML.Source(MCP_Session.encode_args(args))))
     assertEquals(decoded, args)
+  }
+}
+
+
+/* MCP_Session.Locator (plans/repl_init_from_source step 2): the PURE
+   half of command-target resolution -- offset/pattern/index against a
+   canned command list, no prover needed. Mirrors the shape (and error
+   wording expectations) of the ML-side init_from_segment resolver in
+   MCP_Repl.thy, which the bridge tests exercise instead (segment text
+   is only ever available in the process that recorded it). */
+class MCP_Locator_Tests extends MCP_Suite {
+  private val items =
+    List(
+      MCP_Session.Locator.Item(1L, 0, 10, "lemma foo"),
+      MCP_Session.Locator.Item(2L, 10, 8, "by simp"),
+      MCP_Session.Locator.Item(3L, 18, 15, "lemma bar: True"))
+
+  test("exactly_one: zero locators is an error") {
+    assertEquals(MCP_Session.Locator.exactly_one(None, None, None).isLeft, true)
+  }
+
+  test("exactly_one: two locators is an error") {
+    assertEquals(MCP_Session.Locator.exactly_one(Some(0), Some("x"), None).isLeft, true)
+    assertEquals(MCP_Session.Locator.exactly_one(Some(0), None, Some(0)).isLeft, true)
+    assertEquals(MCP_Session.Locator.exactly_one(None, Some("x"), Some(0)).isLeft, true)
+  }
+
+  test("exactly_one: exactly one locator is accepted") {
+    assertEquals(MCP_Session.Locator.exactly_one(Some(0), None, None), Right(()))
+    assertEquals(MCP_Session.Locator.exactly_one(None, Some("x"), None), Right(()))
+    assertEquals(MCP_Session.Locator.exactly_one(None, None, Some(0)), Right(()))
+  }
+
+  test("resolve: offset picks the containing command") {
+    assertEquals(MCP_Session.Locator.resolve(items, Some(12), None, None), Right(2L))
+    assertEquals(MCP_Session.Locator.resolve(items, Some(0), None, None), Right(1L))
+    assertEquals(MCP_Session.Locator.resolve(items, Some(32), None, None), Right(3L))
+  }
+
+  test("resolve: offset outside every command is an error") {
+    assertEquals(MCP_Session.Locator.resolve(items, Some(1000), None, None).isLeft, true)
+  }
+
+  test("resolve: pattern picks the first command whose source contains it") {
+    assertEquals(MCP_Session.Locator.resolve(items, None, Some("lemma"), None), Right(1L))
+    assertEquals(MCP_Session.Locator.resolve(items, None, Some("simp"), None), Right(2L))
+    assertEquals(MCP_Session.Locator.resolve(items, None, Some("bar"), None), Right(3L))
+  }
+
+  test("resolve: pattern not found is an error") {
+    assertEquals(MCP_Session.Locator.resolve(items, None, Some("no_such_text"), None).isLeft, true)
+  }
+
+  test("resolve: index picks the nth command, negative indices count from the end") {
+    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(0)), Right(1L))
+    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(2)), Right(3L))
+    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(-1)), Right(3L))
+  }
+
+  test("resolve: index out of range is an error") {
+    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(3)).isLeft, true)
+    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(-4)).isLeft, true)
   }
 }
 

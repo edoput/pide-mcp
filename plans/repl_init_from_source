@@ -1,7 +1,57 @@
 repl_init_from_source — implementation plan
 ============================================
 
-status: planned (2026-07-09)
+status: done (2026-07-16). T1..T5 green; see CHANGELOG 2026-07-16
+"repl_init_from_source: command/segment-target attach lands".
+
+implementation notes (2026-07-16)
+----------------------------------
+
+the shared infra (step 1) landed as MCP_Session.Locator (mcp_session.
+scala): a pure Item(id, offset, length, source) + exactly_one/resolve
+pair, unit-tested standalone in MCP_Locator_Tests (no backend, no
+prover) -- goto_definition can reuse exactly_one verbatim and resolve
+if its own locator shape ends up matching.
+
+the loaded (PIDE snapshot) tier resolves scala-side exactly as
+planned: Document.Node.command_iterator gives (Command, Text.Offset)
+pairs, filtered to is_proper, fed to Locator.resolve, then dispatched
+to the existing "init_from_document" ir fname.
+
+the image tier (segments) turned out to need its OWN resolution step,
+not a reuse of the scala Locator: segment text is only ever readable
+in the ML process that recorded it (Thy_Info.get_theory_segments),
+so offset/pattern/index resolution for that branch is new ML
+(MCP_Repl.thy's init_from_segment_index/init_from_segment, dispatcher
+fname "init_from_segment") -- mirrors the scala Locator's semantics
+(pattern = first segment whose source contains it; offset = position
+in the concatenation of segment texts in order, which is internally
+consistent since segments partition the source contiguously) but is
+a separate implementation, not a shared call. Resolved index is
+forwarded to Ir.init as a literal "thy_name:idx" spec, the same path
+a client-given Thy:idx spec already takes.
+
+T1 (exactly-one-locator) and T2 (pure resolver coverage, both
+found/not-found and in/out-of-range) are scala-unit: dispatch tests
+in mcp_handler_tests.scala plus MCP_Locator_Tests. T3..T5 are bridge
+tests in mcp_bridge_tests.scala's MCP_Ir_Bridge_Tests (session
+MCP-HOL, -T MCP_Repl -- the same fixture the retracted segments-gap
+tests already established has real recorded segments live). T3 tests
+the closest publicly-reachable analogue of "unexecuted command": since
+load_theory blocks until the whole document is checked, there is no
+way to reach a genuinely still-evaluating command through this tool's
+own resolver, so T3 instead pins the sibling guard -- an inaccessible
+command_id is a clean status error (Exn.capture's Exn.Exn branch), not
+a hang -- via a node_name extracted from a real create reply rather
+than a guessed naming convention.
+
+open question, resolved: AFTER, not BEFORE. Ir.init_from_document's
+existing eval_result_state behavior was kept as specified; T5's bridge
+test pins it directly (attaching at "lemma L: P" lands in state
+"[proof]", the open goal, confirming the created REPL sees the
+command's OWN result, not its predecessor's). The mid-proof "attach at
+the failing command" workflow (spec step 3) is on the client: pattern
+on the command BEFORE the one you want to fix.
 
 references I1..I5 (plans/repl_list); builds on plans/repl_init.
 
