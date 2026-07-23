@@ -187,6 +187,108 @@ val _ = \<^assert> (s_pin = "error");
 val _ = \<^assert> (String.isSubstring "No REPL" (plain o_pin));
 \<close>
 
+section \<open>repl_fork (plans/repl_fork): T2..T4\<close>
+
+text \<open>T2: index semantics match repl_state's -- 0 is the base state, N
+is the state after step N-1, -1 is the latest (equal to fork at the
+highest index); indices past the end error "out of range". Faithfulness
+of "-1 equals fork at 2" is checked by comparing the STATE each fork
+starts from (a fork's own state_idx=0 is its fork point), not by
+string-comparing the "Forked ... at state N" acknowledgement -- that
+message always echoes the raw argument, so fork@-1 and fork@2 print
+different text even though they land on the same state.\<close>
+ML \<open>
+val (s_init, _) = MCP_Repl.run "init" [("repl", "Tfk2"), ("theories", main)];
+val _ = \<^assert> (s_init = "ok");
+val (s1, _) = MCP_Repl.run "step" [("repl", "Tfk2"), ("isar_text", "lemma tfk2: True")];
+val _ = \<^assert> (s1 = "ok");
+val (s2, _) = MCP_Repl.run "step" [("repl", "Tfk2"), ("isar_text", "by simp")];
+val _ = \<^assert> (s2 = "ok");
+
+val (s_f0, _) = MCP_Repl.run "fork" [("repl", "Tfk2"), ("new_repl", "Tfk2f0"), ("state_idx", "0")];
+val _ = \<^assert> (s_f0 = "ok");
+val (s_f1, _) = MCP_Repl.run "fork" [("repl", "Tfk2"), ("new_repl", "Tfk2f1"), ("state_idx", "1")];
+val _ = \<^assert> (s_f1 = "ok");
+val (s_fneg1, _) =
+  MCP_Repl.run "fork" [("repl", "Tfk2"), ("new_repl", "Tfk2fneg1"), ("state_idx", "-1")];
+val _ = \<^assert> (s_fneg1 = "ok");
+val (s_f2, _) = MCP_Repl.run "fork" [("repl", "Tfk2"), ("new_repl", "Tfk2f2"), ("state_idx", "2")];
+val _ = \<^assert> (s_f2 = "ok");
+
+(*fork@-1 and fork@2 must start from the same state: each fork's own
+  index 0 IS its fork point, so compare repl_state(fork, 0) across the
+  two forks instead of the parent's states directly*)
+val (_, o_state_neg1) = MCP_Repl.run "state" [("repl", "Tfk2fneg1"), ("state_idx", "0")];
+val (_, o_state_2) = MCP_Repl.run "state" [("repl", "Tfk2f2"), ("state_idx", "0")];
+val _ = \<^assert> (plain o_state_neg1 = plain o_state_2);
+
+val (s_f99, o_f99) =
+  MCP_Repl.run "fork" [("repl", "Tfk2"), ("new_repl", "Tfk2f99"), ("state_idx", "99")];
+val _ = \<^assert> (s_f99 = "error");
+val _ = \<^assert> (String.isSubstring "out of range" (plain o_f99));
+
+val (s_rm, _) = MCP_Repl.run "remove" [("repl", "Tfk2")];
+val _ = \<^assert> (s_rm = "ok");
+\<close>
+
+text \<open>T3: a duplicate new_repl id errors and changes nothing; the
+parent's claim is released, so it still steps afterwards.\<close>
+ML \<open>
+val (s_init, _) = MCP_Repl.run "init" [("repl", "Tfk3"), ("theories", main)];
+val _ = \<^assert> (s_init = "ok");
+val (s_dup, _) = MCP_Repl.run "init" [("repl", "Tfk3dup"), ("theories", main)];
+val _ = \<^assert> (s_dup = "ok");
+
+val (s_f, o_f) = MCP_Repl.run "fork" [("repl", "Tfk3"), ("new_repl", "Tfk3dup"), ("state_idx", "0")];
+val _ = \<^assert> (s_f = "error");
+val _ = \<^assert> (String.isSubstring "already exists" (plain o_f));
+
+val (s_step, _) = MCP_Repl.run "step" [("repl", "Tfk3"), ("isar_text", "lemma tfk3: True")];
+val _ = \<^assert> (s_step = "ok");
+
+val (s_rm1, _) = MCP_Repl.run "remove" [("repl", "Tfk3")];
+val _ = \<^assert> (s_rm1 = "ok");
+val (s_rm2, _) = MCP_Repl.run "remove" [("repl", "Tfk3dup")];
+val _ = \<^assert> (s_rm2 = "ok");
+\<close>
+
+text \<open>T4: the fork is independent of its parent in both directions --
+stepping the fork does not change the parent, and stepping the parent
+afterwards does not change the fork.\<close>
+ML \<open>
+val (s_init, _) = MCP_Repl.run "init" [("repl", "Tfk4"), ("theories", main)];
+val _ = \<^assert> (s_init = "ok");
+val (s1, _) = MCP_Repl.run "step" [("repl", "Tfk4"), ("isar_text", "lemma tfk4: True")];
+val _ = \<^assert> (s1 = "ok");
+val (s2, _) = MCP_Repl.run "step" [("repl", "Tfk4"), ("isar_text", "by simp")];
+val _ = \<^assert> (s2 = "ok");
+
+(*fork at the tip -- theory-mode state (the proof is already closed on
+  the parent), so BOTH sides can independently open a fresh lemma below*)
+val (s_f, _) = MCP_Repl.run "fork" [("repl", "Tfk4"), ("new_repl", "Tfk4C"), ("state_idx", "-1")];
+val _ = \<^assert> (s_f = "ok");
+
+val (s_cstep, _) = MCP_Repl.run "step" [("repl", "Tfk4C"), ("isar_text", "lemma tfk4c: True by simp")];
+val _ = \<^assert> (s_cstep = "ok");
+val (_, o_parent_after_child_step) = MCP_Repl.run "show" [("repl", "Tfk4")];
+val _ = \<^assert> (String.isSubstring "2 steps" (plain o_parent_after_child_step));
+
+val (s_pstep, _) = MCP_Repl.run "step" [("repl", "Tfk4"), ("isar_text", "lemma tfk4b: True by simp")];
+val _ = \<^assert> (s_pstep = "ok");
+val (_, o_child_after_parent_step) = MCP_Repl.run "show" [("repl", "Tfk4C")];
+val _ = \<^assert> (String.isSubstring "1 steps" (plain o_child_after_parent_step));
+
+val (s_rm_c, _) = MCP_Repl.run "remove" [("repl", "Tfk4C")];
+val _ = \<^assert> (s_rm_c = "ok");
+val (s_rm, _) = MCP_Repl.run "remove" [("repl", "Tfk4")];
+val _ = \<^assert> (s_rm = "ok");
+\<close>
+
+text \<open>T5: the orphan rule (truncating the parent strictly below the
+fork point removes the fork) is exercised in repl_truncate's own T3
+(further down this theory), which explicitly shares this claim across
+both plans -- no separate assertion is duplicated here.\<close>
+
 section \<open>repl_remove (plans/repl_remove): T1..T3\<close>
 
 text \<open>T1: removing an unknown repl is a status error naming it, not ok;

@@ -199,7 +199,10 @@ def test_repl_builtins():
     the build-a-base workflow: PinA defines a constant and pins, PinB is
     init'd from pin@PinA and proves a lemma using it, repl_rebase on an
     up-to-date REPL replies "already up to date", repl_unpin is blocked
-    while PinB depends on the pin and succeeds once PinB is removed):
+    while PinB depends on the pin and succeeds once PinB is removed), and
+    repl_fork T6 / repl_merge's deferred e2e case (plans/repl_fork,
+    plans/repl_merge -- the fork -> merge round trip repl_merge's own
+    CHANGELOG entry left pending until repl_fork existed as a builtin):
     create, step a lemma, check repl_state -1 shows the same goal
     repl_step just printed, step its proof, repl_edit that step's tactic,
     check repl_show lists both steps, repl_timeout sets a new per-step
@@ -208,7 +211,10 @@ def test_repl_builtins():
     repl_truncate -1 drops the tactic step, repl_step re-does it a
     different way, repl_text shows the new script, repl_back drops it
     again, repl_step re-does it yet another way, repl_text shows that
-    script too, list, remove, and confirm removal via a second list.
+    script too, repl_fork a sub-REPL from the tip, prove a lemma in it,
+    repl_merge it back and confirm the merged step's text and that the
+    fork is gone from repl_list, list, remove, and confirm removal via a
+    second list.
     (repl_edit's failure-atomicity
     promise -- editing with text that fails leaves the old step
     untouched -- is exercised at the ml-unit layer, T2, not here: a
@@ -356,6 +362,46 @@ def test_repl_builtins():
         verdict("repl builtins: tools/call repl_text shows the script after repl_back+step",
                 text == 'lemma "x + y = y + (x::nat)"\nby simp'
                 and not reply["result"].get("isError", False),
+                json.dumps(reply))
+
+        # plans/repl_fork T6 / plans/repl_merge (deferred e2e, T5): fork a
+        # sub-REPL at E2E's tip, prove something in it, then merge it back
+        # -- the fork -> merge round trip that repl_merge's own CHANGELOG
+        # entry left pending until repl_fork existed as a builtin.
+        reply = client.request("tools/call", {"name": "repl_fork",
+            "arguments": {"repl": "E2E", "new_repl": "E2EFork", "state_idx": -1}})
+        content = reply.get("result", {}).get("content", [])
+        verdict("repl builtins: tools/call repl_fork forks E2EFork from E2E",
+                content and "Forked" in content[0].get("text", "")
+                and not reply["result"].get("isError", False),
+                json.dumps(reply))
+
+        reply = client.request("tools/call", {"name": "repl_step",
+            "arguments": {"repl": "E2EFork", "isar_text": "lemma \"(1::nat) + 1 = 2\" by simp"}})
+        verdict("repl builtins: tools/call repl_step proves a lemma in the fork",
+                not reply.get("result", {}).get("isError", False), json.dumps(reply))
+
+        reply = client.request("tools/call",
+            {"name": "repl_merge", "arguments": {"repl": "E2EFork"}})
+        content = reply.get("result", {}).get("content", [])
+        verdict("repl builtins: tools/call repl_merge merges the fork back into E2E",
+                content and "appended as new step" in content[0].get("text", "")
+                and not reply["result"].get("isError", False),
+                json.dumps(reply))
+
+        reply = client.request("tools/call", {"name": "repl_text", "arguments": {"repl": "E2E"}})
+        content = reply.get("result", {}).get("content", [])
+        text = content[0].get("text", "") if content else ""
+        verdict("repl builtins: tools/call repl_text shows the merged fork's step appended",
+                text == 'lemma "x + y = y + (x::nat)"\nby simp\nlemma "(1::nat) + 1 = 2" by simp'
+                and not reply["result"].get("isError", False),
+                json.dumps(reply))
+
+        reply = client.request("tools/call", {"name": "repl_list", "arguments": {}})
+        content = reply.get("result", {}).get("content", [])
+        text = content[0].get("text", "") if content else ""
+        verdict("repl builtins: tools/call repl_list no longer shows the merged fork",
+                "E2EFork" not in text and not reply["result"].get("isError", False),
                 json.dumps(reply))
 
         reply = client.request("tools/call",

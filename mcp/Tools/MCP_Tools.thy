@@ -1240,6 +1240,7 @@ val _ =
       [("repl_list", "List all open REPL proof sessions."),
        ("repl_init", "Create a new REPL proof session that imports the given theories."),
        ("repl_init_from_source", "Create a new REPL rooted at a specific command inside an existing theory."),
+       ("repl_fork", "Fork a sub-REPL from an existing REPL at a given state index."),
        ("repl_remove", "Remove a REPL and all sub-REPLs forked from it."),
        ("repl_step", "Apply one Isar command to a REPL and print the resulting proof state."),
        ("repl_state", "Print the proof/theory state of a REPL at a given index."),

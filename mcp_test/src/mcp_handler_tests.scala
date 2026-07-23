@@ -264,6 +264,19 @@ class MCP_Tools_Tests extends MCP_Suite {
       "init", List("repl" -> "T", "theories" -> "A", "theories" -> "B"))
   }
 
+  test("tools/list includes repl_fork with an integer state_idx") {
+    val row = tool_row("repl_fork")
+    assertEquals(required_args(row), List("repl", "new_repl", "state_idx"))
+    assertEquals(property_type(row, "state_idx"), "integer")
+    assertEquals(annotation(row, "readOnlyHint"), false)
+  }
+
+  test("tools/call repl_fork reaches backend.ir with (\"fork\", [(\"repl\", ...), (\"new_repl\", ...), (\"state_idx\", ...)])") {
+    assert_dispatch("repl_fork",
+      JSON.Object("repl" -> "T", "new_repl" -> "T2", "state_idx" -> -1),
+      "fork", List("repl" -> "T", "new_repl" -> "T2", "state_idx" -> "-1"))
+  }
+
   test("tools/list includes repl_remove with destructiveHint true") {
     val row = tool_row("repl_remove")
     assertEquals(required_args(row), List("repl"))

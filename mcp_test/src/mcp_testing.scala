@@ -90,6 +90,8 @@ class Fake_Backend extends MCP_Backend {
     (fname, args) match {
       case ("repls", Nil) => MCP_Session.Ok("")
       case ("init", ("repl", _) :: _) => MCP_Session.Ok("Created REPL")
+      case ("fork", ("repl", repl) :: ("new_repl", new_repl) :: ("state_idx", idx) :: Nil) =>
+        MCP_Session.Ok("Forked " + quote(new_repl) + " from " + quote(repl) + " at state " + idx)
       case ("remove", ("repl", repl) :: Nil) => MCP_Session.Ok("Removed " + quote(repl))
       case ("step", ("repl", _) :: ("isar_text", text) :: Nil) => MCP_Session.Ok(text)
       case ("state", ("repl", _) :: ("state_idx", idx) :: Nil) => MCP_Session.Ok("state " + idx)

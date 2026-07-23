@@ -261,6 +261,38 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     }
   }
 
+  test("ir bridge: repl_fork T6 -- full chain, init/step/fork/step fork/repls shows both with origins") {
+    with_repl("Fork6") {
+      expect_ok(session.ir("step",
+        List("repl" -> "Fork6", "isar_text" -> "lemma fork6: True")), "step 0 on Fork6")
+
+      expect_ok(session.ir("fork",
+        List("repl" -> "Fork6", "new_repl" -> "Fork6C", "state_idx" -> "-1")),
+        "fork Fork6C from Fork6")
+
+      expect_ok(session.ir("step",
+        List("repl" -> "Fork6C", "isar_text" -> "by simp")), "step 0 on Fork6C")
+
+      val listing = repl_listing()
+      assert(listing.contains("Fork6"), "listing missing parent Fork6: " + listing)
+      assert(listing.contains("Fork6C"), "listing missing fork Fork6C: " + listing)
+      /* ir.ML's origin_str renders a From_REPL origin as `REPL "<parent>"
+         state <i>` (Ir.repls) -- check the child's entry actually names
+         its parent as origin, not just that both ids happen to appear */
+      assert(listing.contains("from REPL \"Fork6\" state"),
+        "Fork6C's listing entry does not mention its parent as origin: " + listing)
+
+      /* the fork's own step never touched the parent -- parent still
+         has exactly its one step */
+      val parent_show = expect_ok(session.ir("show", List("repl" -> "Fork6")),
+        "show Fork6 after stepping the fork")
+      assert(parent_show.contains("1 steps"),
+        "parent Fork6 changed by stepping its fork: " + parent_show)
+
+      expect_ok(session.ir("remove", List("repl" -> "Fork6C")), "remove Fork6C")
+    }
+  }
+
   test("ir bridge: repl_truncate T4 -- a busy orphan blocks the whole truncate, nothing is half-removed") {
     with_repl("Trunc") {
       expect_ok(session.ir("step",

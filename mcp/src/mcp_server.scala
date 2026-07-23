@@ -263,6 +263,28 @@ object MCP_Server {
         }
       }))
 
+  val repl_fork_tool: Builtin_Tool =
+    Builtin_Tool(
+      name = "repl_fork",
+      fname = "fork",
+      description =
+        "Fork a sub-REPL from an existing REPL at the given state index " +
+        "(0 = base state, N = after step N-1, -1 = latest). The fork " +
+        "starts with no steps of its own and inherits the parent's " +
+        "timeout. Use it to try a proof approach without disturbing the " +
+        "parent; bring the result back with repl_merge, or discard it " +
+        "with repl_remove. Truncating or removing the parent past the " +
+        "fork point removes the fork.",
+      input_schema =
+        JSON.Object(
+          "type" -> "object",
+          "properties" -> JSON.Object(
+            "repl" -> JSON.Object("type" -> "string"),
+            "new_repl" -> JSON.Object("type" -> "string"),
+            "state_idx" -> JSON.Object("type" -> "integer")),
+          "required" -> List("repl", "new_repl", "state_idx")),
+      annotations = mutating_annotations)
+
   val repl_remove_tool: Builtin_Tool =
     Builtin_Tool(
       name = "repl_remove",
@@ -944,7 +966,7 @@ object MCP_Server {
       handler_fn = Some((backend, _) => backend.scope_show()))
 
   val builtins: List[Builtin_Tool] =
-    List(repl_list_tool, repl_init_tool, repl_init_from_source_tool, repl_remove_tool, repl_step_tool, repl_state_tool,
+    List(repl_list_tool, repl_init_tool, repl_init_from_source_tool, repl_fork_tool, repl_remove_tool, repl_step_tool, repl_state_tool,
       repl_show_tool, repl_text_tool, repl_edit_tool, repl_replay_tool, repl_truncate_tool,
       repl_back_tool, repl_merge_tool, repl_timeout_tool, repl_pin_tool, repl_unpin_tool,
       repl_rebase_tool, sledgehammer_tool, find_theorems_tool, find_definition_tool,
