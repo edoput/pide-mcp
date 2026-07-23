@@ -2852,3 +2852,86 @@ out of scope (phase 4+)
   (discovery via search_sources + the inventory above suffices)
 - completion api wiring for tool-name arguments (phase-3+ of the
   resources story; same mechanism would serve both)
+- a rendering app for terms — contemplated 2026-07-22, NOT planned;
+  the findings are recorded below so the ground does not have to be
+  resurveyed
+
+
+contemplated: a rendering app for terms (not planned)
+-----------------------------------------------------
+
+the question that prompted this: "symbol recoding at the client edge"
+buys readable unicode (⟹, ‹...›, λ, ∀) in any terminal, but it cannot
+express what jEdit does with font styling — sub/superscripts, bold, and
+the colouring that distinguishes a free variable from a bound one. an
+mcp app could, by shipping html the client renders instead of text.
+recorded as contemplated only. what follows is the survey, not a plan.
+
+the load-bearing unknown, and the reason this is not planned: the
+mechanism is an mcp UI resource (a `ui://` resource whose html the
+client renders in a sandboxed iframe, linked from a tool via `_meta`).
+that is a moving extension to mcp and none of the survey below matters
+unless the target client actually renders one. claude code is a
+terminal client and does not; claude desktop / web are the candidates.
+VERIFY THAT FIRST against the current spec — everything else here
+answers only "how would we feed it".
+
+what is already on the wire. MCP_Repl.fork_run wraps every dispatch in
+Print_Mode.with_modes [Print_Mode.PIDE], and the MCP.ir protocol
+command's own comment already states the intended fork: "Output is YXML
+(PIDE print mode); Scala strips or interprets the markup". the scala
+side currently takes the STRIPS branch — MCP_Session's ir_result does
+XML.content(YXML.parse_body(...)) and throws the markup away. the app
+is the "interprets" branch; the extension point was designed in and is
+simply unexercised. no ml change is needed to get at it.
+
+but the markup covers terms, not chrome. output that goes through
+Pretty / Find_Theorems.pretty_thm carries the semantic markup (Markup
+FREE / BOUND / VAR / SKOLEM / TFREE / TVAR / CONSTANT / ENTITY /
+TYPING, in Pure/PIDE/markup.scala). output that ir hand-assembles as
+plain strings — the find_theorems tally, find_definition's "kind: /
+name: / position:" header, the repl_list column header — carries none.
+those render as plain text. giving THEM semantic markup is real ml
+work; the terms are free. this is the honest answer to "how much can
+be done at the ml level": for terms, none; for chrome, all of it.
+
+how to render html from isabelle (the part worth not rediscovering):
+
+- Pure/Build/browser_info.scala, make_html(elements, xml) — the
+  existing converter from a marked-up XML.Body to html: html_class
+  wraps markup as span/div, entity kinds become entity_def/entity_ref
+  links. it hangs off a build-oriented Browser_Info context and its
+  cross-reference resolution wants session deps we will not have, so
+  COPY the span/entity logic (~40 lines); do not expect to call it
+  standalone.
+- Pure/PIDE/rendering.scala — the shared jEdit/vscode rendering tables:
+  entity_elements, tooltip_elements, foreground / text_color. these are
+  the palette and the element filters; they map markup to the classes a
+  stylesheet would carry.
+- fonts: NOT needed. of the 512 entries in etc/symbols, 440 carry a
+  code: field, 410 distinct code points, and ZERO of them land in the
+  unicode private use area — every glyph is real unicode that a system
+  font can show. the Isabelle DejaVu fonts are a jEdit convenience, not
+  a requirement for html.
+
+two tiers, and they are not the same size:
+
+- tier 1, interpret what is already there: stop calling XML.content,
+  keep the body, convert the markup. buys colouring, type tooltips,
+  click-to-definition. line breaks stay baked in at the margin ml
+  formatted with, so the pane does not reflow.
+- tier 2, responsive: switch the ir output path from writeln-a-
+  formatted-string to Pretty.symbolic_output (Pure/General/pretty.ML),
+  which emits the UNFORMATTED pretty tree with block/break markup
+  intact; Pretty.formatted(body, margin, recode) on the scala side
+  (Pure/General/pretty.scala) then re-wraps at the client's width —
+  exactly how jEdit and vscode reflow. this is a real change to how ml
+  produces and captures output (symbolic_output returns Bytes.T, not a
+  writeln string), not merely "the server stops stripping".
+
+coupling with the recoding boundary, so the two are not designed apart:
+Symbol.decode at text_result decodes a FLATTENED string. an app path
+never flattens, so it must apply the recode to the text nodes inside
+the body instead — both make_html-style conversion and Pretty.formatted
+take a recode parameter for exactly this. wire it there or the app
+silently reintroduces raw symbol notation.
