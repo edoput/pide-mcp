@@ -82,7 +82,7 @@ wave 1 — repl lifecycle + stepping + proof search (MCP.ir bridge):
   - [x] repl_list              plans/repl_list   (pilot: full template)
   - [x] repl_init              plans/repl_init
   - [x] repl_init_from_source  plans/repl_init_from_source
-  - [ ] repl_fork              plans/repl_fork
+  - [x] repl_fork              plans/repl_fork
   - [x] repl_remove            plans/repl_remove
   - [x] repl_step              plans/repl_step
   - [x] repl_state             plans/repl_state
@@ -151,7 +151,7 @@ resource-read tool mirrors (DECIDED 2026-07-15, planned; wave TBD —
   (repl/{id} and /text need no mirror — repl_show/repl_text already are.)
 
 server lifecycle (infrastructure, no tool of its own):
-  - [ ] readiness              plans/readiness  (serve stdin before the
+  - [x] readiness              plans/readiness  (serve stdin before the
         session is built; Not_Ready/Ready/Failed state, prover-backed
         tools error until ready. decided 2026-07-21, spec "server
         startup and readiness")

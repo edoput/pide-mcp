@@ -1,7 +1,7 @@
 repl_fork — implementation plan
 ================================
 
-status: planned (2026-07-09)
+status: IMPLEMENTED (2026-07-23)
 
 references I1..I5 (plans/repl_list). pure pass-through: the dispatcher
 entry exists ("fork" => keys ["repl", "new_repl", "state_idx"]), the

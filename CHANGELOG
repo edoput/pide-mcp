@@ -4,6 +4,60 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-23 (repl_fork implemented: sub-REPL forking lands)
+-----------------------------------------------------------
+
+- done: repl_fork implemented (plans/repl_fork, wave 1) -- builtin
+  table row (fname "fork", pass-through {repl, new_repl, state_idx} ->
+  backend.ir("fork", [(repl,...),(new_repl,...),(state_idx,...)]));
+  mutating, not destructive ({mutating_annotations}, matching the
+  plan's annotations exactly -- forking creates, it does not destroy,
+  so it does not join repl_remove/repl_truncate/repl_back/repl_merge's
+  destructiveHint bucket). The engine (ir.ML's `fork`) and the ML
+  dispatcher case already existed before this tool shipped -- both
+  repl_truncate and repl_merge's own tests already called "fork" as a
+  fixture to build sub-REPLs, so only the builtin row, its scala/ML
+  registry mirror, and repl_fork's OWN dedicated tests were missing.
+  T2 pinned index semantics matching repl_state's (0 = base, N = after
+  step N-1, -1 = latest, out of range errors) -- verified fork@-1 and
+  fork@2 land on the identical state by comparing each fork's own
+  state_idx=0 (its fork point), not by string-comparing the
+  acknowledgement text, since that always echoes the raw argument
+  (fork@-1 prints "at state ~1", SML's tilde-for-negative spelling, the
+  same wart already pinned for repl_timeout). T3 confirmed a duplicate
+  new_repl id errors "already exists" and releases the parent's claim
+  (it still steps afterwards). T4 confirmed independence in both
+  directions: stepping the fork does not change the parent's step
+  count and vice versa (forked at a theory-mode state so both sides
+  can open a fresh lemma independently). T5 (orphan-on-truncate) is
+  NOT duplicated here -- repl_truncate's own T3 already asserts it and
+  cross-references plans/repl_fork T5 by name. T6 (bridge): the full
+  init/step/fork/step-fork/repls chain against a live session, checking
+  both ids appear and the fork's listing entry names its parent as
+  origin (`from REPL "<parent>" state N`, ir.ML's origin_str). Also
+  closed the deferral repl_merge's own CHANGELOG entry left open: a
+  fork -> merge round trip is now in test_mcp.py's test_repl_builtins
+  (fork a sub-REPL from the tip, prove a lemma in it, merge it back,
+  confirm the merged text and that repl_list no longer shows the
+  fork) -- repl_merge itself still has no other e2e coverage, so this
+  is the one case that needed repl_fork to exist first.
+  FOUND (unrelated pre-existing regression, not part of this change):
+  e4b21f78's jar-history purge (aimed at the bundled
+  Isabelle2025-2_linux distribution) also swept up the SIX vendored
+  test jars under mcp_test/lib/ext/ (the munit stack: munit,
+  munit-diff, junit-interface, junit, hamcrest-core, test-interface),
+  which are build inputs mcp_test/etc/build.props requires and were
+  never meant to be removed -- isabelle scala_build failed outright
+  with "Bad input file" until they were restored to the working tree
+  from the last commit that had them (4e878a43's parent). Left
+  untracked per this repo's "only commit source files" rule; flagged
+  here for a deliberate fix (re-add in their own commit, or
+  .gitignore + a documented fetch step) rather than silently repaired.
+  ml unit: MCP_Repl_Tests.thy; scala unit + tools/call wiring +
+  Fake_Backend fork case: isabelle mcp_test; bridge (T6): isabelle
+  mcp_test -b; e2e: test_mcp.py's test_repl_builtins. all four layers
+  green.
+
 2026-07-22 (symbol recoding at the client edge: the model sees ⟹, not \<Longrightarrow>)
 ----------------------------------------------------------------------------------------
 
