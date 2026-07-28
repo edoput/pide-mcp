@@ -534,6 +534,29 @@ Cancellation (deferred, below) likewise applies to both once both fork.
   their own feature, comparable in size to the param-schema work and
   wanting the same ptyp machinery.
 
+  AMENDED 2026-07-28, see "parameterised resources" below. The
+  PARAMETERS half is now decided (read grows an argument list, params
+  reuse the tool machinery, the uri clause is published metadata rather
+  than a routing mechanism). Three corrections to the paragraph above:
+
+  - "\<open>repls\<close> needs dynamic registration" is WRONG and superseded. There
+    was never a case for per-repl registry entries: isabelle://repl/{id}
+    is ONE templated resource that needs to be askable which instances
+    exist. That is an ENUMERATION question and it is PENDING — deferred
+    until a client other than claude code has been observed consuming
+    resources/list. So MCP.ir cannot retire in this wave regardless of
+    the parameters work.
+  - the two init_from_* do NOT collapse into a single command: they
+    carry different arguments (init_from_document takes node_name +
+    command_id from the PIDE locator, init_from_segment takes
+    theory_name + the offset/pattern/index triple). Two handoffs, not
+    one.
+  - the dispatcher has TEN live cases, not the eight fnames Isabelle/
+    Scala calls: \<open>theories\<close> and \<open>load_theory\<close> (MCP_Repl.thy) have no
+    builtin row and no Isabelle/Scala call site but do have live test
+    callers. Retiring MCP.ir must dispose of them too — delete the
+    cases or move their callers — so "shrunk to 8" understates it.
+
 argument encoding (decided 2026-07-09): named args in yxml, not
 positional strings. yxml_args is one chunk holding an association list
 of (key, value) string pairs — XML.Encode.list (XML.Encode.pair string
@@ -2551,6 +2574,140 @@ keeping the drift gate green until the last one leaves. Everything up to
 and including async is independently reversible.
 
 plans: plans/param_schema_v2, plans/ml_builtin_migration.
+
+parameterised resources (decided 2026-07-28; enumeration PENDING)
+------------------------------------------------------------------
+
+the driver is USER EXTENSIBILITY, not MCP.ir cleanup. \<open>mcp_resource\<close>
+today produces exactly one shape —
+
+    type resource = {description: string, read: Proof.context -> string}
+
+— zero arguments, one concrete uri \<open>isabelle://named/<declname>\<close>. every
+INTERESTING resource, the ones carrying {name}, {id}, ?lines=,
+?start=&count=, is instead a hand-written row in
+\<open>MCP_Server.resource_templates\<close>: seven entries with hard-coded uri
+shapes and descriptions, advertised (its own comment admits) before
+their backing exists, and with NO drift gate — unlike the builtin
+mirror list, nothing checks them against reality. a user therefore
+cannot write a resource that takes an argument at all.
+
+parameterising MCP_Resource makes \<open>mcp_resource\<close> a real extension point
+and makes resources/templates/list a GENERATED listing. retiring MCP.ir
+falls out of that; it is not the goal. it also completes the symmetry
+"builtins as ML tools" begins — with ML tools AND ML resources the whole
+repl surface (engine, tool wrapper, resource view) is replaceable by the
+user in one language.
+
+DEPENDS on the param-schema work landing first: this reuses ptyp,
+check_value and validate wholesale rather than growing a second copy.
+
+decision 1: resources reuse the TOOL parameter machinery verbatim. the
+read function grows an argument list and the entry grows params:
+
+    type resource =
+      {description: string,
+       uri: string,            (* rfc 6570 template; see decision 2 *)
+       params: param list,     (* the SAME param/ptyp as MCP_Tool *)
+       read: Proof.context -> (string * string) list -> string}
+
+the already-specced query parameters land exactly on that universe and
+motivated it: \<open>?kind=type&prefix=foo\<close> is enum plus an optional string,
+\<open>?start=40&count=20\<close> is nat with defaults, \<open>?lines=120-180\<close> is an
+optional string. one validate, one check_value, one wire encoder serving
+both MCP.tools and MCP.resources. in isar:
+
+    mcp_resource goal_hints
+      uri \<open>isabelle://named/goal_hints{?depth}\<close>
+      params (depth :: nat = 3 \<open>search depth\<close>)
+      = \<open>fn ctxt => fn args => ...\<close>
+
+ASYMMETRY WITH TOOLS, pinned because someone will later try to "fix" it:
+an mcp Resource/ResourceTemplate object has NO inputSchema — only
+uriTemplate, name, description, mimeType, annotations. a resource's
+params therefore never reach the client as a schema. their client-facing
+product is the uriTemplate string plus generated description prose;
+their runtime product is validation. do NOT emit a schema for resources.
+
+COMPATIBILITY, stated because a plan author will otherwise assume one
+half: the ISAR SURFACE is preserved — a bare \<open>mcp_resource my_simps\<close>
+keeps working unchanged (see the default in decision 2). the ML LAYER is
+NOT — the record gains two fields and read changes arity, so every
+MCP_Resource.declare site and MCP_Protocol.read_resource change, the
+MCP.read_resource protocol command grows a fourth argument holding the
+yxml args chunk (mirroring MCP.run_tool, which it already mirrors in
+shape: uuid-keyed, promise-backed), and MCP_Session.mcp_resources'
+3-tuple widens, which reaches Fake_Backend.
+
+decision 2: the uri clause is declared METADATA, not routing. ML
+resources are addressed by (name, args) — \<open>MCP.read_resource id
+designation name args\<close> — and never by template matching on the ML side.
+the uri string is what gets PUBLISHED, not what gets PARSED.
+
+rationale: routing cannot move to ML even in principle for the theory
+family. three of the five image-tier reads back \<open>isabelle://theory/...\<close>,
+and mcp_resource_read must extract {name} and resolve image vs
+filesystem vs loaded BEFORE it can know whether ML is the right target
+at all; tier resolution rests on Sessions.load_structure / deps / Store,
+which has no ML equivalent. Isabelle/Scala parses the uri regardless, so
+a template matcher in both languages would buy nothing.
+
+namespace: FREE, with reserved prefixes. \<open>theory/\<close>, \<open>repl/\<close>, \<open>session\<close>
+and bare \<open>named/{name}\<close> belong to the server-shipped resources; anything
+else is the user's. allowing declarations outside \<open>named/\<close> is what later
+lets \<open>repl/{id}\<close> and \<open>theory/{name}\<close> themselves become ML declarations
+rather than Isabelle/Scala rows.
+
+default: no uri clause and no params yields \<open>isabelle://named/<declname>\<close>
+— exactly today's behaviour, so existing declarations are untouched.
+
+three registration-time checks, all cheap, all free drift gates:
+- the template's variable set equals the param name set (a mismatch
+  errors at the declaration, not at read time);
+- path variables ({name}) must be required params, query variables
+  ({?lines}) optional or defaulted — every specced case already
+  satisfies this;
+- no two registered resources declare the same template.
+
+ROUTING GAP, recorded as a gap and NOT as a decision: mcp_resource_read
+is a flat regex table (repl_uri, named_uri, theory_source_uri, ...)
+ending in \<open>case _ => "Unknown MCP resource"\<close>. there is no fallback arm
+offering an unmatched uri to ML. so a user template outside the reserved
+prefixes PUBLISHES in resources/templates/list but does NOT read — the
+free namespace is declarable before it is routable. closing it means
+Isabelle/Scala growing a fallback that resolves an unmatched uri to a
+registry entry, which necessarily gives ML some template matching after
+all and so partly walks back "metadata only" for the user namespace.
+that mechanism is undecided; do not let a plan invent it.
+
+PENDING (decision 3, deferred 2026-07-28): enumeration — how a templated
+resource reports which instances currently exist, so resources/list can
+show \<open>isabelle://repl/{id}\<close> concretely per live repl as the default
+scope requires. NOT "dynamic registration": we never wanted per-repl
+registry entries, \<open>isabelle://repl/{id}\<close> is ONE templated resource that
+needs to be askable for its instances. the candidate is an optional
+enumerator, dual to read, returning either concrete uris (ML formats) or
+argument tuples (Isabelle/Scala expands); it stays OUT of the record
+above until decided, so nothing builds a field whose semantics are
+unagreed. deferred deliberately: the answer depends on how a real client
+other than claude code consumes resources/list, which is unmeasured.
+
+standing defect to carry into that decision, true TODAY and independent
+of it: active_repl_ids (mcp_session.scala) populates the repl entries by
+REGEX-SCRAPING human prose — Ir.repls() formats one line per repl for a
+person and Isabelle/Scala parses the id back out with
+\<open>\A\s*(\S+) \(.*\)\z\<close>, dropping non-matching lines via collect. reformat
+that line in ir.ML and every repl silently vanishes from the listing,
+with no error anywhere.
+
+drift hazard the decision inherits: once ML declares templates and
+Isabelle/Scala routes them, the two can disagree — enumerated uris that
+do not route. same class as the builtin drift gate and wanting the same
+answer, a bridge test round-tripping every enumerated uri through
+mcp_resource_read.
+
+plan: unwritten as of 2026-07-28. the read half (decisions 1 and 2) is
+plannable now; the listing half waits on decision 3.
 
 the parameter spec language (params clause) and schema derivation
 ------------------------------------------------------------------

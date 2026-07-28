@@ -4,6 +4,69 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-28 (spec: parameterised resources; enumeration deferred)
+-------------------------------------------------------------------
+
+- decided: MCP_Resource grows PARAMETERS. Its read function becomes
+  `Proof.context -> (string * string) list -> string` and the entry
+  gains `uri` and `params`, reusing the TOOL parameter machinery
+  (ptyp, check_value, validate) verbatim rather than growing a second
+  copy -- the already-specced query parameters land exactly on it
+  (?kind=type&prefix=foo is enum + optional string, ?start=&count= is
+  nat with defaults, ?lines= is an optional string). Depends on the
+  param-schema work landing first. Spec: phase 3 "parameterised
+  resources".
+- the DRIVER is user extensibility, not MCP.ir cleanup. Today
+  mcp_resource can only produce a zero-argument resource at one
+  concrete uri; every interesting resource is a hand-written row in
+  MCP_Server.resource_templates -- seven entries, hard-coded uri
+  shapes and descriptions, advertised before their backing exists,
+  and with NO drift gate. A user cannot write a resource that takes
+  an argument at all. Parameterisation makes mcp_resource a real
+  extension point and resources/templates/list a GENERATED listing;
+  MCP.ir's retirement falls out of that rather than motivating it.
+- pinned: an mcp Resource/ResourceTemplate has NO inputSchema, so
+  resource params never reach the client as a schema -- their
+  client-facing product is the uriTemplate plus generated description
+  prose, their runtime product is validation. Do not emit a schema
+  for resources.
+- decided: the `uri` clause is declared METADATA, not routing. ML
+  resources are addressed by (name, args); Isabelle/Scala keeps the
+  uri parsing, because for the theory family it must resolve the tier
+  (image / filesystem / loaded) BEFORE it can know whether ML is the
+  right target, and tier resolution rests on Sessions.load_structure /
+  deps / Store with no ML equivalent. Namespace is FREE with reserved
+  prefixes (theory/, repl/, session, bare named/{name} belong to the
+  server); a bare `mcp_resource my_simps` still yields
+  isabelle://named/my_simps, so the isar surface is unchanged even
+  though the ML record and MCP.read_resource are not.
+- KNOWN GAP recorded rather than solved: mcp_resource_read is a flat
+  regex table ending in `case _ => "Unknown MCP resource"`, with no
+  fallback offering an unmatched uri to ML. A user template outside
+  the reserved prefixes therefore PUBLISHES but does not READ -- the
+  free namespace is declarable before it is routable. Closing it
+  needs a mechanism that partly walks back "metadata only"; the spec
+  forbids a plan inventing one.
+- DEFERRED: enumeration (how a templated resource reports its live
+  instances, so resources/list can show isabelle://repl/{id} per
+  repl). The spec's old "repls needs dynamic registration" wording is
+  withdrawn as wrong -- there was never a case for per-repl registry
+  entries; it is one templated resource that must be askable for its
+  instances. Left open until a client other than claude code has been
+  observed consuming resources/list. The candidate enumerator stays
+  OUT of the specced record so nothing builds an unagreed field.
+  Consequence: MCP.ir cannot retire in this wave.
+- standing defect recorded with that deferral: active_repl_ids
+  populates the repl listing by REGEX-SCRAPING Ir.repls()' human
+  prose, dropping non-matching lines silently -- reformat that line
+  in ir.ML and every repl vanishes from resources/list with no error.
+- corrections to the "retiring MCP.ir" paragraph while amending it:
+  the two init_from_* do NOT collapse into one command (different
+  arguments -- node_name+command_id vs theory_name+offset/pattern/
+  index), and the dispatcher has TEN live cases, not the eight fnames
+  Isabelle/Scala calls (`theories` and `load_theory` have test-only
+  callers), so "shrunk to 8" understated the retirement work.
+
 2026-07-28 (spec: builtins as ML tools; param schema v2)
 ----------------------------------------------------------
 
