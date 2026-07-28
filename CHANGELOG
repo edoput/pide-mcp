@@ -4,6 +4,116 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-07-28 (spec: builtins as ML tools; param schema v2)
+----------------------------------------------------------
+
+- decided: the ~20 builtins whose logic is ALREADY ML (the repl_*
+  family, sledgehammer, find_theorems, find_definition) move into the
+  ML registry, so each is declared ONCE instead of three times -- a
+  Builtin_Tool row in mcp_server.scala, a dispatcher case in
+  MCP_Repl.thy whose `keys [...]` list is a hand-written untyped
+  schema, and a mirror row in MCP_Tools.thy. The description is
+  written twice, the argument names three times, and nothing checks
+  the three against each other. Spec: phase 3 "builtins as ML tools".
+  Staying Isabelle/Scala: load_theory/unload_theory/check_theory,
+  list_sessions/list_theories/search_sources, doc_list/doc_read,
+  scope_*/tool_scope_*, and repl_init_from_source (its locator needs a
+  live PIDE snapshot, so it SPLITS rather than moves). Plans:
+  plans/param_schema_v2, plans/ml_builtin_migration.
+- the guardrails from "builtin tools in the activation layer"
+  (2026-07-13) are SCOPED, not overturned: mirror rows and the DRIFT
+  GATE cease to exist for a moved tool (one substrate, nothing to keep
+  in sync); ASYMMETRIC CALLABILITY DISSOLVES BY ITS OWN TERMS, since
+  its stated rationale is that builtins "wrap scala capabilities with
+  NO alternate route (ML cannot call into scala)" and that premise is
+  false for a tool already written in ML -- the rule's own ML clause
+  then governs, so a moved tool is del'able-and-uncallable like any
+  ML tool; the AVAILABILITY FLOOR narrows, so a broken heap or
+  unresolvable designation drops the moved tools from tools/list
+  rather than falling back to a scala row (a behaviour change, called
+  out rather than discovered).
+- MCP.run_tool becomes ASYNC, matching MCP.ir. ML-only change:
+  MCP_Session.ml_run is already UUID-keyed and promise-based, the same
+  shape ir() uses, so only the ML handler changes (fork, post by id).
+  BUFFERS STAY AT ONE LAYER -- MCP.ir's fork_run registers one because
+  the Ir.* functions are writeln-style, and run_tool's fork must NOT,
+  since each moved tool captures for itself via MCP_Output.captured
+  and find_buffer's group-ancestry walk would otherwise be ambiguous.
+  Tool execution goes serial -> concurrent (registry is Synchronized,
+  contexts immutable, MCP.ir has forked since phase 2).
+- MCP.ir SURVIVES at 8 fnames (down from ~28), as the
+  Isabelle/Scala -> ML call path rather than the tool bridge: repls,
+  show/text, source/source_map/entities (image tier only),
+  init_from_document/init_from_segment. show/text/repls end up with
+  two ML entry points -- DELIBERATELY, since routing the resource read
+  through MCP.run_tool would put it behind MCP_Tool.is_active and
+  `declare [[mcp_tools del: repl_show]]` would then break
+  isabelle://repl/{id}, which the resource surface's own scope
+  mechanism must govern instead. Retiring MCP.ir needs PARAMETERISED
+  MCP_Resource (its read is `Proof.context -> string`, with nowhere to
+  put a template's {id}) plus dynamic registration for repls, and is
+  explicitly a later wave; it would not remove the
+  Isabelle/Scala -> ML path anyway, since mcp_resource_read is a
+  three-tier router whose filesystem tier reads off disk for theories
+  Thy_Info cannot see.
+- param schema v2 (spec: "the parameter spec language"): enum and
+  list-of-scalar were ALREADY SPECCED and merely DEFERRED at
+  implementation time (2026-07-11), so landing them closes existing
+  debt rather than adding design. Newly recorded: source/args folded
+  back into the design section's type universe (they landed
+  2026-07-11 but were only ever written down in the implementation
+  log); the (optional) modifier recorded as an unimplemented gap --
+  param_entry derives `required = is_none default`, so
+  optional-WITHOUT-default is unreachable from isar even though the
+  data model supports it, which gates find_theorems (repl/theory),
+  find_definition (kind/repl/theory) and repl_init_from_source
+  (offset/pattern/index).
+- the wire's param TYPE becomes a VARIANT (scalars nullary, enum
+  carrying its items, list its element type) rather than a flat
+  string, so the universe can grow without another positional field
+  and nested types compose. Supersedes the 6-field "enum values"
+  tuple specced originally and never built; the shipped wire is 5
+  fields with a flat string type.
+- ANNOTATIONS become a DECLARED per-tool field: an optional record of
+  the four MCP hints, NOT a closed enum -- the field has no nesting
+  and no validation logic, so a variant would buy curation rather
+  than type safety (contrast the type universe, where exhaustiveness
+  and list nesting earn it). The five buckets survive as named ML
+  constants. With no (annotations ...) clause the form tag supplies
+  hints only where it PROVES them (diag_wrap -> readOnly+idempotent,
+  checked at registration by Keyword.is_diag), and
+  MCP_Tool.default_annotations covers the rest: open_world = false
+  (true by construction of every tool this server serves), the other
+  three unset so the CLIENT's spec defaults stand. Recorded because
+  omission is NOT neutral -- MCP defaults destructiveHint and
+  openWorldHint to TRUE, so silence is a claim, not its absence.
+- CROSS-PARAM CONSTRAINTS: one constructor, Exactly_One, driving
+  exactly two things -- the runtime check in validate (the
+  enforcement) and a generated sentence appended to the description.
+  NO json-schema oneOf: client support is patchy, the encoding over
+  required-sets is easy to get subtly wrong, and the audience for a
+  tool schema here is a model, which reads the description. Retires
+  the Locator.exactly_one (scala) / init_from_segment_index (ML)
+  duplication, which today has two error strings and nothing checking
+  they agree. At_Most_One DEFERRED: declaring it on
+  find_theorems/find_definition would turn today's silent
+  theory-wins-over-repl precedence into an error on two shipped
+  tools; the precedence is written down so it is a known gap rather
+  than an undocumented one.
+- superseded in part: "builtins are NOT displaced" (phase 3 payoff
+  inventory) -- find_theorems/sledgehammer do move, but under the new
+  section and for an unrelated reason (one declaration replacing three
+  specifications, not the diag-wrap payoff). The isar-parity
+  acceptance test survives unchanged; after the move the builtin IS
+  the isar-derived thing, so parity becomes definitional.
+- interface preservation is STRUCTURAL, not byte-exact: param names,
+  json types, required sets and defaults reproduce exactly, but
+  ml_tool_schema appends a type contract to each property description
+  ("source" -> " (verbatim source text)" and so on) that the
+  hand-written builtin schemas have no equivalent of. Judged an
+  improvement and accepted; recorded because it is not a no-diff
+  move.
+
 2026-07-23 (repl_fork implemented: sub-REPL forking lands)
 -----------------------------------------------------------
 
