@@ -1,0 +1,729 @@
+builtins as ML tools — implementation plan
+===========================================
+
+status: PLANNED (decided 2026-07-28, commit 40d30471; spec: phase 3
+"builtins as ML tools (decided 2026-07-28)", the AMENDED block in "ml
+bridge: async protocol commands", the SCOPED block in "builtin tools in
+the activation layer"). no new mcp tool — a feature plan like
+plans/builtin_activation and plans/mcp_tool_registry: the ~20 builtins
+whose logic is already ML stop being declared three times and become
+ordinary ML registry entries.
+
+DEPENDS ON plans/param_schema_v2 (written in parallel, must LAND FIRST).
+this plan does not restate or duplicate its steps. the capabilities it
+must deliver before a single tool moves are listed as D1..D5 under
+"dependency on param_schema_v2" below; if any is missing the
+corresponding wave stalls, not the whole migration.
+
+BLOCKED on one spec decision before wave 1 can be scheduled: the repl
+designation gap, "blocking open question" below. steps 1..5 (the
+infrastructure) are unaffected and independently reversible.
+
+the decision, restated for implementation
+------------------------------------------
+
+ONE declaration instead of three. repl_replay today exists as a
+Builtin_Tool row (mcp_server.scala:404, description + json inputSchema +
+annotations), as a dispatcher case (MCP_Repl.thy:362,
+\<open>| "replay" => (keys ["repl"]; Ir.replay (get "repl"))\<close> — an untyped
+hand-written schema, since that keys list IS the required-argument
+declaration), and as a mirror row (MCP_Tools.thy:1250). after the move
+it exists once, in MCP_Repl.thy:
+
+  mcp_tool "repl_replay" = capture \<open>fn _ => fn args => Ir.replay (arg args "repl")\<close>
+    (description \<open>Re-execute all stale steps in a REPL, in order ...\<close>)
+    (params repl :: string \<open>the REPL id\<close>)
+    (annotations idempotent_mutating)
+
+MOVABLE (20 tools, verified against mcp_server.scala's `builtins` list
+at :968): repl_list repl_init repl_fork repl_remove repl_step
+repl_state repl_show repl_text repl_edit repl_replay repl_truncate
+repl_back repl_merge repl_timeout repl_pin repl_unpin repl_rebase
+sledgehammer find_theorems find_definition.
+
+STAYING Isabelle/Scala (15 rows, so the remainder does NOT empty and
+the drift gate SHRINKS rather than deletes): load_theory unload_theory
+check_theory list_sessions list_theories search_sources doc_list
+doc_read scope_add scope_remove scope_show tool_scope_show
+tool_scope_set tool_scope_include, and repl_init_from_source — which
+SPLITS: the tool row stays, its two ML branches keep reaching
+MCP.ir("init_from_document" / "init_from_segment").
+
+spec refinement: find_theorems and find_definition are listed as MOVABLE
+in the spec but are SPLIT CANDIDATES, not clean moves — see "spec
+tensions" and wave 6.
+
+blocking open question: the repl designation
+---------------------------------------------
+
+a tool declared in MCP_Repl.thy is INVISIBLE and UNCALLABLE under a repl
+designation, and the availability floor does not rescue it after the
+move.
+
+  mechanism: Ir builds a repl's base theory with
+  \<open>Theory.begin_theory (id, Position.none) thys\<close> (ir.ML:446) over the
+  repl's OWN imports — typically just Main. MCP_Repl is not among them,
+  so \<open>Ir.context_of\<close> (ir.ML:392), which
+  MCP_Protocol.designated_context resolves a "repl:ID" designation to
+  (MCP_Repl.thy:27, MCP_Tools.thy:979-992), carries none of MCP_Repl's
+  registry data. both halves break, not just listing: tools_body serves
+  no row, `exposure` over the empty row set yields an empty map, the raw
+  name reaches ml_run, and MCP_Protocol.run_tool's \<open>MCP_Tool.get\<close>
+  (MCP_Tools.thy:1077) fails against the repl context.
+
+  why it does not bite today: the mirror rows are equally invisible
+  there, but an empty builtins section IS the availability floor — scala
+  serves the full builtin table (mcp_server.scala:1363). after the move
+  there is no table row to fall back to.
+
+  why the spec's SCOPED block does not cover it: that block narrows the
+  floor for "a broken heap or an unresolvable designation". a repl
+  designation is neither — it resolves fine, the repl exists, and
+  \<open>tool_scope_set {repl}\<close> followed by more repl_step calls is the
+  documented self-extension workflow (plans/tool_scope).
+
+candidate resolutions, enumerated but NOT chosen here (this needs a spec
+decision from the parent, like the 2026-07-13 activation guardrails):
+
+  (a) resolve a repl designation to the repl context TRANSFERRED to a
+      theory merged with the server's own (Theory.merge +
+      Proof_Context.transfer). preserves the goal state, keeps one
+      registry; cost is a merge per tools/list and an untested
+      interaction with repl theories built at runtime.
+  (b) a scala-side always-served CORE set: moved tools keep a static
+      listing fallback when the designated context serves no row. this
+      is the availability floor generalized, and it re-creates exactly
+      the duplication the move deletes.
+  (c) declare the moved tools somewhere every repl imports. impossible:
+      a repl's imports are client-chosen.
+  (d) accept the narrowing and document it (repl scope loses the repl
+      tools). rejected here on its face — it breaks the primary
+      workflow — but recorded so the decision is explicit.
+
+until this is decided, waves 1..6 must not start. steps 1..5 may.
+
+dependency on param_schema_v2
+------------------------------
+
+what this plan CONSUMES and must not re-plan:
+
+- D1 the ptyp WIRE VARIANT (scalars nullary, enum carrying items, list
+  carrying element type) and its scala expansion in ml_tool_schema.
+- D2 the ANNOTATIONS record + MCP_Tool.default_annotations + the five
+  named constants (read_only, read_only_non_idempotent, mutating,
+  idempotent_mutating, destructive), INCLUDING THE SCALA HALF.
+  MCP_Server.ml_tool_annotations (mcp_server.scala:77) is
+  \<open>case _ => None\<close> for every form but diag_wrap; a Capture-form row
+  hits that fallthrough, so without the scala half repl_remove ships
+  with no destructiveHint and repl_show with no readOnlyHint. that is
+  an interface BREAK, not the accepted description drift of G — D2 is a
+  hard gate on wave 1.
+- D3 the (optional) modifier: optional-WITHOUT-default params. gates
+  find_theorems (repl, theory) and find_definition (kind, repl,
+  theory) — wave 6 only.
+- D4 enum params: find_definition's `kind` (const | type | class |
+  fact | locale | method | attribute), today checked inside the
+  dispatcher against find_definition_kinds (MCP_Repl.thy:406) — wave 6.
+- D5 `list of <scalar>` params END TO END, including the repeated-key
+  decoding: json_args encodes a json array as REPEATED (key, element)
+  pairs in array order (mcp_server.scala:713 comment), and
+  MCP_Combinators.validate today is AList.lookup-based
+  (MCP_Tools.thy:505), i.e. it sees only the first occurrence and
+  \<open>validate\<close>'s own unknown-key check would not reject the rest. gates
+  repl_init (`theories`) — wave 5. if param_schema_v2 stops at the
+  wire type without the multi-value validate path, wave 5 stalls and
+  repl_init stays scala; say so rather than smuggling the work here.
+
+Exactly_One is consumed by nothing in this plan: the one exactly-one
+rule belongs to repl_init_from_source, which stays scala (its
+Locator.exactly_one survives, per the spec).
+
+new fifth form: capture
+------------------------
+
+every Ir.* function is WRITELN-STYLE. MCP_Repl.dispatch is typed
+\<open>string -> (string * string) list -> unit\<close> and results arrive through
+the output channel, while MCP_Tool's run slot returns a string. ml_run
+would make ~20 tools hand-roll the capture-and-join-errors block
+exec_text (MCP_Tools.thy:617) already implements for diag wraps. so:
+
+  MCP_Combinators.capture:
+    string -> MCP_Tool.param list ->
+      (Proof.context -> (string * string) list -> unit) -> MCP_Tool.tool
+
+form tag "capture"; MCP_Tool.form grows a Capture constructor beside
+String_Fun / Diag_Wrap / Method_Wrap / Builtin. the run slot is
+
+  fn ctxt => fn args =>
+    (case MCP_Output.captured (fn () =>
+        Print_Mode.with_modes [] (fn () => f ctxt (validate ctxt params args))) of
+      (Exn.Res (), output) => output
+    | (Exn.Exn exn, output) =>
+        if Exn.is_interrupt exn then Exn.reraise exn
+        else error (if output = "" then Runtime.exn_message exn
+                    else output ^ "\n" ^ Runtime.exn_message exn))
+
+three things are load-bearing and each has a test below:
+
+- PLAIN PRINT MODE, not PIDE. MCP_Repl.fork_run runs under
+  \<open>Print_Mode.with_modes [Print_Mode.PIDE]\<close> and the scala ir_result
+  handler strips the markup back out
+  (\<open>XML.content (YXML.parse_body (YXML.Source (msg.text)))\<close>,
+  mcp_session.scala:441). run_tool_result does NOT
+  (mcp_session.scala:429, bare \<open>msg.text\<close>), so a capture tool printing
+  under PIDE mode would leak yxml to the client. exec_text's
+  \<open>Print_Mode.with_modes []\<close> (MCP_Tools.thy:621) is the shape to copy.
+- NO BUFFER REGISTRATION ANYWHERE ELSE in the same task tree — see the
+  async step below.
+- the ARG ACCESSOR. \<open>validate\<close> already guarantees required args present
+  and defaults filled, so the lookup can be TOTAL, unlike the
+  dispatcher's raw AList.lookup with its own error path
+  (MCP_Repl.thy:325). add to MCP_COMBINATORS:
+
+    arg:      (string * string) list -> string -> string
+    arg_int:  (string * string) list -> string -> int
+    arg_opt:  (string * string) list -> string -> string option   (D3)
+    arg_all:  (string * string) list -> string -> string list     (D5)
+
+  `arg` raises an ML error naming the parameter if the key is absent —
+  that is a TOOL BUG (a name not in the params clause), not a client
+  error, and should read as one.
+
+ANNOTATIONS: capture has NO default. the form tag cannot supply the hint
+— Ir.show is read-only, Ir.step mutating, Ir.remove destructive, one
+form — so the mcp_tool command REQUIRES an explicit (annotations ...)
+clause for the capture form and errors at registration without it
+(contrast diag_wrap, where Keyword.is_diag PROVES readOnly+idempotent).
+the clause/record mechanism itself is D2's, not this plan's.
+
+async MCP.run_tool
+-------------------
+
+ML-only, zero scala change. MCP_Session.ml_run (mcp_session.scala:548)
+is already UUID-keyed and promise-based, byte-for-byte the shape ir()
+uses (mcp_session.scala:576). the edit is at MCP_Tools.thy:1130.
+
+copy MCP.ir's TWO-FUTURE shape (MCP_Repl.thy:468-490): fork the work,
+then fork a SECOND future with \<open>deps = [Future.task_of result]\<close>,
+\<open>interrupts = false\<close>, and post \<open>(status, output)\<close> by id from THERE. do
+not post from inside the worker body: if the body is interrupted the
+scala promise never resolves and tools/call hangs forever — the same
+failure mode designated_context_safe's comment records
+(MCP_Tools.thy:994-1000).
+
+DO NOT copy fork_run's buffer half. fork_run registers an output buffer
+because Ir.* are writeln-style; MCP_Tool.run returns its string and each
+moved tool captures for itself via MCP_Output.captured. MCP_Output.
+find_buffer (MCP_Tools.thy:288) walks the worker's group ancestry via
+\<open>Task_Queue.str_of_groups\<close> and takes the FIRST registered gid found
+anywhere in it, so registering at two levels of one task tree is
+genuinely ambiguous — the capture inside would or would not see its own
+output depending on table order.
+
+CONCURRENCY: tool execution goes serial -> concurrent. the registry is
+Synchronized, contexts are immutable, MCP.ir has forked since phase 2,
+and Ir serializes per-repl through with_claim — so same-repl contention
+is unchanged and what is new is genuine interleaving across DIFFERENT
+repls on the run_tool path. treated as an assumption with a
+discriminating test (A6), not an aside.
+
+name/argument mapping across the layers
+----------------------------------------
+
+  before (repl_replay)
+    mcp        tools/call "repl_replay" {"repl": "T"}
+    scala      Builtin_Tool(name = "repl_replay", fname = "replay")
+               -> backend.ir("replay", [("repl", "T")])
+    bridge     MCP.ir [id, "replay", yxml]
+    engine     dispatch "replay" -> Ir.replay (get "repl")
+
+  after
+    mcp        tools/call "repl_replay" {"repl": "T"}
+    scala      no row; exposure("MCP_Repl.repl_replay") = "repl_replay"
+               -> backend.ml_run("MCP_Repl.repl_replay", [("repl","T")],
+                    designation, bundles)
+    bridge     MCP.run_tool [id, designation, bundles, name, yxml]
+    engine     MCP_Tool.run -> capture -> Ir.replay (arg args "repl")
+
+the fname/name mapping DISAPPEARS: there is no second name to map to.
+the DESIGNATION appears instead, which is the whole content of the
+blocking question above.
+
+surviving MCP.ir
+-----------------
+
+VERIFIED against \<open>grep -n 'ir("' mcp/src/mcp_session.scala\<close> — 8
+production call sites, exactly the spec's list:
+
+  repls               :649  resources/list repl enumeration
+  text                :675  isabelle://repl/{id}/text
+  show                :676  isabelle://repl/{id}
+  source_map          :707  isabelle://theory/{name}/commands (image tier)
+  source              :726  isabelle://theory/{name} (image tier)
+  init_from_document  :833  repl_init_from_source, loaded tier
+  init_from_segment   :841  repl_init_from_source, image tier
+  entities            :938  isabelle://theory/{name}/entities (image tier)
+
+mcp_server.scala's other two ir call sites — backend.ir("find_theorems")
+:639/:643 and backend.ir("find_definition") :696/:700 — leave with wave
+6, as does Builtin_Tool.handler's default \<open>backend.ir(fname, args)\<close>
+(:150) once no row carries an fname.
+
+show / text / repls keep TWO ML entry points after the move: a registry
+declaration and the surviving dispatcher case. DELIBERATE — routing the
+resource read through MCP.run_tool would put it behind
+MCP_Tool.is_active, so \<open>declare [[mcp_tools del: repl_show]]\<close> would
+break isabelle://repl/{id}, and the resource surface has its own scope
+mechanism (scope_add) that tool activation must not preempt.
+
+RETIRING MCP.ir is OUT OF SCOPE (follow-on): it needs parameterised
+MCP_Resource (read is \<open>Proof.context -> string\<close> today, nowhere to put a
+template's {id}), dynamic registration for `repls`, and purpose-specific
+commands for the two init_from_*. spec has the argument; do not plan it
+here.
+
+interface preservation
+-----------------------
+
+STRUCTURAL, not byte-exact. reproduce exactly, per tool: param NAMES,
+json TYPES, REQUIRED sets, DEFAULTS, and the annotations bucket.
+
+DESCRIPTIONS DO NOT reproduce: ml_tool_schema appends a type contract
+per property (mcp_server.scala:52-58 — "source" -> " (verbatim source
+text)", "term" -> " (an inner-syntax term, elaborated before use)",
+"typ", "fact"), which the hand-written builtin schemas have no
+equivalent of. so repl_step's \<open>isar_text :: source\<close> gains a suffix.
+accepted (spec: "judged an improvement"). every test asserting on exact
+property-description text must be updated — the sweep is part of each
+wave's step, and the only such assertion found today is
+mcp_handler_tests.scala:931 (a term-param contract test over synthetic
+rows, which is unaffected because it tests the transformation, not a
+builtin).
+
+ERROR TEXT also changes, and this is NOT in the spec's list. today the
+dispatcher wraps everything as \<open>"MCP.ir: " ^ msg ^ " for \"replay\"
+(arguments: ...)"\<close> (MCP_Repl.thy:320) and integers fail as "bad integer
+...". after the move the same failures read "Missing required argument:
+repl" / "Unknown argument \"x\" (declared: repl)" / "Invalid value for
+argument \"state_idx\" (type int): ..." from validate
+(MCP_Tools.thy:497-519). client-visible; strictly more precise; record
+it, and update the ml-unit error-path assertions per wave.
+
+implementation steps
+--------------------
+
+steps 1..5 are infrastructure and land before any tool moves. each is
+independently verifiable and reversible.
+
+rebuild/verify commands (per .claude/rules, always through the flatpak
+— never the bundled tree):
+
+  theories:  flatpak run --command=isabelle de.tum.in.isabelle.Isabelle \
+               build -d mcp/Tools -v MCP-Tools MCP-Tools-Tests \
+               MCP-HOL MCP-HOL-Tests
+  scala:     flatpak run --command=isabelle de.tum.in.isabelle.Isabelle \
+               scala_build            (never -f)
+  suites:    flatpak run --command=isabelle de.tum.in.isabelle.Isabelle \
+               mcp_test [-b] [-t PATTERN]
+
+1. [ml] DEFAULT DESIGNATION HOOK. MCP_Protocol.default_theory
+   (MCP_Tools.thy:958) hardcodes MCP_Tools, and Handler.scope_designation
+   defaults to "" (mcp_server.scala:1182) — so the out-of-the-box scope
+   is the MCP_Tools theory, an ANCESTOR of MCP_Repl, and a tool declared
+   in MCP_Repl.thy would not be listed at all. add
+   \<open>MCP_Protocol.set_default_theory\<close> beside the existing
+   \<open>set_repl_context_hook\<close>, called at the end of MCP_Repl.thy exactly as
+   \<open>MCP_Protocol.set_repl_context_hook Ir.context_of\<close> is (MCP_Repl.thy:27).
+   ML-only; widens strictly (MCP_Repl imports MCP_Tools, so every tool
+   visible before stays visible); the Pure-based MCP-Tools test image
+   keeps MCP_Tools as its default because nothing sets the hook there.
+   verify: theories build; [bridge] ml_tools() at the default
+   designation lists a tool declared in MCP_Repl.thy (use a throwaway
+   declaration until wave 1 supplies a real one).
+   NOTE for the skills: a user theory that wants the repl tools in its
+   own tool_scope must import MCP-HOL.MCP_Repl, not MCP-HOL.MCP —
+   MCP.thy is MCP_Repl's SIBLING (both import Main + MCP_Tools), not
+   its ancestor.
+
+2. [spec] resolve the repl-designation gap ("blocking open question").
+   not code — a decision the parent records in the spec, with the
+   guardrail wording the 2026-07-13 activation decision got. waves 1..6
+   are BLOCKED until it lands; steps 3..5 are not.
+   verify: spec section + CHANGELOG entry exist; this plan's wave table
+   updated with whatever it decides.
+
+3. [ml] CAPTURE FORM. MCP_Tool.form grows Capture (form_tag "capture");
+   MCP_Combinators.capture + arg/arg_int (arg_opt/arg_all land with
+   D3/D5); the mcp_tool command grows the \<open>= capture \<open>...\<close>\<close> form and
+   REQUIRES (annotations ...) for it. no tool moves yet.
+   verify: theories build; [ml unit, MCP_Tools_Tests.thy] a capture tool
+   over a writeln-style function returns its output; an erroring one
+   joins output and message; print_mcp_tools shows a [capture] row; a
+   capture declaration without (annotations ...) is a registration
+   error. NOTE: MCP-Tools is Pure-based and has no Ir — test capture
+   against a plain \<open>fn _ => fn args => writeln (arg args "x")\<close>.
+
+4. [scala] ZERO-PARAM SCHEMA. ml_tool_schema returns the mvp
+   \<open>{input :: string, required: [input]}\<close> when params is empty
+   (mcp_server.scala:47-48). repl_list's builtin schema is bare
+   \<open>{"type": "object"}\<close>, so moving it unchanged would advertise a
+   required `input` that does not exist. make an empty params list yield
+   \<open>{"type": "object"}\<close>, keeping the mvp fallback only where it is
+   actually needed. CHECK FIRST whether param_schema_v2 already owns
+   this; if it does, drop this step and cite it.
+   verify: scala_build; [scala unit] a synthetic zero-param row lists as
+   \<open>{"type":"object"}\<close>; "shout" is unaffected (MCP_Combinators.func
+   always supplies its own input param, MCP_Tools.thy:640-649).
+
+5. [ml] ASYNC MCP.run_tool. MCP_Tools.thy:1130 — fork the call, post
+   (status, output) by id from a dependent future. no buffer
+   registration. no scala change.
+   verify: theories build; [bridge] a slow ML tool and a fast one, the
+   fast one replies first (mirrors the existing "ir bridge: async" case,
+   mcp_bridge_tests.scala:210); A5/A6 below.
+
+waves. each wave: declare the tools in MCP_Repl.thy, delete their
+Builtin_Tool rows + mirror rows + dispatcher cases, shrink
+MCP_Server.all_builtin_names implicitly (it derives from `builtins`),
+migrate the tests per "test migration", then run the three verify
+commands. THE DRIFT GATE STAYS GREEN THROUGHOUT — it compares the mirror
+set to the (shrinking) table set, so both sides shrink together in the
+same commit.
+
+6. WAVE 1 — the minimum shape: one \<open>repl :: string\<close> param, no defaults,
+   no optionals, three distinct annotation buckets.
+     repl_show  (read_only)  repl_text (read_only)  repl_back (destructive)
+   verify: builds; [ml unit] each tool's params/required via
+   MCP_Tool.get in MCP_Repl_Tests.thy; [bridge] tools/list shows the
+   three with the right schemas and annotations, tools/call repl_show
+   round-trips against a live repl, and its text carries NO yxml markup
+   (A3).
+
+7. WAVE 2 — the rest of the single-`repl` family; exercises all five
+   annotation buckets against D2.
+     repl_remove (destructive)   repl_replay (idempotent_mutating)
+     repl_merge (destructive)    repl_pin (mutating)
+     repl_unpin (mutating)       repl_rebase (idempotent_mutating)
+   verify: builds; [ml unit] params + annotations per tool; [bridge] one
+   end-to-end exemplar (init -> pin -> unpin -> remove).
+
+8. WAVE 3 — int and source params.
+     repl_state (repl, state_idx :: int)
+     repl_truncate (repl, idx :: int)
+     repl_timeout (repl, secs :: int)
+     repl_fork (repl, new_repl :: string, state_idx :: int)
+     repl_step (repl, isar_text :: source)
+     repl_edit (repl, idx :: int, isar_text :: source)
+   NOTE isar_text as `source` only relaxes the single-line check and
+   adds the balanced-cartouche check (MCP_Tools.thy:475-477); capture
+   does NOT go through `assemble`, so nothing quotes or frames the text
+   before Ir.step sees it — the value reaches Ir verbatim, as today.
+   the property description gains " (verbatim source text)" (G).
+   verify: builds; [ml unit] negative state_idx round-trips (the
+   repl_fork T1 claim, now through validate rather than
+   Value.parse_int); a non-integer idx is a typed error naming the
+   parameter; [bridge] init -> step -> state -> truncate.
+
+9. WAVE 4 — defaults, and the zero-param tool.
+     sledgehammer (repl, timeout_secs :: nat = 15)
+     repl_list    (no params — needs step 4)
+   the sledgehammer default moves from the dispatcher's
+   \<open>get_int_default "timeout_secs" 15\<close> (MCP_Repl.thy:381) into the params
+   clause, where validate fills it. the json "default": 15 must survive
+   (mcp_server.scala:583).
+   verify: builds; [ml unit] omitted timeout_secs yields 15 inside the
+   tool; [scala unit] a synthetic defaulted row still advertises
+   "default"; [bridge] repl_list at the default designation, tools/list
+   shows \<open>{"type":"object"}\<close> for it.
+
+10. WAVE 5 — list params (D5).
+     repl_init (repl :: string, theories :: list of string)
+    the array/repeated-key encoding (json_args, mcp_server.scala:713)
+    must survive into validate, which is AList.lookup-based today. if D5
+    lands without the multi-value path, STOP: repl_init stays scala and
+    this wave is skipped, recorded here rather than worked around.
+    verify: builds; [ml unit] repeated "theories" keys reach Ir.init in
+    ARRAY ORDER (the existing MCP_Repl_Tests.thy T1 claim, :101, moves
+    to the tool); [bridge] repl_init with two theories.
+
+11. WAVE 6 — the search tools. LAST, and gated on a decision of its own
+    (see "spec tensions"): find_theorems, find_definition.
+    needs D3 (repl/theory/kind optional without default) and D4 (kind
+    enum), AND a resolution for two things their scala handler_fn does
+    that no ML declaration reproduces:
+      - THEORY-NAME NORMALIZATION via backend.resolve_context_theory
+        (mcp_session.scala:796), which rides resolve_theory's three-tier
+        resolver (Sessions.load_structure / deps / Store — the spec's
+        own "retiring MCP.ir" paragraph states this has no ML
+        equivalent). ML's find_theorems_theory does
+        \<open>Thy_Info.get_theory thy_name\<close> against a key that mixes
+        qualified and unqualified spellings (MCP_Repl.thy:95-100
+        comment), so without it "Multiset" stops resolving and the
+        "filesystem theory, not yet loaded — load_theory first"
+        diagnostic disappears.
+      - REPL/THEORY MUTUAL EXCLUSIVITY, an explicit error today
+        (mcp_server.scala:634, :691; pinned by mcp_handler_tests.scala
+        :514 and :562). the ML dispatcher instead lets theory win
+        silently (MCP_Repl.thy:382-392).
+    options: SPLIT them like repl_init_from_source (row stays scala,
+    logic stays ML behind MCP.ir); or move them and undefer At_Most_One
+    plus an ML normalization helper. do not start this wave on the
+    strength of the spec's MOVABLE listing alone.
+    verify: builds; whatever the decision picks, plus the existing
+    find_theorems/find_definition e2e cases unchanged.
+
+12. CLOSE-OUT (deletions + docs).
+    - MCP_Tools.thy:1240 mirror list: delete the 20 moved names, keep
+      the 15 that stay. the section header text (MCP_Tools.thy:1214-1228)
+      must stop claiming the list covers "the scala builtin table" and
+      say WHICH builtins remain scala-backed and why.
+    - MCP_Server.all_builtin_names (mcp_server.scala:989): shrinks with
+      `builtins`; tool_scope_builtin_names is untouched (the trio stays).
+    - the DRIFT GATE (mcp_bridge_tests.scala:78) shrinks to the
+      remainder; it does NOT delete, because 15 rows stay. its comment
+      must say the gate now covers only scala-resident builtins.
+    - the drift gate is ALSO pinned in the spec's testing section
+      (spec:3104, "bridge — drift gate (mirror set == table set)") and
+      in the implementation-order entry (spec:3047). both need the
+      scoping sentence; the close-out must catch them, not just the
+      code.
+    - spec: implementation-order checkbox for "builtins as ML tools";
+      CHANGELOG dated entry; plans/README index entry + checkbox.
+    - skills: the extending skill teaches builtin pruning; add that a
+      moved tool is now del'able-AND-uncallable (the SCOPED block's
+      dissolved asymmetric callability) and the MCP_Repl-vs-MCP import
+      note from step 1.
+
+test migration
+---------------
+
+a real cost, planned explicitly. today mcp_handler_tests.scala carries
+205 test cases over Fake_Backend with no prover; ~60 of them touch the
+movable tools (tools/list metadata + assert_dispatch pairs, lines
+214-570, plus 819-890 and 1641-1660). after the move Fake_Backend can
+only serve INVENTED rows, i.e. those assertions would assert about the
+fake.
+
+the lever that keeps the fast suite large: THE TRANSFORMATION AND THE
+TABLE ARE DIFFERENT CLAIMS.
+
+- STAYS in mcp_handler_tests.scala, prover-free, over SYNTHETIC rows:
+  every param -> json claim, because ml_tool_schema is a pure function
+  of List[Tool_Param] (mcp_server.scala:47). int -> "integer", bool ->
+  "boolean", defaults carried, required computed, type contracts
+  appended, zero-param shape, annotations expansion (D2). these do not
+  shrink — they GROW, since the moved tools' shapes are now expressible
+  as synthetic rows.
+- STAYS: everything about exposure/collision/activation that does not
+  need a specific builtin. mcp_handler_tests.scala:819 ("a colliding ML
+  tool does not shadow the repl_list builtin") and :886 both reference
+  MCP_Server.repl_list_tool / the reserved set by name — repoint them at
+  a builtin that STAYS (list_sessions is zero-arg like repl_list), do
+  not delete them.
+- STAYS: the readiness cases (:93-186). A3/A4/A5 call repl_list only as
+  an arbitrary name and never reach lookup; A2 asserts against
+  all_builtin_names, which shrinks with the table, so it stays true and
+  its meaning narrows exactly as the spec's floor paragraph says.
+  add one line to A2's comment recording that narrowing.
+- MOVES to \<^assert> in MCP_Repl_Tests.thy (build-time, fast — that
+  theory already carries ~500 asserts): "WHICH TOOL HAS WHICH PARAMS".
+  one block per wave over \<open>MCP_Tool.get (Context.Proof ctxt) name\<close>,
+  asserting #params (names, types, required, defaults) and the
+  annotations record. this is the direct replacement for the deleted
+  tools/list metadata cases, and it is the cheapest layer that can see
+  the real declaration.
+- MOVES to \<^assert> in MCP_Repl_Tests.thy: the dispatcher's error-path
+  cases that become validate's (missing key, spurious key, bad
+  integer). the surviving MCP_Repl.run cases for the 10 remaining
+  dispatcher fnames stay as they are.
+- MOVES to bridge (mcp_bridge_tests.scala), ONE EXEMPLAR PER WAVE, not
+  one per tool: the end-to-end wire claim (tools/call reaches Ir and the
+  text comes back clean). resist routing the per-tool interface
+  assertions here — it makes the migration slow for no added signal.
+- REWRITTEN: mcp_handler_tests.scala:1641-1660 (MCP_Symbol_Tests) drives
+  symbol round-tripping through call_tool("repl_step", ...) over the
+  fake. the claim is about MCP_Session.encode_args/Symbol.encode, not
+  about repl_step: repoint it at the fake's "shout" ml row, which
+  already goes through ml_run and the same encoder.
+- UNCHANGED: mcp_handler_tests.scala:1108-1268 (resources) — the
+  isabelle://repl/{id} tests ride Fake_Backend.ir("show"/"text"), which
+  is exactly the surviving MCP.ir path.
+
+ASSUMPTIONS -> tests
+---------------------
+
+A1  a capture tool returns what its function PRINTED, and joins output
+    with the error message on failure — the exec_text contract, at a
+    form that returns instead of assembling.
+    test [ml unit, MCP_Tools_Tests.thy]: a capture tool over
+    \<open>writeln\<close>; one that writelns then errors; one that only errors.
+
+A2  capture's arg accessor is TOTAL for declared params after validate,
+    and a lookup of an UNDECLARED name is an ML error naming it (a tool
+    bug, distinct from a client error).
+    test [ml unit]: required param present; defaulted param absent from
+    the call but present in args; \<open>arg args "nope"\<close> errors.
+
+A3  no markup leaks. a capture tool's text arrives at the client with no
+    yxml, because run_tool_result does not strip and capture runs in
+    plain print mode.
+    test [bridge]: tools/call repl_show on a live repl; the result text
+    contains no yxml control characters. do NOT also assert equality
+    with the isabelle://repl/{id} resource text — that path is
+    PIDE-mode-then-stripped and this one is plain-mode, and byte
+    equality across the two is a stronger claim than needed (pin it only
+    if measured true).
+
+A4  ASYNC run_tool posts exactly once per id, including on interrupt of
+    the worker, because the reply rides a dependent future.
+    test [bridge]: a slow capture tool and a fast one concurrently — the
+    fast reply arrives first, both promises resolve; a cancelled/erroring
+    slow call still resolves its promise (no hang).
+
+A5  BUFFER UNAMBIGUITY: run_tool's fork registers NO buffer, so
+    MCP_Output.find_buffer resolves to the capture's own group.
+    test [ml unit]: a capture tool nested inside an explicitly
+    registered outer group sees only its own output; [bridge] as A6.
+
+A6  CONCURRENCY is safe under the new execution model. the
+    DISCRIMINATING test is not "slow does not block fast" (MCP.ir
+    already proves that) but OUTPUT ISOLATION.
+    test [bridge]: two capture-form tools running concurrently against
+    two DIFFERENT repls; assert neither result contains any of the
+    other's output. this is exactly what a double buffer registration
+    over one task tree would break, given find_buffer's ancestry walk.
+    second case: registry reads during a concurrent declaration
+    (Synchronized) do not tear.
+
+A7  the DEFAULT designation sees MCP_Repl-declared tools (step 1).
+    test [bridge]: ml_tools() with no designation lists a moved tool;
+    [ml unit] MCP_Protocol with no hook set still resolves to MCP_Tools
+    (the MCP-Tools test image path).
+
+A8  EXPOSURE: "MCP_Repl.repl_show" exposes as the bare "repl_show" once
+    the name leaves the builtin reserved set — the client-visible name
+    must not become "MCP_Repl__repl_show".
+    test [scala unit]: exposure over the moved names with the SHRUNKEN
+    reserved set yields bare names; a second tool named repl_show in
+    another theory qualifies BOTH (the existing collision contract).
+
+A9  INTERFACE PRESERVATION per wave: param names, json types, required
+    sets, defaults, annotations identical to the deleted row.
+    test [ml unit] the params/annotations block per wave (above), plus a
+    ONE-OFF migration check per wave: diff the tools/list json for the
+    moved names before and after, expecting differences ONLY in property
+    descriptions. run it by hand at the wave's commit; do not try to
+    automate a before/after diff into the suite.
+
+A10 the DRIFT GATE stays green mid-migration: mirror set == remaining
+    table set at every wave boundary.
+    test [bridge, existing, mcp_bridge_tests.scala:78] — unchanged
+    assertion, shrinking data, which is the point.
+
+A11 a moved tool is del'able AND uncallable (the SCOPED block: asymmetric
+    callability dissolves for a tool whose logic is ML).
+    test [bridge]: \<open>declare [[mcp_tools del: repl_show]]\<close> in the
+    designated context -> absent from tools/list AND tools/call refuses;
+    [e2e, test_mcp.py] the same, contrasted with a del'd
+    still-scala builtin (list_sessions), which stays callable.
+
+A12 error TEXT change is client-visible and precise: a missing/unknown/
+    ill-typed argument names the parameter.
+    test [ml unit]: the three validate paths per representative tool;
+    update the MCP_Repl_Tests.thy I2 case (:44) so it covers the
+    surviving dispatcher, not the moved tools.
+
+A13 OUTPUT ROUTING SURVIVES A FRESH PROCESS AGAINST THE SAVED HEAP.
+    MCP_Output installs its Private_Output wrappers lazily and records
+    \<open>wrapped\<close> in a Synchronized var; process startup re-assigns those
+    functions and silently discards wrappers inherited from the heap, so
+    a persisted \<open>wrapped = true\<close> would disable routing for good
+    (MCP_Tools.thy:334-340). today ONE dispatcher depends on that, and
+    MCP_Repl.reset guards it after the build-time self-test. after the
+    move ~20 tools depend on it, through a DIFFERENT entry point
+    (MCP_Output.captured, not MCP_Output.register).
+    this is the one claim neither build-time \<^assert> (it runs inside
+    the building process, where the flag is whatever that process just
+    set) nor Fake_Backend can exercise — it is the MCP_Heap_Suite case
+    (plans/README, "added 2026-07-10").
+    test [heap, mcp_heap_tests.scala, run under -b]: one ml() call
+    against the saved MCP-HOL heap that runs a capture-form tool and
+    asserts its output was CAPTURED, not lost to the real writeln.
+    batch any other ML-only assertion wanted from the same heap load —
+    heap loads cost seconds. every other assumption here is a
+    same-process or live-bridge claim, which is why the fixture appears
+    exactly once.
+    consequence for step 3/5: MCP_Repl.thy must keep calling
+    MCP_Output.reset after ANY build-time capture exercise, for the same
+    reason its existing self-test does.
+
+D1..D5 are param_schema_v2's assumptions, not restated here. this plan
+only asserts they are PRESENT before the wave that needs them: a wave's
+first step is to check its D and stop if missing.
+
+spec tensions found
+--------------------
+
+recorded for folding back, in the "spec refinement:" tradition.
+
+S1 REPL DESIGNATION (blocking; see above). the spec's SCOPED block
+   narrows the availability floor only for a broken heap or an
+   unresolvable designation. a repl designation is a resolvable one that
+   still loses every moved tool, listing and calling both. not covered,
+   and it breaks the documented self-extension workflow.
+
+S2 DEFAULT DESIGNATION. the spec never mentions that "" resolves to the
+   MCP_Tools theory (MCP_Tools.thy:958) while the moved tools must live
+   in MCP_Repl.thy. as written, the move would make them invisible
+   out of the box. step 1 fixes it; the spec should record the hook.
+
+S3 find_theorems / find_definition are listed MOVABLE ("logic already
+   entirely ML, reached only through Ir"). FALSE as stated: their
+   handler_fn normalizes `theory` through resolve_context_theory —
+   which the spec's own "retiring MCP.ir" paragraph identifies as
+   having no ML equivalent — and errors when repl and theory are both
+   given.
+
+S4 the DEFERRED At_Most_One paragraph says these two tools "silently let
+   theory win when both are given ... discarding the repl argument with
+   no diagnostic", and defers the constructor to avoid a client-visible
+   break. that describes the ML DISPATCHER, which clients never reach
+   for these two: the scala handler errors first (mcp_server.scala:634,
+   :691), and mcp_handler_tests.scala:514/:562 pin the error. so moving
+   them as specced would CREATE the break the deferral exists to avoid —
+   turning a clean error into silent precedence.
+
+S5 "MCP.ir shrunk from ~28 fnames to 8" undercounts by two. after the
+   move TEN dispatcher cases survive: the 8 production ones plus
+   \<open>theories\<close> and \<open>load_theory\<close> (MCP_Repl.thy:371-372), which have no
+   builtin row, no scala call site, and live test callers —
+   mcp_bridge_tests.scala:199 (the load_theory KNOWN GAP regression) and
+   MCP_Repl.thy's own build-time self-test. either they are dead weight
+   to delete deliberately, or the count is 10; do not leave it implicit.
+
+S6 the spec's INTERFACE PRESERVATION paragraph covers descriptions but
+   not ERROR TEXT, which also changes (dispatcher's "MCP.ir: ... for
+   \"replay\"" -> validate's "Missing required argument: repl"). same
+   verdict (an improvement), same need to be recorded rather than
+   discovered.
+
+S7 "ML-only, zero Isabelle/Scala change" is true of async run_tool
+   (step 5) but NOT of the migration as a whole: ml_tool_annotations
+   (D2) and the zero-param schema branch (step 4) are both scala edits
+   without which the first moved tool ships a wrong interface.
+
+done when
+----------
+
+- steps 1..5 landed and green; S1 decided and this plan updated with it.
+- every wave's tools declared once, in MCP_Repl.thy, with their
+  Builtin_Tool row, mirror row and dispatcher case deleted in the SAME
+  commit (code and its tests are one commit, per .claude/rules/commits).
+- A1..A13 green in their layers; the drift gate green at every wave
+  boundary and scoped-down at close-out.
+- mcp_handler_tests.scala still carries the full param -> json
+  transformation surface (no net loss of prover-free coverage), with the
+  which-tool-has-which-params assertions relocated to
+  MCP_Repl_Tests.thy.
+- MCP.ir down to its surviving dispatcher cases; spec, CHANGELOG,
+  plans/README and the skills updated per step 12.

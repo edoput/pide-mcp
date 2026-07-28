@@ -1,0 +1,505 @@
+param schema v2 (enum, list, optional, ptyp variant, annotations,
+exactly_one) — implementation plan
+==============================================================================
+
+status: [ ] planned only. spec decision landed 2026-07-28 (commit
+40d30471; spec phase-3 "the parameter spec language (params clause) and
+schema derivation", as amended that day). no new mcp tool — this is a
+feature plan (like mcp_tool_registry and builtin_activation): the
+parameter/schema layer under mcp_tool grows the pieces the spec specced
+and the 2026-07-11 wave deferred, plus the three items decided
+2026-07-28 (ptyp as a variant, declared annotations, exactly_one).
+
+depends on plans/mcp_tool_command (DONE — the params clause, the
+combinators, the quoting/validation pipeline this plan extends) and
+plans/mcp_tool_registry (DONE — the registry rows and the MCP.tools
+payload whose shape this plan changes). composes with, and lands
+BEFORE, plans/ml_builtin_migration: the spec's ORDER paragraph pins
+this work first because it is independently valuable — it improves
+user-written ML tools whether or not a single builtin moves.
+
+NON-GOALS, stated up front because a reader arriving from the spec's
+"builtins as ML tools" section will otherwise conflate the two plans.
+this plan moves NO builtin tool, adds NO capture form and NO arg
+accessor, does not make MCP.run_tool async, does not build At_Most_One
+(explicitly DEFERRED 2026-07-28 — declaring it would turn
+find_theorems/find_definition's silent repl-vs-theory precedence into a
+client-visible error), and emits NO json-schema oneOf. it also does not
+implement the format clause's $flag?text conditional segments (specced,
+never built, still not built here — see "spec refinements"). all of
+that belongs to plans/ml_builtin_migration or a later wave.
+
+the seven work items
+---------------------
+
+1. enum (a | b | c) param type — specced since 2026-07-11, deferred at
+   implementation ("enum/list params" in the spec's implementation-
+   order entry).
+2. "list of <scalar>" param type — same deferral, same entry.
+3. the (optional) modifier — optional-WITHOUT-default. specced at the
+   "modifiers" bullet, never implemented, and not recorded as deferred
+   until 2026-07-28. param_entry (MCP_Tools.thy:719) derives
+   required = is_none default, so it is unreachable from isar; the data
+   model supports it (MCP_Combinators.param takes required and default
+   independently, validate's value_of drops an absent optional) but no
+   ML site has ever set required = false, so the path is untested end
+   to end. it gates find_theorems (repl/theory), find_definition
+   (kind/repl/theory), repl_init_from_source (offset/pattern/index).
+4. ptyp as a VARIANT datatype replacing the flat "typ: string" field.
+   payoff beyond nesting: check_value's "| t => error (Unknown
+   parameter type ...)" fallback and MCP_Combinators.param's
+   member (op =) param_types check both become UNREACHABLE, replaced by
+   compiler exhaustiveness.
+5. print_param (MCP_Tools.thy:762) grows a matching printer. easy to
+   miss — it sits 260 lines from the wire code and has nothing to do
+   with yxml: it prints a param back as ML SOURCE so
+   "mcp_tool ... = run <...> (params ...)" can round-trip its
+   declaration through ML_Context.expression. miss it and the run form
+   breaks. items 6 and 7 extend the same obligation to annotations and
+   constraints.
+6. ANNOTATIONS as a declared per-tool field: an optional record of the
+   four MCP hints, each independently absent or set. deliberately NOT a
+   closed enum (spec: the field has no nesting and no validation logic,
+   so a variant would buy curation rather than type safety). the five
+   buckets become named ML constants over that record, plus
+   MCP_Tool.default_annotations for declarations that omit the clause
+   and whose form tag proves nothing. diag_wrap keeps its derived
+   readOnly+idempotent, since Keyword.is_diag checks the premise at
+   registration.
+7. Exactly_One of string list, declared (exactly_one offset pattern
+   index), driving exactly two things: the runtime check in validate,
+   and a generated sentence appended to the tool description.
+
+data model delta (MCP_Tools.thy, MCP_TOOL signature ~143)
+----------------------------------------------------------
+
+  datatype ptyp =
+    String | Source | Args | Nat | Int | Bool | Term | Typ | Fact
+  | Enum of string list
+  | List_Of of ptyp
+
+  type param = {name: string, typ: ptyp, required: bool,
+                default: string option, description: string}
+
+  type annotations =
+    {read_only: bool option, idempotent: bool option,
+     destructive: bool option, open_world: bool option}
+
+  datatype constraint = Exactly_One of string list
+
+  type tool =
+    {description: string, params: param list,
+     constraints: constraint list, annotations: annotations,
+     form: form, run: Proof.context -> (string * string) list -> string}
+
+constructor names sit in the VALUE namespace, so String/Int/Bool do not
+shadow the structures of those names (String.isSubstring keeps working
+inside MCP_Tools.thy); only the two compound constructors are
+spec-pinned (Enum, List_Of).
+
+annotation constants (MCP_Tool), reproducing the five buckets the scala
+builtin table already distinguishes — note DESTRUCTIVE IS ABSENT, not
+false, in four of the five, which is precisely why the record holds
+four independent options rather than a flag triple:
+
+                            read_only  idempotent  destructive  open_world
+  read_only                 T          T           -            F
+  read_only_non_idempotent  T          F           -            F
+  mutating                  F          F           -            F
+  idempotent_mutating       F          T           -            F
+  destructive               F          F           T            F
+  default_annotations       -          -           -            F
+  (T = SOME true, F = SOME false, - = NONE/absent from the json)
+  diag_annotations = read_only (the form PROVES it: Keyword.is_diag)
+
+cross-check against mcp_server.scala:154/157/163/172/557 when
+implementing — those five JSON objects are the definition of record.
+
+record-construction sites that must all be updated when the tool record
+grows two fields: MCP_Tools.thy:640 (func), :652 (ml_run), :662 (diag),
+:1237 (the builtin mirror fold), Tests/MCP_Fixture_A.thy:14 and :20,
+Tests/MCP_Tools_Tests.thy:18 and :51. no site outside mcp/Tools/
+constructs one.
+
+CONSUMERS, which matter as much as constructors here (step 2 changes
+the type of #typ, step 6 changes validate's arity): grepped for
+MCP_Combinators.*, #typ, #params, #annotations, #constraints,
+MCP_Tool.param/tool over mcp/, ir/ and mcp_test/ — every hit is inside
+MCP_Tools.thy or Tests/MCP_Tools_Tests.thy. nothing in
+mcp/Tools/HOL/ (MCP.thy, MCP_Repl.thy), nothing in ir/ir.ML.
+mcp_test/src/mcp_heap_tests.scala touches the registry from raw ML but
+only through MCP_Tool.defined / is_active / active, which are
+unaffected — worth re-checking after step 5 anyway, since it is the one
+layer no ml-unit build covers.
+
+surface (isar), all reachable WITHOUT new header keywords
+-----------------------------------------------------------
+
+  (params
+    kind   :: enum (const | thm | type) \<open>what to look for\<close>
+    names  :: list of string            \<open>names to search\<close>
+    repl   :: string (optional)         \<open>REPL id; omitted = image\<close>
+    limit  :: nat = 40                  \<open>max results\<close>)
+  (annotations read_only)
+  (exactly_one offset pattern index)
+
+VERIFIED PARSER FACT, and the reason no keyword is added: Parse.$$$
+needs its literal in the theory's keyword table, but Args.$$$
+(Pure/Isar/args.ML:81) matches an IDENT *or* keyword token by content
+and marks it Markup.quasi_keyword — no declaration required, jEdit
+still highlights it. so enum, list, of, optional, annotations and
+exactly_one are parsed with Args.$$$. declaring them in the MCP_Tools
+header instead would be actively harmful: a minor keyword lexes as a
+keyword token in EVERY importing theory, so "list" would break
+"thm list.induct" and friends throughout MCP-HOL. "|" is already a Pure
+quasi_command keyword, so enum items parse as Parse.enum1 "|"
+Parse.name inside Parse.$$$ "(" ... ")" — the same tokens clause_block
+already uses.
+
+the ptyp parser is recursive ("list of list of string" parses; whether
+it is USEFUL is a schema question, and the json mapping nests fine).
+(optional) sits after the type and is mutually exclusive with
+"= default" — both present is a registration error. the two new clauses
+join clause/digest (MCP_Tools.thy:730/736) as Annot and Constraint
+cases, at most once each, any order, and are rejected for mcp_resource
+the way params/format already are.
+
+wire delta (LOCKSTEP — read this before touching either side)
+---------------------------------------------------------------
+
+  encode_param (ML, MCP_Tools.thy:1023) <-> decode_tools (scala,
+  mcp_session.scala:120)
+
+the param type stops being a string and becomes an XML.Encode.variant /
+XML.Decode.variant; the row grows an annotations field:
+
+  row     = (name, (description, (form, (params, annotations))))
+  param   = (name, (ptyp, (required, (default option, description))))
+  ptyp    = variant, tag order EXACTLY
+            0 String, 1 Source, 2 Args, 3 Nat, 4 Int, 5 Bool,
+            6 Term, 7 Typ, 8 Fact, 9 Enum (items in the body),
+            10 List_Of (element ptyp in the body)
+  annots  = (bool option, (bool option, (bool option, bool option)))
+            in the order read_only, idempotent, destructive, open_world
+
+THE HAZARD, and why this is not an ordinary refactor:
+XML.Encode.variant (xml.ML:324) and XML.Decode.variant (xml.scala:483)
+key on the POSITIONAL INDEX of the encoder/decoder in the list, and
+every nullary scalar encodes to the same bytes (empty attributes, empty
+body). a scala list in the wrong order therefore decodes Nat as Int
+SILENTLY — no exception, just a wrong json type. no scala-unit test can
+catch it (Fake rows never cross the encoder); only a bridge case
+comparing a live ML declaration against the decoded row can. see A5.
+
+and there is NO COMPATIBILITY WINDOW: a stale mcp.jar against a rebuilt
+heap fails inside XML.Decode with an XML_Body exception, not with a
+clean error, and it surfaces as a dead tools/list rather than a
+diagnostic. the two sides change in ONE commit (commits.md rule 3
+forces code+tests together anyway), and the step's verification order
+is: edit both sides -> scala_build -> isabelle build -> mcp_test -b.
+
+constraints do NOT cross the wire: Exactly_One drives the runtime check
+(ML) and a sentence appended to the description at tool-construction
+time (ML), so the description that crosses already carries it. one
+rule, one implementation, nothing for a second surface to drift from.
+
+scala delta (mcp_server.scala, mcp_session.scala)
+---------------------------------------------------
+
+- MCP_Session.Ptyp: a sealed ADT mirroring the ML datatype, with the
+  recursive decoder; Tool_Param.typ becomes Ptyp.
+- MCP_Session.Tool_Annotations: four Option[Boolean] fields; Tool_Row
+  grows it.
+- ml_tool_schema (mcp_server.scala:47) matches on Ptyp instead of
+  strings: Enum -> {"type": "string", "enum": [...]}, List_Of(e) ->
+  {"type": "array", "items": {...}}, scalars unchanged. DO NOT reword
+  the contract suffixes while moving them into the match — the handler
+  test asserts description.contains("term"), and
+  plans/ml_builtin_migration's "descriptions gain a suffix" claim is
+  stated against their exact text.
+- ml_tool_annotations(form: String) (mcp_server.scala:77) is DELETED
+  and replaced by a renderer over the record: emit only the hints that
+  are Some, None for an all-absent record (so "declared nothing" stays
+  representable, per the spec). the form tag then has NO scala consumer
+  left; it stays on the wire (print/introspection, and
+  mcp_bridge_tests.scala:25 asserts it).
+- resolution stays ML-SIDE: default_annotations is an ML constant and
+  the diag_wrap premise is an ML fact (Keyword.is_diag, checked at
+  registration), so the row that crosses is already resolved and scala
+  only renders.
+
+CLIENT-VISIBLE BEHAVIOUR CHANGE from that resolution: every
+string_fun/ml_run tool, which today emits no annotations key at all,
+starts emitting {"openWorldHint": false} — spec-sanctioned ("every tool
+this server serves acts on the running prover and none reaches the open
+world, so that one hint holds by construction"), with the other three
+hints left unset so the CLIENT's conservative defaults stand. test
+sites that change with it: mcp_testing.scala:53 (Fake_Backend's shout
+row), mcp_handler_tests.scala:822/904/921/1097, mcp_bridge_tests.scala:25.
+
+runtime semantics
+------------------
+
+- check_value becomes an exhaustive match on ptyp. Enum items:
+  membership, or a typed error naming the param AND listing the items.
+  List_Of t: check each element against t.
+- LIST ARGUMENTS ARRIVE AS REPEATED KEYS — the existing convention
+  (mcp_server.scala:1012 json_args: a json array becomes repeated
+  (key, element) pairs in array order; mcp_session.scala:148 documents
+  it; pass_args at :714 consumes it for scope_add and repl_init). so
+  validate stops being able to use AList.lookup for a List_Of param (it
+  takes the first occurrence only) and collects every occurrence,
+  returning them as repeated pairs so the tool's run function sees the
+  whole list. absent = zero occurrences. assemble's "quoted"
+  (MCP_Tools.thy:567) has the SAME first-occurrence bug and needs the
+  same fix — one reasoning, two call sites, easy to miss twice.
+- validate grows the constraint list as an argument
+  (validate ctxt params constraints args) rather than getting a sibling
+  check_constraints the callers could forget. Exactly_One ns counts
+  members present in the RAW args, before defaults are filled (a
+  default would make one member permanently present); zero, or more
+  than one, is an error naming the members.
+- assemble: Enum substitutes VERBATIM (see spec refinements), List_Of t
+  quotes each element per t and joins with a single space, an absent
+  optional substitutes the empty string.
+- MCP_Combinators.param survives the deletion of param_types with a NEW
+  job — it is the one registration-time gate on a param, now checking
+  what the type system cannot: enum items nonempty, distinct and
+  token-safe (no whitespace, quote or cartouche character — this is
+  what makes the verbatim splice defensible rather than merely
+  convenient); a "= default" on an enum is one of the items; a List_Of
+  param carries NO default (rejected at registration rather than
+  inventing a list-literal default syntax the spec never specced —
+  recorded as deferred).
+- tool construction appends the constraint sentence to the description:
+  "Exactly one of offset, pattern, index is required." — the spec's
+  exact wording, pinned by assertion.
+
+implementation steps
+---------------------
+
+1. (optional) modifier. ML only, no wire change: param_entry parses the
+   modifier with Args.$$$ and stops deriving required from the default;
+   assemble substitutes an absent optional as empty.
+   [ml unit: MCP-Tools-Tests — an (optional) declaration has
+   required=false/default=NONE; validate drops it when absent and keeps
+   it when supplied; (optional) together with "= d" is a registration
+   error]
+2. ptyp variant — the FIRST lockstep wire step, behaviour-preserving
+   (no new type constructors reach the surface yet). ML: the datatype,
+   param's field, exhaustive check_value/assemble (the two unreachable
+   fallbacks delete), encode_param via XML.Encode.variant, print_param
+   gains print_ptyp, the type parser dispatches on Parse.name. scala:
+   the Ptyp ADT, the mirror decoder in tag order, ml_tool_schema's
+   match, Fake_Backend rows. NOT test-neutral: MCP_Tools_Tests.thy:
+   131-133 asserts the decoded wire shape
+   [("input", ("string", (true, (NONE, "tool input"))))] and its SHAPE
+   changes — reuse it as the ML-side encode/decode round-trip pin.
+   ALSO IN THIS STEP: a fixture tool in MCP_Tools.thy itself (next to
+   shout/greeting) carrying one param per constructor, since
+   MCP_Bridge_Tests is MCP_Session_Suite("MCP-Tools", "MCP_Tools") and
+   serves THAT theory, not the Tests session — it is the only place the
+   tag-order case (A5) can read a real encoded row from.
+   [ml unit + scala unit + bridge]
+3. enum. ML: Enum reaches the surface (the enum (a | b | c) parser),
+   membership check, item checks in param, verbatim splice. scala:
+   {enum: [...]} in the schema. [ml unit: the spec's pre-written
+   "enum rejects junk" case, plus items-listed-in-the-error; scala
+   unit: the spec's "each type, optional/default/enum" case]
+4. list of <scalar>. ML: the recursive parser branch, elementwise
+   check_value, repeated-key collection in BOTH validate and assemble's
+   quoted (:567, the same AList.lookup first-occurrence bug),
+   space-join in assemble, no-default rejection in param. scala:
+   {type: array, items: ...}. [ml unit + scala unit]
+5. annotations record — the SECOND lockstep wire step. ML: the record,
+   the five bucket constants + default_annotations + the diag_wrap
+   derivation, the (annotations ...) clause, the tool field at all
+   eight construction sites, print_annotations for the run form,
+   encode_row's fifth field. scala: Tool_Annotations, the decoder, the
+   renderer, deletion of ml_tool_annotations(form), and the test sites
+   listed above. the builtin mirrors (:1237) take
+   default_annotations, and the value is INERT: tools_body (:1048)
+   filters Builtin rows out of ml_rows, so a mirror's annotations never
+   reach encode_row — do not replicate the scala row's bucket there.
+   [ml unit + scala unit + bridge]
+6. exactly_one — ML only (no wire field). DEPENDS ON STEP 1: a member
+   must be optional-without-default, which is exactly what (optional)
+   makes reachable from isar. the clause, the constraint type, the
+   validate argument, the registration-time check (every member is a
+   declared param, none required, none defaulted), the generated
+   sentence, print_constraint for the run form. [ml unit]
+7. close-out: spec implementation-order entry updated (the deferrals
+   this plan discharges — enum/list, and the (optional) gap recorded
+   2026-07-28 — plus the annotations and exactly_one items marked
+   done), CHANGELOG entry, plans/README index entry + checkbox, and
+   any deviation folded back into this file's status header.
+
+each step is one commit under commits.md rule 3 (source + its tests
+together); steps 2 and 5 MUST NOT be split across commits by side.
+
+verification (build/test commands per step)
+--------------------------------------------
+
+everything goes through the flatpak — never
+Isabelle2025-2_linux/Isabelle2025-2/bin/isabelle, whose bundled tree is
+reference sources only (the two installs ship different Poly/ML
+binaries and share $ISABELLE_HOME_USER/heaps, so alternating forces a
+full Pure -> HOL rebuild). NOTE: .claude/rules/theories-rebuild.md
+still spells the bundled path and still lists three sessions; the
+flatpak rule wins, and mcp/Tools/ROOT declares FOUR.
+
+  ml steps (1, 3, 4, 6, and the ML half of 2 and 5):
+    flatpak run --command=isabelle de.tum.in.isabelle.Isabelle \
+      build -d mcp/Tools -v MCP-Tools MCP-Tools-Tests MCP-HOL MCP-HOL-Tests
+  a clean build IS the test signal — it fails iff a theory fails to
+  load or an assert in MCP_Tools_Tests / MCP_Repl(_Tests) fails.
+
+  scala steps (2, 5, and any mcp_test edit):
+    flatpak run --command=isabelle de.tum.in.isabelle.Isabelle scala_build
+  never -f: it forces a rebuild of Isabelle/Scala itself, whose
+  isabelle.jar lives in the read-only flatpak image.
+
+    flatpak run --command=isabelle de.tum.in.isabelle.Isabelle mcp_test
+    flatpak run --command=isabelle de.tum.in.isabelle.Isabelle mcp_test -b
+  (-b adds the bridge/heap suites; -t PATTERN narrows.)
+
+  for steps 2 and 5, in this order inside the one commit: edit both
+  sides -> scala_build -> isabelle build -> mcp_test -b. running
+  mcp_test without rebuilding the jar reproduces exactly the stale-jar
+  decode failure this plan warns about, so the order is part of the
+  step, not hygiene advice.
+
+ASSUMPTIONS -> tests
+---------------------
+
+- A1 the (optional) path works end to end, having never been exercised
+  by any ML site: a param with required=false and default=NONE is
+  declarable from isar, validate omits it from the result when absent
+  and includes it when supplied, and assemble does not error on the
+  missing value [ml unit, MCP-Tools-Tests]. step 1.
+- A2 Args.$$$ matches an undeclared identifier in an outer-syntax
+  parser, so "list of string", "enum (a | b)" and "(optional)" parse
+  with NO new header keyword (args.ML:81 says so; a wrong guess must
+  fail loudly, not silently) [ml unit: a declaration using all three
+  parses and registers with the expected params]. steps 1, 3, 4.
+- A3 the two deleted fallbacks are genuinely unreachable after the
+  variant: check_value's "| t => error (Unknown parameter type)" and
+  param's param_types membership test. the check is the COMPILER — a
+  non-exhaustive match warning is the failure signal, so the ml build
+  must stay warning-clean. the old ml-unit assertion "unknown parameter
+  types are rejected at param construction" (MCP_Tools_Tests.thy:300)
+  no longer TYPE-CHECKS and is deleted; its intent moves to the
+  enum-items check of A7 [ml unit]. step 2.
+- A4 XML.Encode.variant / Decode.variant round-trip a recursive ptyp
+  across the bridge, nesting included [ml unit: encode/decode the row
+  in ML (MCP_Tools_Tests.thy:131 rewritten) + bridge]. step 2.
+- A5 TAG ORDER is identical on both sides. every nullary scalar encodes
+  to identical bytes, so a mis-ordered scala list decodes Nat as Int
+  silently — this assumption is UNCATCHABLE at the scala-unit layer
+  (Fake rows never cross the encoder) [bridge: the MCP_Tools.thy
+  fixture tool from step 2, one param per constructor, asserted
+  constructor-by-constructor against session.ml_tools().rows]. step 2.
+- A6 the wire has no compatibility window: a stale mcp.jar against a
+  rebuilt heap fails at decode, not with a clean error. no test — this
+  is a PROCESS assumption, discharged by the step-2/5 command order
+  above and by commits.md rule 3 keeping both sides in one commit.
+  recorded so a future reader does not "tidy" the ordering away.
+- A7 enum values are constrained enough for a verbatim splice: items
+  are checked token-safe at registration, and a call-time value must be
+  one of them [ml unit: the spec's pre-written "enum rejects junk"
+  case, an error that lists the admissible items, and a registration
+  error for an item containing a space/quote/cartouche]. step 3.
+- A8 list arguments survive the repeated-key convention: a json array
+  reaches validate as repeated pairs, every element is type-checked,
+  and the pairs come out in array order [scala unit: json_args ->
+  repeated pairs is already pinned; ml unit: validate over repeated
+  keys keeps order and rejects a bad element naming the param]. step 4.
+- A9 schema expansion covers the grown universe [scala unit,
+  mcp_handler_tests.scala — the spec's pre-written "each type,
+  optional/default/enum" case, extended with list-of -> array/items].
+  steps 3, 4.
+- A10 annotation resolution is ML-side and reproduces the five buckets
+  byte-for-byte, with absent hints ABSENT (not false) — the property
+  plans/ml_builtin_migration depends on when a moved tool must
+  reproduce its old builtin row [ml unit: the constants; scala unit:
+  the renderer, rewriting the spec's "annotation hints per form" case
+  from per-form to per-record, plus all-absent -> no annotations key;
+  bridge: a declared (annotations destructive) tool arrives with
+  destructiveHint set]. step 5.
+- A11 the run form still round-trips its whole declaration through
+  ML_Context.expression after the param record grows: print_param
+  handles every ptyp constructor, and annotations and constraints get
+  printers of their own [ml unit: a "= run <...>" fixture whose clauses
+  carry enum + list + (optional) + (annotations ...) + (exactly_one
+  ...) declares successfully and its registered row shows all of them —
+  the existing snippet fixture (MCP_Tools_Tests.thy ~390) exercises
+  only "n :: nat" and would not catch a missing branch]. steps 2, 5, 6.
+- A12 Exactly_One enforces at call time and documents at declaration
+  time from ONE declaration: zero members -> error, two -> error, one
+  -> pass, and the description carries the spec's exact sentence
+  [ml unit]. registration-time half: a member that is not declared, or
+  is required, or has a default, is a registration error. step 6.
+- A13 no e2e layer for this plan, deliberately: nothing in the
+  self-extension loop changes shape. the one e2e-visible consequence is
+  A10's annotations-on-every-tool change, which the scala-unit and
+  bridge cases already pin. inventing an e2e step here would be
+  padding.
+
+spec refinements (fold back into the spec at step 7)
+-----------------------------------------------------
+
+- spec refinement: an enum value substitutes VERBATIM into the format,
+  like args/fact and unlike string. the spec's quoting bullet does not
+  say. rationale: enum items exist to name command keywords
+  ("find_definition kind: const" breaks if quoted), and membership
+  validation against a declaration-time set makes the splice safe where
+  a free string would not be — which is why param also checks the items
+  are token-safe.
+- spec refinement: "list of <scalar>" joins with a SINGLE SPACE after
+  per-element type-directed quoting. the spec says "space- or
+  comma-joined per an optional join spec"; the join spec is DEFERRED
+  (no declared user), one join rule ships.
+- spec refinement: a List_Of param takes no "= default". a list-literal
+  default syntax is not specced; rejected at registration, DEFERRED.
+- spec refinement: an absent (optional) param substitutes the EMPTY
+  STRING in the format. the spec says "omitted = absent from the
+  format" / "omitted optionals erase their segment", which presupposes
+  segment machinery that does not exist — $flag?text is specced and
+  still unimplemented (scan_format knows only $name). segment erasure
+  stays OUT OF SCOPE; the three tools that gate on (optional) are
+  ml_run/capture-form tools with no format clause at all, so nothing is
+  blocked. check_format already tolerates an unused non-required param,
+  so no change there.
+- spec refinement: validate takes the constraint list as an argument
+  rather than the constraints being checked by a sibling function the
+  callers could forget. the existing three-argument call sites in
+  MCP_Tools_Tests.thy (:274, :278, :287, :289, :291, :294-297) update
+  with it.
+- spec refinement: the isar (annotations ...) clause takes ONE of the
+  five bucket names. arbitrary combinations of the four hints stay
+  reachable from ML only (the combinators take an annotations record) —
+  the spec's "a genuinely new combination needs no spec edit" is a
+  statement about the ML constants, and giving isar a per-hint syntax
+  before a user needs it would be a second surface.
+- spec refinement: the exactly_one sentence is generated ML-side at
+  tool construction, so nothing about constraints crosses the wire.
+
+done when
+----------
+
+steps 1-7 landed; the four sessions build clean under the flatpak;
+isabelle mcp_test and isabelle mcp_test -b green; A1-A13 each have
+their test at the stated layer; the spec's implementation-order entry
+no longer lists enum/list/(optional) as deferred and records the
+annotations and exactly_one items as done; CHANGELOG entry dated;
+plans/README carries a param_schema_v2 index entry with its checkbox;
+and this file's status header records any deviation the way
+plans/mcp_tool_command's does. NO evals/ file: plans/README pairs each
+plan with an agent evaluation of the same name, but that is a per-TOOL
+obligation — no feature plan has one (evals/ holds no mcp_tool_command,
+mcp_tool_registry, builtin_activation, tool_scope or readiness entry),
+and this plan adds no tool an agent could be evaluated on. the absence
+is deliberate, not an omission.
+
+plans/ml_builtin_migration may then start — it consumes (optional), the
+annotations record and Exactly_One from day one.
