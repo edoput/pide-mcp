@@ -1,13 +1,66 @@
 builtins as ML tools — implementation plan
 ===========================================
 
-status: PLANNED (decided 2026-07-28, commit 40d30471; spec: phase 3
-"builtins as ML tools (decided 2026-07-28)", the AMENDED block in "ml
-bridge: async protocol commands", the SCOPED block in "builtin tools in
-the activation layer"). no new mcp tool — a feature plan like
-plans/builtin_activation and plans/mcp_tool_registry: the ~20 builtins
-whose logic is already ML stop being declared three times and become
-ordinary ML registry entries.
+status: STEPS 1, 3 (partial), 4, 5 LANDED 2026-07-28; S1 still
+undecided, waves 1..6 not started (decided 2026-07-28, commit 40d30471;
+spec: phase 3 "builtins as ML tools (decided 2026-07-28)", the AMENDED
+block in "ml bridge: async protocol commands", the SCOPED block in
+"builtin tools in the activation layer"). no new mcp tool — a feature
+plan like plans/builtin_activation and plans/mcp_tool_registry: the ~20
+builtins whose logic is already ML stop being declared three times and
+become ordinary ML registry entries.
+
+DEVIATIONS FROM THIS PLAN, recorded per .claude/rules/plan-tasks.md:
+
+- step 3 landed WITHOUT the "(annotations ...) clause REQUIRED for the
+  capture form" registration-time check described below. That
+  mechanism (the annotations record, MCP_Tool.default_annotations, the
+  five named constants, the scala half) is param_schema_v2's D2, which
+  has not landed (param_schema_v2 is itself still "planned only" —
+  confirmed by grep, no annotations record exists anywhere in
+  MCP_Tools.thy yet). Capture-form tools declared today carry no
+  annotations at all; the scala side falls through to `case _ => None`
+  (mcp_server.scala:77, unchanged). Once D2 lands, add the
+  registration-time check to MCP_Tools.thy's `tool_cmd` (Tool_Capture
+  branch) and retrofit it onto whatever capture tools already exist —
+  this includes the mcp_tool command's outer-syntax `= capture \<open>...\<close>`
+  form itself, which DID land now (ahead of the plan's literal step-3
+  wording, which bundled it with the annotations requirement): it was
+  judged independent and useful on its own, per advisor review.
+- A13 (output routing survives a fresh process against the saved heap)
+  turned out to apply one layer wider than the plan's own wording
+  suggested. The plan states "today ONE dispatcher depends on that ...
+  MCP_Repl.reset guards it after the build-time self-test" (singular,
+  MCP_Repl.thy only). In practice, ANY theory whose build-time
+  \<^assert>s exercise MCP_Output.captured — which now includes
+  MCP_Tools_Tests.thy, once its capture-form tests were added for step
+  3's A1/A2/A5 coverage — must also call MCP_Output.reset () at the end,
+  for the identical reason. Discovered empirically: the new bridge
+  suite MCP_Run_Tool_Async_Tests (session MCP-Tools-Tests) got empty
+  output back from a live capture-form tool call until this reset was
+  added to MCP_Tools_Tests.thy. Generalize A13's wording: it is a
+  property of the SESSION/HEAP, not of MCP_Repl.thy specifically — any
+  session that exercises captured output at build time needs the reset
+  before it can be loaded fresh and still route output correctly.
+- A6's bridge case as literally specced ("two capture-form tools
+  running concurrently against two DIFFERENT repls") cannot be built
+  yet: it needs a real repl-designated capture tool, which does not
+  exist until wave 1 lands (itself blocked on S1). Landed instead: a
+  bridge test asserting the adjacent, buildable claim — two DIFFERENT
+  capture tools running concurrently under one (non-repl) designation
+  do not cross outputs — in MCP_Run_Tool_Async_Tests
+  (mcp_bridge_tests.scala). Replace with the literal A6 case once wave 1
+  supplies a real repl-designated capture tool.
+- checked, no bug found: whether step 1's widened default_theory would
+  desync tool_scope_show's reported label from what ML actually
+  resolves "" to. It does not — MCP_Server.format_designation("")
+  (mcp_server.scala:1001-1004) returns the designation-agnostic string
+  "default (the base registry theory)", never a literal theory name, so
+  there is nothing for step 1 to desync. The fast suite's test named
+  "tool_scope_show default: theory MCP_Tools, no bundles" is a
+  descriptive test NAME only — it asserts on Fake_Backend's synthetic
+  row set, not a real ML resolution, and Fake_Backend never runs real
+  Isabelle/ML at all.
 
 DEPENDS ON plans/param_schema_v2 (written in parallel, must LAND FIRST).
 this plan does not restate or duplicate its steps. the capabilities it
@@ -326,7 +379,7 @@ rebuild/verify commands (per .claude/rules, always through the flatpak
   suites:    flatpak run --command=isabelle de.tum.in.isabelle.Isabelle \
                mcp_test [-b] [-t PATTERN]
 
-1. [ml] DEFAULT DESIGNATION HOOK. MCP_Protocol.default_theory
+1. [ml] [LANDED 2026-07-28] DEFAULT DESIGNATION HOOK. MCP_Protocol.default_theory
    (MCP_Tools.thy:958) hardcodes MCP_Tools, and Handler.scope_designation
    defaults to "" (mcp_server.scala:1182) — so the out-of-the-box scope
    is the MCP_Tools theory, an ANCESTOR of MCP_Repl, and a tool declared
@@ -344,6 +397,14 @@ rebuild/verify commands (per .claude/rules, always through the flatpak
    own tool_scope must import MCP-HOL.MCP_Repl, not MCP-HOL.MCP —
    MCP.thy is MCP_Repl's SIBLING (both import Main + MCP_Tools), not
    its ancestor.
+   LANDED: MCP_Tools.thy gets default_theory_hook + set_default_theory;
+   MCP_Repl.thy calls it at the true end of the file (\<^theory> there
+   already includes every mcp_tool declared above it) with a throwaway
+   probe tool "mcp_repl_default_designation_probe" standing in for wave
+   1's real tools (remove it when wave 1 lands). Verified as an ml-unit
+   \<^assert> in MCP_Repl.thy itself (both the probe and the pre-existing
+   "shout" resolve at designation ""), plus the pre-existing MCP-Tools-
+   Tests coverage of designation "" with no hook set (A7's other half).
 
 2. [spec] resolve the repl-designation gap ("blocking open question").
    not code — a decision the parent records in the spec, with the
@@ -352,7 +413,7 @@ rebuild/verify commands (per .claude/rules, always through the flatpak
    verify: spec section + CHANGELOG entry exist; this plan's wave table
    updated with whatever it decides.
 
-3. [ml] CAPTURE FORM. MCP_Tool.form grows Capture (form_tag "capture");
+3. [ml] [LANDED 2026-07-28, PARTIAL] CAPTURE FORM. MCP_Tool.form grows Capture (form_tag "capture");
    MCP_Combinators.capture + arg/arg_int (arg_opt/arg_all land with
    D3/D5); the mcp_tool command grows the \<open>= capture \<open>...\<close>\<close> form and
    REQUIRES (annotations ...) for it. no tool moves yet.
@@ -362,8 +423,19 @@ rebuild/verify commands (per .claude/rules, always through the flatpak
    capture declaration without (annotations ...) is a registration
    error. NOTE: MCP-Tools is Pure-based and has no Ir — test capture
    against a plain \<open>fn _ => fn args => writeln (arg args "x")\<close>.
+   LANDED except the "(annotations ...) required" registration-time
+   check — see "DEVIATIONS" above (D2 not landed, nothing to require or
+   store yet). Everything else landed as specced, including the
+   outer-syntax \<open>= capture \<open>...\<close>\<close> form. Verified: capture_ok/
+   capture_err/capture_err_only/capture_default/capture_int/
+   capture_bad_accessor in MCP_Tools_Tests.thy cover A1/A2 (writeln
+   passthrough, output+message join, error-only, total arg on a
+   defaulted-and-omitted param, arg_int, arg on an undeclared name);
+   print_mcp_tools row and #form both confirm the [capture] tag. A5
+   (buffer unambiguity under nesting) also landed here as an ml-unit
+   \<^assert>, ahead of where the plan lists it (see step 5's note).
 
-4. [scala] ZERO-PARAM SCHEMA. ml_tool_schema returns the mvp
+4. [scala] [LANDED 2026-07-28] ZERO-PARAM SCHEMA. ml_tool_schema returns the mvp
    \<open>{input :: string, required: [input]}\<close> when params is empty
    (mcp_server.scala:47-48). repl_list's builtin schema is bare
    \<open>{"type": "object"}\<close>, so moving it unchanged would advertise a
@@ -374,13 +446,29 @@ rebuild/verify commands (per .claude/rules, always through the flatpak
    verify: scala_build; [scala unit] a synthetic zero-param row lists as
    \<open>{"type":"object"}\<close>; "shout" is unaffected (MCP_Combinators.func
    always supplies its own input param, MCP_Tools.thy:640-649).
+   CONFIRMED param_schema_v2 does not own this (grepped its plan text
+   for zero-param/empty-params/mvp — no hits), so it stayed in this
+   plan as written. LANDED: the dead top-level `input_schema` val was
+   also deleted (no longer referenced anywhere once the empty-params
+   branch stopped using it). Verified: new scala-unit test in
+   mcp_handler_tests.scala (synthetic zero-param row -> bare object
+   schema; shout still requires "input").
 
-5. [ml] ASYNC MCP.run_tool. MCP_Tools.thy:1130 — fork the call, post
+5. [ml] [LANDED 2026-07-28] ASYNC MCP.run_tool. MCP_Tools.thy:1130 — fork the call, post
    (status, output) by id from a dependent future. no buffer
    registration. no scala change.
    verify: theories build; [bridge] a slow ML tool and a fast one, the
    fast one replies first (mirrors the existing "ir bridge: async" case,
    mcp_bridge_tests.scala:210); A5/A6 below.
+   LANDED exactly as specced (two-future shape copied from MCP.ir).
+   Verified via a new bridge suite, MCP_Run_Tool_Async_Tests
+   (mcp_bridge_tests.scala, session MCP-Tools-Tests over the capture
+   tools from step 3): slow-does-not-block-fast (A4), an erroring slow
+   call still resolves its promise (A4), and concurrent capture tools
+   do not cross outputs (A6 PROXY — the literal "two different repls"
+   case needs wave 1; see "DEVIATIONS"). A5's own strongest form (nested
+   buffer registration) is the ml-unit \<^assert> added under step 3.
+   Uncovered a wider instance of A13 in the process — see "DEVIATIONS".
 
 waves. each wave: declare the tools in MCP_Repl.thy, delete their
 Builtin_Tool rows + mirror rows + dispatcher cases, shrink
@@ -656,6 +744,24 @@ A13 OUTPUT ROUTING SURVIVES A FRESH PROCESS AGAINST THE SAVED HEAP.
     consequence for step 3/5: MCP_Repl.thy must keep calling
     MCP_Output.reset after ANY build-time capture exercise, for the same
     reason its existing self-test does.
+
+    STATUS 2026-07-28: this test (the [heap, mcp_heap_tests.scala]
+    fixture, an ml() call against the SAVED MCP-HOL heap) is STILL
+    OUTSTANDING -- there is no capture-form tool in MCP-HOL to run it
+    against until wave 1 lands, and wave 1 is blocked on S1. What landed
+    instead, while implementing steps 3/5, was the SAME underlying bug
+    caught a layer over: MCP_Run_Tool_Async_Tests (mcp_bridge_tests.scala,
+    a live PIDE-session bridge test, not the raw-process heap fixture)
+    against a FRESH session on MCP-Tools-Tests got empty output back from
+    a capture-form tool until MCP_Tools_Tests.thy was given its own
+    MCP_Output.reset () at the true end of the file -- confirming A13's
+    mechanism empirically, one heap early. Also moved MCP_Repl.thy's own
+    reset to the true end of the file (it had drifted to before the new
+    step-1 "Default designation" section, which is itself build-time
+    capture-adjacent via MCP_Tool.list/print_mcp_tools) — see the comment
+    left there marking it MUST stay last. The literal MCP_Heap_Suite case
+    against MCP-HOL remains to be written once wave 1 supplies a real
+    capture tool there.
 
 D1..D5 are param_schema_v2's assumptions, not restated here. this plan
 only asserts they are PRESENT before the wave that needs them: a wave's
