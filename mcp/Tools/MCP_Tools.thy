@@ -568,19 +568,26 @@ fun assemble params fmt args =
           (case find_first (fn p => #name p = name) params of
             SOME p => p
           | NONE => error ("Unknown parameter $" ^ name ^ " in format"));
-        val v =
-          (case AList.lookup (op =) args name of
-            SOME v => v
-          | NONE => error ("Missing argument " ^ quote name));
       in
-        (case #typ p of
-          "string" => (quote_string v, 0)
-        | "source" => quote_framed v
-        | "term" => quote_framed v
-        | "typ" => quote_framed v
-        | "args" => (v, 0)  (*verbatim splice: the command's own syntax*)
-        | "fact" => (v, 0)
-        | _ => (v, 0))  (*nat/int/bool: validated literals*)
+        (case AList.lookup (op =) args name of
+          NONE =>
+            (*validate already ran: a defaulted param is filled in by the
+              time assemble sees it, so an absent value here can only be
+              an (optional) param the caller left out. Substitute the
+              empty segment DIRECTLY, bypassing type-directed quoting --
+              routing "" through quote_string would splice the two
+              characters "" (a quoted empty string), not an empty
+              segment.*)
+            if #required p then error ("Missing argument " ^ quote name) else ("", 0)
+        | SOME v =>
+            (case #typ p of
+              "string" => (quote_string v, 0)
+            | "source" => quote_framed v
+            | "term" => quote_framed v
+            | "typ" => quote_framed v
+            | "args" => (v, 0)  (*verbatim splice: the command's own syntax*)
+            | "fact" => (v, 0)
+            | _ => (v, 0)))  (*nat/int/bool: validated literals*)
       end;
     val (pieces, shift) =
       fold_map
@@ -767,13 +774,30 @@ local
 datatype clause =
   Descr of string | Params of MCP_Tool.param list | Format of string | Isar of string;
 
+(*(optional) sits after the type, matched with Args.$$$ (an ident/keyword
+  token by CONTENT, Pure/Isar/args.ML:81) rather than Parse.$$$, which
+  would need "optional" declared in the theory header -- a minor keyword
+  lexes as one in every IMPORTING theory too, breaking any unrelated use
+  of the word. No declaration needed and none wanted (plans/
+  param_schema_v2, "VERIFIED PARSER FACT").*)
+val optional_flag =
+  Scan.optional (Parse.$$$ "(" |-- Args.$$$ "optional" --| Parse.$$$ ")" >> K true) false;
+
 val param_entry =
-  Parse.name -- (Parse.$$$ "::" |-- Parse.name) --
+  Parse.name -- (Parse.$$$ "::" |-- Parse.name) -- optional_flag --
     Scan.option (Parse.$$$ "=" |-- Parse.embedded) -- Parse.embedded
-  >> (fn (((name, typ), default), description) =>
-      MCP_Combinators.param
-        {name = name, typ = typ, required = is_none default, default = default,
-         description = description});
+  >> (fn ((((name, typ), optional), default), description) =>
+      let
+        val _ =
+          if optional andalso is_some default then
+            error ("(optional) is mutually exclusive with a default value, for parameter " ^
+              quote name)
+          else ();
+      in
+        MCP_Combinators.param
+          {name = name, typ = typ, required = not optional andalso is_none default,
+           default = default, description = description}
+      end);
 
 fun clause_block kw p =
   Parse.$$$ "(" |-- Parse.$$$ kw |-- Parse.!!! (p --| Parse.$$$ ")");

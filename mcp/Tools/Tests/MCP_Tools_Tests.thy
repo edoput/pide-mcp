@@ -300,6 +300,67 @@ val tp = [mk_param ("t", "term") true NONE];
 \<^assert> (is_err (fn () => mk_param ("x", "float") true NONE));
 \<close>
 
+section \<open>Combinators: the (optional) modifier (plans/param_schema_v2 A1)\<close>
+
+text \<open>required=false/default=NONE was always representable in the data
+model (MCP_Combinators.param takes required and default independently)
+but unreachable from isar until now -- param_entry always derived
+required from is_none default. validate itself needed no change: its
+value_of already returns NONE for an absent required=false/default=NONE
+param, which map_filter already drops.\<close>
+
+ML \<open>
+val opt_ps =
+  [mk_param ("crit", "string") true NONE,
+   mk_param ("repl", "string") false NONE];
+
+(*absent optional is dropped, not an error and not a spurious empty pair*)
+\<^assert> (MCP_Combinators.validate \<^context> opt_ps [("crit", "x")] = [("crit", "x")]);
+(*supplied optional is kept, in declaration order*)
+\<^assert> (MCP_Combinators.validate \<^context> opt_ps [("crit", "x"), ("repl", "T")] =
+  [("crit", "x"), ("repl", "T")]);
+
+(*assemble: an absent optional referenced in the format substitutes the
+  empty string rather than erroring "Missing argument"*)
+\<^assert> (MCP_Combinators.assemble opt_ps "find_theorems (repl $repl) $crit"
+    [("crit", "conj")] =
+  ("find_theorems (repl ) \"conj\"", 0));
+(*a SUPPLIED value still goes through normal type-directed quoting --
+  only the absent case bypasses it*)
+\<^assert> (MCP_Combinators.assemble opt_ps "find_theorems (repl $repl) $crit"
+    [("crit", "conj"), ("repl", "T")] =
+  ("find_theorems (repl \"T\") \"conj\"", 0));
+\<close>
+
+text \<open>A2: (optional) is declarable from isar with NO new header keyword
+(Args.$$$ matches "optional" by content); mutually exclusive with a
+default value.\<close>
+
+mcp_tool optional_probe = run \<open>fn _ => fn args =>
+  (case AList.lookup (op =) args "repl" of SOME v => "repl=" ^ v | NONE => "no-repl")\<close>
+  (description \<open>probe for the (optional) modifier\<close>)
+  (params
+    repl :: string (optional) \<open>REPL id; omitted = image\<close>
+    crit :: string \<open>search criteria\<close>)
+
+ML \<open>
+val optional_probe = MCP_Tool.get (Context.Proof \<^context>) "MCP_Tools_Tests.optional_probe";
+val repl_param = the (find_first (fn p => #name p = "repl") (#params optional_probe));
+\<^assert> (not (#required repl_param) andalso #default repl_param = NONE);
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.optional_probe" [("crit", "x")] = "no-repl");
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.optional_probe" [("crit", "x"), ("repl", "T")] =
+  "repl=T");
+\<close>
+
+ML \<open>
+(*(optional) together with "= default" is a registration error*)
+\<^assert> (err_mentions
+  (fn () => MCP_Combinators.exec_text \<^theory> 0
+    ("mcp_tool \"optional_bad\" = run \<open>fn _ => fn _ => \"\"\<close> (description \<open>d\<close>) " ^
+     "(params repl :: string (optional) = \<open>T\<close> \<open>x\<close>)"))
+  "optional");
+\<close>
+
 section \<open>Combinators: format assembly\<close>
 
 ML \<open>
