@@ -532,9 +532,60 @@ val _ = \<^assert> (s9 = "error" andalso String.isSubstring "banana" (plain o9))
 val _ = \<^assert> (MCP_Repl.decode_args encoded = wire_args);
 val _ = \<^assert> (MCP_Repl.decode_args "" = []);
 end;
-
-(*drop build-time wrapper state from the heap — see MCP_Repl.reset*)
-MCP_Repl.reset ();
 \<close>
+
+section \<open>Default designation\<close>
+
+text \<open>plans/ml_builtin_migration step 1 calls for a THROWAWAY probe here
+(its own words: "use a throwaway declaration until wave 1 supplies a
+real one"), standing in for the repl tools that wave 1 will declare
+once the S1 repl-designation spec decision lands and
+plans/param_schema_v2's D2 (annotations) is available. Not a real MCP
+tool; it exists solely so step 1 has something in MCP_Repl.thy to check
+the default designation against. Remove it when wave 1 lands.\<close>
+mcp_tool "mcp_repl_default_designation_probe" = \<open>fn _ => "ok"\<close>
+  (description \<open>Throwaway probe for the default-designation hook
+    (plans/ml_builtin_migration step 1); superseded once wave 1 lands.\<close>)
+
+text \<open>Widen the out-of-the-box designation ("") from MCP_Tools to this
+theory: MCP_Protocol.default_theory (MCP_Tools.thy) otherwise hardcodes
+MCP_Tools, an ANCESTOR of MCP_Repl, so a tool declared anywhere in this
+theory (the moves below) would be invisible at the default designation.
+Captured here, at the END of the file, so \<^ML>\<open>\<^theory>\<close> already includes
+every mcp_tool declaration above -- placing this any earlier would miss
+them. Strictly widens: MCP_Repl imports MCP_Tools, so every tool visible
+at the old default stays visible.\<close>
+ML \<open>MCP_Protocol.set_default_theory \<^theory>\<close>
+
+text \<open>A7: the default designation now sees a tool declared in THIS
+theory, not just MCP_Tools -- the whole point of step 1. Also checks
+that the pre-existing MCP_Tools-resident demo tool ("shout") is still
+reachable, i.e. the widening is strict, not a replacement.\<close>
+ML \<open>
+val _ =
+  let
+    (*full internal names are theory-qualified (e.g. "MCP_Repl.foo"),
+      same as exposure()'s Long_Name.base_name reduction on the scala
+      side (mcp_server.scala:108) -- compare on the base name.*)
+    val bases =
+      map (Long_Name.base_name o #1)
+        (MCP_Tool.list (Context.Proof (MCP_Protocol.designated_context "" [])));
+  in
+    \<^assert> (member (op =) bases "mcp_repl_default_designation_probe");
+    \<^assert> (member (op =) bases "shout")
+  end;
+\<close>
+
+text \<open>MUST stay the LAST command in this theory (A13,
+plans/ml_builtin_migration): the self-test above and the A7 probe both
+exercise \<^verbatim>\<open>MCP_Output.captured\<close>/writeln routing at build time, which
+marks \<^verbatim>\<open>wrapped = true\<close> in a Synchronized var that would otherwise
+persist into the saved MCP-HOL heap; a fresh process loading that heap
+re-assigns Private_Output's functions at startup, silently discarding
+the wrappers while \<open>wrapped\<close> still reads true, so every capture-form
+tool (wave 1 onward) would then return empty output for good. Any
+mcp_tool declaration or ML block added below this line in a future edit
+would silently reopen that gap -- keep this last.\<close>
+ML \<open>MCP_Repl.reset ()\<close>
 
 end

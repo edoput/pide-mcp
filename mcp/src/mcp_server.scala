@@ -18,17 +18,17 @@ object MCP_Server {
   val server_version = "0.1.0"
   val default_protocol_version = "2025-03-26"
 
-  val input_schema: JSON.Object.T =
-    JSON.Object(
-      "type" -> "object",
-      "properties" -> JSON.Object("input" -> JSON.Object("type" -> "string")),
-      "required" -> List("input"))
-
   /* declared params -> JSON schema (spec phase 3 "schema over the
      bridge"): nat/int -> integer, bool -> boolean, everything else
      (string/source/args/term/typ/fact) -> string with the validation
      contract in the property description; defaults and descriptions
-     carried. A tool without params keeps the mvp {input} schema. */
+     carried. A tool with no declared params gets the bare object schema
+     (plans/ml_builtin_migration step 4) -- not every ML tool actually has
+     an "input" property (e.g. a moved zero-param builtin like repl_list),
+     so advertising one unconditionally would be a lie about the interface.
+     MCP_Combinators.func-form tools (e.g. "shout") are unaffected: they
+     always supply their own real "input" param, so params is never
+     actually empty for them. */
 
   private def param_json_type(typ: String): String =
     typ match {
@@ -45,7 +45,7 @@ object MCP_Server {
     }
 
   def ml_tool_schema(params: List[MCP_Session.Tool_Param]): JSON.Object.T =
-    if (params.isEmpty) input_schema
+    if (params.isEmpty) JSON.Object("type" -> "object")
     else {
       val properties =
         params.foldLeft(JSON.Object.empty) { (obj, p) =>

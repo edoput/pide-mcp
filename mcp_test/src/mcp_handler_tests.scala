@@ -935,6 +935,18 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(annotation(row, "idempotentHint"), true)
   }
 
+  test("tools/list gives a zero-param ML tool the bare object schema, " +
+      "not the mvp {input} shape (plans/ml_builtin_migration step 4)") {
+    val backend = new Fake_Backend
+    backend.extra_ml_tools =
+      List(MCP_Session.Tool_Row("Thy_A.no_args", "takes nothing", "string_fun", Nil))
+    val row = tool_row("no_args", backend)
+    assertEquals(get(row, "inputSchema"), JSON.Object("type" -> "object"))
+    /* a real func-form tool (declared params always non-empty) is unaffected */
+    val shout = tool_row("shout", backend)
+    assertEquals(required_args(shout), List("input"))
+  }
+
   test("tools/call forwards ALL json arguments as named pairs") {
     class Recording_Backend extends Fake_Backend {
       var seen: Option[(String, List[(String, String)])] = None

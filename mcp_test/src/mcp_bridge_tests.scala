@@ -1107,3 +1107,63 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     }
   }
 }
+
+
+/* MCP.run_tool async (plans/ml_builtin_migration step 5, A4/A5): the same
+   two-future shape as MCP.ir above, over the capture-form test tools
+   declared in MCP_Tools_Tests.thy (MCP-Tools has no genuinely slow tool of
+   its own to exercise this with). A6's own bridge case -- two capture
+   tools concurrently against two DIFFERENT repls -- needs a real
+   repl-designated capture tool, which does not exist until wave 1 lands
+   (and wave 1 is blocked on the S1 repl-designation decision); this suite
+   is the adjacent claim available today: two DIFFERENT capture tools
+   running concurrently under one designation do not cross outputs. */
+class MCP_Run_Tool_Async_Tests
+  extends MCP_Session_Suite("MCP-Tools-Tests", "MCP_Tools_Tests") {
+
+  /* the default designation ("") resolves to MCP_Tools (MCP_Protocol.
+     default_theory, unaffected by this session's own theory since no
+     MCP_Repl hook runs in this process) -- name these test tools by their
+     own theory explicitly. Thy_Info keying mixes qualified and
+     unqualified spellings and designated_context tries no fallback
+     itself, so resolve the canonical name the same way "explicit theory
+     designation equals the default" does elsewhere in this file. */
+  lazy val test_theory: String =
+    session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
+      .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+
+  def run(name: String, args: List[(String, String)] = Nil): MCP_Session.Result =
+    session.ml_run("MCP_Tools_Tests." + name, args, designation = test_theory)
+
+  test("bridge: run_tool async -- a slow capture tool does not block a concurrent fast one") {
+    val slow = Future.fork(run("capture_slow"))
+    val fast = run("capture_ok", List("x" -> "hi"))
+
+    assertEquals(fast, MCP_Session.Ok("got:hi"))
+    assert(!slow.is_finished, "the slow capture tool finished before the fast reply arrived")
+
+    val slow_result = slow.join
+    assertEquals(slow_result, MCP_Session.Ok("slow done"))
+  }
+
+  test("bridge: run_tool async -- concurrent capture tools do not cross outputs (A5/A6 proxy)") {
+    val slow = Future.fork(run("capture_slow"))
+    val fast = run("capture_ok", List("x" -> "hi"))
+    val slow_result = slow.join
+
+    (fast, slow_result) match {
+      case (MCP_Session.Ok(fast_text), MCP_Session.Ok(slow_text)) =>
+        assert(!fast_text.contains("slow done"), "fast result leaked the slow tool's output")
+        assert(!slow_text.contains("got:hi"), "slow result leaked the fast tool's output")
+      case other => fail("expected both calls to succeed: " + other.toString)
+    }
+  }
+
+  test("bridge: run_tool async -- an erroring slow call still resolves its promise") {
+    val slow = Future.fork(run("capture_err_only"))
+    val fast = run("capture_ok", List("x" -> "hi"))
+
+    assertEquals(fast, MCP_Session.Ok("got:hi"))
+    expect_error(slow.join, containing = "silent boom")
+  }
+}

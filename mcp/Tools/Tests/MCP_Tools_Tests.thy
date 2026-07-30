@@ -401,6 +401,101 @@ ML \<open>
   (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.snippet" [("n", "no")]) "n");
 \<close>
 
+section \<open>The mcp_tool command: capture form (plans/ml_builtin_migration A1/A2)\<close>
+
+mcp_tool capture_ok = capture \<open>fn _ => fn args =>
+  writeln ("got:" ^ MCP_Combinators.arg args "x")\<close>
+  (description \<open>writeln its input\<close>)
+  (params x :: string \<open>echoed back\<close>)
+
+mcp_tool capture_err = capture \<open>fn _ => fn _ => (writeln "before"; error "boom")\<close>
+  (description \<open>writeln then error\<close>)
+
+mcp_tool capture_err_only = capture \<open>fn _ => fn _ => error "silent boom"\<close>
+  (description \<open>errors with no output at all\<close>)
+
+mcp_tool capture_default = capture \<open>fn _ => fn args =>
+  writeln (MCP_Combinators.arg args "greeting")\<close>
+  (description \<open>arg is total for a defaulted param even when the caller omits it\<close>)
+  (params greeting :: string = \<open>hello\<close> \<open>greeting text\<close>)
+
+mcp_tool capture_int = capture \<open>fn _ => fn args =>
+  writeln (string_of_int (MCP_Combinators.arg_int args "n" + 1))\<close>
+  (description \<open>arg_int accessor\<close>)
+  (params n :: int \<open>a number\<close>)
+
+mcp_tool capture_bad_accessor = capture \<open>fn _ => fn args =>
+  writeln (MCP_Combinators.arg args "nope")\<close>
+  (description \<open>calls arg on a name outside its own params clause -- a tool bug\<close>)
+  (params declared :: string \<open>present but irrelevant to the bug\<close>)
+
+mcp_tool capture_slow = capture \<open>fn _ => fn _ =>
+  (OS.Process.sleep (Time.fromReal 2.0); writeln "slow done")\<close>
+  (description \<open>sleeps ~2s then writelns -- for the run_tool bridge async
+    test (plans/ml_builtin_migration A4), a fast concurrent call must not
+    wait behind this one\<close>)
+
+ML \<open>
+val context = Context.Proof \<^context>;
+
+(*A1: a capture tool returns what its function printed*)
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_ok" [("x", "hi")] = "got:hi");
+
+(*A1: writeln then error -- output and message joined, in that order*)
+\<^assert> (err_mentions
+  (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_err" []) "before");
+\<^assert> (err_mentions
+  (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_err" []) "boom");
+
+(*A1: an error with no output still surfaces the message alone*)
+\<^assert> (err_mentions
+  (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_err_only" []) "silent boom");
+
+(*A2: arg is TOTAL for a declared param -- present even when the caller
+  omitted it, because validate already filled in the default*)
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_default" [] = "hello");
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_default" [("greeting", "hi")] = "hi");
+
+(*arg_int parses the validated string*)
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_int" [("n", "41")] = "42");
+
+(*A2: arg on a name outside the tool's own params clause is a tool-bug
+  error naming the offending parameter, not a client error*)
+\<^assert> (err_mentions
+  (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_bad_accessor" [("declared", "x")])
+  "nope");
+
+(*the row is tagged [capture], both via the form field and print_mcp_tools*)
+\<^assert> (#form (MCP_Tool.get context "MCP_Tools_Tests.capture_ok") = MCP_Tool.Capture);
+\<^assert> (String.isSubstring "[capture]" (MCP_Combinators.exec_text \<^theory> 0 "print_mcp_tools"));
+\<close>
+
+text \<open>A5 (plans/ml_builtin_migration): a capture tool forks its OWN group
+and registers its OWN buffer inside \<^verbatim>\<open>MCP_Output.captured\<close>
+(MCP_Tools.thy). Nest it inside an already-registered OUTER group (the
+shape a naive MCP.run_tool that also registered a buffer would create,
+and precisely why step 5 does not) and confirm the inner tool's output
+lands in ITS OWN return value, not the outer buffer -- \<^verbatim>\<open>find_buffer\<close>'s
+ancestry walk must resolve to the more recently registered (inner) entry,
+not the first one found by naive ancestor order.\<close>
+ML \<open>
+val _ =
+  let
+    val outer_group = Future.new_group NONE;
+    val finish_outer = MCP_Output.register outer_group;
+    val inner_result =
+      Future.join
+        ((singleton o Future.forks)
+          {name = "A5 nested capture probe", group = SOME outer_group, deps = [],
+           pri = 0, interrupts = true}
+          (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_ok" [("x", "nested")]));
+    val outer_output = finish_outer ();
+  in
+    \<^assert> (inner_result = "got:nested");
+    \<^assert> (not (String.isSubstring "got:nested" outer_output))
+  end;
+\<close>
+
 section \<open>The mcp_tool command: registration-time rejection\<close>
 
 ML \<open>
@@ -446,5 +541,17 @@ ML \<open>
 (*unknown fact name rejected at registration (spec phase-2 box)*)
 \<^assert> (reg_fails "mcp_resource no_such_fact_xyz" "no_such_fact_xyz");
 \<close>
+
+text \<open>A13 (plans/ml_builtin_migration): the capture-form exercises above ran
+\<^verbatim>\<open>MCP_Output.captured\<close> at BUILD time, which installs the Private_Output
+wrappers and marks \<^verbatim>\<open>wrapped = true\<close> in a Synchronized var that survives
+into the saved heap. A fresh process loading this heap re-assigns
+Private_Output's functions at startup, silently discarding those wrappers
+-- but \<^verbatim>\<open>wrapped\<close> still reads true there, so a later
+\<^verbatim>\<open>install_wrappers ()\<close> call (inside \<^verbatim>\<open>captured\<close>) would see "already
+installed" and skip re-installing them, and every capture-form tool would
+silently return empty output. Reset here, exactly as MCP_Repl.thy's
+own build-time self-test does.\<close>
+ML \<open>MCP_Output.reset ()\<close>
 
 end

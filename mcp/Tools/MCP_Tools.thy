@@ -2,7 +2,7 @@ theory MCP_Tools
   imports Pure
   keywords "mcp_tool" "mcp_resource" "mcp_test" :: thy_decl
     and "print_mcp_tools" "print_mcp_resources" :: diag
-    and "description" "params" "format" "run" "isar"
+    and "description" "params" "format" "run" "capture" "isar"
 begin
 
 text \<open>The header reserves \<^verbatim>\<open>mcp_test\<close> now so it never changes again;
@@ -142,7 +142,7 @@ section \<open>MCP tool registry\<close>
 ML \<open>
 signature MCP_TOOL =
 sig
-  datatype form = String_Fun | Diag_Wrap | Method_Wrap | Builtin
+  datatype form = String_Fun | Diag_Wrap | Method_Wrap | Builtin | Capture
   val form_tag: form -> string
   type param =
     {name: string, typ: string, required: bool, default: string option, description: string}
@@ -165,12 +165,13 @@ end;
 structure MCP_Tool: MCP_TOOL =
 struct
 
-datatype form = String_Fun | Diag_Wrap | Method_Wrap | Builtin;
+datatype form = String_Fun | Diag_Wrap | Method_Wrap | Builtin | Capture;
 
 fun form_tag String_Fun = "string_fun"
   | form_tag Diag_Wrap = "diag_wrap"
   | form_tag Method_Wrap = "method_wrap"
-  | form_tag Builtin = "builtin";
+  | form_tag Builtin = "builtin"
+  | form_tag Capture = "capture";
 
 type param =
   {name: string, typ: string, required: bool, default: string option, description: string};
@@ -406,6 +407,10 @@ sig
     (Proof.context -> (string * string) list -> string) -> MCP_Tool.tool
   val diag: Proof.context -> string * Position.T ->
     {description: string, params: MCP_Tool.param list, format: string} -> MCP_Tool.tool
+  val capture: string -> MCP_Tool.param list ->
+    (Proof.context -> (string * string) list -> unit) -> MCP_Tool.tool
+  val arg: (string * string) list -> string -> string
+  val arg_int: (string * string) list -> string -> int
 end;
 
 structure MCP_Combinators: MCP_COMBINATORS =
@@ -680,6 +685,44 @@ fun diag ctxt (cmd, pos) {description, params, format = fmt} : MCP_Tool.tool =
       in exec_text (Proof_Context.theory_of run_ctxt) shift text end}
   end;
 
+(*capture form (plans/ml_builtin_migration): a run slot for writeln-style
+  ML functions (most naturally Ir-shaped: report via writeln/error,
+  return unit) that would otherwise have to hand-roll exec_text's
+  capture-and-join-errors block themselves. PLAIN print mode, not PIDE
+  -- run_tool_result (mcp_session.scala) does not strip yxml markup the
+  way the repl bridge's ir_result does, so captured text must already
+  be plain, the same reason exec_text uses Print_Mode.with_modes [].
+  NOTE: the mcp_tool command's capture form does not yet require an
+  (annotations ...) clause -- that mechanism belongs to
+  plans/param_schema_v2 (D2), not yet landed; see plans/ml_builtin_migration
+  step 3 and its recorded deviation.*)
+fun capture description params f : MCP_Tool.tool =
+  let val params = map param params in
+    {description = description, params = params, form = MCP_Tool.Capture,
+     run = fn ctxt => fn args =>
+      (case MCP_Output.captured (fn () =>
+          Print_Mode.with_modes [] (fn () => f ctxt (validate ctxt params args)) ()) of
+        (Exn.Res (), output) => output
+      | (Exn.Exn exn, output) =>
+          if Exn.is_interrupt exn then Exn.reraise exn
+          else error (if output = "" then Runtime.exn_message exn
+                      else output ^ "\n" ^ Runtime.exn_message exn))}
+  end;
+
+(*total accessors for a capture tool's own function: validate already
+  guarantees every DECLARED parameter is present (required args checked,
+  defaults filled in), so a lookup of a declared name never fails here.
+  An absent key means the tool asked for a name it never put in its own
+  params clause -- a tool bug, not a client error, so it reads as one.*)
+fun arg args name =
+  (case AList.lookup (op =) args name of
+    SOME v => v
+  | NONE =>
+      error ("mcp_tool capture: undeclared parameter " ^ quote name ^
+        " (not in this tool's own params clause)"));
+
+fun arg_int args name = Value.parse_int (arg args name);
+
 end;
 \<close>
 
@@ -703,6 +746,14 @@ but does not export it).
 
 \<^verbatim>\<open>mcp_tool probe = run \<open>fn ctxt => fn args => ...\<close> (params ...)\<close> —
 full-power hatch with declared parameters.
+
+\<^verbatim>\<open>mcp_tool probe = capture \<open>fn ctxt => fn args => ...\<close> (params ...)\<close> —
+for a writeln-style function (returns unit, reports via writeln/error);
+MCP_Combinators.capture runs it under MCP_Output.captured and returns
+what it printed (plans/ml_builtin_migration). Unlike the other forms,
+this one carries no default annotations bucket -- pending
+plans/param_schema_v2's D2, an (annotations ...) clause is not yet
+required or even accepted here.
 
 \<^verbatim>\<open>mcp_resource simps\<close> — a named/dynamic fact, pretty-printed at READ
 time (dynamic collections stay current); \<^verbatim>\<open>(isar \<open>print_simpset\<close>)\<close> —
@@ -781,11 +832,14 @@ fun binding_ml (name, pos) = ML_Syntax.atomic (ML_Syntax.make_binding (name, pos
 
 (* mcp_tool *)
 
-datatype tool_form = Tool_Fun of Input.source | Tool_Run of Input.source;
+datatype tool_form =
+  Tool_Fun of Input.source | Tool_Run of Input.source | Tool_Capture of Input.source;
 
 val tool_form =
   Parse.$$$ "=" |--
-    (Parse.$$$ "run" |-- Parse.ML_source >> Tool_Run || Parse.ML_source >> Tool_Fun);
+    (Parse.$$$ "run" |-- Parse.ML_source >> Tool_Run ||
+     Parse.$$$ "capture" |-- Parse.ML_source >> Tool_Capture ||
+     Parse.ML_source >> Tool_Fun);
 
 fun tool_cmd ((name, pos), (form, clauses)) lthy =
   let
@@ -832,6 +886,27 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
           ml_declaration
             ("MCP_Tool.declare " ^ binding_ml (name, pos) ^
               " (MCP_Combinators.ml_run " ^ ML_Syntax.print_string descr' ^
+              " " ^ params_ml)
+            source ")" lthy
+        end
+    | SOME (Tool_Capture source) =>
+        let
+          val _ =
+            if is_some fmt
+            then error ("(format ...) clause is not meaningful for the capture form of " ^ what)
+            else ();
+          (*NOT YET: an (annotations ...) clause requirement here, per
+            plans/ml_builtin_migration step 3 -- that mechanism (the
+            record, the five named constants, the scala half) is
+            plans/param_schema_v2's D2, not landed. a capture tool
+            declared today carries no annotations at all (scala falls
+            through to `case _ => None`, mcp_server.scala:77) until D2
+            lands and this clause is added.*)
+          val params_ml = ML_Syntax.print_list print_param (these params);
+        in
+          ml_declaration
+            ("MCP_Tool.declare " ^ binding_ml (name, pos) ^
+              " (MCP_Combinators.capture " ^ ML_Syntax.print_string descr' ^
               " " ^ params_ml)
             source ")" lthy
         end)
@@ -937,6 +1012,7 @@ ML \<open>
 signature MCP_PROTOCOL =
 sig
   val set_repl_context_hook: (string -> Proof.context) -> unit
+  val set_default_theory: theory -> unit
   val designated_context: string -> string list -> Proof.context
   val designated_context_safe: string -> string list -> Proof.context option
   val decode_args: string -> (string * string) list
@@ -952,13 +1028,27 @@ end;
 structure MCP_Protocol: MCP_PROTOCOL =
 struct
 
+(*default theory hook: NONE means fall back to MCP_Tools itself (the
+  Pure-based MCP-Tools test image, where nothing sets it). installed by
+  MCP_Repl.thy, mirroring repl_context_hook below, so this base layer
+  never names the HOL layer's theory -- widens the out-of-the-box
+  default strictly, since MCP_Repl imports MCP_Tools.*)
+val default_theory_hook : theory option Synchronized.var =
+  Synchronized.var "MCP_Protocol.default_theory_hook" NONE;
+
+fun set_default_theory thy = Synchronized.change default_theory_hook (K (SOME thy));
+
 (*"" = the registry's own theory: deterministic, in every server heap,
-  and it sees exactly the tools declared below (today's default view).
-  Thy_Info keying mixes qualified and unqualified names, so try both.*)
+  and it sees exactly the tools declared below (today's default view)
+  when no hook is set. Thy_Info keying mixes qualified and unqualified
+  names, so try both.*)
 fun default_theory () =
-  (case try Thy_Info.get_theory "MCP-Tools.MCP_Tools" of
+  (case Synchronized.value default_theory_hook of
     SOME thy => thy
-  | NONE => Thy_Info.get_theory "MCP_Tools");
+  | NONE =>
+      (case try Thy_Info.get_theory "MCP-Tools.MCP_Tools" of
+        SOME thy => thy
+      | NONE => Thy_Info.get_theory "MCP_Tools"));
 
 (*installed by MCP_Repl.thy (the HOL layer, which owns the repl
   registry); NONE = no repl support in this session (e.g. the plain
@@ -1126,24 +1216,56 @@ val _ =
     (fn [] =>
       Output.protocol_message [Markup.function "MCP.theories_result"]
         [MCP_Protocol.theories_body ()]);
+\<close>
 
+text \<open>ASYNC (plans/ml_builtin_migration step 5): the same two-future shape
+as \<open>MCP.ir\<close> above (MCP_Repl.thy) -- fork the work, then fork a SECOND,
+non-interruptible future depending on it that posts \<open>(status, output)\<close> by
+id. Posting must happen from that dependent future, never from inside the
+worker: if the worker were interrupted, posting from within it would never
+run and the Scala promise would hang forever (the same failure mode
+\<open>designated_context_safe\<close>'s comment records). Unlike \<open>MCP.ir\<close>'s
+\<open>fork_run\<close>, this registers NO output buffer -- \<^verbatim>\<open>run_tool\<close> below returns
+its result as a plain string, and any capture-form tool it reaches captures
+its own output via \<^verbatim>\<open>MCP_Output.captured\<close>; registering a second buffer
+here would make that capture ambiguous (\<open>find_buffer\<close>'s group-ancestry walk
+takes the first match found, MCP_Tools.thy above). Plain print mode
+throughout, unlike \<open>MCP.ir\<close>'s PIDE mode -- \<open>run_tool_result\<close> on the Scala
+side does not strip yxml markup.\<close>
+
+ML \<open>
 val _ =
   Protocol_Command.define "MCP.run_tool"
     (fn [id, designation, bundles_yxml, name, args_yxml] =>
       let
-        val (status, output) =
-          (case Exn.capture_body (fn () =>
-              MCP_Protocol.designated_context designation
-                (MCP_Protocol.decode_names bundles_yxml)) of
-            Exn.Res ctxt => MCP_Protocol.run_tool ctxt name (MCP_Protocol.decode_args args_yxml)
-          | Exn.Exn exn =>
-              if Exn.is_interrupt exn then Exn.reraise exn
-              else ("error", Runtime.exn_message exn));
-      in
-        Output.protocol_message
-          [Markup.function "MCP.run_tool_result", ("id", id), ("status", status)]
-          [[XML.Text output]]
-      end);
+        val result =
+          (singleton o Future.forks)
+            {name = "MCP.run_tool." ^ name, group = NONE, deps = [], pri = ~1, interrupts = true}
+            (fn () =>
+              case Exn.capture_body (fn () =>
+                  MCP_Protocol.designated_context designation
+                    (MCP_Protocol.decode_names bundles_yxml)) of
+                Exn.Res ctxt =>
+                  MCP_Protocol.run_tool ctxt name (MCP_Protocol.decode_args args_yxml)
+              | Exn.Exn exn =>
+                  if Exn.is_interrupt exn then Exn.reraise exn
+                  else ("error", Runtime.exn_message exn));
+        val _ =
+          (singleton o Future.forks)
+            {name = "MCP.run_tool_result", group = NONE,
+             deps = [Future.task_of result], pri = ~1, interrupts = false}
+            (fn () =>
+              let
+                val (status, output) =
+                  (case Future.join_result result of
+                    Exn.Res res => res
+                  | Exn.Exn exn => ("error", Runtime.exn_message exn));
+              in
+                Output.protocol_message
+                  [Markup.function "MCP.run_tool_result", ("id", id), ("status", status)]
+                  [[XML.Text output]]
+              end);
+      in () end);
 \<close>
 
 text \<open>tool_scope_set/tool_scope_include (plans/tool_scope) validate a

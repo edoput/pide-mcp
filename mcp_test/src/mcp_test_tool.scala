@@ -37,7 +37,8 @@ object MCP_Test {
       classOf[MCP_Registry_Heap_Tests],
       classOf[MCP_Tool_Scope_Heap_Tests],
       classOf[MCP_Bridge_Tests],
-      classOf[MCP_Ir_Bridge_Tests])
+      classOf[MCP_Ir_Bridge_Tests],
+      classOf[MCP_Run_Tool_Async_Tests])
 
   val isabelle_tool =
     Isabelle_Tool("mcp_test", "run mcp component test suites", Scala_Project.here,
