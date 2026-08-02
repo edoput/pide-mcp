@@ -935,6 +935,22 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(annotation(row, "idempotentHint"), true)
   }
 
+  test("tools/list expands an enum param into {type: string, enum: [...]} " +
+      "(plans/param_schema_v2 A9)") {
+    val backend = new Fake_Backend
+    backend.extra_ml_tools = List(
+      MCP_Session.Tool_Row("Thy_A.finder", "searches", "string_fun", List(
+        MCP_Session.Tool_Param("kind",
+          MCP_Session.Ptyp_Enum(List("const", "thm", "type")),
+          false, Some("const"), "what to look for"))))
+    val row = tool_row("finder", backend)
+    assertEquals(property_type(row, "kind"), "string")
+    assertEquals(get_list(row, "inputSchema", "properties", "kind", "enum"),
+      List("const", "thm", "type"))
+    assertEquals(get(row, "inputSchema", "properties", "kind", "default"), "const")
+    assertEquals(required_args(row), Nil)
+  }
+
   test("tools/list gives a zero-param ML tool the bare object schema, " +
       "not the mvp {input} shape (plans/ml_builtin_migration step 4)") {
     val backend = new Fake_Backend

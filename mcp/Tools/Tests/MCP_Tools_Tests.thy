@@ -384,6 +384,87 @@ ML \<open>
   "optional");
 \<close>
 
+section \<open>Combinators: enum (plans/param_schema_v2 A7)\<close>
+
+text \<open>check_value's membership check and assemble's verbatim splice were
+both already written exhaustively in step 2 (ptyp is a closed variant
+from that step on); this step adds the isar surface (enum (a | b | c))
+and param's registration-time gate (nonempty, distinct, token-safe
+items; a default among them).\<close>
+
+ML \<open>
+val kind_ps = [mk_param ("kind", MCP_Tool.Enum ["const", "thm", "type"]) true NONE];
+
+(*the spec's pre-written "enum rejects junk" case: a value outside the
+  declared items is a typed error naming the param AND listing the
+  admissible items*)
+\<^assert> (MCP_Combinators.validate \<^context> kind_ps [("kind", "const")] = [("kind", "const")]);
+\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> kind_ps [("kind", "junk")]) "kind");
+\<^assert> (err_mentions
+  (fn () => MCP_Combinators.validate \<^context> kind_ps [("kind", "junk")]) "const");
+\<^assert> (err_mentions
+  (fn () => MCP_Combinators.validate \<^context> kind_ps [("kind", "junk")]) "thm");
+
+(*verbatim splice: unlike string, an enum value is NOT quoted*)
+\<^assert> (MCP_Combinators.assemble kind_ps "find_definition $kind" [("kind", "const")] =
+  ("find_definition const", 0));
+
+(*registration-time gate: empty, duplicate, non-token-safe items; a
+  default outside the item set*)
+\<^assert> (is_err (fn () =>
+  MCP_Combinators.param
+    {name = "k", typ = MCP_Tool.Enum [], required = true, default = NONE,
+     description = "d"}));
+\<^assert> (is_err (fn () =>
+  MCP_Combinators.param
+    {name = "k", typ = MCP_Tool.Enum ["a", "a"], required = true, default = NONE,
+     description = "d"}));
+\<^assert> (is_err (fn () =>
+  MCP_Combinators.param
+    {name = "k", typ = MCP_Tool.Enum ["a b"], required = true, default = NONE,
+     description = "d"}));
+\<^assert> (is_err (fn () =>
+  MCP_Combinators.param
+    {name = "k", typ = MCP_Tool.Enum ["a", "b"], required = false, default = SOME "c",
+     description = "d"}));
+\<^assert> (MCP_Combinators.param
+    {name = "k", typ = MCP_Tool.Enum ["a", "b"], required = false, default = SOME "a",
+     description = "d"}
+  = {name = "k", typ = MCP_Tool.Enum ["a", "b"], required = false, default = SOME "a",
+     description = "d"});
+\<close>
+
+text \<open>A2/A7: enum is declarable from isar with NO new header keyword
+("enum" matched by content, same trick as "optional"); "|" is already a
+Pure quasi-command keyword.\<close>
+
+mcp_tool enum_probe = run \<open>fn _ => fn args => MCP_Combinators.arg args "kind"\<close>
+  (description \<open>probe for the enum type\<close>)
+  (params kind :: enum (const | "thm" | "type") = \<open>const\<close> \<open>what to look for\<close>)
+
+ML \<open>
+val enum_probe = MCP_Tool.get (Context.Proof \<^context>) "MCP_Tools_Tests.enum_probe";
+val kind_param = the (find_first (fn p => #name p = "kind") (#params enum_probe));
+\<^assert> (#typ kind_param = MCP_Tool.Enum ["const", "thm", "type"]);
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.enum_probe" [] = "const");
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.enum_probe" [("kind", "thm")] = "thm");
+\<^assert> (err_mentions
+  (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.enum_probe" [("kind", "bogus")]) "bogus");
+\<close>
+
+ML \<open>
+(*registration-time errors surface through the real command too. NOTE:
+  an empty enum cannot be exercised this way -- Parse.enum1 itself
+  requires at least one item, so \<open>enum ()\<close> is a PARSE error, not a
+  registration one; param's empty-items check (already covered above,
+  constructed directly) guards the raw-ML construction path instead.*)
+\<^assert> (err_mentions
+  (fn () => MCP_Combinators.exec_text \<^theory> 0
+    ("mcp_tool \"enum_dup\" = run \<open>fn _ => fn _ => \"\"\<close> (description \<open>d\<close>) " ^
+     "(params k :: enum (a | a) \<open>d\<close>)"))
+  "Duplicate");
+\<close>
+
 section \<open>Combinators: format assembly\<close>
 
 ML \<open>

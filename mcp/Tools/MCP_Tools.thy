@@ -464,12 +464,52 @@ struct
 
 (* parameters *)
 
+(*a value that will be spliced VERBATIM (assemble's Enum branch, and
+  args/fact) must not be able to break out of its surrounding format
+  text or a JSON string -- no blank symbol (Symbol.is_blank, which
+  covers space/tab/newline and Isabelle's own blank symbols, not just
+  ASCII whitespace), quote, or cartouche delimiter.*)
+fun token_safe s =
+  forall (fn sym => not (Symbol.is_blank sym) andalso
+      sym <> "\"" andalso sym <> "\<open>" andalso sym <> "\<close>")
+    (Symbol.explode s);
+
 (*the closed type universe is now MCP_Tool.ptyp itself -- the compiler
   rejects an unknown type, so there is nothing left for param to check
   for the nine scalars. param survives as the one registration-time gate
-  for what the type system cannot express: steps 3/4 (plans/
-  param_schema_v2) add enum-items and list-of-no-default checks here.*)
-fun param (p: MCP_Tool.param) = p;
+  for what the type system cannot express: enum items nonempty, distinct
+  and token-safe (plans/param_schema_v2 step 3 -- token-safety is what
+  makes assemble's verbatim splice defensible rather than merely
+  convenient), and a declared default must be one of the items. Step 4
+  adds the list-of-no-default check.*)
+fun param (p: MCP_Tool.param) =
+  (case #typ p of
+    MCP_Tool.Enum items =>
+      let
+        val _ =
+          if null items then error ("Empty enum for parameter " ^ quote (#name p)) else ();
+        val _ =
+          if has_duplicates (op =) items then
+            error ("Duplicate enum items for parameter " ^ quote (#name p) ^ ": " ^
+              commas_quote items)
+          else ();
+        val _ =
+          List.app (fn item =>
+            if token_safe item then ()
+            else
+              error ("Enum item " ^ quote item ^ " for parameter " ^ quote (#name p) ^
+                " contains whitespace or a quote/cartouche character"))
+            items;
+        val _ =
+          (case #default p of
+            NONE => ()
+          | SOME d =>
+              if member (op =) items d then ()
+              else
+                error ("Default " ^ quote d ^ " for parameter " ^ quote (#name p) ^
+                  " is not one of its enum items: " ^ commas_quote items));
+      in p end
+  | _ => p);
 
 (*"args" splices VERBATIM into the command's argument position (a
   command takes a token stream there, not a quoted value) — the default
@@ -551,7 +591,7 @@ fun check_value ctxt (p: MCP_Tool.param) v =
         catch ERROR msg => invalid p msg\<close>)
   | MCP_Tool.Enum items =>
       if member (op =) items v then ()
-      else invalid p ("expected one of " ^ commas_quote items)
+      else invalid p (quote v ^ " is not one of " ^ commas_quote items)
   | MCP_Tool.List_Of t =>
       check_value ctxt
         {name = #name p, typ = t, required = #required p,
@@ -884,9 +924,28 @@ fun read_ptyp name =
   names never collide with a keyword) OR quoted as a string, e.g.
   \<open>x :: "term" \<open>d\<close>\<close> -- a string/cartouche token is opaque to span
   scanning, so quoting shields it.*)
+(*enum (a | b | c): "enum" matched by content (Args.$$$, no new header
+  keyword, same trick as "optional"); "|" is already a Pure quasi-
+  command keyword, so items parse as Parse.enum1 "|" <item> inside the
+  same Parse.$$$ "(" ... ")" tokens clause_block already uses.
+  Registration-time validity (nonempty, distinct, token-safe items; a
+  default among them) is MCP_Combinators.param's job, not the parser's --
+  the grammar accepts any name list here.
+  Items are exactly as liable to collide with an existing keyword as a
+  type name is (e.g. "type" itself, in the plan's own canonical
+  find_definition example) -- same span-scanning hazard as ptyp_parser
+  above. Parse.name already covers the fix (it is short_ident ||
+  long_ident || sym_ident || number || string, string included), so a
+  colliding item is quoted, e.g. \<open>kind :: enum (const | thm | "type")\<close>,
+  with no further change needed here.*)
+val enum_ptyp =
+  Args.$$$ "enum" |-- Parse.$$$ "(" |-- Parse.enum1 "|" Parse.name --| Parse.$$$ ")"
+    >> MCP_Tool.Enum;
+
 val ptyp_parser =
-  (Parse.short_ident || Parse.long_ident || Parse.sym_ident || Parse.keyword || Parse.string)
-    >> read_ptyp;
+  enum_ptyp ||
+  ((Parse.short_ident || Parse.long_ident || Parse.sym_ident || Parse.keyword || Parse.string)
+    >> read_ptyp);
 
 val param_entry =
   Parse.name -- (Parse.$$$ "::" |-- ptyp_parser) -- optional_flag --
