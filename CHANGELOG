@@ -4,6 +4,59 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-02 (param schema v2: enum, list-of, (optional), annotations,
+exactly_one land)
+-------------------------------------------------------------------------
+
+- milestone (spec "the parameter spec language" and "builtins as ML
+  tools", decided 2026-07-28; plan: plans/param_schema_v2, status
+  DONE): every DEFERRED item from that decision record lands. enum
+  (a | b | c) and `list of <scalar>` reach isar; the (optional) gap
+  recorded 2026-07-28 (param_entry deriving required from is_none
+  default, leaving optional-without-default unreachable) is closed.
+  The param type stops being a flat string and becomes a closed
+  variant, MCP_Tool.ptyp, crossing the wire as an XML.Encode.variant —
+  every nullary scalar encodes identically, so a mis-ordered scala
+  decoder would silently read e.g. nat as int with no exception; caught
+  only by a live bridge fixture reading a real encoded row (a
+  synthetic row never reaches the encoder, so no scala-unit test can
+  see the hazard). Declared per-tool annotations (the four MCP hints,
+  each independently absent or set; five named ML constants
+  reproducing the scala builtin table's own five buckets exactly;
+  diag_wrap's stay derived, proven at registration by Keyword.is_diag;
+  everything else defaults to MCP_Tool.default_annotations unless an
+  (annotations <bucket>) clause names one of the five) and the
+  exactly_one cross-param constraint (Exactly_One of string list; a
+  runtime count in validate over the raw arguments, before defaults are
+  filled in; a generated sentence appended to the description, never a
+  json-schema oneOf — client support is patchy and the audience here is
+  a model, which reads the description) both land exactly as decided.
+  SPEC REFINEMENTS folded back: enum substitutes VERBATIM into the
+  format (membership is already checked by validate, so quoting it
+  would break e.g. "kind: const"); a list-of parameter's elements are
+  quoted per their own type and space-joined, one join rule rather than
+  a configurable spec; a list-of parameter carries no default (no
+  list-literal syntax is specced); an absent optional substitutes the
+  empty segment directly, bypassing type-directed quoting (routing ""
+  through the type's own quoter would splice a quoted empty string,
+  not an empty one); the isar (annotations ...) clause takes exactly
+  one of the five bucket names, never an arbitrary combination —
+  arbitrary hints stay ML-only, via MCP_Combinators.ml_run taking the
+  record directly. Found and fixed live: "annotations" is not already
+  a global minor keyword the way description/params/format/isar happen
+  to be (declared elsewhere in the distribution, for unrelated
+  purposes), so Parse.$$$ silently truncated its clause's span at
+  parse time; fixed with the same Args.$$$ content-match trick already
+  used for optional/enum/list/of. All four layers green; the plan's
+  A1-A13 assumptions each pinned at the stated layer (ml unit, scala
+  unit or bridge), including a fixture whose one declaration carries
+  every new surface at once (enum + list-of + (optional) +
+  (annotations ...) + (exactly_one ...)) so a gap in any one printer
+  fails registration, not just a narrower probe. spec's
+  implementation-order item updated with the landed shape recorded in
+  detail; plans/ml_builtin_migration's builtins-as-ML-tools waves,
+  which depend on this landing, remain separately gated on decision S1.
+
 2026-07-28 (spec: parameterised resources; enumeration deferred)
 -------------------------------------------------------------------
 

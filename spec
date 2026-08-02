@@ -3175,6 +3175,44 @@ implementation order
       drop.
       SURFACE CORRECTIONS (outer lexer, see the phase-2 command item):
       quoted command names, plural activation attribute.
+      LANDED 2026-08-02 (plans/param_schema_v2), discharging every
+      DEFERRED item above: enum (a | b | c) reaches isar and splices
+      VERBATIM into the format (membership is already checked by
+      validate, so quoting it would break e.g. "kind: const" —
+      SPEC REFINEMENT); `list of <scalar>` reaches isar, arrives on
+      the wire as repeated keys (the same convention as a json array
+      argument), and assembles by quoting each element per its own
+      type and space-joining the pieces — one join rule ships rather
+      than a configurable spec (SPEC REFINEMENT); a list-of parameter
+      carries no default, since no list-literal default syntax is
+      specced (SPEC REFINEMENT, recorded as deferred rather than
+      invented here); the (optional) gap recorded 2026-07-28 is
+      discharged (param_entry stops deriving required from
+      is_none default) and an absent optional substitutes the empty
+      segment directly, bypassing type-directed quoting — routing ""
+      through the type's own quoter would splice a quoted empty
+      string, not an empty one (SPEC REFINEMENT). The param type
+      itself becomes a closed variant (MCP_Tool.ptyp) rather than a
+      flat string, crossing the wire as an XML.Encode.variant — every
+      nullary scalar encodes identically, so a mis-ordered scala
+      decoder list would silently read e.g. nat as int, catchable only
+      by a live bridge fixture reading a real encoded row, never a
+      scala-unit test (a synthetic row never crosses the encoder).
+      Declared per-tool annotations (the four MCP hints as independent
+      options; five named ML constants over default_annotations;
+      diag_wrap's are still derived — Keyword.is_diag proves them at
+      registration — everything else defaults unless declared) and the
+      exactly_one cross-param constraint (Exactly_One of string list;
+      a runtime count in validate over the RAW arguments, before
+      defaults are filled; a generated sentence appended to the
+      description, never a json schema oneOf) both land exactly as
+      decided (see "builtins as ML tools" and "cross-param
+      constraints" below); the isar (annotations ...) clause takes
+      exactly one of the five bucket names (SPEC REFINEMENT —
+      arbitrary hint combinations stay ML-only, via
+      MCP_Combinators.ml_run taking the record directly). All four
+      layers green; A1-A13 each pinned at the layer the plan states
+      (ml-unit, scala-unit or bridge).
 - [x] builtin activation unification (decided 2026-07-13, done
       2026-07-16): ml mirror rows for every scala builtin (form
       Builtin, tag "builtin", run slot errors "builtin tool:
@@ -3241,7 +3279,9 @@ testing (mapped to the standard pyramid)
 2. scala unit (mcp_test, Fake_Backend grows params in tool rows):
    schema expansion from serialized descriptors (each type, optional/
    default/enum); tools/list against a fake designation; tool_scope_*
-   dispatch; annotation hints per form.
+   dispatch; annotation hints rendered from a row's own declared
+   record (plans/param_schema_v2 — no longer derived from the form
+   tag), Some-only, all-absent -> no annotations key.
 3. bridge (mcp_test -b): register-in-repl -> tools_changed arrives;
    tool_scope_set {repl} -> tools/list shows the repl-registered
    tool; run a params tool end to end (typed error round trip);
