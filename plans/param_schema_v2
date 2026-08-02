@@ -2,13 +2,51 @@ param schema v2 (enum, list, optional, ptyp variant, annotations,
 exactly_one) — implementation plan
 ==============================================================================
 
-status: [ ] planned only. spec decision landed 2026-07-28 (commit
-40d30471; spec phase-3 "the parameter spec language (params clause) and
-schema derivation", as amended that day). no new mcp tool — this is a
-feature plan (like mcp_tool_registry and builtin_activation): the
-parameter/schema layer under mcp_tool grows the pieces the spec specced
-and the 2026-07-11 wave deferred, plus the three items decided
-2026-07-28 (ptyp as a variant, declared annotations, exactly_one).
+status: DONE (all 7 steps landed 2026-07-30 through 2026-08-02; spec
+phase-3 "the parameter spec language (params clause) and schema
+derivation" and "builtins as ML tools" implementation-order items
+updated with the landed shape; CHANGELOG "param schema v2: enum,
+list-of, (optional), annotations, exactly_one land"). deviations and
+findings from the plan as written:
+- the isar (annotations ...) clause is accepted by the RUN form only
+  -- diag_wrap rejects an explicit clause outright (its hints are
+  PROVEN at registration by Keyword.is_diag, not merely hinted, so an
+  override would let a declaration contradict a proven fact), the
+  string form rejects it (its tag proves nothing but it also carries
+  no real params story, same reasoning as its existing params/format
+  rejection), and the capture form rejects it too -- not because
+  constraints don't apply there, but because plans/ml_builtin_migration
+  already deferred (annotations ...) for capture specifically (D2, its
+  own recorded deviation); this plan did not pull that forward. The
+  plan's own prose ("resolution when an (annotations ...) clause is
+  absent") reads generically across forms; this is the concrete
+  parser-level scoping decision that prose left unstated.
+  The exactly_one clause, by contrast, IS accepted by diag/run/capture
+  alike (rejected only for the string form and mcp_resource) — it
+  follows necessarily from validate's constraints argument, which
+  every param-validating combinator threads through regardless of form.
+- FOUND LIVE while wiring the (annotations ...) clause: "annotations"
+  is not already a global minor keyword the way description/params/
+  format/isar happen to be (declared elsewhere in the distribution,
+  for unrelated purposes outside this theory's own control) -- using
+  Parse.$$$ for it silently truncated the clause's span at parse time
+  (no compile error; the trailing clause was simply dropped and the
+  next tokens misparsed as a new command). Fixed with the SAME Args.$$$
+  content-match trick the plan's own "VERIFIED PARSER FACT" section
+  already prescribes for optional/enum/list/of -- exactly_one uses it
+  too, for the same reason.
+- A11 (the run form's full printer round-trip: print_param/print_ptyp/
+  print_annotations/print_constraint together) is exercised by one
+  fixture whose single declaration carries enum + list-of + (optional)
+  + (annotations ...) + (exactly_one ...) at once, so a gap in any one
+  printer fails registration rather than only a narrower single-feature
+  probe.
+
+no new mcp tool — this was a feature plan (like mcp_tool_registry and
+builtin_activation): the parameter/schema layer under mcp_tool grew the
+pieces the spec specced and the 2026-07-11 wave deferred, plus the
+three items decided 2026-07-28 (ptyp as a variant, declared
+annotations, exactly_one).
 
 depends on plans/mcp_tool_command (DONE — the params clause, the
 combinators, the quoting/validation pipeline this plan extends) and

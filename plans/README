@@ -159,11 +159,11 @@ server lifecycle (infrastructure, no tool of its own):
 phase 3 — the ML tool surface (decided 2026-07-28, spec commit
   40d30471). two feature plans, in this order; the second depends on
   the first and does not restate its steps:
-  - [ ] param_schema_v2        plans/param_schema_v2 (enum, list of
+  - [x] param_schema_v2        plans/param_schema_v2 (enum, list of
         <scalar>, the (optional) modifier, ptyp as a wire variant,
         declared annotations + default_annotations, exactly_one.
         independently valuable — it improves user-written ML tools
-        whether or not a builtin ever moves)
+        whether or not a builtin ever moves. done 2026-08-02.)
   - [ ] ml_builtin_migration   plans/ml_builtin_migration (the ~20
         repl/search builtins stop being declared three times and
         become ordinary ML registry entries; capture form, async
