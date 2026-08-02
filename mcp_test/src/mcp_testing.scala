@@ -52,7 +52,8 @@ class Fake_Backend extends MCP_Backend {
     MCP_Session.Tools_Reply(
       MCP_Session.Tool_Row("MCP_Tools.shout", "uppercase the input", "string_fun",
         List(MCP_Session.Tool_Param(
-          "input", MCP_Session.Ptyp_String, true, None, "tool input"))) ::
+          "input", MCP_Session.Ptyp_String, true, None, "tool input")),
+        MCP_Session.Tool_Annotations.default) ::
       extra_ml_tools,
       builtin_activation)
   def ml_run(name: String, args: List[(String, String)],

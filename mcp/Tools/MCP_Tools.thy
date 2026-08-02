@@ -152,8 +152,18 @@ sig
   val print_ptyp: ptyp -> string
   type param =
     {name: string, typ: ptyp, required: bool, default: string option, description: string}
+  type annotations =
+    {read_only: bool option, idempotent: bool option, destructive: bool option,
+     open_world: bool option}
+  val default_annotations: annotations
+  val read_only: annotations
+  val read_only_non_idempotent: annotations
+  val mutating: annotations
+  val idempotent_mutating: annotations
+  val destructive: annotations
+  val diag_annotations: annotations
   type tool =
-    {description: string, params: param list, form: form,
+    {description: string, params: param list, form: form, annotations: annotations,
      run: Proof.context -> (string * string) list -> string}
   val space_of: Context.generic -> Name_Space.T
   val declare: binding -> tool -> local_theory -> string * local_theory
@@ -223,8 +233,51 @@ fun print_ptyp String = "MCP_Tool.String"
 type param =
   {name: string, typ: ptyp, required: bool, default: string option, description: string};
 
+(*the four MCP hint flags (spec "tool annotations"): each independently
+  absent (NONE, no premise proven) or set, deliberately NOT a closed
+  enum -- a variant would buy curation over these four booleans, not
+  type safety. The five buckets below reproduce the scala builtin
+  table's five annotation groups EXACTLY (mcp_server.scala's
+  read_only_annotations/mutating_annotations/destructive_annotations/
+  idempotent_mutating_annotations/read_only_non_idempotent_annotations)
+  -- destructiveHint is the one flag any bucket ever OMITS (NONE)
+  rather than sets false; openWorldHint is SOME false in every one of
+  them, including default_annotations, so it is the one hint every
+  tool -- ML or scala -- ends up advertising.*)
+type annotations =
+  {read_only: bool option, idempotent: bool option, destructive: bool option,
+   open_world: bool option};
+
+(*for a declaration whose form tag proves nothing about the tool's
+  behavior (string_fun, the run form when no (annotations ...) clause
+  is given, a Builtin mirror -- whose annotations are inert, see
+  tools_body/encode_row below).*)
+val default_annotations : annotations =
+  {read_only = NONE, idempotent = NONE, destructive = NONE, open_world = SOME false};
+
+val read_only : annotations =
+  {read_only = SOME true, idempotent = SOME true, destructive = NONE, open_world = SOME false};
+
+val read_only_non_idempotent : annotations =
+  {read_only = SOME true, idempotent = SOME false, destructive = NONE, open_world = SOME false};
+
+val mutating : annotations =
+  {read_only = SOME false, idempotent = SOME false, destructive = NONE, open_world = SOME false};
+
+val idempotent_mutating : annotations =
+  {read_only = SOME false, idempotent = SOME true, destructive = NONE, open_world = SOME false};
+
+val destructive : annotations =
+  {read_only = SOME false, idempotent = SOME false, destructive = SOME true,
+   open_world = SOME false};
+
+(*a diag wrap's read_only/idempotent are PROVEN at registration
+  (Keyword.is_diag), not merely hinted -- diag always uses this,
+  never an explicit (annotations ...) clause (see tool_cmd below).*)
+val diag_annotations = read_only;
+
 type tool =
-  {description: string, params: param list, form: form,
+  {description: string, params: param list, form: form, annotations: annotations,
    run: Proof.context -> (string * string) list -> string};
 
 structure Registry =
@@ -449,7 +502,7 @@ sig
   val assemble: MCP_Tool.param list -> string -> (string * string) list -> string * int
   val exec_text: theory -> int -> string -> string
   val func: string -> (string -> string) -> MCP_Tool.tool
-  val ml_run: string -> MCP_Tool.param list ->
+  val ml_run: string -> MCP_Tool.param list -> MCP_Tool.annotations ->
     (Proof.context -> (string * string) list -> string) -> MCP_Tool.tool
   val diag: Proof.context -> string * Position.T ->
     {description: string, params: MCP_Tool.param list, format: string} -> MCP_Tool.tool
@@ -815,15 +868,17 @@ fun func description f : MCP_Tool.tool =
     [{name = "input", typ = MCP_Tool.String, required = true, default = NONE,
       description = "tool input"}],
    form = MCP_Tool.String_Fun,
+   annotations = MCP_Tool.default_annotations,
    run = fn _ => fn args =>
     (case AList.lookup (op =) args "input" of
       SOME input => f input
     | NONE => error "Missing required argument: input")};
 
 (*full-power hatch: declared params, validated before f sees them*)
-fun ml_run description params f : MCP_Tool.tool =
+fun ml_run description params annotations f : MCP_Tool.tool =
   let val params = map param params in
     {description = description, params = params, form = MCP_Tool.String_Fun,
+     annotations = annotations,
      run = fn ctxt => fn args => f ctxt (validate ctxt params args)}
   end;
 
@@ -846,6 +901,7 @@ fun diag ctxt (cmd, pos) {description, params, format = fmt} : MCP_Tool.tool =
     val _ = check_format params fmt;
   in
     {description = description, params = params, form = MCP_Tool.Diag_Wrap,
+     annotations = MCP_Tool.diag_annotations,
      run = fn run_ctxt => fn args =>
       let
         val (text, shift) = assemble params fmt (validate run_ctxt params args);
@@ -859,13 +915,16 @@ fun diag ctxt (cmd, pos) {description, params, format = fmt} : MCP_Tool.tool =
   -- run_tool_result (mcp_session.scala) does not strip yxml markup the
   way the repl bridge's ir_result does, so captured text must already
   be plain, the same reason exec_text uses Print_Mode.with_modes [].
-  NOTE: the mcp_tool command's capture form does not yet require an
-  (annotations ...) clause -- that mechanism belongs to
-  plans/param_schema_v2 (D2), not yet landed; see plans/ml_builtin_migration
-  step 3 and its recorded deviation.*)
+  NOTE: the mcp_tool command's capture form does not yet accept an
+  (annotations ...) clause -- every capture tool carries
+  MCP_Tool.default_annotations until plans/ml_builtin_migration's
+  follow-up makes the clause mandatory here (D2 -- param_schema_v2 landed
+  the mechanism itself, this form just doesn't use it yet); see
+  plans/ml_builtin_migration step 3 and its recorded deviation.*)
 fun capture description params f : MCP_Tool.tool =
   let val params = map param params in
     {description = description, params = params, form = MCP_Tool.Capture,
+     annotations = MCP_Tool.default_annotations,
      run = fn ctxt => fn args =>
       (case MCP_Output.captured (fn () =>
           Print_Mode.with_modes [] (fn () => f ctxt (validate ctxt params args)) ()) of
@@ -932,7 +991,8 @@ local
 (* clauses: parenthesized keyword blocks, any order, at most once *)
 
 datatype clause =
-  Descr of string | Params of MCP_Tool.param list | Format of string | Isar of string;
+  Descr of string | Params of MCP_Tool.param list | Format of string | Isar of string
+| Annot of MCP_Tool.annotations;
 
 (*(optional) sits after the type, matched with Args.$$$ (an ident/keyword
   token by CONTENT, Pure/Isar/args.ML:81) rather than Parse.$$$, which
@@ -1003,6 +1063,24 @@ fun ptyp_parser xs =
    ((Parse.short_ident || Parse.long_ident || Parse.sym_ident || Parse.keyword || Parse.string)
      >> read_ptyp)) xs;
 
+(*(annotations <bucket>): the isar surface only ever names one of the
+  five pre-built buckets (spec refinement, plans/param_schema_v2) --
+  arbitrary hint combinations stay ML-only, via MCP_Combinators.ml_run
+  taking an MCP_Tool.annotations record directly.*)
+val annotation_buckets =
+  [("read_only", MCP_Tool.read_only),
+   ("read_only_non_idempotent", MCP_Tool.read_only_non_idempotent),
+   ("mutating", MCP_Tool.mutating),
+   ("idempotent_mutating", MCP_Tool.idempotent_mutating),
+   ("destructive", MCP_Tool.destructive)];
+
+fun read_annotations name =
+  (case AList.lookup (op =) annotation_buckets name of
+    SOME a => a
+  | NONE =>
+      error ("Unknown MCP tool annotations bucket " ^ quote name ^
+        " (expected " ^ commas_quote (map #1 annotation_buckets) ^ ")"));
+
 val param_entry =
   Parse.name -- (Parse.$$$ "::" |-- ptyp_parser) -- optional_flag --
     Scan.option (Parse.$$$ "=" |-- Parse.embedded) -- Parse.embedded
@@ -1022,11 +1100,21 @@ val param_entry =
 fun clause_block kw p =
   Parse.$$$ "(" |-- Parse.$$$ kw |-- Parse.!!! (p --| Parse.$$$ ")");
 
+(*"annotations" is not already a global minor keyword the way
+  description/params/format/isar happen to be (declared elsewhere in
+  the distribution, for unrelated purposes) -- Parse.$$$ would need it
+  declared in THIS theory's header, polluting every importing theory's
+  keyword table. Same fix as optional/enum/list/of: Args.$$$ matches by
+  CONTENT (ident or keyword), no declaration needed or wanted.*)
+fun clause_block_ct kw p =
+  Parse.$$$ "(" |-- Args.$$$ kw |-- Parse.!!! (p --| Parse.$$$ ")");
+
 val clause =
   clause_block "description" Parse.embedded >> Descr ||
   clause_block "params" (Scan.repeat1 param_entry) >> Params ||
   clause_block "format" Parse.embedded >> Format ||
-  clause_block "isar" Parse.embedded >> Isar;
+  clause_block "isar" Parse.embedded >> Isar ||
+  clause_block_ct "annotations" Parse.name >> (Annot o read_annotations);
 
 fun digest what allow_isar clauses =
   let
@@ -1043,7 +1131,8 @@ fun digest what allow_isar clauses =
     {descr = uniq (fn Descr s => SOME s | _ => NONE) "description",
      params = uniq (fn Params ps => SOME ps | _ => NONE) "params",
      fmt = uniq (fn Format s => SOME s | _ => NONE) "format",
-     isar = isar}
+     isar = isar,
+     annot = uniq (fn Annot a => SOME a | _ => NONE) "annotations"}
   end;
 
 fun the_descr what pos NONE =
@@ -1060,6 +1149,12 @@ fun print_param (p: MCP_Tool.param) =
   ", required = " ^ Bool.toString (#required p) ^
   ", default = " ^ ML_Syntax.print_option ML_Syntax.print_string (#default p) ^
   ", description = " ^ ML_Syntax.print_string (#description p) ^ "}";
+
+fun print_annotations (a: MCP_Tool.annotations) =
+  "{read_only = " ^ ML_Syntax.print_option Bool.toString (#read_only a) ^
+  ", idempotent = " ^ ML_Syntax.print_option Bool.toString (#idempotent a) ^
+  ", destructive = " ^ ML_Syntax.print_option Bool.toString (#destructive a) ^
+  ", open_world = " ^ ML_Syntax.print_option Bool.toString (#open_world a) ^ "}";
 
 (*the method_setup idiom: the generated source is a UNIT expression
   registering through Theory.local_setup — ML_Context.expression
@@ -1088,7 +1183,7 @@ val tool_form =
 fun tool_cmd ((name, pos), (form, clauses)) lthy =
   let
     val what = "mcp_tool " ^ quote name;
-    val {descr, params, fmt, ...} = digest what false clauses;
+    val {descr, params, fmt, annot, ...} = digest what false clauses;
     val descr' = the_descr what pos descr;
   in
     (case form of
@@ -1101,6 +1196,12 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
                 then error ("(params ...) without (format ...) for " ^ what)
                 else ()
             | SOME _ => ());
+          val _ =
+            if is_some annot
+            then error ("(annotations ...) clause is not meaningful for the " ^
+              "diagnostic-command wrap form of " ^ what ^
+              " (the command's keyword class already proves read_only/idempotent)")
+            else ();
           val tool =
             MCP_Combinators.diag lthy (name, pos)
               {description = descr', params = these params,
@@ -1109,8 +1210,8 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
     | SOME (Tool_Fun source) =>
         let
           val _ =
-            if is_some params orelse is_some fmt
-            then error ("(params/format ...) clauses are not meaningful for the " ^
+            if is_some params orelse is_some fmt orelse is_some annot
+            then error ("(params/format/annotations ...) clauses are not meaningful for the " ^
               "string form of " ^ what)
             else ();
         in
@@ -1126,11 +1227,12 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
             then error ("(format ...) clause is not meaningful for the run form of " ^ what)
             else ();
           val params_ml = ML_Syntax.print_list print_param (these params);
+          val annot_ml = print_annotations (the_default MCP_Tool.default_annotations annot);
         in
           ml_declaration
             ("MCP_Tool.declare " ^ binding_ml (name, pos) ^
               " (MCP_Combinators.ml_run " ^ ML_Syntax.print_string descr' ^
-              " " ^ params_ml)
+              " " ^ params_ml ^ " " ^ annot_ml)
             source ")" lthy
         end
     | SOME (Tool_Capture source) =>
@@ -1139,13 +1241,16 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
             if is_some fmt
             then error ("(format ...) clause is not meaningful for the capture form of " ^ what)
             else ();
-          (*NOT YET: an (annotations ...) clause requirement here, per
-            plans/ml_builtin_migration step 3 -- that mechanism (the
-            record, the five named constants, the scala half) is
-            plans/param_schema_v2's D2, not landed. a capture tool
-            declared today carries no annotations at all (scala falls
-            through to `case _ => None`, mcp_server.scala:77) until D2
-            lands and this clause is added.*)
+          (*NOT YET: the (annotations ...) clause is parsed generally
+            (digest) but still REJECTED here, per plans/ml_builtin_migration
+            step 3 -- making it mandatory for capture is that plan's
+            follow-up, not this one. A capture tool declared today always
+            carries MCP_Tool.default_annotations (MCP_Combinators.capture).*)
+          val _ =
+            if is_some annot
+            then error ("(annotations ...) clause is not yet accepted for the capture form of " ^
+              what ^ " (deferred to plans/ml_builtin_migration's follow-up)")
+            else ();
           val params_ml = ML_Syntax.print_list print_param (these params);
         in
           ml_declaration
@@ -1181,10 +1286,10 @@ fun isar_resource text descr : MCP_Resource.resource =
 fun resource_cmd ((name, pos), (form, clauses)) lthy =
   let
     val what = "mcp_resource " ^ quote name;
-    val {descr, params, fmt, isar} = digest what true clauses;
+    val {descr, params, fmt, isar, annot} = digest what true clauses;
     val _ =
-      if is_some params orelse is_some fmt
-      then error ("(params/format ...) clauses are not meaningful for " ^ what)
+      if is_some params orelse is_some fmt orelse is_some annot
+      then error ("(params/format/annotations ...) clauses are not meaningful for " ^ what)
       else ();
     val binding = Binding.make (name, pos);
   in
@@ -1382,12 +1487,23 @@ fun encode_ptyp x =
 val encode_param =
   let open XML.Encode in pair string (pair encode_ptyp (pair bool (pair (option string) string))) end;
 
+(*the four hints as (option bool) each, in the SAME field order as the
+  type/scala's Tool_Annotations -- no variant/tag hazard here (unlike
+  encode_ptyp): every field is independently present or absent, so
+  there is no positional ambiguity between two encoded values.*)
+fun encode_annotations (a: MCP_Tool.annotations) =
+  let open XML.Encode in
+    pair (option bool) (pair (option bool) (pair (option bool) (option bool)))
+      (#read_only a, (#idempotent a, (#destructive a, #open_world a)))
+  end;
+
 fun encode_row (name, tool: MCP_Tool.tool) =
   let open XML.Encode in
-    pair string (pair string (pair string (list encode_param)))
+    pair string (pair string (pair string (pair (list encode_param) encode_annotations)))
       (name, (#description tool, (MCP_Tool.form_tag (#form tool),
-        map (fn p => (#name p, (#typ p, (#required p, (#default p, #description p)))))
-          (#params tool))))
+        (map (fn p => (#name p, (#typ p, (#required p, (#default p, #description p)))))
+          (#params tool),
+         #annotations tool))))
   end;
 
 (*(base name, active): the BASE name, not the theory-qualified full
@@ -1609,9 +1725,14 @@ MCP_Session_Suite("MCP-Tools", "MCP_Tools") -- it serves THIS theory,
 not the Tests session -- and the tag-order hazard (a mis-ordered scala
 decoder list silently reads e.g. Nat as Int) can only be caught by a
 live bridge case reading a REAL encoded row. Enum/List_Of join this
-fixture once steps 3/4 give them isar syntax.\<close>
+fixture once steps 3/4 give them isar syntax. The (annotations
+destructive) clause doubles this fixture as the A10 bridge case (step
+5): a declared bucket other than the default arrives with the right
+hints set, over the same live encoder that would silently corrupt a
+mis-ordered wire shape.\<close>
 mcp_tool ptyp_fixture = run \<open>fn _ => fn _ => "ok"\<close>
   (description \<open>one param per ptyp scalar constructor, for the tag-order bridge check\<close>)
+  (annotations destructive)
   (params
     p_string :: string \<open>d\<close>
     p_source :: source \<open>d\<close>
@@ -1647,6 +1768,10 @@ val _ =
         lthy
         |> MCP_Tool.declare (Binding.name name)
             {description = description, params = [], form = MCP_Tool.Builtin,
+             (*INERT: tools_body filters Builtin rows out of ml_rows, so
+               this value never reaches encode_row -- it must not
+               replicate the scala row's real bucket (mcp_server.scala).*)
+             annotations = MCP_Tool.default_annotations,
              run = fn _ => fn _ => error "builtin tool: dispatched Isabelle/Scala-side"}
         |> #2)
       [("repl_list", "List all open REPL proof sessions."),

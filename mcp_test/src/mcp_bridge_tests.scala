@@ -33,8 +33,12 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
      mis-ordered scala decoder list would silently read e.g. Nat as Int,
      with no exception and no way for a scala-unit test to catch it
      (Fake rows never cross the real encoder). Only a live bridge read
-     of a REAL encoded row, asserted constructor-by-constructor, can. */
-  test("bridge: ptyp_fixture's params decode to the right constructor, tag-order proof (A5)") {
+     of a REAL encoded row, asserted constructor-by-constructor, can.
+     Also A10: the fixture's own (annotations destructive) clause
+     (MCP_Tools.thy) proves a declared bucket other than the default
+     arrives over the same live encoder. */
+  test("bridge: ptyp_fixture's params decode to the right constructor, tag-order proof " +
+      "(A5), and its declared annotations bucket (A10)") {
     val tools = session.ml_tools().rows
     val fixture = tools.find(_.name == "MCP_Tools.ptyp_fixture")
       .getOrElse(fail("MCP_Tools.ptyp_fixture not in " + tools.toString))
@@ -49,6 +53,8 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
         "p_term" -> MCP_Session.Ptyp_Term,
         "p_typ" -> MCP_Session.Ptyp_Typ,
         "p_fact" -> MCP_Session.Ptyp_Fact))
+    assertEquals(fixture.annotations,
+      MCP_Session.Tool_Annotations(Some(false), Some(false), Some(true), Some(false)))
   }
 
   test("bridge: ml_run round trip") {

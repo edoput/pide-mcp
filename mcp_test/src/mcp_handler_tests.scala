@@ -819,7 +819,8 @@ class MCP_Tools_Tests extends MCP_Suite {
   test("tools/list: a colliding ML tool does not shadow the repl_list builtin") {
     val backend = new Fake_Backend
     backend.extra_ml_tools =
-      List(MCP_Session.Tool_Row("repl_list", "some unrelated ml tool", "string_fun", Nil))
+      List(MCP_Session.Tool_Row("repl_list", "some unrelated ml tool", "string_fun", Nil,
+        MCP_Session.Tool_Annotations.default))
     val tools = get_list(rpc("tools/list", backend = backend), "result", "tools")
     val matches = tools.filter(t => get_string(t, "name") == "repl_list")
     assertEquals(matches.length, 1, "expected exactly one repl_list entry")
@@ -901,7 +902,8 @@ class MCP_Tools_Tests extends MCP_Suite {
   test("tools/call resolves an exposed qualified name to the internal row") {
     val backend = new Fake_Backend
     backend.extra_ml_tools =
-      List(MCP_Session.Tool_Row("Thy_A.shout", "clashes with the demo tool", "string_fun", Nil))
+      List(MCP_Session.Tool_Row("Thy_A.shout", "clashes with the demo tool", "string_fun", Nil,
+        MCP_Session.Tool_Annotations.default))
     /* base name "shout" now ambiguous: both rows serve qualified */
     val tools = get_list(rpc("tools/list", backend = backend), "result", "tools")
     val names = tools.map(t => get_string(t, "name"))
@@ -921,7 +923,10 @@ class MCP_Tools_Tests extends MCP_Suite {
       MCP_Session.Tool_Row("Thy_A.finder", "searches", "diag_wrap", List(
         MCP_Session.Tool_Param("criteria", MCP_Session.Ptyp_Args, true, None, "search criteria"),
         MCP_Session.Tool_Param("limit", MCP_Session.Ptyp_Nat, false, Some("20"), "max results"),
-        MCP_Session.Tool_Param("goal", MCP_Session.Ptyp_Term, true, None, "a goal"))))
+        MCP_Session.Tool_Param("goal", MCP_Session.Ptyp_Term, true, None, "a goal")),
+        /* mirrors MCP_Tool.read_only (MCP_Combinators.diag always uses
+           diag_annotations, plans/param_schema_v2 step 5) */
+        MCP_Session.Tool_Annotations(Some(true), Some(true), None, Some(false))))
     val row = tool_row("finder", backend)
     assertEquals(property_type(row, "criteria"), "string")
     assertEquals(property_type(row, "limit"), "integer")
@@ -942,7 +947,8 @@ class MCP_Tools_Tests extends MCP_Suite {
       MCP_Session.Tool_Row("Thy_A.finder", "searches", "string_fun", List(
         MCP_Session.Tool_Param("kind",
           MCP_Session.Ptyp_Enum(List("const", "thm", "type")),
-          false, Some("const"), "what to look for"))))
+          false, Some("const"), "what to look for")),
+        MCP_Session.Tool_Annotations.default))
     val row = tool_row("finder", backend)
     assertEquals(property_type(row, "kind"), "string")
     assertEquals(get_list(row, "inputSchema", "properties", "kind", "enum"),
@@ -958,7 +964,8 @@ class MCP_Tools_Tests extends MCP_Suite {
       MCP_Session.Tool_Row("Thy_A.finder", "searches", "string_fun", List(
         MCP_Session.Tool_Param("names",
           MCP_Session.Ptyp_List_Of(MCP_Session.Ptyp_String),
-          true, None, "names to search"))))
+          true, None, "names to search")),
+        MCP_Session.Tool_Annotations.default))
     val row = tool_row("finder", backend)
     assertEquals(property_type(row, "names"), "array")
     assertEquals(get(row, "inputSchema", "properties", "names", "items"),
@@ -970,12 +977,31 @@ class MCP_Tools_Tests extends MCP_Suite {
       "not the mvp {input} shape (plans/ml_builtin_migration step 4)") {
     val backend = new Fake_Backend
     backend.extra_ml_tools =
-      List(MCP_Session.Tool_Row("Thy_A.no_args", "takes nothing", "string_fun", Nil))
+      List(MCP_Session.Tool_Row("Thy_A.no_args", "takes nothing", "string_fun", Nil,
+        MCP_Session.Tool_Annotations.default))
     val row = tool_row("no_args", backend)
     assertEquals(get(row, "inputSchema"), JSON.Object("type" -> "object"))
     /* a real func-form tool (declared params always non-empty) is unaffected */
     val shout = tool_row("shout", backend)
     assertEquals(required_args(shout), List("input"))
+  }
+
+  test("tools/list renders an ML row's own annotations record -- only the " +
+      "Some hints, and no \"annotations\" key at all for an all-absent record " +
+      "(plans/param_schema_v2 A10)") {
+    val backend = new Fake_Backend
+    backend.extra_ml_tools = List(
+      MCP_Session.Tool_Row("Thy_A.destroyer", "wipes something", "string_fun", Nil,
+        MCP_Session.Tool_Annotations(Some(false), Some(false), Some(true), Some(false))),
+      MCP_Session.Tool_Row("Thy_A.mystery", "no hints at all", "string_fun", Nil,
+        MCP_Session.Tool_Annotations(None, None, None, None)))
+    val destroyer = tool_row("destroyer", backend)
+    assertEquals(annotation(destroyer, "readOnlyHint"), false)
+    assertEquals(annotation(destroyer, "idempotentHint"), false)
+    assertEquals(annotation(destroyer, "destructiveHint"), true)
+    assertEquals(annotation(destroyer, "openWorldHint"), false)
+    val mystery = tool_row("mystery", backend)
+    assertEquals(JSON.value(mystery, "annotations"), None)
   }
 
   test("tools/call forwards ALL json arguments as named pairs") {
@@ -1138,7 +1164,7 @@ class MCP_Tool_Scope_Tests extends MCP_Suite {
     val backend = new Fake_Backend
     backend.extra_ml_tools =
       List(MCP_Session.Tool_Row("Some_Theory.tool_scope_show", "not the real one",
-        "string_fun", Nil))
+        "string_fun", Nil, MCP_Session.Tool_Annotations.default))
     val row = tool_row("tool_scope_show", backend)
     assert(get_string(row, "description").contains("Show the current tool scope"),
       get_string(row, "description"))

@@ -85,16 +85,20 @@ object MCP_Server {
         "required" -> params.filter(_.required).map(_.name))
     }
 
-  /* form tag -> tool annotations: a diag wrap cannot mutate prover state
-     (diagnostic commands, discarded toplevel state) and repeats cleanly;
-     string_fun/ml_run make no such promise -> no annotations */
-  def ml_tool_annotations(form: String): Option[JSON.Object.T] =
-    form match {
-      case "diag_wrap" =>
-        Some(JSON.Object(
-          "readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false))
-      case _ => None
-    }
+  /* renderer over the row's own declared MCP_Session.Tool_Annotations
+     (plans/param_schema_v2 step 5) -- the hint set is a per-row property
+     now (an isar (annotations <bucket>) clause, or ML's default), not
+     inferred from the form tag: only Some hints render, so an all-absent
+     record (no ML tool currently produces one, but the type allows it)
+     yields no "annotations" key at all. */
+  def ml_tool_annotations(annotations: MCP_Session.Tool_Annotations): Option[JSON.Object.T] = {
+    val fields =
+      annotations.read_only.toList.map("readOnlyHint" -> _) :::
+      annotations.idempotent.toList.map("idempotentHint" -> _) :::
+      annotations.destructive.toList.map("destructiveHint" -> _) :::
+      annotations.open_world.toList.map("openWorldHint" -> _)
+    if (fields.isEmpty) None else Some(JSON.Object(fields*))
+  }
 
 
   /* exposed names for ML registry entries (plans/mcp_tool_registry).
@@ -1394,7 +1398,7 @@ object MCP_Server {
                       "description" -> row.description,
                       "inputSchema" -> ml_tool_schema(row.params)) ++
                     JSON.Object.apply(
-                      ml_tool_annotations(row.form).toList.map("annotations" -> _)*)))
+                      ml_tool_annotations(row.annotations).toList.map("annotations" -> _)*)))
               Some(RPC.response(id, JSON.Object("tools" -> (builtin_json ++ ml_json))))
           }
 

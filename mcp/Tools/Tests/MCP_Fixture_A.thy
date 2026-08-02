@@ -12,12 +12,14 @@ setup \<open>
     lthy
     |> MCP_Tool.declare \<^binding>\<open>alpha\<close>
         {description = "fixture tool alpha", params = [], form = MCP_Tool.String_Fun,
+         annotations = MCP_Tool.default_annotations,
          run = fn _ => fn args =>
           "alpha:" ^ the_default "" (AList.lookup (op =) args "input")}
     |> #2
     |> MCP_Tool.declare \<^binding>\<open>beta\<close>
         {description = "fixture tool beta (bundle-scoped)", params = [],
-         form = MCP_Tool.String_Fun, run = fn _ => fn _ => "beta"}
+         form = MCP_Tool.String_Fun, annotations = MCP_Tool.default_annotations,
+         run = fn _ => fn _ => "beta"}
     |> #2)
 \<close>
 

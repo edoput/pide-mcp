@@ -16,6 +16,7 @@ Context.>> (Context.map_theory (Named_Target.theory_map (fn lthy =>
   lthy
   |> MCP_Tool.declare \<^binding>\<open>test_tool\<close>
       {description = "a test tool", params = [], form = MCP_Tool.String_Fun,
+       annotations = MCP_Tool.default_annotations,
        run = fn _ => fn args =>
         "ran:" ^ the_default "" (AList.lookup (op =) args "input")}
   |> #2)));
@@ -49,6 +50,7 @@ ML \<open>
     lthy
     |> MCP_Tool.declare \<^binding>\<open>test_tool\<close>
         {description = "duplicate", params = [], form = MCP_Tool.String_Fun,
+         annotations = MCP_Tool.default_annotations,
          run = fn _ => fn _ => ""}
     |> #2))));
 \<close>
@@ -130,10 +132,20 @@ fun decode_ptyp body =
      body
   end;
 
+(*mirrors MCP_Tools.thy's encode_annotations -- a plain 4-tuple of
+  (option bool), no variant/tag hazard (every field independently
+  present or absent, so there is no positional ambiguity to get wrong
+  the way ptyp's nullary constructors have).*)
+fun decode_annotations body =
+  let open XML.Decode in
+    pair (option bool) (pair (option bool) (pair (option bool) (option bool))) body
+  end;
+
 fun decode_row_list body =
   let open XML.Decode in
     list (pair string (pair string (pair string
-      (list (pair string (pair decode_ptyp (pair bool (pair (option string) string))))))))
+      (pair (list (pair string (pair decode_ptyp (pair bool (pair (option string) string)))))
+        decode_annotations))))
       body
   end;
 fun decode_builtin_list body = let open XML.Decode in list (pair string bool) body end;
@@ -147,10 +159,19 @@ val rows = map (fn (n, (d, (f, _))) => (n, d, f)) full_rows;
 \<^assert> (exists (fn (n, _, _) => n = "MCP_Fixture_A.alpha") rows);
 \<^assert> (not (exists (fn (n, _, _) => n = "MCP_Fixture_A.beta") rows));
 
-(*params cross the bridge: shout advertises {input :: string, required}*)
-val (_, (_, (_, shout_params))) =
+(*params cross the bridge: shout advertises {input :: string, required};
+  its annotations are the string_fun default (form tag proves nothing)*)
+val (_, (_, (_, (shout_params, shout_annot)))) =
   the (find_first (fn (n, _) => n = "MCP_Tools.shout") full_rows);
 \<^assert> (shout_params = [("input", (MCP_Tool.String, (true, (NONE, "tool input"))))]);
+\<^assert> (shout_annot = (NONE, (NONE, (NONE, SOME false))));
+
+(*A10: ptyp_fixture's explicit (annotations destructive) clause crosses
+  the SAME live encoder the A5 bridge test reads -- destructiveHint set,
+  the other two bool hints false, openWorldHint false.*)
+val (_, (_, (_, (_, ptyp_fixture_annot)))) =
+  the (find_first (fn (n, _) => n = "MCP_Tools.ptyp_fixture") full_rows);
+\<^assert> (ptyp_fixture_annot = (SOME false, (SOME false, (SOME true, SOME false))));
 
 (*A1: builtin mirrors are ordinary registry entries -- del/add round trip
   through the plain [[mcp_tools ...]] attribute like any other tool, and
@@ -729,6 +750,100 @@ fun reg_fails src = err_mentions (fn () => MCP_Combinators.exec_text \<^theory> 
 \<^assert> (reg_fails "mcp_tool \"typedecl\" (description \<open>d\<close>)" "diagnostic");
 \<^assert> (reg_fails "mcp_tool no_such_command_xyz (description \<open>d\<close>)" "no_such_command_xyz");
 \<^assert> (reg_fails "mcp_tool \"find_consts\"" "description");
+\<close>
+
+section \<open>Combinators: annotations (plans/param_schema_v2 A10)\<close>
+
+text \<open>The five buckets mirror the scala builtin table's annotation
+groups EXACTLY (mcp_server.scala's read_only_annotations/
+mutating_annotations/destructive_annotations/
+idempotent_mutating_annotations/read_only_non_idempotent_annotations):
+destructiveHint is the one flag any bucket ever OMITS (NONE) rather
+than sets false; openWorldHint is SOME false in every one of them,
+including default_annotations.\<close>
+
+ML \<open>
+\<^assert> (MCP_Tool.read_only =
+  {read_only = SOME true, idempotent = SOME true, destructive = NONE,
+   open_world = SOME false});
+\<^assert> (MCP_Tool.read_only_non_idempotent =
+  {read_only = SOME true, idempotent = SOME false, destructive = NONE,
+   open_world = SOME false});
+\<^assert> (MCP_Tool.mutating =
+  {read_only = SOME false, idempotent = SOME false, destructive = NONE,
+   open_world = SOME false});
+\<^assert> (MCP_Tool.idempotent_mutating =
+  {read_only = SOME false, idempotent = SOME true, destructive = NONE,
+   open_world = SOME false});
+\<^assert> (MCP_Tool.destructive =
+  {read_only = SOME false, idempotent = SOME false, destructive = SOME true,
+   open_world = SOME false});
+\<^assert> (MCP_Tool.default_annotations =
+  {read_only = NONE, idempotent = NONE, destructive = NONE, open_world = SOME false});
+(*diag_wrap's hints are PROVEN at registration (Keyword.is_diag), not
+  merely hinted -- it is exactly the read_only bucket, never a separate
+  value a future edit could let drift.*)
+\<^assert> (MCP_Tool.diag_annotations = MCP_Tool.read_only);
+\<close>
+
+text \<open>Forms whose tag proves nothing about behavior default silently to
+MCP_Tool.default_annotations (no clause offered); diag_wrap's are
+derived, never explicit.\<close>
+
+ML \<open>
+val context = Context.Proof \<^context>;
+\<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.test_tool")
+  = MCP_Tool.default_annotations);
+\<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.find_consts")
+  = MCP_Tool.diag_annotations);
+\<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.capture_ok")
+  = MCP_Tool.default_annotations);
+\<close>
+
+text \<open>A10: the run form's isar (annotations <bucket>) clause -- the only
+form that accepts one (D2 for capture is a separate, later plan).\<close>
+
+mcp_tool annot_probe = run \<open>fn _ => fn _ => "ok"\<close>
+  (description \<open>probe for the annotations clause\<close>)
+  (annotations destructive)
+
+mcp_tool annot_probe_default = run \<open>fn _ => fn _ => "ok"\<close>
+  (description \<open>probe with no annotations clause -- defaults silently\<close>)
+
+ML \<open>
+val context = Context.Proof \<^context>;
+\<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.annot_probe") = MCP_Tool.destructive);
+\<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.annot_probe_default")
+  = MCP_Tool.default_annotations);
+\<close>
+
+text \<open>An (annotations ...) clause is parsed generally (digest) but
+REJECTED for every form except the run form: diag_wrap already proves
+its hints (an explicit clause would let a declaration override a proven
+fact); string_fun's tag proves nothing, same rejection as its existing
+params/format clauses; capture is DEFERRED (plans/ml_builtin_migration's
+follow-up makes it mandatory there, not this plan); mcp_resource has no
+concept of tool annotations at all.\<close>
+
+ML \<open>
+\<^assert> (reg_fails
+  "mcp_tool \"find_consts\" (description \<open>d\<close>) (annotations destructive)"
+  "not meaningful");
+\<^assert> (reg_fails
+  "mcp_tool annot_func = \<open>fn s => s\<close> (description \<open>d\<close>) (annotations mutating)"
+  "not meaningful");
+\<^assert> (reg_fails
+  ("mcp_tool annot_capture = capture \<open>fn _ => fn _ => ()\<close> (description \<open>d\<close>) " ^
+    "(annotations mutating)")
+  "not yet accepted");
+\<^assert> (reg_fails
+  "mcp_resource annot_res (isar \<open>print_theory\<close>) (description \<open>d\<close>) (annotations mutating)"
+  "not meaningful");
+(*an unknown bucket name is a parse-time error listing the five valid ones*)
+\<^assert> (reg_fails
+  ("mcp_tool annot_bogus = run \<open>fn _ => fn _ => \"\"\<close> (description \<open>d\<close>) " ^
+    "(annotations no_such_bucket)")
+  "no_such_bucket");
 \<close>
 
 section \<open>The mcp_resource command: three forms\<close>

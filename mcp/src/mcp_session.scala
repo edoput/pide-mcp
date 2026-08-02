@@ -143,11 +143,36 @@ object MCP_Session {
     default: Option[String],
     description: String)
 
+  /* mirrors MCP_Tool.annotations (MCP_Tools.thy) exactly -- the four MCP
+     hint flags, each independently absent (no premise proven) or set
+     (plans/param_schema_v2 step 5). No tag/variant hazard here (unlike
+     Ptyp): every field is an independent option, so there is no
+     positional ambiguity between two encoded values to get wrong. */
+  case class Tool_Annotations(
+    read_only: Option[Boolean],
+    idempotent: Option[Boolean],
+    destructive: Option[Boolean],
+    open_world: Option[Boolean])
+
+  object Tool_Annotations {
+    /* MCP_Tool.default_annotations's mirror: a declaration whose form
+       tag proves nothing about its behavior (plans/param_schema_v2). */
+    val default: Tool_Annotations = Tool_Annotations(None, None, None, Some(false))
+  }
+
+  def decode_annotations(body: XML.Body): Tool_Annotations = {
+    import XML.Decode._
+    val (read_only, (idempotent, (destructive, open_world))) =
+      pair(option(bool), pair(option(bool), pair(option(bool), option(bool))))(body)
+    Tool_Annotations(read_only, idempotent, destructive, open_world)
+  }
+
   case class Tool_Row(
     name: String,
     description: String,
     form: String,
-    params: List[Tool_Param])
+    params: List[Tool_Param],
+    annotations: Tool_Annotations)
 
   /* MCP.tools' wire shape (plans/builtin_activation): ml rows (active,
      non-builtin ML tools) plus a builtins section -- (base name, active)
@@ -160,10 +185,12 @@ object MCP_Session {
   def decode_tools(body: XML.Body): List[Tool_Row] = {
     import XML.Decode._
     list(pair(string, pair(string, pair(string,
-      list(pair(string, pair(decode_ptyp _, pair(bool, pair(option(string), string)))))))))(body)
-      .map({ case (name, (description, (form, params))) =>
+      pair(list(pair(string, pair(decode_ptyp _, pair(bool, pair(option(string), string))))),
+        decode_annotations _)))))(body)
+      .map({ case (name, (description, (form, (params, annotations)))) =>
         Tool_Row(name, description, form,
-          params.map({ case (n, (t, (r, (d, ds)))) => Tool_Param(n, t, r, d, ds) }))
+          params.map({ case (n, (t, (r, (d, ds)))) => Tool_Param(n, t, r, d, ds) }),
+          annotations)
       })
   }
 
