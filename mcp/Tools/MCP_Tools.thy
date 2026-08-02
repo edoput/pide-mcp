@@ -162,8 +162,10 @@ sig
   val idempotent_mutating: annotations
   val destructive: annotations
   val diag_annotations: annotations
+  datatype constraint = Exactly_One of string list
   type tool =
-    {description: string, params: param list, form: form, annotations: annotations,
+    {description: string, params: param list, constraints: constraint list,
+     form: form, annotations: annotations,
      run: Proof.context -> (string * string) list -> string}
   val space_of: Context.generic -> Name_Space.T
   val declare: binding -> tool -> local_theory -> string * local_theory
@@ -276,8 +278,18 @@ val destructive : annotations =
   never an explicit (annotations ...) clause (see tool_cmd below).*)
 val diag_annotations = read_only;
 
+(*a cross-param constraint: Exactly_One names DECLARED, non-required,
+  non-defaulted params (registration-time gate, MCP_Combinators.
+  check_constraint) of which exactly one must be present in a call's
+  RAW arguments (runtime gate, MCP_Combinators.validate). Constraints
+  do NOT cross the wire -- they drive a runtime check and a generated
+  sentence appended to the tool's description at construction time, so
+  the description that DOES cross the wire already carries the rule.*)
+datatype constraint = Exactly_One of string list;
+
 type tool =
-  {description: string, params: param list, form: form, annotations: annotations,
+  {description: string, params: param list, constraints: constraint list,
+   form: form, annotations: annotations,
    run: Proof.context -> (string * string) list -> string};
 
 structure Registry =
@@ -496,17 +508,19 @@ sig
     description: string} -> MCP_Tool.param
   val quote_string: string -> string
   val quote_cartouche: string -> string
-  val validate: Proof.context -> MCP_Tool.param list -> (string * string) list ->
-    (string * string) list
+  val validate: Proof.context -> MCP_Tool.param list -> MCP_Tool.constraint list ->
+    (string * string) list -> (string * string) list
   val check_format: MCP_Tool.param list -> string -> unit
   val assemble: MCP_Tool.param list -> string -> (string * string) list -> string * int
   val exec_text: theory -> int -> string -> string
+  val check_constraint: MCP_Tool.param list -> MCP_Tool.constraint -> unit
   val func: string -> (string -> string) -> MCP_Tool.tool
-  val ml_run: string -> MCP_Tool.param list -> MCP_Tool.annotations ->
+  val ml_run: string -> MCP_Tool.param list -> MCP_Tool.annotations -> MCP_Tool.constraint list ->
     (Proof.context -> (string * string) list -> string) -> MCP_Tool.tool
   val diag: Proof.context -> string * Position.T ->
-    {description: string, params: MCP_Tool.param list, format: string} -> MCP_Tool.tool
-  val capture: string -> MCP_Tool.param list ->
+    {description: string, params: MCP_Tool.param list, format: string,
+     constraints: MCP_Tool.constraint list} -> MCP_Tool.tool
+  val capture: string -> MCP_Tool.param list -> MCP_Tool.constraint list ->
     (Proof.context -> (string * string) list -> unit) -> MCP_Tool.tool
   val arg: (string * string) list -> string -> string
   val arg_int: (string * string) list -> string -> int
@@ -570,6 +584,37 @@ fun param (p: MCP_Tool.param) =
             quote (#name p) ^
             " (no list-literal default syntax is specced; DEFERRED, plans/param_schema_v2)"))
   | _ => p);
+
+(*registration-time gate for a constraint (param's own job, one level
+  up): every named member must be a DECLARED, non-required,
+  non-defaulted param -- a required or defaulted member could never
+  legitimately vary between 0 and 1 occurrences in a call's raw args, so
+  exactly_one over it would be either meaningless or permanently
+  satisfied. Called from each of ml_run/diag/capture below (not from
+  the parser), so a raw-ML declaration is gated exactly like an isar one
+  (plans/param_schema_v2 step 6).*)
+fun check_constraint (params: MCP_Tool.param list) (MCP_Tool.Exactly_One members) =
+  let
+    val _ = if null members then error "Empty exactly_one constraint" else ();
+    val _ =
+      if has_duplicates (op =) members then
+        error ("Duplicate members in exactly_one constraint: " ^ commas_quote members)
+      else ();
+    val _ =
+      List.app (fn m =>
+        (case find_first (fn p => #name p = m) params of
+          NONE =>
+            error ("exactly_one constraint names undeclared parameter " ^ quote m ^
+              " (declared: " ^ commas_quote (map #name params) ^ ")")
+        | SOME p =>
+            if #required p then
+              error ("exactly_one member " ^ quote m ^
+                " must be declared (optional), not required")
+            else if is_some (#default p) then
+              error ("exactly_one member " ^ quote m ^ " must not declare a default value")
+            else ()))
+        members;
+  in () end;
 
 (*"args" splices VERBATIM into the command's argument position (a
   command takes a token stream there, not a quoted value) — the default
@@ -674,13 +719,26 @@ fun check_value ctxt (p: MCP_Tool.param) v =
   the element type. Absent = zero occurrences (List_Of carries no
   default, per param's own registration-time check, so there is no
   fallback value to fill in here).*)
-fun validate ctxt params args =
+fun validate ctxt params constraints args =
   let
     val _ =
       List.app (fn (k, _) =>
         if exists (fn p => #name p = k) params then ()
         else error ("Unknown argument " ^ quote k ^ " (declared: " ^
           commas_quote (map #name params) ^ ")")) args;
+    (*Exactly_One counts DISTINCT member names present as a key in the
+      RAW args, BEFORE defaults are filled in (value_of below) -- a
+      defaulted member would read as permanently present, which is
+      exactly why check_constraint rejects one at registration.*)
+    val _ =
+      List.app (fn MCP_Tool.Exactly_One members =>
+        let val present = filter (fn m => exists (fn (k, _) => k = m) args) members in
+          if length present = 1 then ()
+          else
+            error ("Exactly one of " ^ commas members ^ " is required" ^
+              (if null present then "" else " (got: " ^ commas_quote present ^ ")"))
+        end)
+        constraints;
     fun value_of (p: MCP_Tool.param) =
       (case AList.lookup (op =) args (#name p) of
         SOME v => SOME v
@@ -860,13 +918,27 @@ fun exec_text thy shift text =
 
 (* tool builders: what the mcp_tool command's forms compile onto *)
 
+(*the constraint sentence appended to a tool's description at
+  construction time (below) -- the ONLY thing that crosses the wire for
+  a constraint, so this wording IS the contract; pinned by assertion,
+  spec's exact text.*)
+fun constraint_sentence (MCP_Tool.Exactly_One members) =
+  "Exactly one of " ^ commas members ^ " is required.";
+
+fun describe_constraints description constraints =
+  fold (fn c => fn d => d ^ " " ^ constraint_sentence c) constraints description;
+
 (*string_fun: the mvp shape, schema {input :: string}; the value is
-  handed to f as-is (no validation — a plain string function)*)
+  handed to f as-is (no validation — a plain string function). Its one
+  fixed param makes a cross-param constraint meaningless, same reasoning
+  as func never taking declared params at all -- no constraints
+  parameter here, always [].*)
 fun func description f : MCP_Tool.tool =
   {description = description,
    params =
     [{name = "input", typ = MCP_Tool.String, required = true, default = NONE,
       description = "tool input"}],
+   constraints = [],
    form = MCP_Tool.String_Fun,
    annotations = MCP_Tool.default_annotations,
    run = fn _ => fn args =>
@@ -875,18 +947,21 @@ fun func description f : MCP_Tool.tool =
     | NONE => error "Missing required argument: input")};
 
 (*full-power hatch: declared params, validated before f sees them*)
-fun ml_run description params annotations f : MCP_Tool.tool =
-  let val params = map param params in
-    {description = description, params = params, form = MCP_Tool.String_Fun,
-     annotations = annotations,
-     run = fn ctxt => fn args => f ctxt (validate ctxt params args)}
+fun ml_run description params annotations constraints f : MCP_Tool.tool =
+  let
+    val params = map param params;
+    val _ = List.app (check_constraint params) constraints;
+  in
+    {description = describe_constraints description constraints, params = params,
+     constraints = constraints, form = MCP_Tool.String_Fun, annotations = annotations,
+     run = fn ctxt => fn args => f ctxt (validate ctxt params constraints args)}
   end;
 
 (*wrap a diagnostic command: registration-time checks here (position
   report -> ctrl+click on the command; keyword-class restriction), the
   run function validates + assembles + executes against the RUN
   context's theory (the designation decides, not the registration site)*)
-fun diag ctxt (cmd, pos) {description, params, format = fmt} : MCP_Tool.tool =
+fun diag ctxt (cmd, pos) {description, params, format = fmt, constraints} : MCP_Tool.tool =
   let
     val _ = Outer_Syntax.check_command ctxt (cmd, pos);
     val keywords = Thy_Header.get_keywords (Proof_Context.theory_of ctxt);
@@ -899,12 +974,13 @@ fun diag ctxt (cmd, pos) {description, params, format = fmt} : MCP_Tool.tool =
     val params = if null params then [input_param] else map param params;
     val fmt = if fmt = "" then cmd ^ " $input" else fmt;
     val _ = check_format params fmt;
+    val _ = List.app (check_constraint params) constraints;
   in
-    {description = description, params = params, form = MCP_Tool.Diag_Wrap,
-     annotations = MCP_Tool.diag_annotations,
+    {description = describe_constraints description constraints, params = params,
+     constraints = constraints, form = MCP_Tool.Diag_Wrap, annotations = MCP_Tool.diag_annotations,
      run = fn run_ctxt => fn args =>
       let
-        val (text, shift) = assemble params fmt (validate run_ctxt params args);
+        val (text, shift) = assemble params fmt (validate run_ctxt params constraints args);
       in exec_text (Proof_Context.theory_of run_ctxt) shift text end}
   end;
 
@@ -919,15 +995,19 @@ fun diag ctxt (cmd, pos) {description, params, format = fmt} : MCP_Tool.tool =
   (annotations ...) clause -- every capture tool carries
   MCP_Tool.default_annotations until plans/ml_builtin_migration's
   follow-up makes the clause mandatory here (D2 -- param_schema_v2 landed
-  the mechanism itself, this form just doesn't use it yet); see
-  plans/ml_builtin_migration step 3 and its recorded deviation.*)
-fun capture description params f : MCP_Tool.tool =
-  let val params = map param params in
-    {description = description, params = params, form = MCP_Tool.Capture,
-     annotations = MCP_Tool.default_annotations,
+  the mechanism itself, this form just doesn't use it yet); constraints
+  are unrelated to that deferral and are accepted here like any other
+  form that validates declared params.*)
+fun capture description params constraints f : MCP_Tool.tool =
+  let
+    val params = map param params;
+    val _ = List.app (check_constraint params) constraints;
+  in
+    {description = describe_constraints description constraints, params = params,
+     constraints = constraints, form = MCP_Tool.Capture, annotations = MCP_Tool.default_annotations,
      run = fn ctxt => fn args =>
       (case MCP_Output.captured (fn () =>
-          Print_Mode.with_modes [] (fn () => f ctxt (validate ctxt params args)) ()) of
+          Print_Mode.with_modes [] (fn () => f ctxt (validate ctxt params constraints args)) ()) of
         (Exn.Res (), output) => output
       | (Exn.Exn exn, output) =>
           if Exn.is_interrupt exn then Exn.reraise exn
@@ -992,7 +1072,7 @@ local
 
 datatype clause =
   Descr of string | Params of MCP_Tool.param list | Format of string | Isar of string
-| Annot of MCP_Tool.annotations;
+| Annot of MCP_Tool.annotations | Constr of MCP_Tool.constraint;
 
 (*(optional) sits after the type, matched with Args.$$$ (an ident/keyword
   token by CONTENT, Pure/Isar/args.ML:81) rather than Parse.$$$, which
@@ -1114,7 +1194,8 @@ val clause =
   clause_block "params" (Scan.repeat1 param_entry) >> Params ||
   clause_block "format" Parse.embedded >> Format ||
   clause_block "isar" Parse.embedded >> Isar ||
-  clause_block_ct "annotations" Parse.name >> (Annot o read_annotations);
+  clause_block_ct "annotations" Parse.name >> (Annot o read_annotations) ||
+  clause_block_ct "exactly_one" (Scan.repeat1 Parse.name) >> (Constr o MCP_Tool.Exactly_One);
 
 fun digest what allow_isar clauses =
   let
@@ -1132,7 +1213,8 @@ fun digest what allow_isar clauses =
      params = uniq (fn Params ps => SOME ps | _ => NONE) "params",
      fmt = uniq (fn Format s => SOME s | _ => NONE) "format",
      isar = isar,
-     annot = uniq (fn Annot a => SOME a | _ => NONE) "annotations"}
+     annot = uniq (fn Annot a => SOME a | _ => NONE) "annotations",
+     constr = uniq (fn Constr c => SOME c | _ => NONE) "exactly_one"}
   end;
 
 fun the_descr what pos NONE =
@@ -1155,6 +1237,9 @@ fun print_annotations (a: MCP_Tool.annotations) =
   ", idempotent = " ^ ML_Syntax.print_option Bool.toString (#idempotent a) ^
   ", destructive = " ^ ML_Syntax.print_option Bool.toString (#destructive a) ^
   ", open_world = " ^ ML_Syntax.print_option Bool.toString (#open_world a) ^ "}";
+
+fun print_constraint (MCP_Tool.Exactly_One members) =
+  "(MCP_Tool.Exactly_One " ^ ML_Syntax.print_list ML_Syntax.print_string members ^ ")";
 
 (*the method_setup idiom: the generated source is a UNIT expression
   registering through Theory.local_setup — ML_Context.expression
@@ -1183,7 +1268,7 @@ val tool_form =
 fun tool_cmd ((name, pos), (form, clauses)) lthy =
   let
     val what = "mcp_tool " ^ quote name;
-    val {descr, params, fmt, annot, ...} = digest what false clauses;
+    val {descr, params, fmt, annot, constr, ...} = digest what false clauses;
     val descr' = the_descr what pos descr;
   in
     (case form of
@@ -1205,14 +1290,14 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
           val tool =
             MCP_Combinators.diag lthy (name, pos)
               {description = descr', params = these params,
-               format = the_default "" fmt};
+               format = the_default "" fmt, constraints = the_list constr};
         in #2 (MCP_Tool.declare (Binding.make (name, pos)) tool lthy) end
     | SOME (Tool_Fun source) =>
         let
           val _ =
-            if is_some params orelse is_some fmt orelse is_some annot
-            then error ("(params/format/annotations ...) clauses are not meaningful for the " ^
-              "string form of " ^ what)
+            if is_some params orelse is_some fmt orelse is_some annot orelse is_some constr
+            then error ("(params/format/annotations/exactly_one ...) clauses are not " ^
+              "meaningful for the string form of " ^ what)
             else ();
         in
           ml_declaration
@@ -1228,11 +1313,12 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
             else ();
           val params_ml = ML_Syntax.print_list print_param (these params);
           val annot_ml = print_annotations (the_default MCP_Tool.default_annotations annot);
+          val constr_ml = ML_Syntax.print_list print_constraint (the_list constr);
         in
           ml_declaration
             ("MCP_Tool.declare " ^ binding_ml (name, pos) ^
               " (MCP_Combinators.ml_run " ^ ML_Syntax.print_string descr' ^
-              " " ^ params_ml ^ " " ^ annot_ml)
+              " " ^ params_ml ^ " " ^ annot_ml ^ " " ^ constr_ml)
             source ")" lthy
         end
     | SOME (Tool_Capture source) =>
@@ -1245,18 +1331,21 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
             (digest) but still REJECTED here, per plans/ml_builtin_migration
             step 3 -- making it mandatory for capture is that plan's
             follow-up, not this one. A capture tool declared today always
-            carries MCP_Tool.default_annotations (MCP_Combinators.capture).*)
+            carries MCP_Tool.default_annotations (MCP_Combinators.capture).
+            exactly_one is unrelated to that deferral and IS accepted here
+            -- capture validates its declared params like any other form.*)
           val _ =
             if is_some annot
             then error ("(annotations ...) clause is not yet accepted for the capture form of " ^
               what ^ " (deferred to plans/ml_builtin_migration's follow-up)")
             else ();
           val params_ml = ML_Syntax.print_list print_param (these params);
+          val constr_ml = ML_Syntax.print_list print_constraint (the_list constr);
         in
           ml_declaration
             ("MCP_Tool.declare " ^ binding_ml (name, pos) ^
               " (MCP_Combinators.capture " ^ ML_Syntax.print_string descr' ^
-              " " ^ params_ml)
+              " " ^ params_ml ^ " " ^ constr_ml)
             source ")" lthy
         end)
   end;
@@ -1286,10 +1375,11 @@ fun isar_resource text descr : MCP_Resource.resource =
 fun resource_cmd ((name, pos), (form, clauses)) lthy =
   let
     val what = "mcp_resource " ^ quote name;
-    val {descr, params, fmt, isar, annot} = digest what true clauses;
+    val {descr, params, fmt, isar, annot, constr} = digest what true clauses;
     val _ =
-      if is_some params orelse is_some fmt orelse is_some annot
-      then error ("(params/format/annotations ...) clauses are not meaningful for " ^ what)
+      if is_some params orelse is_some fmt orelse is_some annot orelse is_some constr
+      then error ("(params/format/annotations/exactly_one ...) clauses are not meaningful for " ^
+        what)
       else ();
     val binding = Binding.make (name, pos);
   in
@@ -1767,7 +1857,7 @@ val _ =
     |> fold (fn (name, description) => fn lthy =>
         lthy
         |> MCP_Tool.declare (Binding.name name)
-            {description = description, params = [], form = MCP_Tool.Builtin,
+            {description = description, params = [], constraints = [], form = MCP_Tool.Builtin,
              (*INERT: tools_body filters Builtin rows out of ml_rows, so
                this value never reaches encode_row -- it must not
                replicate the scala row's real bucket (mcp_server.scala).*)

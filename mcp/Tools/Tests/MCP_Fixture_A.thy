@@ -11,13 +11,13 @@ setup \<open>
   Named_Target.theory_map (fn lthy =>
     lthy
     |> MCP_Tool.declare \<^binding>\<open>alpha\<close>
-        {description = "fixture tool alpha", params = [], form = MCP_Tool.String_Fun,
-         annotations = MCP_Tool.default_annotations,
+        {description = "fixture tool alpha", params = [], constraints = [],
+         form = MCP_Tool.String_Fun, annotations = MCP_Tool.default_annotations,
          run = fn _ => fn args =>
           "alpha:" ^ the_default "" (AList.lookup (op =) args "input")}
     |> #2
     |> MCP_Tool.declare \<^binding>\<open>beta\<close>
-        {description = "fixture tool beta (bundle-scoped)", params = [],
+        {description = "fixture tool beta (bundle-scoped)", params = [], constraints = [],
          form = MCP_Tool.String_Fun, annotations = MCP_Tool.default_annotations,
          run = fn _ => fn _ => "beta"}
     |> #2)

@@ -15,8 +15,8 @@ ML \<open>
 Context.>> (Context.map_theory (Named_Target.theory_map (fn lthy =>
   lthy
   |> MCP_Tool.declare \<^binding>\<open>test_tool\<close>
-      {description = "a test tool", params = [], form = MCP_Tool.String_Fun,
-       annotations = MCP_Tool.default_annotations,
+      {description = "a test tool", params = [], constraints = [],
+       form = MCP_Tool.String_Fun, annotations = MCP_Tool.default_annotations,
        run = fn _ => fn args =>
         "ran:" ^ the_default "" (AList.lookup (op =) args "input")}
   |> #2)));
@@ -49,8 +49,8 @@ ML \<open>
   \<^theory> |> Named_Target.theory_map (fn lthy =>
     lthy
     |> MCP_Tool.declare \<^binding>\<open>test_tool\<close>
-        {description = "duplicate", params = [], form = MCP_Tool.String_Fun,
-         annotations = MCP_Tool.default_annotations,
+        {description = "duplicate", params = [], constraints = [],
+         form = MCP_Tool.String_Fun, annotations = MCP_Tool.default_annotations,
          run = fn _ => fn _ => ""}
     |> #2))));
 \<close>
@@ -312,11 +312,11 @@ val ps =
    mk_param ("limit", MCP_Tool.Nat) false (SOME "40")];
 
 (*defaults filled in declaration order*)
-\<^assert> (MCP_Combinators.validate \<^context> ps [("crit", "x")] =
+\<^assert> (MCP_Combinators.validate \<^context> ps [] [("crit", "x")] =
   [("crit", "x"), ("limit", "40")]);
 
 (*explicit values win*)
-\<^assert> (MCP_Combinators.validate \<^context> ps [("limit", "7"), ("crit", "x")] =
+\<^assert> (MCP_Combinators.validate \<^context> ps [] [("limit", "7"), ("crit", "x")] =
   [("crit", "x"), ("limit", "7")]);
 
 (*typed errors name the argument*)
@@ -325,17 +325,17 @@ fun err_mentions f sub =
     Exn.Exn exn => String.isSubstring sub (Runtime.exn_message exn)
   | Exn.Res _ => false);
 
-\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> ps []) "crit");
+\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> ps [] []) "crit");
 \<^assert> (err_mentions
-  (fn () => MCP_Combinators.validate \<^context> ps [("crit", "x"), ("limit", "many")]) "limit");
+  (fn () => MCP_Combinators.validate \<^context> ps [] [("crit", "x"), ("limit", "many")]) "limit");
 \<^assert> (err_mentions
-  (fn () => MCP_Combinators.validate \<^context> ps [("crit", "x"), ("bogus", "y")]) "bogus");
+  (fn () => MCP_Combinators.validate \<^context> ps [] [("crit", "x"), ("bogus", "y")]) "bogus");
 
 (*term params elaborate against the context*)
 val tp = [mk_param ("t", MCP_Tool.Term) true NONE];
-\<^assert> (MCP_Combinators.validate \<^context> tp [("t", "PROP A \<Longrightarrow> PROP A")] =
+\<^assert> (MCP_Combinators.validate \<^context> tp [] [("t", "PROP A \<Longrightarrow> PROP A")] =
   [("t", "PROP A \<Longrightarrow> PROP A")]);
-\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> tp [("t", "\<Longrightarrow>")]) "t");
+\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> tp [] [("t", "\<Longrightarrow>")]) "t");
 
 (*A3 (plans/param_schema_v2): "unknown parameter types are rejected at
   param construction" no longer type-checks -- MCP_Tool.ptyp is a closed
@@ -359,9 +359,9 @@ val opt_ps =
    mk_param ("repl", MCP_Tool.String) false NONE];
 
 (*absent optional is dropped, not an error and not a spurious empty pair*)
-\<^assert> (MCP_Combinators.validate \<^context> opt_ps [("crit", "x")] = [("crit", "x")]);
+\<^assert> (MCP_Combinators.validate \<^context> opt_ps [] [("crit", "x")] = [("crit", "x")]);
 (*supplied optional is kept, in declaration order*)
-\<^assert> (MCP_Combinators.validate \<^context> opt_ps [("crit", "x"), ("repl", "T")] =
+\<^assert> (MCP_Combinators.validate \<^context> opt_ps [] [("crit", "x"), ("repl", "T")] =
   [("crit", "x"), ("repl", "T")]);
 
 (*assemble: an absent optional referenced in the format substitutes the
@@ -419,12 +419,12 @@ val kind_ps = [mk_param ("kind", MCP_Tool.Enum ["const", "thm", "type"]) true NO
 (*the spec's pre-written "enum rejects junk" case: a value outside the
   declared items is a typed error naming the param AND listing the
   admissible items*)
-\<^assert> (MCP_Combinators.validate \<^context> kind_ps [("kind", "const")] = [("kind", "const")]);
-\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> kind_ps [("kind", "junk")]) "kind");
+\<^assert> (MCP_Combinators.validate \<^context> kind_ps [] [("kind", "const")] = [("kind", "const")]);
+\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> kind_ps [] [("kind", "junk")]) "kind");
 \<^assert> (err_mentions
-  (fn () => MCP_Combinators.validate \<^context> kind_ps [("kind", "junk")]) "const");
+  (fn () => MCP_Combinators.validate \<^context> kind_ps [] [("kind", "junk")]) "const");
 \<^assert> (err_mentions
-  (fn () => MCP_Combinators.validate \<^context> kind_ps [("kind", "junk")]) "thm");
+  (fn () => MCP_Combinators.validate \<^context> kind_ps [] [("kind", "junk")]) "thm");
 
 (*verbatim splice: unlike string, an enum value is NOT quoted*)
 \<^assert> (MCP_Combinators.assemble kind_ps "find_definition $kind" [("kind", "const")] =
@@ -498,18 +498,18 @@ val names_ps = [mk_param ("names", MCP_Tool.List_Of MCP_Tool.String) true NONE];
 
 (*A8: repeated keys survive validate in array order, each element
   type-checked*)
-\<^assert> (MCP_Combinators.validate \<^context> names_ps
+\<^assert> (MCP_Combinators.validate \<^context> names_ps []
     [("names", "a"), ("names", "b"), ("names", "c")] =
   [("names", "a"), ("names", "b"), ("names", "c")]);
 (*a bad element is rejected naming the param, same as any scalar*)
 val bad_ps = [mk_param ("ns", MCP_Tool.List_Of MCP_Tool.Nat) true NONE];
 \<^assert> (err_mentions
-  (fn () => MCP_Combinators.validate \<^context> bad_ps [("ns", "1"), ("ns", "bogus")]) "ns");
+  (fn () => MCP_Combinators.validate \<^context> bad_ps [] [("ns", "1"), ("ns", "bogus")]) "ns");
 (*a required list with zero occurrences still errors*)
-\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> names_ps []) "names");
+\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> names_ps [] []) "names");
 (*an OPTIONAL list with zero occurrences is simply absent, not an error*)
 val opt_names_ps = [mk_param ("names", MCP_Tool.List_Of MCP_Tool.String) false NONE];
-\<^assert> (MCP_Combinators.validate \<^context> opt_names_ps [] = []);
+\<^assert> (MCP_Combinators.validate \<^context> opt_names_ps [] [] = []);
 
 (*assemble: each element quoted per its type, joined with a single space*)
 \<^assert> (MCP_Combinators.assemble names_ps "load_theories $names"
@@ -844,6 +844,155 @@ ML \<open>
   ("mcp_tool annot_bogus = run \<open>fn _ => fn _ => \"\"\<close> (description \<open>d\<close>) " ^
     "(annotations no_such_bucket)")
   "no_such_bucket");
+\<close>
+
+section \<open>Combinators: exactly_one constraint (plans/param_schema_v2 A12)\<close>
+
+text \<open>DEPENDS ON STEP 1: a member must be optional-without-default, which
+(optional) makes reachable from isar. Constraints do NOT cross the wire
+-- Exactly_One drives a runtime check in validate and a generated
+sentence appended to the description at tool-construction time, so the
+description that DOES cross already carries the rule.\<close>
+
+ML \<open>
+(*registration-time gate (MCP_Combinators.check_constraint): every
+  member must be a DECLARED, non-required, non-defaulted param*)
+val abcd_ps =
+  [mk_param ("a", MCP_Tool.String) false NONE,
+   mk_param ("b", MCP_Tool.String) false NONE,
+   mk_param ("c", MCP_Tool.String) true NONE,
+   mk_param ("d", MCP_Tool.String) false (SOME "x")];
+
+\<^assert> (MCP_Combinators.check_constraint abcd_ps (MCP_Tool.Exactly_One ["a", "b"]) = ());
+\<^assert> (err_mentions
+  (fn () => MCP_Combinators.check_constraint abcd_ps (MCP_Tool.Exactly_One ["a", "nope"]))
+  "nope");
+(*a required member*)
+\<^assert> (err_mentions
+  (fn () => MCP_Combinators.check_constraint abcd_ps (MCP_Tool.Exactly_One ["a", "c"])) "c");
+(*a defaulted member*)
+\<^assert> (err_mentions
+  (fn () => MCP_Combinators.check_constraint abcd_ps (MCP_Tool.Exactly_One ["a", "d"])) "d");
+\<^assert> (is_err (fn () => MCP_Combinators.check_constraint abcd_ps (MCP_Tool.Exactly_One [])));
+\<^assert> (is_err
+  (fn () => MCP_Combinators.check_constraint abcd_ps (MCP_Tool.Exactly_One ["a", "a"])));
+\<close>
+
+ML \<open>
+(*runtime check (MCP_Combinators.validate): zero members present errors
+  naming all three; two present errors too (and names which were seen);
+  exactly one is accepted -- counted over the RAW args, before defaults
+  (none of these members has one, per the registration gate above)*)
+val eo_ps =
+  [mk_param ("offset", MCP_Tool.Nat) false NONE,
+   mk_param ("pattern", MCP_Tool.String) false NONE,
+   mk_param ("index", MCP_Tool.Int) false NONE];
+val eo_c = [MCP_Tool.Exactly_One ["offset", "pattern", "index"]];
+
+\<^assert> (MCP_Combinators.validate \<^context> eo_ps eo_c [("offset", "3")] = [("offset", "3")]);
+\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> eo_ps eo_c []) "offset");
+\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> eo_ps eo_c []) "pattern");
+\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> eo_ps eo_c []) "index");
+\<^assert> (err_mentions
+  (fn () => MCP_Combinators.validate \<^context> eo_ps eo_c [("offset", "3"), ("pattern", "x")])
+  "offset");
+\<close>
+
+ML \<open>
+(*the exact spec wording, pinned by assertion -- exercised directly
+  through ml_run so this does not depend on the isar clause at all*)
+val eo_tool =
+  MCP_Combinators.ml_run "search by locator" eo_ps MCP_Tool.default_annotations eo_c
+    (fn _ => fn _ => "");
+\<^assert> (#description eo_tool =
+  "search by locator Exactly one of offset, pattern, index is required.");
+\<^assert> (#constraints eo_tool = eo_c);
+\<close>
+
+text \<open>End to end: the run form's isar (exactly_one m1 m2 ...) clause,
+including the runtime check and the description sentence through the
+full command -> ml_declaration -> ML_Context.expression path.\<close>
+
+mcp_tool exactly_one_probe = run \<open>fn _ => fn args =>
+  the_default "" (AList.lookup (op =) args "offset") ^
+  the_default "" (AList.lookup (op =) args "pattern") ^
+  the_default "" (AList.lookup (op =) args "index")\<close>
+  (description \<open>probe for the exactly_one constraint\<close>)
+  (params
+    offset :: nat (optional) \<open>an offset\<close>
+    pattern :: string (optional) \<open>a pattern\<close>
+    index :: int (optional) \<open>an index\<close>)
+  (exactly_one offset pattern index)
+
+ML \<open>
+val context = Context.Proof \<^context>;
+\<^assert> (#description (MCP_Tool.get context "MCP_Tools_Tests.exactly_one_probe") =
+  "probe for the exactly_one constraint Exactly one of offset, pattern, index is required.");
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.exactly_one_probe" [("offset", "3")] = "3");
+\<^assert> (err_mentions
+  (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.exactly_one_probe" []) "offset");
+\<^assert> (err_mentions
+  (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.exactly_one_probe"
+    [("offset", "3"), ("pattern", "p")])
+  "offset");
+\<close>
+
+text \<open>The capture form validates its declared params exactly like the
+run form, so it accepts the clause too -- unlike (annotations ...),
+which is deferred there for an unrelated reason (D2).\<close>
+
+mcp_tool capture_exactly_one_probe = capture \<open>fn _ => fn args =>
+  writeln (the_default "" (AList.lookup (op =) args "a") ^
+    the_default "" (AList.lookup (op =) args "b"))\<close>
+  (description \<open>probe for exactly_one on the capture form\<close>)
+  (params
+    a :: string (optional) \<open>a\<close>
+    b :: string (optional) \<open>b\<close>)
+  (exactly_one a b)
+
+ML \<open>
+val context = Context.Proof \<^context>;
+\<^assert> (#description (MCP_Tool.get context "MCP_Tools_Tests.capture_exactly_one_probe") =
+  "probe for exactly_one on the capture form Exactly one of a, b is required.");
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_exactly_one_probe" [("a", "hi")] = "hi");
+\<^assert> (err_mentions
+  (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_exactly_one_probe" []) "a");
+\<^assert> (err_mentions
+  (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.capture_exactly_one_probe"
+    [("a", "x"), ("b", "y")])
+  "a");
+\<close>
+
+text \<open>The diag (no-form) path threads constraints too -- proven directly
+through MCP_Combinators.diag (real diagnostic command, no isar clause
+needed to make the point) rather than fighting a fresh command name into
+the shared namespace.\<close>
+
+ML \<open>
+val diag_tool =
+  MCP_Combinators.diag \<^context> ("print_state", Position.none)
+    {description = "print the state", format = "print_state",
+     params =
+      [mk_param ("a", MCP_Tool.Nat) false NONE, mk_param ("b", MCP_Tool.Nat) false NONE],
+     constraints = [MCP_Tool.Exactly_One ["a", "b"]]};
+\<^assert> (#description diag_tool = "print the state Exactly one of a, b is required.");
+(*print_state succeeds against a bare theory-level toplevel state*)
+val _ = #run diag_tool \<^context> [("a", "3")];
+\<^assert> (err_mentions (fn () => #run diag_tool \<^context> []) "a");
+\<^assert> (err_mentions (fn () => #run diag_tool \<^context> [("a", "3"), ("b", "4")]) "a");
+\<close>
+
+text \<open>Rejected where a cross-param constraint is meaningless: the string
+form (one fixed param) and mcp_resource (no concept of tool params at
+all) -- same rejection message as the other tool-only clauses.\<close>
+
+ML \<open>
+\<^assert> (reg_fails
+  "mcp_tool eo_func = \<open>fn s => s\<close> (description \<open>d\<close>) (exactly_one a b)"
+  "not meaningful");
+\<^assert> (reg_fails
+  "mcp_resource eo_res (isar \<open>print_theory\<close>) (description \<open>d\<close>) (exactly_one a b)"
+  "not meaningful");
 \<close>
 
 section \<open>The mcp_resource command: three forms\<close>
