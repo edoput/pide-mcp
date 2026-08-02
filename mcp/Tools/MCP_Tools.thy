@@ -509,6 +509,13 @@ fun param (p: MCP_Tool.param) =
                 error ("Default " ^ quote d ^ " for parameter " ^ quote (#name p) ^
                   " is not one of its enum items: " ^ commas_quote items));
       in p end
+  | MCP_Tool.List_Of _ =>
+      (case #default p of
+        NONE => p
+      | SOME _ =>
+          error ("A list-of parameter cannot declare a default, for parameter " ^
+            quote (#name p) ^
+            " (no list-literal default syntax is specced; DEFERRED, plans/param_schema_v2)"))
   | _ => p);
 
 (*"args" splices VERBATIM into the command's argument position (a
@@ -551,6 +558,14 @@ fun quote_framed s =
 
 (* validation: typed errors naming the argument *)
 
+(*a param record with everything but its ptyp carried over -- the
+  shape List_Of's element-wise recursion needs at more than one call
+  site (check_value, validate); SML has no {p with typ = t} update
+  syntax.*)
+fun with_typ (p: MCP_Tool.param) t : MCP_Tool.param =
+  {name = #name p, typ = t, required = #required p,
+   default = #default p, description = #description p};
+
 fun invalid (p: MCP_Tool.param) msg =
   error ("Invalid value for argument " ^ quote (#name p) ^
     " (type " ^ MCP_Tool.string_of_ptyp (#typ p) ^ "): " ^ msg);
@@ -592,13 +607,20 @@ fun check_value ctxt (p: MCP_Tool.param) v =
   | MCP_Tool.Enum items =>
       if member (op =) items v then ()
       else invalid p (quote v ^ " is not one of " ^ commas_quote items)
-  | MCP_Tool.List_Of t =>
-      check_value ctxt
-        {name = #name p, typ = t, required = #required p,
-         default = #default p, description = #description p} v);
+  | MCP_Tool.List_Of t => check_value ctxt (with_typ p t) v);
 
 (*named args -> validated pairs in declaration order, defaults filled in;
-  unknown keys, missing required args and ill-typed values are errors*)
+  unknown keys, missing required args and ill-typed values are errors.
+  A List_Of param is the one case that can legitimately produce MORE
+  THAN ONE output pair per param: list arguments arrive as REPEATED
+  KEYS on the wire (json_args: a json array becomes repeated (key,
+  element) pairs in array order, mcp_server.scala; documented
+  mcp_session.scala), so AList.lookup's first-occurrence semantics
+  would silently drop every element but the first -- collect every
+  occurrence instead, in array order, and type-check each one against
+  the element type. Absent = zero occurrences (List_Of carries no
+  default, per param's own registration-time check, so there is no
+  fallback value to fill in here).*)
 fun validate ctxt params args =
   let
     val _ =
@@ -617,10 +639,19 @@ fun validate ctxt params args =
               then error ("Missing required argument: " ^ #name p)
               else NONE));
   in
-    params |> map_filter (fn p =>
-      (case value_of p of
-        SOME v => (check_value ctxt p v; SOME (#name p, v))
-      | NONE => NONE))
+    params |> maps (fn p =>
+      (case #typ p of
+        MCP_Tool.List_Of t =>
+          let val vs = map snd (filter (fn (k, _) => k = #name p) args) in
+            if null vs then
+              (if #required p then error ("Missing required argument: " ^ #name p) else [])
+            else
+              (List.app (check_value ctxt (with_typ p t)) vs; map (pair (#name p)) vs)
+          end
+      | _ =>
+          (case value_of p of
+            SOME v => (check_value ctxt p v; [(#name p, v)])
+          | NONE => [])))
   end;
 
 
@@ -672,9 +703,10 @@ fun assemble params fmt args =
           fact (spec refinement: enum items name command keywords, e.g.
           "find_definition kind: const", which quoting would break --
           membership is already checked by validate, so the splice is
-          safe). List_Of t recurses on the single value as ONE element
-          of type t; the repeated-key collection and space-join that
-          calls this per element is step 4's job, not this function's.*)
+          safe). List_Of t's own branch recurses treating v as ONE
+          element of type t -- the repeated-key collection and space-
+          join live in quoted below, not here, so this stays a total
+          per-VALUE quoter reusable from both places.*)
         fun quote_typ MCP_Tool.String v = (quote_string v, 0)
           | quote_typ MCP_Tool.Source v = quote_framed v
           | quote_typ MCP_Tool.Term v = quote_framed v
@@ -687,17 +719,35 @@ fun assemble params fmt args =
           | quote_typ (MCP_Tool.Enum _) v = (v, 0)
           | quote_typ (MCP_Tool.List_Of t) v = quote_typ t v;
       in
-        (case AList.lookup (op =) args name of
-          NONE =>
-            (*validate already ran: a defaulted param is filled in by the
-              time assemble sees it, so an absent value here can only be
-              an (optional) param the caller left out. Substitute the
-              empty segment DIRECTLY, bypassing type-directed quoting --
-              routing "" through quote_string would splice the two
-              characters "" (a quoted empty string), not an empty
-              segment.*)
-            if #required p then error ("Missing argument " ^ quote name) else ("", 0)
-        | SOME v => quote_typ (#typ p) v)
+        (case #typ p of
+          MCP_Tool.List_Of t =>
+            (*same repeated-key collection as validate (MCP_Tools.thy,
+              "the SAME AList.lookup first-occurrence bug", plans/
+              param_schema_v2 step 4) -- AList.lookup would see only the
+              first element. Each element is quoted per t and the
+              pieces joined with a SINGLE SPACE (spec refinement: the
+              join spec is deferred, one join rule ships); the shift is
+              the max across elements, matching fold_map's own rule for
+              several multiline payloads in one format.*)
+            let val vs = map snd (filter (fn (k, _) => k = name) args) in
+              if null vs then
+                if #required p then error ("Missing argument " ^ quote name) else ("", 0)
+              else
+                let val results = map (quote_typ t) vs
+                in (space_implode " " (map #1 results), fold (Integer.max o #2) results 0) end
+            end
+        | _ =>
+            (case AList.lookup (op =) args name of
+              NONE =>
+                (*validate already ran: a defaulted param is filled in by
+                  the time assemble sees it, so an absent value here can
+                  only be an (optional) param the caller left out.
+                  Substitute the empty segment DIRECTLY, bypassing
+                  type-directed quoting -- routing "" through
+                  quote_string would splice the two characters "" (a
+                  quoted empty string), not an empty segment.*)
+                if #required p then error ("Missing argument " ^ quote name) else ("", 0)
+            | SOME v => quote_typ (#typ p) v))
       end;
     val (pieces, shift) =
       fold_map
@@ -942,10 +992,16 @@ val enum_ptyp =
   Args.$$$ "enum" |-- Parse.$$$ "(" |-- Parse.enum1 "|" Parse.name --| Parse.$$$ ")"
     >> MCP_Tool.Enum;
 
-val ptyp_parser =
-  enum_ptyp ||
-  ((Parse.short_ident || Parse.long_ident || Parse.sym_ident || Parse.keyword || Parse.string)
-    >> read_ptyp);
+(*list of <ptyp>: "list"/"of" matched by content, same trick again; the
+  element type recurses through ptyp_parser itself, so "list of list of
+  string" parses (whether it is USEFUL is a schema question the plan
+  leaves open). A `fun`, not a `val`, purely so the recursive reference
+  to ptyp_parser inside its own definition is legal.*)
+fun ptyp_parser xs =
+  (enum_ptyp ||
+   (Args.$$$ "list" |-- Args.$$$ "of" |-- ptyp_parser >> MCP_Tool.List_Of) ||
+   ((Parse.short_ident || Parse.long_ident || Parse.sym_ident || Parse.keyword || Parse.string)
+     >> read_ptyp)) xs;
 
 val param_entry =
   Parse.name -- (Parse.$$$ "::" |-- ptyp_parser) -- optional_flag --

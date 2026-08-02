@@ -951,6 +951,21 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(required_args(row), Nil)
   }
 
+  test("tools/list expands a list-of param into {type: array, items: {...}} " +
+      "(plans/param_schema_v2 A8/A9)") {
+    val backend = new Fake_Backend
+    backend.extra_ml_tools = List(
+      MCP_Session.Tool_Row("Thy_A.finder", "searches", "string_fun", List(
+        MCP_Session.Tool_Param("names",
+          MCP_Session.Ptyp_List_Of(MCP_Session.Ptyp_String),
+          true, None, "names to search"))))
+    val row = tool_row("finder", backend)
+    assertEquals(property_type(row, "names"), "array")
+    assertEquals(get(row, "inputSchema", "properties", "names", "items"),
+      JSON.Object("type" -> "string"))
+    assertEquals(required_args(row), List("names"))
+  }
+
   test("tools/list gives a zero-param ML tool the bare object schema, " +
       "not the mvp {input} shape (plans/ml_builtin_migration step 4)") {
     val backend = new Fake_Backend

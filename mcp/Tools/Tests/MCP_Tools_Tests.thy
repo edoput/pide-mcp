@@ -465,6 +465,63 @@ ML \<open>
   "Duplicate");
 \<close>
 
+section \<open>Combinators: list of \<open><scalar>\<close> (plans/param_schema_v2 A8)\<close>
+
+text \<open>list arguments arrive as REPEATED KEYS (the json_args convention,
+mcp_server.scala) -- AList.lookup would see only the first occurrence,
+so validate and assemble's quoted both collect every occurrence for a
+List_Of param instead. Absent = zero occurrences.\<close>
+
+ML \<open>
+val names_ps = [mk_param ("names", MCP_Tool.List_Of MCP_Tool.String) true NONE];
+
+(*A8: repeated keys survive validate in array order, each element
+  type-checked*)
+\<^assert> (MCP_Combinators.validate \<^context> names_ps
+    [("names", "a"), ("names", "b"), ("names", "c")] =
+  [("names", "a"), ("names", "b"), ("names", "c")]);
+(*a bad element is rejected naming the param, same as any scalar*)
+val bad_ps = [mk_param ("ns", MCP_Tool.List_Of MCP_Tool.Nat) true NONE];
+\<^assert> (err_mentions
+  (fn () => MCP_Combinators.validate \<^context> bad_ps [("ns", "1"), ("ns", "bogus")]) "ns");
+(*a required list with zero occurrences still errors*)
+\<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> names_ps []) "names");
+(*an OPTIONAL list with zero occurrences is simply absent, not an error*)
+val opt_names_ps = [mk_param ("names", MCP_Tool.List_Of MCP_Tool.String) false NONE];
+\<^assert> (MCP_Combinators.validate \<^context> opt_names_ps [] = []);
+
+(*assemble: each element quoted per its type, joined with a single space*)
+\<^assert> (MCP_Combinators.assemble names_ps "load_theories $names"
+    [("names", "A"), ("names", "B")] =
+  ("load_theories \"A\" \"B\"", 0));
+(*absent optional list substitutes the empty segment, like any optional*)
+\<^assert> (MCP_Combinators.assemble opt_names_ps "load_theories $names" [] =
+  ("load_theories ", 0));
+
+(*registration-time: a List_Of param cannot declare a default*)
+\<^assert> (is_err (fn () =>
+  MCP_Combinators.param
+    {name = "names", typ = MCP_Tool.List_Of MCP_Tool.String, required = false,
+     default = SOME "x", description = "d"}));
+\<close>
+
+text \<open>A2/A8: list of \<open><scalar>\<close> is declarable from isar with NO new header
+keyword ("list"/"of" matched by content, same trick as "optional"/
+"enum").\<close>
+
+mcp_tool list_probe = run \<open>fn _ => fn args =>
+  cat_lines (map snd (filter (fn (k, _) => k = "names") args))\<close>
+  (description \<open>probe for the list-of type\<close>)
+  (params names :: list of string \<open>names to search\<close>)
+
+ML \<open>
+val list_probe = MCP_Tool.get (Context.Proof \<^context>) "MCP_Tools_Tests.list_probe";
+val names_param = the (find_first (fn p => #name p = "names") (#params list_probe));
+\<^assert> (#typ names_param = MCP_Tool.List_Of MCP_Tool.String);
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.list_probe"
+    [("names", "Main"), ("names", "List")] = "Main\nList");
+\<close>
+
 section \<open>Combinators: format assembly\<close>
 
 ML \<open>
