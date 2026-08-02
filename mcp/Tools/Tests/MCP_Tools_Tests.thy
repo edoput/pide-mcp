@@ -110,10 +110,30 @@ ML \<open>
   params; active, non-builtin only) and a builtins section (base name,
   active) for every registered Builtin-form mirror
   (plans/builtin_activation).*)
+(*mirrors MCP_Tools.thy's encode_ptyp -- TAG ORDER MUST MATCH exactly
+  (plans/param_schema_v2 A4/A5): 0 String, 1 Source, 2 Args, 3 Nat,
+  4 Int, 5 Bool, 6 Term, 7 Typ, 8 Fact, 9 Enum, 10 List_Of.*)
+fun decode_ptyp body =
+  let open XML.Decode in
+    variant
+     [fn _ => MCP_Tool.String,
+      fn _ => MCP_Tool.Source,
+      fn _ => MCP_Tool.Args,
+      fn _ => MCP_Tool.Nat,
+      fn _ => MCP_Tool.Int,
+      fn _ => MCP_Tool.Bool,
+      fn _ => MCP_Tool.Term,
+      fn _ => MCP_Tool.Typ,
+      fn _ => MCP_Tool.Fact,
+      fn (_, ts) => MCP_Tool.Enum (list string ts),
+      fn (_, ts) => MCP_Tool.List_Of (decode_ptyp ts)]
+     body
+  end;
+
 fun decode_row_list body =
   let open XML.Decode in
     list (pair string (pair string (pair string
-      (list (pair string (pair string (pair bool (pair (option string) string))))))))
+      (list (pair string (pair decode_ptyp (pair bool (pair (option string) string))))))))
       body
   end;
 fun decode_builtin_list body = let open XML.Decode in list (pair string bool) body end;
@@ -130,7 +150,7 @@ val rows = map (fn (n, (d, (f, _))) => (n, d, f)) full_rows;
 (*params cross the bridge: shout advertises {input :: string, required}*)
 val (_, (_, (_, shout_params))) =
   the (find_first (fn (n, _) => n = "MCP_Tools.shout") full_rows);
-\<^assert> (shout_params = [("input", ("string", (true, (NONE, "tool input"))))]);
+\<^assert> (shout_params = [("input", (MCP_Tool.String, (true, (NONE, "tool input"))))]);
 
 (*A1: builtin mirrors are ordinary registry entries -- del/add round trip
   through the plain [[mcp_tools ...]] attribute like any other tool, and
@@ -267,8 +287,8 @@ fun mk_param (name, typ) required default : MCP_Tool.param =
      description = "test param"};
 
 val ps =
-  [mk_param ("crit", "string") true NONE,
-   mk_param ("limit", "nat") false (SOME "40")];
+  [mk_param ("crit", MCP_Tool.String) true NONE,
+   mk_param ("limit", MCP_Tool.Nat) false (SOME "40")];
 
 (*defaults filled in declaration order*)
 \<^assert> (MCP_Combinators.validate \<^context> ps [("crit", "x")] =
@@ -291,13 +311,16 @@ fun err_mentions f sub =
   (fn () => MCP_Combinators.validate \<^context> ps [("crit", "x"), ("bogus", "y")]) "bogus");
 
 (*term params elaborate against the context*)
-val tp = [mk_param ("t", "term") true NONE];
+val tp = [mk_param ("t", MCP_Tool.Term) true NONE];
 \<^assert> (MCP_Combinators.validate \<^context> tp [("t", "PROP A \<Longrightarrow> PROP A")] =
   [("t", "PROP A \<Longrightarrow> PROP A")]);
 \<^assert> (err_mentions (fn () => MCP_Combinators.validate \<^context> tp [("t", "\<Longrightarrow>")]) "t");
 
-(*unknown parameter types are rejected at param construction*)
-\<^assert> (is_err (fn () => mk_param ("x", "float") true NONE));
+(*A3 (plans/param_schema_v2): "unknown parameter types are rejected at
+  param construction" no longer type-checks -- MCP_Tool.ptyp is a closed
+  variant now, so an unknown type name is a compile error, not a runtime
+  one. The compiler is the new gate; its intent moves to the enum-items
+  check (A7, step 3).*)
 \<close>
 
 section \<open>Combinators: the (optional) modifier (plans/param_schema_v2 A1)\<close>
@@ -311,8 +334,8 @@ param, which map_filter already drops.\<close>
 
 ML \<open>
 val opt_ps =
-  [mk_param ("crit", "string") true NONE,
-   mk_param ("repl", "string") false NONE];
+  [mk_param ("crit", MCP_Tool.String) true NONE,
+   mk_param ("repl", MCP_Tool.String) false NONE];
 
 (*absent optional is dropped, not an error and not a spurious empty pair*)
 \<^assert> (MCP_Combinators.validate \<^context> opt_ps [("crit", "x")] = [("crit", "x")]);
@@ -371,7 +394,7 @@ ML \<open>
 
 (*source params: single-line -> inline cartouche, multiline -> framed
   on its own line with shift 1*)
-val sp = [mk_param ("input", "source") true NONE];
+val sp = [mk_param ("input", MCP_Tool.Source) true NONE];
 \<^assert> (MCP_Combinators.assemble sp "ML_val $input" [("input", "1 + 1")] =
   ("ML_val \<open>1 + 1\<close>", 0));
 \<^assert> (MCP_Combinators.assemble sp "ML_val $input" [("input", "val x = 1;\nval y = x;")] =
@@ -403,7 +426,7 @@ ML \<open>
 val (text, shift) =
   MCP_Combinators.assemble
     [MCP_Combinators.param
-      {name = "input", typ = "source", required = true, default = NONE,
+      {name = "input", typ = MCP_Tool.Source, required = true, default = NONE,
        description = "d"}]
     "ML_val $input"
     [("input", "val ok = 1;\nval bad = undefined_name_xyz;")];

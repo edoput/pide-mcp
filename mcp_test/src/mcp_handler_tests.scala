@@ -919,9 +919,9 @@ class MCP_Tools_Tests extends MCP_Suite {
     val backend = new Fake_Backend
     backend.extra_ml_tools = List(
       MCP_Session.Tool_Row("Thy_A.finder", "searches", "diag_wrap", List(
-        MCP_Session.Tool_Param("criteria", "args", true, None, "search criteria"),
-        MCP_Session.Tool_Param("limit", "nat", false, Some("20"), "max results"),
-        MCP_Session.Tool_Param("goal", "term", true, None, "a goal"))))
+        MCP_Session.Tool_Param("criteria", MCP_Session.Ptyp_Args, true, None, "search criteria"),
+        MCP_Session.Tool_Param("limit", MCP_Session.Ptyp_Nat, false, Some("20"), "max results"),
+        MCP_Session.Tool_Param("goal", MCP_Session.Ptyp_Term, true, None, "a goal"))))
     val row = tool_row("finder", backend)
     assertEquals(property_type(row, "criteria"), "string")
     assertEquals(property_type(row, "limit"), "integer")

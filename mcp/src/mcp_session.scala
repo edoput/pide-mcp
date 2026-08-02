@@ -96,9 +96,49 @@ object MCP_Session {
   case class Ok(text: String) extends Result { def ok = true }
   case class Error(message: String) extends Result { def ok = false }
 
+  /* mirrors MCP_Tool.ptyp (MCP_Tools.thy) exactly -- the isar params
+     clause's closed type universe (plans/param_schema_v2). Enum/List_Of
+     are not reachable from isar until steps 3/4 land their parsers, but
+     the ADT (like the ML datatype) carries them from this step on. */
+  sealed abstract class Ptyp
+  case object Ptyp_String extends Ptyp
+  case object Ptyp_Source extends Ptyp
+  case object Ptyp_Args extends Ptyp
+  case object Ptyp_Nat extends Ptyp
+  case object Ptyp_Int extends Ptyp
+  case object Ptyp_Bool extends Ptyp
+  case object Ptyp_Term extends Ptyp
+  case object Ptyp_Typ extends Ptyp
+  case object Ptyp_Fact extends Ptyp
+  case class Ptyp_Enum(items: List[String]) extends Ptyp
+  case class Ptyp_List_Of(elem: Ptyp) extends Ptyp
+
+  /* TAG ORDER MUST MATCH MCP_Tools.thy's encode_ptyp EXACTLY: 0 String,
+     1 Source, 2 Args, 3 Nat, 4 Int, 5 Bool, 6 Term, 7 Typ, 8 Fact,
+     9 Enum, 10 List_Of. Every nullary scalar encodes to identical bytes
+     (empty attributes, empty body), so a mis-ordered list here would
+     decode e.g. Nat as Int SILENTLY -- no exception, just a wrong json
+     type (plans/param_schema_v2, "THE HAZARD"). Recursive for List_Of,
+     hence a `def`, not a `val`. */
+  def decode_ptyp(body: XML.Body): Ptyp = {
+    import XML.Decode._
+    variant[Ptyp](List(
+      { case _ => Ptyp_String },
+      { case _ => Ptyp_Source },
+      { case _ => Ptyp_Args },
+      { case _ => Ptyp_Nat },
+      { case _ => Ptyp_Int },
+      { case _ => Ptyp_Bool },
+      { case _ => Ptyp_Term },
+      { case _ => Ptyp_Typ },
+      { case _ => Ptyp_Fact },
+      { case (_, ts) => Ptyp_Enum(list(string)(ts)) },
+      { case (_, ts) => Ptyp_List_Of(decode_ptyp(ts)) }))(body)
+  }
+
   case class Tool_Param(
     name: String,
-    typ: String,
+    typ: Ptyp,
     required: Boolean,
     default: Option[String],
     description: String)
@@ -120,7 +160,7 @@ object MCP_Session {
   def decode_tools(body: XML.Body): List[Tool_Row] = {
     import XML.Decode._
     list(pair(string, pair(string, pair(string,
-      list(pair(string, pair(string, pair(bool, pair(option(string), string)))))))))(body)
+      list(pair(string, pair(decode_ptyp _, pair(bool, pair(option(string), string)))))))))(body)
       .map({ case (name, (description, (form, params))) =>
         Tool_Row(name, description, form,
           params.map({ case (n, (t, (r, (d, ds)))) => Tool_Param(n, t, r, d, ds) }))

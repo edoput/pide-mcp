@@ -24,7 +24,31 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
     assertEquals(shout.description, "uppercase the input")
     assertEquals(shout.form, "string_fun")
     assertEquals(shout.params.map(p => (p.name, p.typ, p.required)),
-      List(("input", "string", true)))
+      List(("input", MCP_Session.Ptyp_String, true)))
+  }
+
+  /* A5 (plans/param_schema_v2): the discriminating tag-order check.
+     XML.Encode.variant/XML.Decode.variant key on POSITIONAL INDEX, and
+     every nullary ptyp scalar encodes to identical bytes -- a
+     mis-ordered scala decoder list would silently read e.g. Nat as Int,
+     with no exception and no way for a scala-unit test to catch it
+     (Fake rows never cross the real encoder). Only a live bridge read
+     of a REAL encoded row, asserted constructor-by-constructor, can. */
+  test("bridge: ptyp_fixture's params decode to the right constructor, tag-order proof (A5)") {
+    val tools = session.ml_tools().rows
+    val fixture = tools.find(_.name == "MCP_Tools.ptyp_fixture")
+      .getOrElse(fail("MCP_Tools.ptyp_fixture not in " + tools.toString))
+    assertEquals(fixture.params.map(p => (p.name, p.typ)),
+      List(
+        "p_string" -> MCP_Session.Ptyp_String,
+        "p_source" -> MCP_Session.Ptyp_Source,
+        "p_args" -> MCP_Session.Ptyp_Args,
+        "p_nat" -> MCP_Session.Ptyp_Nat,
+        "p_int" -> MCP_Session.Ptyp_Int,
+        "p_bool" -> MCP_Session.Ptyp_Bool,
+        "p_term" -> MCP_Session.Ptyp_Term,
+        "p_typ" -> MCP_Session.Ptyp_Typ,
+        "p_fact" -> MCP_Session.Ptyp_Fact))
   }
 
   test("bridge: ml_run round trip") {

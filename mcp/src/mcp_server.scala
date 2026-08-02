@@ -30,17 +30,18 @@ object MCP_Server {
      always supply their own real "input" param, so params is never
      actually empty for them. */
 
-  private def param_json_type(typ: String): String =
+  private def param_json_type(typ: MCP_Session.Ptyp): String =
     typ match {
-      case "nat" | "int" => "integer"
-      case "bool" => "boolean"
-      case _ => "string"
+      case MCP_Session.Ptyp_Nat | MCP_Session.Ptyp_Int => "integer"
+      case MCP_Session.Ptyp_Bool => "boolean"
+      case MCP_Session.Ptyp_List_Of(_) => "array"
+      case _ => "string"  // String/Source/Args/Term/Typ/Fact/Enum
     }
 
-  private def param_default_json(typ: String, v: String): JSON.T =
+  private def param_default_json(typ: MCP_Session.Ptyp, v: String): JSON.T =
     typ match {
-      case "nat" | "int" => Value.Long.unapply(v).getOrElse(v)
-      case "bool" => Value.Boolean.unapply(v).getOrElse(v)
+      case MCP_Session.Ptyp_Nat | MCP_Session.Ptyp_Int => Value.Long.unapply(v).getOrElse(v)
+      case MCP_Session.Ptyp_Bool => Value.Boolean.unapply(v).getOrElse(v)
       case _ => v
     }
 
@@ -51,16 +52,29 @@ object MCP_Server {
         params.foldLeft(JSON.Object.empty) { (obj, p) =>
           val contract =
             p.typ match {
-              case "term" => " (an inner-syntax term, elaborated before use)"
-              case "typ" => " (an inner-syntax type, elaborated before use)"
-              case "fact" => " (a fact name, resolved before use)"
-              case "source" => " (verbatim source text)"
+              case MCP_Session.Ptyp_Term => " (an inner-syntax term, elaborated before use)"
+              case MCP_Session.Ptyp_Typ => " (an inner-syntax type, elaborated before use)"
+              case MCP_Session.Ptyp_Fact => " (a fact name, resolved before use)"
+              case MCP_Session.Ptyp_Source => " (verbatim source text)"
               case _ => ""
             }
+          /* Enum -> {"type": "string", "enum": [...]}; List_Of e ->
+             {"type": "array", "items": {"type": ...}} (plans/
+             param_schema_v2, steps 3/4) -- not reachable from isar until
+             those steps land their parsers, but Ptyp is a closed ADT
+             from step 2 on, so the match covers them already. */
+          val type_fields: JSON.Object.T =
+            p.typ match {
+              case MCP_Session.Ptyp_Enum(items) =>
+                JSON.Object("type" -> "string", "enum" -> items)
+              case MCP_Session.Ptyp_List_Of(elem) =>
+                JSON.Object("type" -> "array",
+                  "items" -> JSON.Object("type" -> param_json_type(elem)))
+              case t => JSON.Object("type" -> param_json_type(t))
+            }
           obj + (p.name ->
-            (JSON.Object(
-              "type" -> param_json_type(p.typ),
-              "description" -> (p.description + contract)) ++
+            (type_fields ++
+              JSON.Object("description" -> (p.description + contract)) ++
               JSON.Object.apply(
                 p.default.toList.map(d =>
                   "default" -> param_default_json(p.typ, d))*)))

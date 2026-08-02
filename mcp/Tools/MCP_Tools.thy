@@ -144,8 +144,14 @@ signature MCP_TOOL =
 sig
   datatype form = String_Fun | Diag_Wrap | Method_Wrap | Builtin | Capture
   val form_tag: form -> string
+  datatype ptyp =
+    String | Source | Args | Nat | Int | Bool | Term | Typ | Fact
+  | Enum of string list
+  | List_Of of ptyp
+  val string_of_ptyp: ptyp -> string
+  val print_ptyp: ptyp -> string
   type param =
-    {name: string, typ: string, required: bool, default: string option, description: string}
+    {name: string, typ: ptyp, required: bool, default: string option, description: string}
   type tool =
     {description: string, params: param list, form: form,
      run: Proof.context -> (string * string) list -> string}
@@ -173,8 +179,49 @@ fun form_tag String_Fun = "string_fun"
   | form_tag Builtin = "builtin"
   | form_tag Capture = "capture";
 
+(*constructor names sit in the VALUE namespace, distinct from the
+  STRUCTURE namespace -- String/Int/Bool do not shadow the Poly/ML
+  structures of those names, so e.g. String.isSubstring keeps working
+  everywhere in this theory (plans/param_schema_v2). Only the two
+  compound constructors are spec-pinned (Enum, List_Of); the nine
+  scalar names are this plan's choice.*)
+datatype ptyp =
+  String | Source | Args | Nat | Int | Bool | Term | Typ | Fact
+| Enum of string list
+| List_Of of ptyp;
+
+(*for error messages (Invalid value for argument ... (type ...)) --
+  distinct from print_ptyp below, which emits ML SOURCE for the run
+  form's declaration round-trip, not prose.*)
+fun string_of_ptyp String = "string"
+  | string_of_ptyp Source = "source"
+  | string_of_ptyp Args = "args"
+  | string_of_ptyp Nat = "nat"
+  | string_of_ptyp Int = "int"
+  | string_of_ptyp Bool = "bool"
+  | string_of_ptyp Term = "term"
+  | string_of_ptyp Typ = "typ"
+  | string_of_ptyp Fact = "fact"
+  | string_of_ptyp (Enum items) = "enum (" ^ space_implode " | " items ^ ")"
+  | string_of_ptyp (List_Of t) = "list of " ^ string_of_ptyp t;
+
+(*ML source for a ptyp value, so a "= run <...> (params ...)" declaration
+  can round-trip through ML_Context.expression (print_param below).*)
+fun print_ptyp String = "MCP_Tool.String"
+  | print_ptyp Source = "MCP_Tool.Source"
+  | print_ptyp Args = "MCP_Tool.Args"
+  | print_ptyp Nat = "MCP_Tool.Nat"
+  | print_ptyp Int = "MCP_Tool.Int"
+  | print_ptyp Bool = "MCP_Tool.Bool"
+  | print_ptyp Term = "MCP_Tool.Term"
+  | print_ptyp Typ = "MCP_Tool.Typ"
+  | print_ptyp Fact = "MCP_Tool.Fact"
+  | print_ptyp (Enum items) =
+      "(MCP_Tool.Enum " ^ ML_Syntax.print_list ML_Syntax.print_string items ^ ")"
+  | print_ptyp (List_Of t) = "(MCP_Tool.List_Of " ^ print_ptyp t ^ ")";
+
 type param =
-  {name: string, typ: string, required: bool, default: string option, description: string};
+  {name: string, typ: ptyp, required: bool, default: string option, description: string};
 
 type tool =
   {description: string, params: param list, form: form,
@@ -392,8 +439,7 @@ Position.none, which erases error positions entirely (spike 2,
 ML \<open>
 signature MCP_COMBINATORS =
 sig
-  val param_types: string list
-  val param: {name: string, typ: string, required: bool, default: string option,
+  val param: {name: string, typ: MCP_Tool.ptyp, required: bool, default: string option,
     description: string} -> MCP_Tool.param
   val quote_string: string -> string
   val quote_cartouche: string -> string
@@ -418,21 +464,19 @@ struct
 
 (* parameters *)
 
-val param_types =
-  ["string", "source", "args", "nat", "int", "bool", "term", "typ", "fact"];
-
-fun param (p: MCP_Tool.param) =
-  if member (op =) param_types (#typ p) then p
-  else
-    error ("Unknown MCP tool parameter type " ^ quote (#typ p) ^
-      " (expected " ^ commas_quote param_types ^ ")");
+(*the closed type universe is now MCP_Tool.ptyp itself -- the compiler
+  rejects an unknown type, so there is nothing left for param to check
+  for the nine scalars. param survives as the one registration-time gate
+  for what the type system cannot express: steps 3/4 (plans/
+  param_schema_v2) add enum-items and list-of-no-default checks here.*)
+fun param (p: MCP_Tool.param) = p;
 
 (*"args" splices VERBATIM into the command's argument position (a
   command takes a token stream there, not a quoted value) — the default
   input type of a bare diag wrap; balanced-cartouche checked so a value
   cannot break the surrounding framing*)
 val input_param: MCP_Tool.param =
-  {name = "input", typ = "args", required = true, default = NONE,
+  {name = "input", typ = MCP_Tool.Args, required = true, default = NONE,
    description = "arguments for the wrapped command, in its own syntax"};
 
 
@@ -469,33 +513,49 @@ fun quote_framed s =
 
 fun invalid (p: MCP_Tool.param) msg =
   error ("Invalid value for argument " ^ quote (#name p) ^
-    " (type " ^ #typ p ^ "): " ^ msg);
+    " (type " ^ MCP_Tool.string_of_ptyp (#typ p) ^ "): " ^ msg);
 
+(*exhaustive match over MCP_Tool.ptyp -- the two old fallbacks (this
+  function's "| t => error (Unknown parameter type ...)" and param's
+  membership test) are UNREACHABLE now and deleted; the compiler is the
+  new gate (plans/param_schema_v2 A3). Enum/List_Of are not reachable
+  from isar until steps 3/4 land their parsers, but the match must
+  already cover them -- written with their real semantics now rather
+  than a placeholder, so those steps do not have to revisit this
+  function. List_Of t recurses treating v as ONE element of type t; the
+  repeated-key collection that calls this once per element is validate's
+  job (step 4), not check_value's.*)
 fun check_value ctxt (p: MCP_Tool.param) v =
   (case #typ p of
-    "string" =>
+    MCP_Tool.String =>
       if multiline v
       then invalid p "newline in a string argument (declare it as type source)"
       else ()
-  | "source" =>
+  | MCP_Tool.Source =>
       if balanced_cartouche v then ()
       else invalid p "unbalanced cartouche delimiters"
-  | "args" =>
+  | MCP_Tool.Args =>
       if balanced_cartouche v then ()
       else invalid p "unbalanced cartouche delimiters"
-  | "nat" => ignore (\<^try>\<open>Value.parse_nat v catch _ => invalid p v\<close>)
-  | "int" => ignore (\<^try>\<open>Value.parse_int v catch _ => invalid p v\<close>)
-  | "bool" => ignore (\<^try>\<open>Value.parse_bool v catch _ => invalid p v\<close>)
-  | "term" =>
+  | MCP_Tool.Nat => ignore (\<^try>\<open>Value.parse_nat v catch _ => invalid p v\<close>)
+  | MCP_Tool.Int => ignore (\<^try>\<open>Value.parse_int v catch _ => invalid p v\<close>)
+  | MCP_Tool.Bool => ignore (\<^try>\<open>Value.parse_bool v catch _ => invalid p v\<close>)
+  | MCP_Tool.Term =>
       (if balanced_cartouche v then () else invalid p "unbalanced cartouche delimiters";
        ignore (\<^try>\<open>Syntax.read_term ctxt v catch ERROR msg => invalid p msg\<close>))
-  | "typ" =>
+  | MCP_Tool.Typ =>
       (if balanced_cartouche v then () else invalid p "unbalanced cartouche delimiters";
        ignore (\<^try>\<open>Syntax.read_typ ctxt v catch ERROR msg => invalid p msg\<close>))
-  | "fact" =>
+  | MCP_Tool.Fact =>
       ignore (\<^try>\<open>Proof_Context.get_fact ctxt (Facts.named v)
         catch ERROR msg => invalid p msg\<close>)
-  | t => error ("Unknown parameter type " ^ quote t));
+  | MCP_Tool.Enum items =>
+      if member (op =) items v then ()
+      else invalid p ("expected one of " ^ commas_quote items)
+  | MCP_Tool.List_Of t =>
+      check_value ctxt
+        {name = #name p, typ = t, required = #required p,
+         default = #default p, description = #description p} v);
 
 (*named args -> validated pairs in declaration order, defaults filled in;
   unknown keys, missing required args and ill-typed values are errors*)
@@ -568,6 +628,24 @@ fun assemble params fmt args =
           (case find_first (fn p => #name p = name) params of
             SOME p => p
           | NONE => error ("Unknown parameter $" ^ name ^ " in format"));
+        (*exhaustive over MCP_Tool.ptyp; Enum splices VERBATIM like args/
+          fact (spec refinement: enum items name command keywords, e.g.
+          "find_definition kind: const", which quoting would break --
+          membership is already checked by validate, so the splice is
+          safe). List_Of t recurses on the single value as ONE element
+          of type t; the repeated-key collection and space-join that
+          calls this per element is step 4's job, not this function's.*)
+        fun quote_typ MCP_Tool.String v = (quote_string v, 0)
+          | quote_typ MCP_Tool.Source v = quote_framed v
+          | quote_typ MCP_Tool.Term v = quote_framed v
+          | quote_typ MCP_Tool.Typ v = quote_framed v
+          | quote_typ MCP_Tool.Args v = (v, 0)  (*verbatim splice: the command's own syntax*)
+          | quote_typ MCP_Tool.Fact v = (v, 0)
+          | quote_typ MCP_Tool.Nat v = (v, 0)  (*validated literal*)
+          | quote_typ MCP_Tool.Int v = (v, 0)
+          | quote_typ MCP_Tool.Bool v = (v, 0)
+          | quote_typ (MCP_Tool.Enum _) v = (v, 0)
+          | quote_typ (MCP_Tool.List_Of t) v = quote_typ t v;
       in
         (case AList.lookup (op =) args name of
           NONE =>
@@ -579,15 +657,7 @@ fun assemble params fmt args =
               characters "" (a quoted empty string), not an empty
               segment.*)
             if #required p then error ("Missing argument " ^ quote name) else ("", 0)
-        | SOME v =>
-            (case #typ p of
-              "string" => (quote_string v, 0)
-            | "source" => quote_framed v
-            | "term" => quote_framed v
-            | "typ" => quote_framed v
-            | "args" => (v, 0)  (*verbatim splice: the command's own syntax*)
-            | "fact" => (v, 0)
-            | _ => (v, 0)))  (*nat/int/bool: validated literals*)
+        | SOME v => quote_typ (#typ p) v)
       end;
     val (pieces, shift) =
       fold_map
@@ -652,7 +722,7 @@ fun exec_text thy shift text =
 fun func description f : MCP_Tool.tool =
   {description = description,
    params =
-    [{name = "input", typ = "string", required = true, default = NONE,
+    [{name = "input", typ = MCP_Tool.String, required = true, default = NONE,
       description = "tool input"}],
    form = MCP_Tool.String_Fun,
    run = fn _ => fn args =>
@@ -783,8 +853,43 @@ datatype clause =
 val optional_flag =
   Scan.optional (Parse.$$$ "(" |-- Args.$$$ "optional" --| Parse.$$$ ")" >> K true) false;
 
+(*the nine scalar type names -> MCP_Tool.ptyp; steps 3/4 (plans/
+  param_schema_v2) extend this parser with "enum (a | b)" and recursive
+  "list of <ptyp>" branches. Unlike the old string-typed param, an
+  unrecognized name is now a PARSE-time error (the type system has no
+  "unknown" constructor to construct instead), so the check that used
+  to live in MCP_Combinators.param's param_types membership test moves
+  here.*)
+val scalar_ptyps =
+  [("string", MCP_Tool.String), ("source", MCP_Tool.Source), ("args", MCP_Tool.Args),
+   ("nat", MCP_Tool.Nat), ("int", MCP_Tool.Int), ("bool", MCP_Tool.Bool),
+   ("term", MCP_Tool.Term), ("typ", MCP_Tool.Typ), ("fact", MCP_Tool.Fact)];
+
+fun read_ptyp name =
+  (case AList.lookup (op =) scalar_ptyps name of
+    SOME t => t
+  | NONE =>
+      error ("Unknown MCP tool parameter type " ^ quote name ^
+        " (expected " ^ commas_quote (map #1 scalar_ptyps) ^ ")"));
+
+(*NOT Parse.name: "term" and "typ" are themselves Pure outer-syntax
+  diagnostic COMMANDS, so the lexer classifies them as Token.Keyword,
+  not Token.Ident -- and command keywords delimit SPANS at the outer-
+  syntax scanning pass, before any inner parser (this one included) ever
+  runs on a span's tokens; Parse.keyword as an extra alternative is not
+  enough to un-break an already-cut span (unlike Args.$$$'s use of the
+  same trick for its OWN literal, which does not sit inside another
+  command's params clause). Same fix as elsewhere in this file ("The
+  command name must be QUOTED"): accept the type name bare (7 of the 9
+  names never collide with a keyword) OR quoted as a string, e.g.
+  \<open>x :: "term" \<open>d\<close>\<close> -- a string/cartouche token is opaque to span
+  scanning, so quoting shields it.*)
+val ptyp_parser =
+  (Parse.short_ident || Parse.long_ident || Parse.sym_ident || Parse.keyword || Parse.string)
+    >> read_ptyp;
+
 val param_entry =
-  Parse.name -- (Parse.$$$ "::" |-- Parse.name) -- optional_flag --
+  Parse.name -- (Parse.$$$ "::" |-- ptyp_parser) -- optional_flag --
     Scan.option (Parse.$$$ "=" |-- Parse.embedded) -- Parse.embedded
   >> (fn ((((name, typ), optional), default), description) =>
       let
@@ -836,7 +941,7 @@ fun the_descr what pos NONE =
 
 fun print_param (p: MCP_Tool.param) =
   "{name = " ^ ML_Syntax.print_string (#name p) ^
-  ", typ = " ^ ML_Syntax.print_string (#typ p) ^
+  ", typ = " ^ MCP_Tool.print_ptyp (#typ p) ^
   ", required = " ^ Bool.toString (#required p) ^
   ", default = " ^ ML_Syntax.print_option ML_Syntax.print_string (#default p) ^
   ", description = " ^ ML_Syntax.print_string (#description p) ^ "}";
@@ -1134,8 +1239,33 @@ fun decode_names yxml =
   params and are EXCLUDED here -- they enter the builtins section
   instead, so they never reach exposure-name computation (guardrail
   A3, plans/builtin_activation).*)
+(*ptyp crosses as an XML.Encode.variant -- TAG ORDER MUST MATCH the
+  scala mirror decoder (mcp_session.scala) EXACTLY: 0 String, 1 Source,
+  2 Args, 3 Nat, 4 Int, 5 Bool, 6 Term, 7 Typ, 8 Fact, 9 Enum (items in
+  the body), 10 List_Of (element ptyp in the body). Every nullary
+  scalar encodes to identical bytes (empty attributes, empty body), so
+  a mis-ordered scala list would decode e.g. Nat as Int SILENTLY -- no
+  exception, just a wrong json type (plans/param_schema_v2, "THE
+  HAZARD"). Recursive for List_Of, hence a plain `fun`, not `val`.*)
+fun encode_ptyp x =
+  let open XML.Encode in
+    variant
+     [fn MCP_Tool.String => ([], []),
+      fn MCP_Tool.Source => ([], []),
+      fn MCP_Tool.Args => ([], []),
+      fn MCP_Tool.Nat => ([], []),
+      fn MCP_Tool.Int => ([], []),
+      fn MCP_Tool.Bool => ([], []),
+      fn MCP_Tool.Term => ([], []),
+      fn MCP_Tool.Typ => ([], []),
+      fn MCP_Tool.Fact => ([], []),
+      fn MCP_Tool.Enum items => ([], list string items),
+      fn MCP_Tool.List_Of t => ([], encode_ptyp t)]
+     x
+  end;
+
 val encode_param =
-  let open XML.Encode in pair string (pair string (pair bool (pair (option string) string))) end;
+  let open XML.Encode in pair string (pair encode_ptyp (pair bool (pair (option string) string))) end;
 
 fun encode_row (name, tool: MCP_Tool.tool) =
   let open XML.Encode in
@@ -1356,6 +1486,27 @@ mcp_tool shout = \<open>String.map Char.toUpper\<close>
 
 mcp_resource greeting = \<open>K "hello from MCP_Resource"\<close>
   (description \<open>a static demo resource\<close>)
+
+text \<open>A5 fixture (plans/param_schema_v2): one param per ptyp SCALAR
+constructor, declared here rather than in Tests/MCP_Tools_Tests.thy
+because MCP_Bridge_Tests (mcp_bridge_tests.scala) is
+MCP_Session_Suite("MCP-Tools", "MCP_Tools") -- it serves THIS theory,
+not the Tests session -- and the tag-order hazard (a mis-ordered scala
+decoder list silently reads e.g. Nat as Int) can only be caught by a
+live bridge case reading a REAL encoded row. Enum/List_Of join this
+fixture once steps 3/4 give them isar syntax.\<close>
+mcp_tool ptyp_fixture = run \<open>fn _ => fn _ => "ok"\<close>
+  (description \<open>one param per ptyp scalar constructor, for the tag-order bridge check\<close>)
+  (params
+    p_string :: string \<open>d\<close>
+    p_source :: source \<open>d\<close>
+    p_args :: args \<open>d\<close>
+    p_nat :: nat \<open>d\<close>
+    p_int :: int \<open>d\<close>
+    p_bool :: bool \<open>d\<close>
+    p_term :: "term" \<open>d\<close>
+    p_typ :: "typ" \<open>d\<close>
+    p_fact :: fact \<open>d\<close>)
 
 section \<open>Builtin tool mirrors\<close>
 
