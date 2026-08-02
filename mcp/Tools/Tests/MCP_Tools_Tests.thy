@@ -995,6 +995,53 @@ ML \<open>
   "not meaningful");
 \<close>
 
+section \<open>A11: the run form's full round trip, every printer at once
+  (plans/param_schema_v2)\<close>
+
+text \<open>The run form compiles its WHOLE declaration through
+ML_Context.expression -- print_param (in turn print_ptyp for every
+constructor it carries), print_annotations, print_constraint. The
+snippet/enum_probe/list_probe/annot_probe/exactly_one_probe fixtures
+above each exercise ONE printer at a time and would not catch a missing
+branch in another; this fixture carries enum + list-of + (optional) +
+(annotations ...) + (exactly_one ...) TOGETHER in one declaration, so a
+gap anywhere in the printing chain fails this command's registration,
+not just a narrower probe.\<close>
+
+mcp_tool round_trip_probe = run \<open>fn _ => fn args =>
+  the_default "" (AList.lookup (op =) args "kind") ^
+  the_default "" (AList.lookup (op =) args "offset")\<close>
+  (description \<open>A11: exercises every printer together\<close>)
+  (params
+    kind :: enum (const | "thm" | "type") (optional) \<open>what to look for\<close>
+    names :: list of string (optional) \<open>names to search\<close>
+    limit :: nat = 40 \<open>max results\<close>
+    offset :: nat (optional) \<open>an offset\<close>
+    pattern :: string (optional) \<open>a pattern\<close>)
+  (annotations mutating)
+  (exactly_one offset pattern)
+
+ML \<open>
+val context = Context.Proof \<^context>;
+val rt_tool = MCP_Tool.get context "MCP_Tools_Tests.round_trip_probe";
+val rt_by_name = fn n => the (find_first (fn p => #name p = n) (#params rt_tool));
+\<^assert> (#typ (rt_by_name "kind") = MCP_Tool.Enum ["const", "thm", "type"]);
+\<^assert> (not (#required (rt_by_name "kind")) andalso is_none (#default (rt_by_name "kind")));
+\<^assert> (#typ (rt_by_name "names") = MCP_Tool.List_Of MCP_Tool.String);
+\<^assert> (not (#required (rt_by_name "names")) andalso is_none (#default (rt_by_name "names")));
+\<^assert> (#default (rt_by_name "limit") = SOME "40");
+\<^assert> (not (#required (rt_by_name "offset")) andalso is_none (#default (rt_by_name "offset")));
+\<^assert> (#annotations rt_tool = MCP_Tool.mutating);
+\<^assert> (#constraints rt_tool = [MCP_Tool.Exactly_One ["offset", "pattern"]]);
+\<^assert> (#description rt_tool =
+  "A11: exercises every printer together Exactly one of offset, pattern is required.");
+(*the declaration didn't just parse -- it RUNS, proving the generated
+  source compiled and executed end to end*)
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.round_trip_probe" [("offset", "3")] = "3");
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.round_trip_probe"
+  [("offset", "3"), ("names", "a"), ("kind", "thm")] = "thm3");
+\<close>
+
 section \<open>The mcp_resource command: three forms\<close>
 
 named_theorems test_collection \<open>a dynamic fact for the read-time test\<close>
