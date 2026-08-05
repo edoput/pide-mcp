@@ -1,8 +1,10 @@
 builtins as ML tools — implementation plan
 ===========================================
 
-status: STEPS 1, 3 (partial), 4, 5 LANDED 2026-07-28; S1 still
-undecided, waves 1..6 not started (decided 2026-07-28, commit 40d30471;
+status: STEPS 1, 3, 4, 5 LANDED 2026-07-28 (step 3's D2 gap -- the
+"(annotations ...) required for capture" registration-time check --
+closed 2026-08-05 once plans/param_schema_v2 landed the mechanism);
+S1 still undecided, waves 1..6 not started (decided 2026-07-28, commit 40d30471;
 spec: phase 3 "builtins as ML tools (decided 2026-07-28)", the AMENDED
 block in "ml bridge: async protocol commands", the SCOPED block in
 "builtin tools in the activation layer"). no new mcp tool — a feature
@@ -27,6 +29,14 @@ DEVIATIONS FROM THIS PLAN, recorded per .claude/rules/plan-tasks.md:
   form itself, which DID land now (ahead of the plan's literal step-3
   wording, which bundled it with the annotations requirement): it was
   judged independent and useful on its own, per advisor review.
+  RESOLVED 2026-08-05: plans/param_schema_v2 landed D2 (the annotations
+  record, the five named constants, the scala renderer) 2026-08-02;
+  MCP_Combinators.capture now takes an annotations argument and
+  tool_cmd's Tool_Capture branch errors at registration naming the gap
+  if the (annotations ...) clause is omitted, closing this deviation.
+  Every existing capture-form fixture in MCP_Tools_Tests.thy retrofitted
+  with an explicit clause (mostly read_only; capture_slow -> mutating,
+  proving a non-default bucket threads through too).
 - A13 (output routing survives a fresh process against the saved heap)
   turned out to apply one layer wider than the plan's own wording
   suggested. The plan states "today ONE dispatcher depends on that ...
@@ -423,9 +433,10 @@ rebuild/verify commands (per .claude/rules, always through the flatpak
    capture declaration without (annotations ...) is a registration
    error. NOTE: MCP-Tools is Pure-based and has no Ir — test capture
    against a plain \<open>fn _ => fn args => writeln (arg args "x")\<close>.
-   LANDED except the "(annotations ...) required" registration-time
-   check — see "DEVIATIONS" above (D2 not landed, nothing to require or
-   store yet). Everything else landed as specced, including the
+   LANDED IN FULL as of 2026-08-05 — the "(annotations ...) required"
+   registration-time check (deferred as D2, see "DEVIATIONS" above) now
+   lands too, once plans/param_schema_v2 supplied the mechanism.
+   Everything else landed as specced, including the
    outer-syntax \<open>= capture \<open>...\<close>\<close> form. Verified: capture_ok/
    capture_err/capture_err_only/capture_default/capture_int/
    capture_bad_accessor in MCP_Tools_Tests.thy cover A1/A2 (writeln
