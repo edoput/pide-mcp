@@ -4,6 +4,50 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-05 (spec: repl designations resolve via repl_init's own imports)
+--------------------------------------------------------------------------
+
+- decided: a tool declared in MCP_Repl.thy is not visible under a
+  `repl:ID` designation unless the repl's own theory imports it. No
+  runtime resolution mechanism is needed to fix this — `repl_init`
+  already accepts more than one theory name, and Isabelle already
+  builds the repl's theory as an import of every theory named. So a
+  client that wants repl-scoped tools must name `MCP_Repl` (or a
+  theory importing it) directly in `repl_init`'s own `theories` list,
+  alongside whatever theory it actually wants to work in. Spec: "repl
+  designations: put the tools theory in repl_init's own imports".
+- `repl_init` itself is one of the 20 movable builtins
+  (plans/ml_builtin_migration): once it becomes an ordinary `mcp_tool`
+  declaration, `theories` is an explicit, undefaulted parameter — there
+  is no automatic injection of `MCP_Repl`. The client is responsible
+  for naming it every time it wants repl-scoped tool visibility.
+- `repl_init_from_source` is NOT a gap this decision needs to cover,
+  and this is recorded explicitly because the natural first reaction is
+  to treat it as one. That command attaches a repl to a position inside
+  an already-written document, whose theory can never be given an
+  extra import after the fact — but the ordinary repl tools are looked
+  up against the DEFAULT designation regardless of which repl they
+  operate on, so this is unaffected. The only thing that needs a
+  repl's own theory to import MCP_Tools is `tool_scope_set {repl}`
+  (self-extension, local activation control), which was already
+  unusable on a `repl_init_from_source` repl for an unrelated reason
+  (the `mcp_tool` keyword itself requires the same import, and an
+  existing math document was never going to have it) — so no workflow
+  is newly broken.
+- this supersedes the 2026-07-30 "repl designations resolve against a
+  merged theory" decision, which was spiked, implemented, and withdrawn
+  the same day as this entry: `Theory.begin_theory` cannot merge a
+  repl's theory while a proof is open on it, which is the repl's normal
+  state between `repl_step` calls. See plans/ml_builtin_migration's
+  DEVIATIONS for the full mechanism and the four-state bisect that
+  pinned it. Do not revisit that approach.
+- documented for general (non-builtin) use at
+  .claude/skills/mcp-tool-theories: any user-written theory declaring
+  its own `mcp_tool`s should import `MCP-HOL.MCP` (not
+  `MCP-Tools.MCP_Tools` directly — a theory-merge-order footgun), and
+  needs to be named in `repl_init`'s `theories` list the same way.
+- waves 1..6 of plans/ml_builtin_migration are UNBLOCKED again.
+
 2026-08-02 (param schema v2: enum, list-of, (optional), annotations,
 exactly_one land)
 -------------------------------------------------------------------------

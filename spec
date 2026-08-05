@@ -2629,6 +2629,78 @@ and including async is independently reversible.
 
 plans: plans/param_schema_v2, plans/ml_builtin_migration.
 
+repl designations: put the tools theory in repl_init's own imports
+(decided 2026-08-05)
+--------------------------------------------------------------------
+
+this resolves the one question BLOCKING the move above.
+
+problem: a client opening a repl using a designation \<open>repl:ID\<close> does
+not see tools that are defined in theories the repl does not import.
+
+decision: only tools from imported theories are available in the repl.
+This also means that until a user imports \<open>MCP_Repl\<close> in their own
+theory -- the theory where the repl tools are defined and registered
+-- those tools are not visible.
+
+\<open>repl_init\<close> itself is one of the 20 MOVABLE tools ("builtins as ML
+tools" above): it becomes an ordinary \<open>mcp_tool\<close> declaration, with
+\<open>theories\<close> an EXPLICIT, undefaulted parameter. There is no automatic
+injection of \<open>MCP_Repl\<close> -- a client that wants repl-scoped tools must
+name the theory itself, every time:
+
+  repl_init(repl="my_repl", theories=["HOL.Main", "MCP-HOL.MCP_Repl"])
+
+Theories and their tools are then merged automatically in the registry
+by Isabelle's own theory import mechanism: \<open>Ir\<close> can build a repl's
+theory from a list of names, which lets us choose which theories --
+and so which tools -- are visible in a repl, simply by naming them.
+
+Instead of introducing "MCP_Repl" or any other theory dynamically, we
+rely on Isabelle's imports to drive the list of available tools, by
+merging the parent theories' own tools. This pattern works as expected
+for user extensibility, and is also explicit about which tools are
+available.
+
+why this is enough: the self-extension workflow (a client declares a
+brand new tool live, inside a running repl, via \<open>repl_step\<close>) already
+requires the repl to be rooted in a theory that imports \<open>MCP_Tools\<close> —
+otherwise the \<open>mcp_tool\<close> keyword itself does not parse. Every existing
+self-extension test already roots its repl in \<open>MCP_Repl\<close> for exactly
+this reason. So this decision costs the self-extension workflow
+nothing new; it only makes explicit, for the ordinary case too, what
+self-extension already required.
+
+\<open>repl_init_from_source\<close> is NOT a gap this decision needs to cover.
+That command attaches a repl to a position inside an EXISTING document,
+whose theory is fixed by a \<open>.thy\<close> file someone already wrote, so it can
+never be given \<open>MCP_Repl\<close> as an extra import. This is not a loss: the
+ordinary repl tools (\<open>repl_step\<close>, \<open>repl_show\<close>, ...) are looked up
+against the DEFAULT designation, independent of which repl the client
+happens to be operating on, so calling them against a
+\<open>repl_init_from_source\<close> repl is unaffected either way. The only thing
+that needs a repl's own theory to import \<open>MCP_Tools\<close> is
+\<open>tool_scope_set {repl}\<close> (self-extension, local activation control),
+and that was already unusable on a \<open>repl_init_from_source\<close> repl before
+this decision even existed, for the same keyword reason given above —
+an existing math document was never going to import \<open>MCP_Tools\<close>. No
+workflow is newly broken.
+
+rejected earlier, kept for the record: resolving a \<open>repl:ID\<close>
+designation by merging the repl's theory with the server's theory at
+lookup time (spiked, then implemented, then withdrawn 2026-08-05). It
+looked correct and passed every test that did not touch an open proof
+— but Isabelle cannot merge a theory while a proof inside it is open,
+and a repl sits mid-proof between almost every step. This is not a bug
+we can work around; it is how Isabelle's own bookkeeping for open
+proofs works. Do not revisit this approach.
+
+see: .claude/skills/mcp-tool-theories for the full pattern, with a
+worked example theory.
+
+plans: plans/ml_builtin_migration (step 2, now a documentation-only
+step — see the plan).
+
 parameterised resources (decided 2026-07-28; enumeration PENDING)
 ------------------------------------------------------------------
 
