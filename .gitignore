@@ -3,3 +3,5 @@
 Isabelle2025-2_linux/
 afp-2025-06-04/
 isabelle-pide-mcp/
+mcp/lib/mcp.jar
+mcp_test/lib/mcp_test.jar
