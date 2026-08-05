@@ -650,33 +650,40 @@ mcp_tool capture_ok = capture \<open>fn _ => fn args =>
   writeln ("got:" ^ MCP_Combinators.arg args "x")\<close>
   (description \<open>writeln its input\<close>)
   (params x :: string \<open>echoed back\<close>)
+  (annotations read_only)
 
 mcp_tool capture_err = capture \<open>fn _ => fn _ => (writeln "before"; error "boom")\<close>
   (description \<open>writeln then error\<close>)
+  (annotations read_only)
 
 mcp_tool capture_err_only = capture \<open>fn _ => fn _ => error "silent boom"\<close>
   (description \<open>errors with no output at all\<close>)
+  (annotations read_only)
 
 mcp_tool capture_default = capture \<open>fn _ => fn args =>
   writeln (MCP_Combinators.arg args "greeting")\<close>
   (description \<open>arg is total for a defaulted param even when the caller omits it\<close>)
   (params greeting :: string = \<open>hello\<close> \<open>greeting text\<close>)
+  (annotations read_only)
 
 mcp_tool capture_int = capture \<open>fn _ => fn args =>
   writeln (string_of_int (MCP_Combinators.arg_int args "n" + 1))\<close>
   (description \<open>arg_int accessor\<close>)
   (params n :: int \<open>a number\<close>)
+  (annotations read_only)
 
 mcp_tool capture_bad_accessor = capture \<open>fn _ => fn args =>
   writeln (MCP_Combinators.arg args "nope")\<close>
   (description \<open>calls arg on a name outside its own params clause -- a tool bug\<close>)
   (params declared :: string \<open>present but irrelevant to the bug\<close>)
+  (annotations read_only)
 
 mcp_tool capture_slow = capture \<open>fn _ => fn _ =>
   (OS.Process.sleep (Time.fromReal 2.0); writeln "slow done")\<close>
   (description \<open>sleeps ~2s then writelns -- for the run_tool bridge async
     test (plans/ml_builtin_migration A4), a fast concurrent call must not
     wait behind this one\<close>)
+  (annotations mutating)
 
 ML \<open>
 val context = Context.Proof \<^context>;
@@ -711,6 +718,12 @@ val context = Context.Proof \<^context>;
 (*the row is tagged [capture], both via the form field and print_mcp_tools*)
 \<^assert> (#form (MCP_Tool.get context "MCP_Tools_Tests.capture_ok") = MCP_Tool.Capture);
 \<^assert> (String.isSubstring "[capture]" (MCP_Combinators.exec_text \<^theory> 0 "print_mcp_tools"));
+
+(*D2 (plans/param_schema_v2's follow-up to plans/ml_builtin_migration
+  step 3): the declared (annotations ...) clause threads through to the
+  registered row, per tool -- not silently defaulted*)
+\<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.capture_ok") = MCP_Tool.read_only);
+\<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.capture_slow") = MCP_Tool.mutating);
 \<close>
 
 text \<open>A5 (plans/ml_builtin_migration): a capture tool forks its OWN group
@@ -787,8 +800,11 @@ ML \<open>
 \<close>
 
 text \<open>Forms whose tag proves nothing about behavior default silently to
-MCP_Tool.default_annotations (no clause offered); diag_wrap's are
-derived, never explicit.\<close>
+MCP_Tool.default_annotations when no clause is offered (string_fun) or
+have no clause to offer at all (diag_wrap's are derived); the capture
+form (D2, plans/ml_builtin_migration) requires an explicit clause
+instead of defaulting -- see MCP_Tools_Tests.thy's capture-form section
+for its own coverage.\<close>
 
 ML \<open>
 val context = Context.Proof \<^context>;
@@ -796,12 +812,9 @@ val context = Context.Proof \<^context>;
   = MCP_Tool.default_annotations);
 \<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.find_consts")
   = MCP_Tool.diag_annotations);
-\<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.capture_ok")
-  = MCP_Tool.default_annotations);
 \<close>
 
-text \<open>A10: the run form's isar (annotations <bucket>) clause -- the only
-form that accepts one (D2 for capture is a separate, later plan).\<close>
+text \<open>A10: the run form's isar (annotations <bucket>) clause.\<close>
 
 mcp_tool annot_probe = run \<open>fn _ => fn _ => "ok"\<close>
   (description \<open>probe for the annotations clause\<close>)
@@ -817,13 +830,16 @@ val context = Context.Proof \<^context>;
   = MCP_Tool.default_annotations);
 \<close>
 
-text \<open>An (annotations ...) clause is parsed generally (digest) but
-REJECTED for every form except the run form: diag_wrap already proves
-its hints (an explicit clause would let a declaration override a proven
-fact); string_fun's tag proves nothing, same rejection as its existing
-params/format clauses; capture is DEFERRED (plans/ml_builtin_migration's
-follow-up makes it mandatory there, not this plan); mcp_resource has no
-concept of tool annotations at all.\<close>
+text \<open>An (annotations ...) clause is parsed generally (digest); its
+acceptance is per-form. REJECTED for diag_wrap (already proves its
+hints -- an explicit clause would let a declaration override a proven
+fact) and the string form (its tag proves nothing, same rejection as
+its existing params/format clauses). MANDATORY for the capture form
+(plans/ml_builtin_migration D2, closed out by this plan's follow-up):
+its tag ALSO proves nothing, but unlike string_fun it validates real
+declared params against real behavior, so a missing clause is a
+registration error naming the gap rather than a silent default.
+mcp_resource has no concept of tool annotations at all.\<close>
 
 ML \<open>
 \<^assert> (reg_fails
@@ -833,9 +849,8 @@ ML \<open>
   "mcp_tool annot_func = \<open>fn s => s\<close> (description \<open>d\<close>) (annotations mutating)"
   "not meaningful");
 \<^assert> (reg_fails
-  ("mcp_tool annot_capture = capture \<open>fn _ => fn _ => ()\<close> (description \<open>d\<close>) " ^
-    "(annotations mutating)")
-  "not yet accepted");
+  "mcp_tool capture_no_annot = capture \<open>fn _ => fn _ => ()\<close> (description \<open>d\<close>)"
+  "Missing (annotations");
 \<^assert> (reg_fails
   "mcp_resource annot_res (isar \<open>print_theory\<close>) (description \<open>d\<close>) (annotations mutating)"
   "not meaningful");
@@ -938,8 +953,8 @@ val context = Context.Proof \<^context>;
 \<close>
 
 text \<open>The capture form validates its declared params exactly like the
-run form, so it accepts the clause too -- unlike (annotations ...),
-which is deferred there for an unrelated reason (D2).\<close>
+run form, so it accepts the exactly_one clause too; (annotations ...)
+is MANDATORY here (D2), so this fixture carries one alongside it.\<close>
 
 mcp_tool capture_exactly_one_probe = capture \<open>fn _ => fn args =>
   writeln (the_default "" (AList.lookup (op =) args "a") ^
@@ -948,6 +963,7 @@ mcp_tool capture_exactly_one_probe = capture \<open>fn _ => fn args =>
   (params
     a :: string (optional) \<open>a\<close>
     b :: string (optional) \<open>b\<close>)
+  (annotations read_only)
   (exactly_one a b)
 
 ML \<open>

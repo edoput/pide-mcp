@@ -520,7 +520,7 @@ sig
   val diag: Proof.context -> string * Position.T ->
     {description: string, params: MCP_Tool.param list, format: string,
      constraints: MCP_Tool.constraint list} -> MCP_Tool.tool
-  val capture: string -> MCP_Tool.param list -> MCP_Tool.constraint list ->
+  val capture: string -> MCP_Tool.param list -> MCP_Tool.annotations -> MCP_Tool.constraint list ->
     (Proof.context -> (string * string) list -> unit) -> MCP_Tool.tool
   val arg: (string * string) list -> string -> string
   val arg_int: (string * string) list -> string -> int
@@ -991,20 +991,21 @@ fun diag ctxt (cmd, pos) {description, params, format = fmt, constraints} : MCP_
   -- run_tool_result (mcp_session.scala) does not strip yxml markup the
   way the repl bridge's ir_result does, so captured text must already
   be plain, the same reason exec_text uses Print_Mode.with_modes [].
-  NOTE: the mcp_tool command's capture form does not yet accept an
-  (annotations ...) clause -- every capture tool carries
-  MCP_Tool.default_annotations until plans/ml_builtin_migration's
-  follow-up makes the clause mandatory here (D2 -- param_schema_v2 landed
-  the mechanism itself, this form just doesn't use it yet); constraints
-  are unrelated to that deferral and are accepted here like any other
-  form that validates declared params.*)
-fun capture description params constraints f : MCP_Tool.tool =
+  ANNOTATIONS ARE MANDATORY here (D2, closed out plans/param_schema_v2's
+  follow-up): unlike diag_wrap (Keyword.is_diag proves read_only+
+  idempotent) or string_fun (one fixed param, no real behavior claim to
+  make), the form tag alone proves nothing about a capture tool's
+  behavior -- Ir.show is read-only, Ir.step mutating, Ir.remove
+  destructive, all one form -- so tool_cmd's Tool_Capture branch
+  requires an explicit (annotations ...) clause and errors at
+  registration if it is missing, rather than silently defaulting.*)
+fun capture description params annotations constraints f : MCP_Tool.tool =
   let
     val params = map param params;
     val _ = List.app (check_constraint params) constraints;
   in
     {description = describe_constraints description constraints, params = params,
-     constraints = constraints, form = MCP_Tool.Capture, annotations = MCP_Tool.default_annotations,
+     constraints = constraints, form = MCP_Tool.Capture, annotations = annotations,
      run = fn ctxt => fn args =>
       (case MCP_Output.captured (fn () =>
           Print_Mode.with_modes [] (fn () => f ctxt (validate ctxt params constraints args)) ()) of
@@ -1053,13 +1054,16 @@ but does not export it).
 \<^verbatim>\<open>mcp_tool probe = run \<open>fn ctxt => fn args => ...\<close> (params ...)\<close> —
 full-power hatch with declared parameters.
 
-\<^verbatim>\<open>mcp_tool probe = capture \<open>fn ctxt => fn args => ...\<close> (params ...)\<close> —
+\<^verbatim>\<open>mcp_tool probe = capture \<open>fn ctxt => fn args => ...\<close>
+  (params ...) (annotations idempotent_mutating)\<close> —
 for a writeln-style function (returns unit, reports via writeln/error);
 MCP_Combinators.capture runs it under MCP_Output.captured and returns
 what it printed (plans/ml_builtin_migration). Unlike the other forms,
-this one carries no default annotations bucket -- pending
-plans/param_schema_v2's D2, an (annotations ...) clause is not yet
-required or even accepted here.
+an \<^verbatim>\<open>(annotations ...)\<close> clause is MANDATORY here (plans/param_schema_v2
+D2): the form tag alone proves nothing about a capture tool's behavior
+(unlike diag_wrap, where Keyword.is_diag proves read_only+idempotent at
+registration), so omitting the clause is a registration-time error
+rather than a silent default.
 
 \<^verbatim>\<open>mcp_resource simps\<close> — a named/dynamic fact, pretty-printed at READ
 time (dynamic collections stay current); \<^verbatim>\<open>(isar \<open>print_simpset\<close>)\<close> —
@@ -1327,25 +1331,25 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
             if is_some fmt
             then error ("(format ...) clause is not meaningful for the capture form of " ^ what)
             else ();
-          (*NOT YET: the (annotations ...) clause is parsed generally
-            (digest) but still REJECTED here, per plans/ml_builtin_migration
-            step 3 -- making it mandatory for capture is that plan's
-            follow-up, not this one. A capture tool declared today always
-            carries MCP_Tool.default_annotations (MCP_Combinators.capture).
-            exactly_one is unrelated to that deferral and IS accepted here
-            -- capture validates its declared params like any other form.*)
-          val _ =
-            if is_some annot
-            then error ("(annotations ...) clause is not yet accepted for the capture form of " ^
-              what ^ " (deferred to plans/ml_builtin_migration's follow-up)")
-            else ();
+          (*(annotations ...) is MANDATORY here (plans/ml_builtin_migration
+            D2, closed out by plans/param_schema_v2's follow-up): the
+            capture form's tag alone proves nothing about a tool's
+            behavior -- Ir.show is read-only, Ir.step mutating, Ir.remove
+            destructive, all one form -- unlike diag_wrap, where
+            Keyword.is_diag proves read_only+idempotent at registration.*)
+          val annot_ml =
+            (case annot of
+              SOME a => print_annotations a
+            | NONE =>
+                error ("Missing (annotations <bucket>) clause for the capture form of " ^
+                  what ^ " (the form tag alone proves nothing about its behavior)"));
           val params_ml = ML_Syntax.print_list print_param (these params);
           val constr_ml = ML_Syntax.print_list print_constraint (the_list constr);
         in
           ml_declaration
             ("MCP_Tool.declare " ^ binding_ml (name, pos) ^
               " (MCP_Combinators.capture " ^ ML_Syntax.print_string descr' ^
-              " " ^ params_ml ^ " " ^ constr_ml)
+              " " ^ params_ml ^ " " ^ annot_ml ^ " " ^ constr_ml)
             source ")" lthy
         end)
   end;
