@@ -450,14 +450,68 @@ the build and prover boot run on a background thread.
 
 not in this decision, deliberately: streaming build progress to the
 client (the Console_Progress feed is on stderr, invisible over stdio,
-and mcp has no server-initiated progress channel we already use), and
-splitting the backend so that the prover-free tools (doc_list,
-doc_read, list_sessions, list_theories, search_sources — pure scala
-over Sessions.Structure/Deps/Store and the doc catalog) can answer
-while the build runs. the latter is a real improvement and a real
-refactor: those maps sit behind an MCP_Session constructor that takes
-a live Headless.Session. recorded here as the follow-up, gated on the
-minimal readiness state landing first.
+and mcp has no server-initiated progress channel we already use).
+
+the catalog is the long pole, not the build (measured 2026-07-30)
+------------------------------------------------------------------
+
+supersedes this section's original follow-up, which was "let the
+prover-free tools answer WHILE THE BUILD RUNS". that follow-up is
+withdrawn: it solved a scenario that does not occur. plan:
+plans/readiness_catalog.
+
+measurements against MCP-HOL, warm heaps, this machine:
+
+  initialize reply                              2.8s
+  build check (Build.build, nothing to do)       ~6s
+  start_session (prover actually up)             ~8s
+  catalog: load_structure + deps + Store +
+    Doc_Catalog                                 ~20s
+  total to Ready                                 39s
+
+and the builds themselves, from the recorded session_timing: MCP-HOL
+1.07s of proving, MCP-Tools 0.65s. HOL ships prebuilt with any Isabelle
+install and our theories are tiny, so even a first run after installing
+the server is dependency checking, not proving. THE BUILD IS NEVER THE
+SLOW PART for an installed user.
+
+what is slow is the catalog — and every prover-backed tool waits behind
+it today for no reason, because MCP_Session's constructor takes
+structure/deps/store and the whole thing is computed inside boot(),
+AFTER start_session. the ordering is arbitrary: load_structure/deps/
+Store/Doc_Catalog are pure source parsing with no heap dependency.
+
+decision: extract the catalog and stop gating readiness on it.
+
+- MCP_Catalog holds structure, deps, store, doc_catalog and the derived
+  maps (sessions_map, theory_map, base_names), plus the five methods
+  that need nothing else: doc_list, doc_read, list_sessions,
+  list_theories, search_sources.
+- it is computed on its own future, started at server startup, in
+  parallel with build+boot. Ready no longer waits for it, so the prover
+  goes live at ~14s instead of 39s.
+- the five catalog-backed tools join that future when called. normally
+  it has long since resolved; if not they wait a few seconds INSIDE a
+  tools/call, which clients tolerate far better than a slow handshake.
+- MCP_Backend is unchanged and MCP_Session delegates its five catalog
+  methods to the MCP_Catalog it is constructed with, so Fake_Backend
+  and every existing suite compile untouched.
+- the readiness ADT is unchanged too: no Not_Ready(progress, Option[
+  MCP_Catalog]) — the catalog is not a readiness state, it is a
+  dependency the tools that need it await.
+
+NOT catalog-backed, despite touching theory_map: scope_add,
+scope_remove, scope_show and mcp_resources all go through
+known_theory_tiers(), which reads session.resources.session_base.
+they stay prover-gated.
+
+noted, not fixed here: Sessions.deps in boot() is called without
+.check_errors, so a session in the structure that fails to resolve is
+swallowed and leaves a hole in the catalog rather than failing loudly
+(observed with an AFP checkout whose HOL-Library imports do not match
+this Isabelle). AFP is also most of the ~20s — a user without it
+registered gets a much cheaper catalog, which is exactly the case the
+lazy future costs nothing.
 
 ml bridge: async protocol commands (the key new mechanism)
 -----------------------------------------------------------

@@ -57,6 +57,48 @@ exactly_one land)
   detail; plans/ml_builtin_migration's builtins-as-ML-tools waves,
   which depend on this landing, remain separately gated on decision S1.
 
+2026-07-30 (the catalog is the long pole, not the build)
+--------------------------------------------------------
+
+- WITHDRAWN, with the measurements that killed it: plans/readiness left
+  an open question — let the prover-free tools (doc_list, doc_read,
+  list_sessions, list_theories, search_sources) answer WHILE THE BUILD
+  RUNS. Measured, the scenario does not occur. MCP-HOL's own build is
+  1.07s of proving (MCP-Tools 0.65s, from the recorded session_timing);
+  HOL ships prebuilt with any Isabelle install and our theories are
+  tiny, so even a first run after installing the server is dependency
+  checking, not proving. Designing around a multi-minute build was
+  designing around a case an installed user never sees.
+- what the same measurements DID show (MCP-HOL, warm, to Ready 39s):
+  initialize 2.8s, build check ~6s, start_session ~8s, and the catalog
+  — load_structure + deps + Store + Doc_Catalog — ~20s. The catalog is
+  the long pole, it runs INSIDE boot() after start_session, and every
+  prover-backed tool waits behind it because MCP_Session's constructor
+  takes structure/deps/store. The ordering is arbitrary: those are pure
+  source parsing with no heap dependency.
+- decided (spec: "the catalog is the long pole, not the build"; plan:
+  plans/readiness_catalog): extract MCP_Catalog (structure, deps, store,
+  doc_catalog, the derived maps, and the five methods that need nothing
+  else), compute it on its own future started at server startup in
+  parallel with build+boot, and stop gating Ready on it — the prover
+  goes live at ~14s instead of 39s. The five catalog-backed tools join
+  the future when called; normally it has resolved, and if not they wait
+  inside a tools/call, which clients tolerate far better than a slow
+  handshake. Same extraction as the withdrawn follow-up, INVERTED: the
+  justification is "25s off every start for every user", not "tools
+  during a build nobody experiences". MCP_Backend is unchanged
+  (MCP_Session delegates), so Fake_Backend and every existing suite
+  compile untouched, and the readiness ADT is unchanged too — the
+  catalog is a dependency the tools that need it await, not a readiness
+  state.
+- scope_add/scope_remove/scope_show/mcp_resources are NOT catalog-backed
+  despite touching theory_map: known_theory_tiers() reads
+  session.resources.session_base, so they stay prover-gated.
+- noted, not fixed: Sessions.deps in boot() has no .check_errors, so a
+  session that fails to resolve is swallowed and silently leaves a hole
+  in the catalog (observed with an AFP checkout whose HOL-Library
+  imports do not match this Isabelle). AFP is also most of the ~20s.
+
 2026-07-28 (spec: parameterised resources; enumeration deferred)
 -------------------------------------------------------------------
 
