@@ -136,25 +136,46 @@ wave 5 — documentation (Doc catalog + src/Doc sources, scala side;
 
 resource-read tool mirrors (DECIDED 2026-07-15, planned; wave TBD —
   umbrella plans/resource_tool_mirrors, spec "resource-read tool
-  mirrors"). one builtin tool per readable resource, so a fully-
-  autonomous-proving mode can hide resources and serve tools instead.
+  mirrors"). the RULE (spec "every declared resource is reachable as a
+  tool", 2026-07-30): every resource the server declares — including
+  every resource a USER declares with mcp_resource — must also be
+  readable through a tool, so a fully-autonomous-proving mode, or a
+  client that surfaces resources to humans only, loses no read access.
   ship registered-but-inactive; the autonomous_proving bundle
   activates the set. two operating assumptions recorded: PRIMARY
-  human-in-the-loop (user @-mentions resources); SECONDARY, UNVERIFIED
-  — claude code reads resources autonomously (must be resolved):
+  human-in-the-loop (user @-mentions resources); SECONDARY — RESOLVED
+  POSITIVE 2026-07-15, claude code DOES read resources autonomously,
+  which relieves urgency without removing the requirement:
   - [ ] read_theory            plans/read_theory   (= isabelle://theory/{name})
   - [ ] read_commands          plans/read_commands (= .../commands)
   - [ ] read_diagnostics       plans/read_diagnostics (= .../diagnostics)
   - [ ] list_entities          plans/list_entities (= .../entities)
   - [ ] read_session           plans/read_session  (= isabelle://session)
-  - [ ] read_named             plans/read_named    (= isabelle://named/{name})
-  (repl/{id} and /text need no mirror — repl_show/repl_text already are.)
+  - [ ] read_named             plans/read_named    (BLOCKED on the
+        umbrella's Q4: its {name}-only schema cannot reach a
+        parameterised named resource, so the twin would be less capable
+        than isabelle://named/{name} itself)
+  (repl/{id} and /text need no twin — repl_show/repl_text already are.)
+  OPEN (umbrella Q4, added 2026-07-30): the mechanism covering
+  USER-declared resources — args passthrough vs. a generic
+  read_resource {uri} vs. twins generated from the ML registry. Depends
+  on param_schema_v2. Plus the invariant's drift gate: declared-resource
+  set ≡ resource-read-tool set, both directions, read from the
+  registries rather than a literal list.
 
 server lifecycle (infrastructure, no tool of its own):
   - [x] readiness              plans/readiness  (serve stdin before the
         session is built; Not_Ready/Ready/Failed state, prover-backed
         tools error until ready. decided 2026-07-21, spec "server
         startup and readiness")
+  - [ ] readiness_catalog      plans/readiness_catalog  (successor:
+        extract MCP_Catalog and stop gating Ready on it — the catalog
+        is ~20s of the 39s startup and runs after start_session, so
+        every prover-backed tool waits behind it. withdraws
+        readiness' "prover-free tools answer during the build" open
+        question: measured, the build is never the slow part for an
+        installed user. decided 2026-07-30, spec "the catalog is the
+        long pole, not the build")
 
 phase 3 — the ML tool surface (decided 2026-07-28, spec commit
   40d30471). two feature plans, in this order; the second depends on
@@ -168,9 +189,13 @@ phase 3 — the ML tool surface (decided 2026-07-28, spec commit
         repl/search builtins stop being declared three times and
         become ordinary ML registry entries; capture form, async
         MCP.run_tool, mirror list + drift gate shrink to the
-        scala-resident remainder. BLOCKED on the repl-designation
-        spec gap before wave 1 — see the plan's "blocking open
-        question")
+        scala-resident remainder. Design fully resolved: infra steps
+        1/3/4/5 landed 2026-07-28, the repl-designation gap that
+        blocked wave 1 DECIDED 2026-07-30 (spec: "repl designations
+        resolve against a merged theory") -- waves 1..6 UNBLOCKED but
+        not started; step 2's ML implementation of that decision is
+        also not started. spec: "the repl as the flagship example"
+        names this migration as the paper's worked example.)
 
 flagged, NOT scheduled (no wave):
   - recap                      plans/recap  (generated Recap.thy the

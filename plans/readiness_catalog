@@ -1,0 +1,214 @@
+readiness_catalog — implementation plan
+========================================
+
+status: PLANNED (2026-07-30)
+
+infrastructure plan (not a single tool): successor to plans/readiness.
+spec section "the catalog is the long pole, not the build".
+
+what this replaces
+------------------
+
+plans/readiness closed with an open question: let the prover-free tools
+answer WHILE THE BUILD RUNS. That question is withdrawn, not
+implemented. Measured (2026-07-30, MCP-HOL, warm heaps):
+
+  initialize reply                              2.8s
+  build check (Build.build, nothing to do)       ~6s
+  start_session (prover actually up)             ~8s
+  catalog: load_structure + deps + Store +
+    Doc_Catalog                                 ~20s
+  total to Ready                                 39s
+
+and from the recorded session_timing, the builds themselves: MCP-HOL
+1.07s of proving, MCP-Tools 0.65s. HOL ships prebuilt with any Isabelle
+install and our theories are tiny, so even a first run after installing
+the server is dependency checking. There is no multi-minute build to
+serve tools during — that plan was designing around a case an installed
+user never sees.
+
+the actual defect
+-----------------
+
+The catalog is the long pole, and it is in the wrong place. In
+MCP_Session.boot (mcp/src/mcp_session.scala):
+
+    val session = resources.start_session(progress = progress)
+    val structure = Sessions.load_structure(options, dirs = session_dirs)
+    val deps = Sessions.deps(structure, progress = progress)
+    val store = Store(options)
+    val mcp_session = new MCP_Session(session, ..., structure, deps, store)
+
+so ~20s of pure source parsing runs AFTER the prover is already up, and
+Ready is not published until it finishes. Every prover-backed tool —
+every repl_*, sledgehammer, find_theorems, the whole point of the
+server — waits behind a catalog it does not use. The ordering is
+arbitrary: load_structure/deps/Store/Doc_Catalog touch no heap and no
+session.
+
+backing mechanism
+-----------------
+
+Extract the catalog; compute it on its own future; stop gating Ready
+on it.
+
+  class MCP_Catalog(options, session_dirs)
+    structure, deps, store          (constructor work: the ~20s)
+    doc_catalog, doc_toc_cache
+    sessions_map, theory_map, base_names
+    doc_list, doc_read, list_sessions_info, list_theories_info,
+      search_sources
+
+  MCP_Session(session, ..., catalog: Future[MCP_Catalog])
+    delegates those five methods to catalog.join; uses
+    catalog.join.theory_map / base_names internally (resolve_theory)
+    as today.
+
+  run(): Future.fork the catalog at startup, in parallel with
+  build+boot. boot() passes the FUTURE straight into MCP_Session
+  without joining it.
+
+MCP_Session holds the FUTURE, not a resolved MCP_Catalog — this is the
+load-bearing detail and the plan owes the decision explicitly.
+Constructing MCP_Session is what publishes Ready, so if the future were
+joined at construction (or anywhere in boot()) Ready would still wait
+on the catalog and A2 would fail. The join happens per call, inside the
+five delegating methods and inside resolve_theory. resolve_theory is on
+the prover-backed path, so it does join the catalog — but only when a
+tool that needs theory-name resolution is actually called, which is
+after Ready and normally long after the future resolved.
+
+Do NOT "optimize" boot() by having start_session reuse the catalog's
+structure: Headless.Resources.make calls Sessions.background, which
+does its own cheaper load_structure for the one session. That second
+load is deliberate — sharing it would reintroduce exactly the
+dependency this plan removes.
+
+MCP_Backend is UNCHANGED — MCP_Session still implements all of it, so
+Fake_Backend, Throwing_Backend and every existing suite compile
+untouched. The Readiness ADT is unchanged too: the catalog is not a
+readiness state, it is a dependency the tools that need it await. No
+Not_Ready(progress, Option[MCP_Catalog]).
+
+serving the five before the prover
+-----------------------------------
+
+Once Ready no longer waits on the catalog, the two poles resolve
+independently and either can land first. The Handler consults the
+catalog future directly for the five catalog-backed tools, so:
+
+- prover up, catalog still computing -> the five wait on the future
+  (seconds, inside a tools/call); everything else already works.
+- catalog done, prover still booting -> the five ANSWER, the rest get
+  today's Not_Ready isError. This is the withdrawn follow-up's
+  behaviour, arriving as a side effect rather than as the goal.
+
+Waiting inside a tools/call is the deliberate choice over an isError:
+the call is short, bounded, and one-time, and a client tolerates a slow
+tool far better than a slow handshake (which is what plans/readiness
+already established).
+
+NOT catalog-backed, despite touching theory_map: scope_add,
+scope_remove, scope_show, mcp_resources. All four go through
+known_theory_tiers(), which reads session.resources.session_base — they
+need the prover and stay Not_Ready-gated. Verified by reading
+mcp_session.scala, and pinned as T5 below because it is exactly the
+kind of thing that drifts.
+
+implementation steps
+--------------------
+
+1. Extract MCP_Catalog: move structure/deps/store, doc_catalog,
+   doc_toc_cache, manual_files/manual_toc, sessions_map/theory_map/
+   base_names and the five methods out of MCP_Session into the new
+   class. MCP_Session takes an already-resolved MCP_Catalog and
+   delegates. Pure move, no behaviour change, no ordering change yet —
+   boot() constructs the catalog exactly where it does today and
+   everything stays green.
+
+2. Thread the catalog as a future: MCP_Session takes
+   Future[MCP_Catalog] and joins per call (see above); boot() passes
+   it through unjoined; run() forks it alongside build+boot. Ready is
+   published as soon as boot() returns. MCP_Session.start (the
+   synchronous convenience the test suites use) keeps its current
+   signature by forking-and-joining internally — it is a COMPATIBILITY
+   SHIM, and the parallel path is reachable only through run(). That
+   is why T1 cannot cover the new ordering and T2 must drive run()/
+   serve() rather than start().
+
+3. Handler consults the catalog future for the five tools, independent
+   of Readiness.
+
+4. tests (below).
+
+5. close-out: spec annotation, CHANGELOG entry, plans/README checkbox.
+
+assumptions and how to test them
+--------------------------------
+
+(testing process: [scala unit] cases are munit suites in
+mcp_test/src/mcp_handler_tests.scala over Fake_Backend
+(mcp_test/src/mcp_testing.scala); [bridge] cases in
+mcp_test/src/mcp_bridge_tests.scala extending MCP_Session_Suite; see
+plans/README. run: isabelle mcp_test [-b] [-t PATTERN].)
+
+A1. the extraction is behaviour-preserving.
+    T1: the EXISTING suites, unchanged, after step 1. If any test
+    needed editing, the move was not a move. This is the whole
+    verification of step 1 and it is worth naming as such. Note what
+    T1 does NOT cover: MCP_Session_Suite goes through MCP_Session.
+    start, which step 2 keeps synchronous, so the existing suites
+    still exercise the sequential path after step 2 and say nothing
+    about the new ordering. That is A2's job.
+
+A2. Ready no longer waits on the catalog.
+    T2 [bridge]: must drive run()/serve(), not start() — start() is
+    the compatibility shim and joins internally, so a test through it
+    would pass whether or not the ordering changed. Assert the
+    ORDERING, not a wall-clock number that would make the suite
+    machine-dependent (measured baseline 39s, expected ~14s): with an
+    injected slow catalog future (step 2 makes it injectable), a
+    prover-backed tools/call succeeds while a catalog-backed one is
+    still waiting.
+
+A3. a catalog-backed tool called before the catalog resolves waits and
+    then answers — it does not error.
+    T3 [scala unit]: Handler with an unresolved catalog future
+    fulfilled from another thread after a delay; assert doc_list
+    returns the real listing, not an isError.
+
+A4. a catalog-backed tool answers while the prover is still Not_Ready.
+    T4 [scala unit]: readiness thunk fixed at Not_Ready, catalog
+    future resolved; assert list_sessions succeeds and (control) a
+    repl_* call still returns the Not_Ready isError.
+
+A5. the scope tools stay prover-gated.
+    T5 [scala unit]: same fixture as T4; assert scope_show,
+    scope_add, scope_remove and resources/list still return the
+    Not_Ready isError with the catalog resolved. Guards the boundary
+    the plan draws above.
+
+A6. shutdown while the catalog future is in flight exits cleanly.
+    T6: the sibling of plans/readiness' T9/A9 (still uncovered there).
+    Closing stdin now has TWO background futures to outlive, not one.
+    Same mechanism (Command_Line.tool force-exits on return) is
+    expected to cover it; assert no orphaned process, and if T9 gets a
+    real test this should share it.
+
+open questions
+--------------
+
+- should the catalog future be started even when the client never
+  calls a catalog-backed tool? Yes as planned — it is off the critical
+  path once Ready stops waiting, and making it lazy-on-first-use would
+  move the ~20s INTO the first doc_list instead of hiding it behind
+  startup. Revisit only if the parallel work measurably slows the
+  build on small machines.
+
+- Sessions.deps in boot() is called without .check_errors, so a
+  session in the structure that fails to resolve is swallowed and
+  leaves a silent hole in the catalog (observed with an AFP checkout
+  whose HOL-Library imports do not match this Isabelle). Out of scope
+  here — the extraction moves the call, it does not change its error
+  handling — but the catalog is the natural home for a fix, and after
+  step 1 there is finally one place to put it.

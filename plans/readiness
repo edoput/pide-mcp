@@ -269,6 +269,17 @@ open questions
   deferred: it is a genuine refactor, and "error until ready" is what
   this plan owes. Recorded in the spec section as the follow-up.
 
+  RESOLVED 2026-07-30, and WITHDRAWN as stated — see
+  plans/readiness_catalog and the spec's "the catalog is the long
+  pole, not the build". Measured, the build is never the slow part
+  for an installed user (MCP-HOL's own build is 1.07s of proving; HOL
+  ships prebuilt), so "answer during the build" solved a case that
+  does not occur. The same measurements found the real defect, which
+  is the mirror image: the catalog costs ~20s of the 39s startup, runs
+  inside boot() AFTER start_session, and every PROVER-backed tool
+  waits behind it. The successor plan extracts the same MCP_Catalog
+  for the opposite reason — to stop Ready waiting on it.
+
 results (2026-07-21)
 ---------------------
 
@@ -314,5 +325,6 @@ all green except one deliberately-deferred test:
   construction (Command_Line.tool force-exits the process on return
   regardless of the background thread — verified by reading, not by
   test — see CHANGELOG) but unverified against a real cold build with
-  stdin closed mid-flight. Left as follow-up, along with the open
-  question above (prover-free tools answering during the build).
+  stdin closed mid-flight. Left as follow-up. (The other open question
+  above — prover-free tools answering during the build — was resolved
+  2026-07-30 by withdrawing it; see plans/readiness_catalog.)
