@@ -1156,6 +1156,25 @@ object MCP_Server {
   case class Ready(backend: MCP_Backend) extends Readiness
   case class Failed(message: String) extends Readiness
 
+  /* decode_message / plain_message: prover and build error text often
+     carries YXML position markup (e.g. "Duplicate session ... \x05\x06
+     position\x06line=1..."), which is literal 0x05/0x06 control bytes
+     once serialized -- unreadable garbage to an MCP client, and exactly
+     the text a client must act on when reported through Failed. Same
+     idiom as MCP_Session.Handler.ir_result: YXML.parse_body on ordinary
+     (non-YXML) text is a safe no-op, yielding a single Text leaf, so
+     this is harmless to apply to messages that never had markup at all.
+     Malformed/partial markup makes parse_body raise "Malformed YXML";
+     Exn.capture guards that so a decode failure falls back to the raw
+     string instead of losing the message entirely. */
+  def decode_message(s: String): String =
+    Exn.capture { XML.content(YXML.parse_body(YXML.Source(s))) } match {
+      case Exn.Res(text) => text
+      case Exn.Exn(_) => s
+    }
+
+  def plain_message(exn: Throwable): String = decode_message(Exn.message(exn))
+
 
   /* request handling: pure JSON in, JSON out — no I/O, no session,
      unit-testable against any MCP_Backend */
@@ -1640,7 +1659,7 @@ object MCP_Server {
             }
           if (abandoned) session.stop() else progress.echo("MCP server ready")
         case Exn.Exn(exn) =>
-          cell.change(s => s.copy(readiness = Failed(Exn.message(exn))))
+          cell.change(s => s.copy(readiness = Failed(plain_message(exn))))
       }
     }
 

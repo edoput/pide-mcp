@@ -178,6 +178,68 @@ class MCP_Readiness_Tests extends MCP_Suite {
     val message = get_string(reply, "error", "message")
     assert(message.contains("building MCP-HOL"), "expected the progress string: " + message)
   }
+
+  /* A7-A11: decode_message/plain_message -- Failed(message) is built from
+     raw exception/prover text (mcp_server.scala run()), which routinely
+     carries YXML position markup (literal 0x05/0x06 bytes wrapping "at
+     line N of FILE" info). That markup must be stripped before the text
+     is stored anywhere an MCP client reads it -- these test the pure
+     decode helper directly, without a prover or background thread. */
+
+  test("A7: decode_message strips YXML position markup into readable text") {
+    val x = YXML.X_char
+    val y = YXML.Y_char
+    val raw =
+      "Duplicate session \"Scratch\"" +
+      x + y + "position" + y + "line=1" + y + "offset=9" + y + "end_offset=18" +
+      y + "file=/tmp/b/ROOT" + x +
+      " (line 1 of \"/tmp/b/ROOT\")" +
+      x + y + x
+    val decoded = MCP_Server.decode_message(raw)
+    assertEquals(decoded, "Duplicate session \"Scratch\" (line 1 of \"/tmp/b/ROOT\")")
+    assert(!decoded.exists(c => c < ' ' && c != '\n' && c != '\t' && c != '\r'),
+      "decoded text must contain no control characters: " + decoded)
+  }
+
+  test("A8: decode_message round-trips a plain string with no markup unchanged") {
+    val plain = "Duplicate session \"Scratch\" already in use for a different ROOT"
+    assertEquals(MCP_Server.decode_message(plain), plain)
+  }
+
+  test("A9: decode_message falls back to the raw string on malformed/partial YXML") {
+    val x = YXML.X_char
+    val y = YXML.Y_char
+    /* an unterminated element -- push() with no matching pop(): parse_body
+       raises "Malformed YXML: unbalanced element", which must not escape
+       decode_message and must not silently drop the message either. */
+    val broken = "oops" + x + y + "position" + y + "line=1"
+    val decoded = MCP_Server.decode_message(broken)
+    assertEquals(decoded, broken, "a decode failure must fall back to the original text")
+  }
+
+  test("A10: plain_message decodes an exception's YXML-bearing message") {
+    val x = YXML.X_char
+    val y = YXML.Y_char
+    val raw =
+      "Duplicate session \"Scratch\"" + x + y + "position" + y + "line=1" + x +
+      " (line 1)" + x + y + x
+    val exn = ERROR(raw)
+    assertEquals(MCP_Server.plain_message(exn), "Duplicate session \"Scratch\" (line 1)")
+  }
+
+  test("A11: Failed built via plain_message carries decoded text, not raw YXML bytes") {
+    val x = YXML.X_char
+    val y = YXML.Y_char
+    val raw =
+      "Duplicate session \"Scratch\"" + x + y + "position" + y + "line=1" + x +
+      " (line 1)" + x + y + x
+    val handler = new MCP_Server.Handler(() => MCP_Server.Failed(MCP_Server.plain_message(ERROR(raw))))
+    val text = assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
+    assert(text.contains("Duplicate session \"Scratch\" (line 1)"),
+      "expected decoded failure text: " + text)
+    assert(!text.exists(c => c == YXML.X_char || c == YXML.Y_char),
+      "failed-status text must contain no raw YXML control bytes: " + text)
+  }
 }
 
 

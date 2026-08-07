@@ -798,7 +798,8 @@ class MCP_Session private(
             Exn.capture(File.read(path)) match {
               case Exn.Res(content) => MCP_Session.Ok(content)
               case Exn.Exn(exn) =>
-                MCP_Session.Error("Failed to read " + quote(path.toString) + ": " + Exn.message(exn))
+                MCP_Session.Error(
+                  "Failed to read " + quote(path.toString) + ": " + MCP_Server.plain_message(exn))
             }
           /* same rationale as /commands above: loaded and unrecognized
              alike, no recorded source to serve. */
@@ -1175,7 +1176,8 @@ class MCP_Session private(
         val text = lines.mkString("\n")
         if (use_result.ok) MCP_Session.Ok(text) else MCP_Session.Error(text)
       case Exn.Exn(exn) =>
-        MCP_Session.Error("Failed to load theory " + quote(name) + ": " + Exn.message(exn))
+        MCP_Session.Error(
+          "Failed to load theory " + quote(name) + ": " + MCP_Server.plain_message(exn))
     }
   }
 
