@@ -1,7 +1,7 @@
 load_theory — implementation plan
 ==================================
 
-status: planned (2026-07-09)
+status: done (2026-07-10)
 
 wave 2: SCALA-side tool — no MCP.ir involved. backing decision (spec
 "theory loading and checking"): scala use_theories and ML Thy_Info are
@@ -125,7 +125,7 @@ done when
   returns the refusal error, so nobody wires the builtin to it by
   accident.
 
-status: done (2026-07-10)
+landed: done (2026-07-10)
 --------------------------
 
 T1 (bridge): a well-formed fixture written under a fresh tmp master_dir

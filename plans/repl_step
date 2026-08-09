@@ -1,7 +1,7 @@
 repl_step — implementation plan
 ================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list). pass-through ("step" => keys
 ["repl", "isar_text"]); THE hot-path tool — everything the model does
@@ -91,7 +91,7 @@ done when
 - T1..T6 green; tools/list shows the row above; the e2e proof loop
   passes.
 
-status: done (2026-07-09). T1..T6 green at all layers (ml unit:
+landed: done (2026-07-09). T1..T6 green at all layers (ml unit:
 mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy -- T1 symbol/multi-line round-trip
 via repl_text, T2 failure atomicity on a bad tactic, T3 timeout behaving
 as a failed step with the timeout lowered to 1s, T4 goal-state output

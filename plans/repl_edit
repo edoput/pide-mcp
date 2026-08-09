@@ -1,7 +1,7 @@
 repl_edit — implementation plan
 ================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list). pass-through ("edit" => keys
 ["repl", "idx", "isar_text"]). semantics to pin: edit re-executes the
@@ -88,7 +88,7 @@ done when
 - T1..T5 green; description states the real auto_replay default;
   tools/list shows the row above.
 
-status: done (2026-07-09). T1..T5 green at all layers. Step 1's decision:
+landed: done (2026-07-09). T1..T5 green at all layers. Step 1's decision:
 this server's engine default is auto_replay=true (ir.ML:65) and there is
 no MCP.ir fname to change it, so the description states that plainly
 ("auto-replay is always on in this server ... no separate repl_replay

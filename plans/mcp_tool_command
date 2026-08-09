@@ -1,7 +1,7 @@
 mcp_tool command (outer syntax + params + combinators) — implementation plan
 =============================================================================
 
-status: DONE (implemented 2026-07-11, same wave as the registry pivot;
+status: done (2026-07-11)
 spec phase-2 "outer syntax commands" and "builtin table" items closed,
 phase-3 combinators/command items checked; CHANGELOG "mcp_tool command
 landed"). deviations and deferrals from the plan as written:

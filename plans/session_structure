@@ -1,7 +1,7 @@
 session_structure — wave 3 shared infrastructure (implementation plan)
 ========================================================================
 
-status: implemented (2026-07-12)
+status: done (2026-07-12)
 
 wave 3: library discovery. this is an UMBRELLA plan in the style of
 mcp_tool_registry/tool_scope — it owns the shared session-structure
@@ -234,7 +234,7 @@ A8  loaded tier follows the document (the spec's 2026-07-11
     wave-2 load/unload machinery; (a)'s pure precedence half also
     [scala unit] on canned node sets.
 
-spec refinement: the not_yet_backed_uri error class disappears —
+spec refinement [OPEN]: the not_yet_backed_uri error class disappears —
 after this wave every documented template answers for every
 structure-known theory (with tier honesty), and unknown names get a
 discovery pointer. fold into the spec's resource-templates section

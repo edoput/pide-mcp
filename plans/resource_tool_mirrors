@@ -1,7 +1,7 @@
 resource_tool_mirrors — umbrella (DECIDED 2026-07-15, planned)
 ==============================================================
 
-status: DECIDED 2026-07-15, planned (wave TBD).
+status: planned (2026-07-15)
 spec: "resource-read tool mirrors" under "mcp resources".
 per-tool plans: plans/read_theory, plans/read_commands,
 plans/read_diagnostics, plans/list_entities, plans/read_session,

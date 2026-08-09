@@ -2,6 +2,7 @@ isabelle mcp_server — project spec
 
 goal
 ----
+id: S-goal
 
 we are writing an implementation of a mcp for the isabelle proof assistant
 as an isabelle tool.
@@ -12,6 +13,7 @@ community.
 
 directories
 -----------
+id: S-directories
 
 - mcp our implementation
 - Isabelle2025-2_linux the isabelle distribution
@@ -31,6 +33,7 @@ current as the project evolves.
 ================================================================
 phase 0 — research
 ================================================================
+id: S-phase-0-research
 
 - [x] how can the isabelle/scala programming environment interact with isabelle/ml and viceversa
 - [x] how to develop isabelle tools
@@ -67,11 +70,13 @@ phase 0 — research
 ================================================================
 phase 1 — mvp: isabelle mcp_server
 ================================================================
+id: S-phase-1-mvp-isabelle-mcp
 
 status: DONE (2026-07-07)
 
 goal
 ----
+id: S-goal-phase-1
 
 an external test program spawns `isabelle mcp_server`, speaks MCP to it, and
 triggers the execution of a tool that is defined and registered in Isabelle/ML
@@ -81,6 +86,7 @@ inside a theory file. the round trip proves the whole chain:
 
 architecture decisions (from phase 0)
 --------------------------------------
+id: D-undated-architecture-decisions
 
 - the server is Isabelle/Scala: the existing `mcp` component's tool
   `isabelle mcp_server` (mcp/src/mcp-main.scala).
@@ -99,6 +105,8 @@ architecture decisions (from phase 0)
 
 components / deliverables
 -------------------------
+id: S-components-deliverables
+superseded_by: D-2026-07-21-server-startup-readiness
 
 1. ML tool api + registry: mcp/Tools/MCP_Tools.thy   (new session `MCP-Tools`
    in mcp/Tools/ROOT, based on Pure)
@@ -176,6 +184,7 @@ components / deliverables
 
 implementation order
 --------------------
+id: S-implementation-order
 
 - [x] ML side alone: mcp/Tools (ROOT + MCP_Tools.thy) with an ML self-test in
       the theory (\<^assert> (MCP_Tool.run "shout" "abc" = "ABC")).
@@ -203,6 +212,7 @@ use_theories is only used for a theory not in the base session
 
 testing
 -------
+id: S-testing
 
 - [x] build test: isabelle scala_build   (compiles the component)
 - [x] ML regression: isabelle build -d mcp/Tools MCP-Tools
@@ -216,6 +226,7 @@ testing
 
 acceptance criteria
 -------------------
+id: S-acceptance-criteria
 
 the mvp is done when test_mcp.py exits 0 against a fresh build, i.e. an
 external program connected to the server, listed the ML-registered tool,
@@ -223,6 +234,8 @@ ran it in the prover, and got the computed result back.
 
 out of scope for the mvp (see phase 2 / later)
 -----------------------------------------------
+id: S-out-scope-mvp
+superseded_by: D-2026-07-13-mcp-tools D-2026-07-09-mcp-resources
 
 - structured tool input schemas / serialization design (see phase 0:
   "what kind of tool description/serialization")
@@ -236,6 +249,7 @@ out of scope for the mvp (see phase 2 / later)
 ================================================================
 testing architecture (added 2026-07-07, post-mvp refactor)
 ================================================================
+id: D-2026-07-07-testing-architecture
 
 the mvp was verified end-to-end only: test_mcp.py spawns the full
 server (heap build + pide session + stdio). that remains the
@@ -330,11 +344,13 @@ concrete cases.
 ================================================================
 phase 2 — agentic proving
 ================================================================
+id: S-phase-2-agentic-proving
 
 status: IN PROGRESS
 
 goal
 ----
+id: S-goal-phase-2
 
 expand the mvp (phase 1) to fully agentic proving: an mcp client can
 explore theories, load them, check them, and conduct interactive proofs
@@ -348,6 +364,7 @@ the analysis behind this.
 
 what we reuse from I/R and what we don't
 ----------------------------------------
+id: S-reuse-i-r-don-t
 
 reuse:
 
@@ -379,6 +396,7 @@ do not reuse:
 
 sessions and file layout
 ------------------------
+id: S-sessions-file-layout
 
 - mcp/Tools/HOL/ir.ML: symlink to ../../../ir/ir.ML (same trick iq
   uses), so the engine has a single source of truth. the HOL/
@@ -405,6 +423,9 @@ sessions and file layout
 
 server startup and readiness (decided 2026-07-21)
 --------------------------------------------------
+id: D-2026-07-21-server-startup-readiness
+supersedes: S-components-deliverables
+superseded_by: D-2026-07-30-catalog-long-pole-build
 
 supersedes the mvp's blocking startup (phase 1's "generous startup
 timeout, default 600s" under test_mcp.py, which stays only as that
@@ -454,6 +475,8 @@ and mcp has no server-initiated progress channel we already use).
 
 the catalog is the long pole, not the build (measured 2026-07-30)
 ------------------------------------------------------------------
+id: D-2026-07-30-catalog-long-pole-build
+supersedes: D-2026-07-21-server-startup-readiness
 
 supersedes this section's original follow-up, which was "let the
 prover-free tools answer WHILE THE BUILD RUNS". that follow-up is
@@ -515,6 +538,8 @@ lazy future costs nothing.
 
 ml bridge: async protocol commands (the key new mechanism)
 -----------------------------------------------------------
+id: D-2026-07-09-ml-bridge-async-protocol-commands
+superseded_by: D-2026-07-28-builtins-ml-tools D-2026-07-28-parameterised-resources
 
 the mvp's MCP.run_tool runs the tool synchronously inside the protocol
 command handler. that blocks the ML protocol loop — fine for "shout",
@@ -685,6 +710,7 @@ Thy_Info-loading inside a headless session proves safe.
 
 symbol recoding at the client edge (decided 2026-07-22)
 -------------------------------------------------------
+id: D-2026-07-22-symbol-recoding-client-edge
 
 isabelle's convention at the ml/scala boundary is: ML speaks symbol
 notation (\<Longrightarrow>, \<open>...\<close>), scala speaks unicode
@@ -761,6 +787,7 @@ known limitations, accepted:
 
 theory loading and checking: two registries, one story
 --------------------------------------------------------
+id: D-undated-theory-loading-checking-registries-story
 
 fact: scala use_theories (PIDE documents) and ML Thy_Info populate
 *disjoint* registries. the plan embraces that:
@@ -789,6 +816,8 @@ fact: scala use_theories (PIDE documents) and ML Thy_Info populate
 
 mcp tools (new, structured)
 ---------------------------
+id: D-2026-07-13-mcp-tools
+superseded_by: D-2026-07-13-builtin-tools-activation-layer
 
 two tool kinds now exist:
 
@@ -1030,6 +1059,8 @@ tools:
 
 isar commands: mcp_tool / mcp_resource (no-ML user wiring)
 ------------------------------------------------------------
+id: D-undated-isar-commands-mcp-tool-mcp
+superseded_by: S-implementation-order-phase-3
 
 the happy path for users: expose existing prover machinery through the
 mcp server by writing *Isar*, not ML. MCP_Tools.thy declares two outer
@@ -1098,6 +1129,7 @@ plumbing:
 
 mcp resources (read-only exploration)
 ---------------------------------------
+id: D-2026-07-09-mcp-resources
 
 resources answer "what is there to look at" without side effects; every
 read maps to snapshot data (scala) or a read-only MCP.ir call (ML).
@@ -1328,6 +1360,7 @@ suppression).
 
 exploring the library universe (theories outside the heap)
 -----------------------------------------------------------
+id: D-2026-07-08-exploring-library-universe
 
 limitation (verified 2026-07-08 against the bundled distribution): the
 semantic layer only sees the base image. the HOL heap contains 119
@@ -1436,6 +1469,7 @@ the host agent's job (web tools), not the server's.
 
 documentation for the agent (manuals, requirements, recap)
 -----------------------------------------------------------
+id: D-2026-07-14-documentation-agent
 
 decided 2026-07-14 (CHANGELOG same date). three related concerns.
 the first (doc_list/doc_read) is scheduled — wave 5 in the
@@ -1577,6 +1611,7 @@ rests on a skipped proof says so.
 
 editing theories and persisting changes
 ----------------------------------------
+id: D-undated-editing-theories-persisting-changes
 
 policy: the server never writes theory files. editing and persistence
 belong to the mcp client — the host agent (claude code etc.) has its
@@ -1619,6 +1654,7 @@ see out of scope for its recommended shape.
 
 implementation order
 --------------------
+id: S-implementation-order-phase-2
 
 - [x] symlink mcp/Tools/HOL/ir.ML, write MCP_Repl.thy (ML_file + output
       wrappers + MCP.ir dispatcher + ML self-test: init from Main,
@@ -1924,6 +1960,7 @@ implementation order
 
 testing
 -------
+id: S-testing-phase-2
 
 every feature lands with cases in the pyramid from the "testing
 architecture" section (see its 2026-07-10 munit-migration update for
@@ -2143,6 +2180,7 @@ the finer-grained test inventories.
 
 acceptance criteria
 -------------------
+id: S-acceptance-criteria-phase-2
 
 an mcp client, talking only mcp, can: discover a theory via resources,
 read its command map, attach a repl mid-theory (or start from Main),
@@ -2169,6 +2207,7 @@ mvp regressions (test_mcp.py, MCP-Tools-Tests, mcp_test).
 
 out of scope (phase 3+)
 -----------------------
+id: S-out-scope
 
 - structured schemas for *user* ML tools (registry schema field)
 - server-side write-back into theory files (persistence is client-side
@@ -2229,6 +2268,7 @@ out of scope (phase 3+)
 ================================================================
 phase 3 — isar-level extensibility (tools as context entities)
 ================================================================
+id: S-phase-3-isar-level-extensibility
 
 status: SPEC (brainstormed 2026-07-11; implementation follows wave 3
 of phase 2). de-risking spikes run 2026-07-11, all resolved — see
@@ -2237,6 +2277,7 @@ of phase 2). de-risking spikes run 2026-07-11, all resolved — see
 
 spike results (2026-07-11)
 ---------------------------
+id: D-2026-07-11-spike-results
 
 eight behavioral assumptions checked before implementation; two
 forced corrections (marked CORRECTED/DEMOTED in their sections):
@@ -2290,6 +2331,7 @@ the ml-unit/bridge cases named in "testing" below.
 
 goal
 ----
+id: S-goal-phase-3
 
 make the mcp server user-extensible entirely from Isar: an isabelle
 user (or the agent itself, through repl steps) declares tools,
@@ -2304,6 +2346,8 @@ through antiquotations, and tests fail the build.
 
 the pivot: tools are context entities, not global state
 ---------------------------------------------------------
+id: D-2026-07-11-pivot-tools-context-entities-global
+supersedes: S-components-deliverables D-undated-isar-commands-mcp-tool-mcp
 
 phases 1–2 keep tools in a global Synchronized.var — fine for a demo
 registry, wrong for everything this phase wants: no positions, no
@@ -2369,6 +2413,7 @@ scoping model):
 
 visibility: registration vs activation, bundles, the agent context
 -------------------------------------------------------------------
+id: D-undated-visibility-registration-vs-activation-bundles
 
 two layers, because isabelle separates them too:
 
@@ -2439,6 +2484,9 @@ of that context, run against it by default.
 
 builtin tools in the activation layer (decided 2026-07-13)
 -----------------------------------------------------------
+id: D-2026-07-13-builtin-tools-activation-layer
+supersedes: D-2026-07-13-mcp-tools
+superseded_by: D-2026-07-28-builtins-ml-tools
 
 problem: the activation machinery above only reached ML-registered
 tools, while the bulk of the served surface (~25 builtins and
@@ -2533,6 +2581,8 @@ plan: plans/builtin_activation.
 
 builtins as ML tools (decided 2026-07-28)
 ------------------------------------------
+id: D-2026-07-28-builtins-ml-tools
+supersedes: D-2026-07-13-builtin-tools-activation-layer S-comes-almost-free
 
 problem: a repl builtin is specified THREE TIMES. repl_replay exists as
 a Builtin_Tool row in mcp_server.scala (description, json inputSchema,
@@ -2632,6 +2682,7 @@ plans: plans/param_schema_v2, plans/ml_builtin_migration.
 repl designations: put the tools theory in repl_init's own imports
 (decided 2026-08-05)
 --------------------------------------------------------------------
+id: D-2026-08-05-repl-designations-put-tools-theory
 
 this resolves the one question BLOCKING the move above.
 
@@ -2703,6 +2754,8 @@ step — see the plan).
 
 parameterised resources (decided 2026-07-28; enumeration PENDING)
 ------------------------------------------------------------------
+id: D-2026-07-28-parameterised-resources
+supersedes: S-explorability-antiquotations-documentation
 
 the driver is USER EXTENSIBILITY, not MCP.ir cleanup. \<open>mcp_resource\<close>
 today produces exactly one shape —
@@ -2837,6 +2890,8 @@ plannable now; the listing half waits on decision 3.
 
 the parameter spec language (params clause) and schema derivation
 ------------------------------------------------------------------
+id: D-2026-07-28-parameter-spec-language-schema-derivation
+supersedes: D-undated-isar-commands-mcp-tool-mcp
 
 phase 2 froze user-tool schemas to {input: string}. phase 3 adds a
 declarative params clause on mcp_tool — this is the tool
@@ -2969,6 +3024,7 @@ not code).
 
 under the sugar: the MCP_Combinators ML library
 ------------------------------------------------
+id: S-under-sugar-mcp-combinators-ml
 
 the isar clause is sugar over an ML combinator library, so ML users
 compose the same pieces the command uses (and the command's
@@ -2994,6 +3050,8 @@ implementation stays small):
 
 what comes almost for free (the payoff inventory)
 --------------------------------------------------
+id: S-comes-almost-free
+superseded_by: D-2026-07-28-builtins-ml-tools
 
 every `:: diag` command is wrappable today with one mcp_tool line;
 with params clauses they get real schemas. verified inventory:
@@ -3026,6 +3084,7 @@ parity becomes definitional rather than checked.
 
 snippet evaluation: ML_val and friends
 ----------------------------------------
+id: S-snippet-evaluation-ml-val-friends
 
 `mcp_tool ML_val (params src :: string ...)` works with zero new
 machinery — ML_val is a diagnostic command (Pure.thy: Isar_Cmd.ml_diag
@@ -3055,6 +3114,7 @@ type-error messages).
 
 proof methods and eisbach (agent-authored automation)
 ------------------------------------------------------
+id: S-proof-methods-eisbach
 
 methods act on proof states, so they are not directly tools; the
 mapping goes through repls:
@@ -3095,6 +3155,7 @@ mapping goes through repls:
 
 tests in isar: the mcp_test command
 -------------------------------------
+id: D-undated-tests-isar-mcp-test-command
 
 users specify tests next to registrations; tests are the contract
 that makes agent-authored tools trustworthy. keyword `mcp_test ::
@@ -3132,6 +3193,8 @@ thy_decl`:
 
 explorability, antiquotations, documentation
 ----------------------------------------------
+id: S-explorability-antiquotations-documentation
+superseded_by: D-2026-07-28-parameterised-resources
 
 the registry must be a first-class citizen the user can query from
 every level:
@@ -3168,6 +3231,7 @@ every level:
 
 the self-extension loop (why this all composes)
 -------------------------------------------------
+id: S-self-extension-loop
 
 the agent, mid-session, using only existing mcp surface plus this
 phase: repl_step "method my_solve = ..." (eisbach) -> repl_step
@@ -3183,6 +3247,7 @@ is the design working as intended.
 
 skills impact (assessed 2026-07-11)
 -------------------------------------
+id: D-2026-07-11-skills-impact
 
 - .claude/skills/isabelle-ml (topic index): ADD topics — bundles
   (Pure/Isar/bundle.ML; unbundle/include/including semantics);
@@ -3215,6 +3280,7 @@ skills impact (assessed 2026-07-11)
 
 implementation order
 --------------------
+id: S-implementation-order-phase-3
 
 - [x] registry pivot (done 2026-07-11): MCP_Tool on Generic_Data +
       Name_Space table (defs + active set), declare-through-
@@ -3389,6 +3455,7 @@ implementation order
 
 testing (mapped to the standard pyramid)
 ------------------------------------------
+id: S-testing-phase-3
 
 1. ml unit (MCP-Tools-Tests / MCP-HOL-Tests): registration declares
    into the name space with the binding position; visibility follows
@@ -3431,6 +3498,7 @@ refused.
 
 acceptance criteria
 -------------------
+id: S-acceptance-criteria-phase-3
 
 a user, writing only isar, can: register a diagnostic command with a
 real parameter schema (types, defaults, enums, per-param docs) and
@@ -3450,6 +3518,7 @@ a theory document. all four test layers green, including all phase
 
 out of scope (phase 4+)
 -----------------------
+id: S-out-scope-phase-3
 
 - schema derivation from arbitrary Scan/Parse parsers (opaque by
   construction; the params clause is the answer)
@@ -3468,6 +3537,7 @@ out of scope (phase 4+)
 
 contemplated: a rendering app for terms (not planned)
 -----------------------------------------------------
+id: D-undated-contemplated-rendering-app-terms
 
 the question that prompted this: "symbol recoding at the client edge"
 buys readable unicode (⟹, ‹...›, λ, ∀) in any terminal, but it cannot

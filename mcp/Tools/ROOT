@@ -3,6 +3,11 @@ session "MCP-Tools" = Pure +
   theories
     MCP_Tools
 
+session "MCP-Assumption" = Pure +
+  description "Checked citation of plan assumptions from theories (test infrastructure)"
+  theories
+    MCP_Assumption
+
 session "MCP-Tools-Tests" in "Tests" = "MCP-Tools" +
   description "Unit tests for the MCP tool registry and protocol payloads"
   theories

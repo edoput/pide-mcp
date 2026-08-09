@@ -1,0 +1,242 @@
+assumption registry (GENERATED -- do not edit)
+=============================================
+
+Regenerate:  python3 tools/gen_assumptions.py
+Check:       python3 tools/spec_gate.py
+
+One row per assumption DECLARED in a plan file. The ID is the address a
+test cites: munit cases put it in the test name, Isabelle theories cite it
+with the checked \<^assumption> antiquotation. An ID that no test cites is
+an unchecked assumption; the gate reports the count.
+
+ID                        LAYER       STATEMENT
+------------------------  ----------  ---------
+check_theory#T1           bridge      THE staleness case, the reason purge-first exists: load fixture (ok), edit the file on disk to break it, check_theory -> reports the NEW error; fix th
+check_theory#T2           bridge      checking a never-loaded filesystem theory works (purge no-op path).
+check_theory#T3           bridge      warnings vs errors policy is what step 1 pinned.
+check_theory#T4           e2e         full chain — the spec's end-to-end workflow.
+doc_list#D1               unstated    document_variants parsing: the option value is a ":"-separated variant list, each variant "name" or "name=tags" (see Document_Build in Pure). the doc 
+doc_list#Q1               unstated    where the catalog struct lives: mcp_session.scala already owns the startup structure/deps; a small Doc_Catalog object in mcp/src (own file or inside m
+doc_list#D2               unstated    Doc.contents needs ML_Settings (the examples section expands $ML_SOURCES): ML_Settings.init() at startup, once. if init proves awkward in the server c
+doc_list#T1               scala-unit  the join claim: every pdf manual in the bundled distribution resolves to a source session. assert at minimum the three naming shapes: "isar-ref" -> Is
+doc_list#T2               scala-unit  variant parsing (D1, revised 2026-07-14 during implementation): Sessions.Structure already parses document_variants into List[Document_Build.Document_
+doc_list#T3               scala-unit  plain entries: NEWS appears (release notes section) with a non-pdf path, rendered "plain", readable by doc_read.
+doc_list#T4               scala-unit  filtering is probe-safe: pattern "isar*" returns exactly the isar-ref entry; pattern "zzz*" returns an EMPTY listing with ok status, not an error.
+doc_list#T5               bridge      full chain: tools/list advertises the row above; tools/call doc_list over a live server returns a listing containing isar-ref with its source session 
+doc_read#D1               unstated    heading extraction mechanism. two candidates: (a) line-anchored scan: a heading command at the start of a line (^chapter/^section/... followed by whit
+doc_read#D2               unstated    heading commands with markers/attributes (chapter \<open>..\<close>, section \<^marker>...): the doc sources use plain forms today; (a) must at least 
+doc_read#D3               unstated    cap sizes (revised 2026-07-14 during implementation): there was nothing to reuse — no ?lines= parser and no window constant exist anywhere in the code
+doc_read#T1               scala-unit  toc claim: doc_read {"name": "isar-ref"} returns headings from ALL chapter files of Isar_Ref (assert > 40 rows, at least one row per .thy file, every 
+doc_read#T2               scala-unit  section extraction: a pinned section of a bundled manual (pick one at implementation time and hard-pin title + a contained phrase) returns text contai
+doc_read#T3               scala-unit  search-not-compile: an ambiguous `section` substring returns the candidate rows, not text; an unknown section and an unknown `name` are ok-status "no 
+doc_read#T4               scala-unit  plain entries: doc_read {"name": "NEWS", "lines": "1-40"} returns exactly that window; `section` on NEWS is an argument error; section+lines together 
+doc_read#T5               scala-unit  truncation (D3): a chapter-level section read truncates at the window with the "narrow" note.
+doc_read#T6               scala-unit  the D1a line-initial assumption (only if (a) ships): every heading command occurrence in the bundled Isar_Ref sources is found by the scanner — count(
+doc_read#T7               bridge      full chain: the lookup workflow over a live server — doc_list -> doc_read {"name": "isar-ref"} (toc) -> doc_read {name, section} (text).
+find_definition#T6        scala-unit  (full chain) is the same live probe, plus scala-unit dispatch/
+find_definition#T1        ml-unit     the kind coverage claim: one hit each for a const (rev), a type introduced by datatype (list), a class (ord), a fact (rev_rev_ident or append_assoc), 
+find_definition#T2        ml-unit     the type-space claim specifically (the spec calls it out): datatype/typedef/type_synonym/record all land their constructor in Sign.type_space.
+find_definition#T3        ml-unit     unknown name -> ok with "no definition found" (probe-safe, like the discovery tools), NOT a status error; a bad `kind` value IS an error (closed enum)
+find_definition#T4        ml-unit     context selection: a constant defined only in a repl's context is found with repl=..., not without; theory=<image thy> scopes to that theory's view.
+find_definition#T5        ml-unit     source-block enrichment: for a name defined in a record_theories theory, the reply contains the whole defining command text; for a heap theory without
+find_theorems#T1          scala-unit  query strings with quotes and underscores cross the wire intact — the encoding's job, but this is the tool where clients WILL send embedded double quo
+find_theorems#T2          ml-unit     a malformed query is a status error from read_query, not a crash.
+find_theorems#T3          ml-unit     results respect max_results and say so ("N found (M displayed)").
+find_theorems#T4          ml-unit     goal-based criteria (intro/solves) work mid-proof and error (or return empty — pin which) at theory level with no goal.
+find_theorems#T5          e2e         the description's quoting contract is livable without the python auto-quoter: a model following it verbatim gets results.
+find_theorems#T6          bridge      full chain latency: find_theorems is interactive-fast (unlike sledgehammer) — no async gymnastics needed, but it must not block behind one either.
+find_theorems#T7          ml-unit     theory-context search works from the global context: theory=Main (and the base-name spelling "Main" vs a qualified spelling) with name:conjI returns h
+find_theorems#T8          e2e         default context (neither repl nor theory) searches the base image: name:conjI hits with no repl in existence.
+find_theorems#T9          scala-unit  exclusivity: repl and theory together -> isError with a message naming both keys, nothing crosses the bridge.
+find_theorems#T10         ml-unit     goal-based criteria without a repl error cleanly and the message points at using a repl mid-proof.
+goto_definition#T1        bridge      entity markup at a use of a global constant (rev) yields its def_file/line pointing into List.thy.
+goto_definition#T2        bridge      local definitions resolve within the same file (def_file = Nav_Test.thy, correct line).
+goto_definition#T3        bridge      type constructors in annotations resolve (the spec's explicit claim: kind "type_name").
+goto_definition#T4        bridge      a position over plain text (whitespace, keyword) -> ok "no entity at position" (probe-safe); unloaded theory -> isError directing to load_theory/find_
+goto_definition#T5        scala-unit  exactly-one-locator enforcement (shared shape with repl_init_from_source T1).
+goto_definition#T6        e2e         full chain.
+list_sessions#D1          scala-unit  the session structure computed once at server startup (from the same -d dirs) enumerates every session with chapter, description, theories and source 
+list_sessions#T1          unstated    D1 (above).
+list_sessions#T2          scala-unit  glob filtering: "HOL-*" matches HOL-Library but not HOL; no pattern lists all; a non-matching pattern -> ok with "no sessions match" (not an error — d
+list_sessions#T3          scala-unit  heap_present is live: it reflects heaps built after server startup? — NO: Store lookup at call time vs structure at startup; decide (recompute store l
+list_sessions#T4          e2e         full chain.
+list_theories#T1          scala-unit  tier truthfulness — the wave's core honesty requirement: (a) every theory of the base image's ancestry reports "image" (HOL.Main under -s MCP-HOL); (b
+list_theories#T2          scala-unit  unknown session -> isError naming it; a session with zero theories (exists in the wild) -> ok, empty.
+list_theories#T3          scala-unit  counts match the spec's verified numbers on the bundled distribution (HOL-Library: 148) — guards against accidentally listing only ROOT-declared inste
+list_theories#T4          e2e         full chain.
+load_theory#T1            bridge      use_theories on a well-formed .thy under a master_dir loads it and reports ok; the theory is then visible to repl_init_from_source (snapshot exists).
+load_theory#T2            bridge      a broken theory yields isError with line-positioned messages, and the session survives (next load works).
+load_theory#T3            bridge      session-qualified names resolve without master_dir via the structure (spec: "load_theory resolves session-qualified names through the same structure")
+load_theory#T4            bridge      re-loading an unchanged theory is fast and ok (idempotency claim); re-loading after a disk edit picks up the new content (this is check_theory's core,
+load_theory#T5            scala-unit  scope auto-add fires once scope exists (wave 4); until then the stub is a recorded no-op.
+load_theory#T6            e2e         full chain.
+ml_builtin_migration#A1   ml-unit     a capture tool returns what its function PRINTED, and joins output with the error message on failure — the exec_text contract, at a form that returns 
+ml_builtin_migration#A2   ml-unit     capture's arg accessor is TOTAL for declared params after validate, and a lookup of an UNDECLARED name is an ML error naming it (a tool bug, distinct 
+ml_builtin_migration#A3   bridge      no markup leaks. a capture tool's text arrives at the client with no yxml, because run_tool_result does not strip and capture runs in plain print mode
+ml_builtin_migration#A4   bridge      ASYNC run_tool posts exactly once per id, including on interrupt of the worker, because the reply rides a dependent future.
+ml_builtin_migration#A5   ml-unit     BUFFER UNAMBIGUITY: run_tool's fork registers NO buffer, so MCP_Output.find_buffer resolves to the capture's own group.
+ml_builtin_migration#A6   bridge      CONCURRENCY is safe under the new execution model. the DISCRIMINATING test is not "slow does not block fast" (MCP.ir already proves that) but OUTPUT I
+ml_builtin_migration#A7   bridge      the DEFAULT designation sees MCP_Repl-declared tools (step 1).
+ml_builtin_migration#A8   scala-unit  EXPOSURE: "MCP_Repl.repl_show" exposes as the bare "repl_show" once the name leaves the builtin reserved set — the client-visible name must not become
+ml_builtin_migration#A9   ml-unit     INTERFACE PRESERVATION per wave: param names, json types, required sets, defaults, annotations identical to the deleted row.
+ml_builtin_migration#A10  bridge      the DRIFT GATE stays green mid-migration: mirror set == remaining table set at every wave boundary.
+ml_builtin_migration#A11  bridge      a moved tool is del'able AND uncallable (the SCOPED block: asymmetric callability dissolves for a tool whose logic is ML).
+ml_builtin_migration#A12  ml-unit     error TEXT change is client-visible and precise: a missing/unknown/ ill-typed argument names the parameter.
+ml_builtin_migration#A13  heap        OUTPUT ROUTING SURVIVES A FRESH PROCESS AGAINST THE SAVED HEAP. MCP_Output installs its Private_Output wrappers lazily and records \<open>wrapped\<clo
+readiness#A1              unstated    initialize does not depend on the backend.
+readiness#T1              scala-unit  drive Handler with a readiness thunk fixed at Not_Ready("building"); assert initialize returns the normal capabilities reply, and that the thunk's bac
+readiness#A2              unstated    tools/list answers while not ready, with the builtin table.
+readiness#T2              scala-unit  same fixed-Not_Ready handler; assert the reply lists exactly MCP_Server.all_builtin_names and no ml rows, and that ml_tools() was not called.
+readiness#A3              unstated    a prover-backed tools/call while not ready is an isError result, not a json-rpc error, and names the state.
+readiness#T3              scala-unit  assert isError true, the text contains the progress string, and the response carries the request id (a result, not an error object).
+readiness#A4              unstated    Failed is reported distinctly from Not_Ready.
+readiness#T4              scala-unit  readiness thunk at Failed("boom"); assert the tools/call text says failed and carries "boom".
+readiness#A5              unstated    the transition is observable without restarting the handler.
+readiness#T5              scala-unit  a mutable thunk flipped from Not_Ready to Ready(Fake_Backend) between two tools/call lines; assert the first is isError and the second succeeds. This 
+readiness#A6              unstated    isabelle://session reads in both states.
+readiness#T6              scala-unit  Not_Ready -> the status text, no backend call; Ready -> today's text.
+readiness#A7              unstated    the real server serves stdin before its session is up.
+readiness#T7              bridge      this is the acceptance claim and the one no unit test reaches — Fake_Backend has no build. Spawn `isabelle mcp_server` against a session whose heap ha
+readiness#A8              unstated    list_changed survives the reorder.
+readiness#T8              bridge      with the server Ready, declare a tool at runtime (MCP_Tool.declare, the existing tools_changed path) and assert a notifications/tools/list_changed lin
+readiness#A9              unstated    closing stdin during the build exits cleanly.
+readiness#T9              bridge      spawn against a cleaned heap, close stdin while still Not_Ready, assert the process exits without a stack trace and leaves no orphaned prover. Covers 
+readiness_catalog#A1      unstated    the extraction is behaviour-preserving.
+readiness_catalog#T1      unstated    the EXISTING suites, unchanged, after step 1. If any test needed editing, the move was not a move. This is the whole verification of step 1 and it is 
+readiness_catalog#A2      unstated    Ready no longer waits on the catalog.
+readiness_catalog#T2      bridge      must drive run()/serve(), not start() — start() is the compatibility shim and joins internally, so a test through it would pass whether or not the ord
+readiness_catalog#A3      unstated    a catalog-backed tool called before the catalog resolves waits and then answers — it does not error.
+readiness_catalog#T3      scala-unit  Handler with an unresolved catalog future fulfilled from another thread after a delay; assert doc_list returns the real listing, not an isError.
+readiness_catalog#A4      unstated    a catalog-backed tool answers while the prover is still Not_Ready.
+readiness_catalog#T4      scala-unit  readiness thunk fixed at Not_Ready, catalog future resolved; assert list_sessions succeeds and (control) a repl_* call still returns the Not_Ready isE
+readiness_catalog#A5      unstated    the scope tools stay prover-gated.
+readiness_catalog#T5      scala-unit  same fixture as T4; assert scope_show, scope_add, scope_remove and resources/list still return the Not_Ready isError with the catalog resolved. Guards
+readiness_catalog#A6      unstated    shutdown while the catalog future is in flight exits cleanly.
+readiness_catalog#T6      unstated    the sibling of plans/readiness' T9/A9 (still uncovered there). Closing stdin now has TWO background futures to outlive, not one. Same mechanism (Comma
+repl_back#T1              ml-unit     equivalence with truncate -1, including on the edge: back on a 0-step repl -> "out of range" error (nothing to revert), same message truncate gives.
+repl_back#T2              ml-unit     the description's trap is real and the reply proves the model can recover: step ok, step FAILS, back — the surviving step is the FIRST one (the failed
+repl_back#T3              e2e         full chain.
+repl_edit#T1              ml-unit     idx is a plain 0-based step index; negatives are NOT supported here (unlike truncate/fork/state) — out of range error.
+repl_edit#T2              ml-unit     failure atomicity: a failing edit leaves the old step and no staleness behind, claim released.
+repl_edit#T3              ml-unit     staleness bookkeeping matches the reply text: editing step i of n marks exactly n-i-1 steps stale (auto_replay off), and repl_replay clears them.
+repl_edit#T4              ml-unit     pin interaction: editing a pinned repl marks the pin stale (mark_pin_stale on mutation), so dependents rebase honestly.
+repl_edit#T5              e2e         full chain.
+repl_fork#T1              scala-unit  json number -> decimal string -> Value.parse_int survives the chain including negatives.
+repl_fork#T2              ml-unit     index semantics match repl_state's: 0 = base, -1 = latest, out of range -> status error "out of range (0..n)".
+repl_fork#T3              ml-unit     duplicate new_repl id errors and changes nothing; parent stays steppable (claim released).
+repl_fork#T4              ml-unit     the fork is independent: stepping the fork does not change the parent's steps, and vice versa below the fork point.
+repl_fork#T5              ml-unit     orphan rule: truncating the parent strictly below the fork point removes the fork (and its descendants); a busy fork blocks the truncate.
+repl_fork#T6              bridge      full chain.
+repl_init#T1              ml-unit     repeated keys preserve array order through encode/decode/get_all, and merge order matters only as Theory.begin_theory order (both orders succeed for i
+repl_init#T2              ml-unit     empty theories array is rejected by the ENGINE, not the dispatcher: keys/get pass (repl present, zero "theories" pairs is a valid encoding), Ir.init e
+repl_init#T3              ml-unit     duplicate id is an engine error and leaves the existing repl untouched.
+repl_init#T4              ml-unit     an unloaded/unknown theory name is a status error naming the theory (Thy_Info.get_theory raises; fork_run captures).
+repl_init#T5              ml-unit     image theories resolve under LONG names — "Main" may fail while "HOL.Main" succeeds depending on the heap; the description tells the model to check `t
+repl_init#T6              ml-unit     spec forms parse at the engine: "Thy:idx" only as a single spec (mixing -> error "Cannot mix theory and segment specs"), "pin@A" requires a fresh pin 
+repl_init#T7              scala-unit  the full chain: tools/call repl_init creates a repl visible to repl_list.
+repl_init_from_source#T1  unstated    (exactly-one-locator) and T2 (pure resolver coverage, both
+repl_init_from_source#T2  scala-unit  the pure resolver picks the documented command: offset -> containing command, pattern -> first occurrence, index -> nth.
+repl_init_from_source#T3  bridge      Ir.init_from_document requires the command to be executed and finished; an unexecuted command is a status error, not a hang.
+repl_init_from_source#T4  ml-unit     the segment fallback works for image theories with recorded segments (record_theories sessions, e.g. MCP-HOL's own theories), where no PIDE document e
+repl_init_from_source#T5  e2e         the created repl behaves like any other: visible in repl_list with origin "document ... cmd N" (or "Thy:idx"), steppable, removable.
+repl_list#I1              bridge      MCP_Session.ir exists and resolves the promise by id on MCP.ir_result, off the ML protocol loop (async).
+repl_list#I2              scala-unit  the argument encoding is the named yxml pair list on both sides, and the empty argument object encodes to something the dispatcher accepts for a zero-
+repl_list#I3              scala-unit  the builtin table is merged into tools/list and tools/call routes to the handler, with builtins keeping the bare name on collision.
+repl_list#I4              scala-unit  yxml stripping yields the plain listing text.
+repl_list#I5              ml-unit     output routing: Ir.repls reports via writeln (out), which the Private_Output wrappers capture into the request's buffer, and concurrent requests don't
+repl_list#T1              ml-unit     the dispatcher maps "repls" to Ir.repls () and rejects arguments. holds today for the positional signature (MCP_Repl.thy:130); must survive the I2 mig
+repl_list#T2              ml-unit     Ir.repls () on an empty repl table returns ok with an empty (or header-only) listing — not an error. the tool must be callable before any repl exists,
+repl_list#T3              ml-unit     a created repl appears in the listing with its id and step count, and a removed repl disappears — the listing reflects the live Synchronized table, no
+repl_list#T4              ml-unit     read-only honesty (backs the readOnlyHint refinement): calling repl_list changes nothing — repeating it yields the same output, and an interleaved rep
+repl_list#T5              bridge      the busy annotation is transient: a repl executing a step shows "busy [...]" and reverts after completion. relevant because the tool's description pro
+repl_merge#T1             ml-unit     both merge shapes: fork at the tip -> "appended as new step"; fork at an interior state -> "replaced step N" and the parent's subsequent steps go stal
+repl_merge#T2             ml-unit     non-sub-repl -> error, child claim released (the Exn.capture / release dance).
+repl_merge#T3             ml-unit     failure in the parent leaves both repls alive and unchanged (parent claim released via with_claim, child released in the Exn handler).
+repl_merge#T4             bridge      busy parent blocks merge without corrupting the child.
+repl_merge#T5             e2e         full chain.
+repl_pin#T1               ml-unit     mid-proof pin is refused with the engine's message.
+repl_pin#T2               ml-unit     the pin round trip: pin A, init B ["pin@A"] -> B's base state has A's definitions; B's origin prints "pin@A".
+repl_pin#T3               ml-unit     staleness: mutating A after the pin marks it stale (repls/show say "pinned [stale]"), and a NEW init from pin@A errors "Pin ... is stale" — existing d
+repl_pin#T4               unstated    version bump feeds rebase: after re-pin, dependent B's specs resolve to the new version (asserted via plans/repl_rebase T1; here just: pin twice -> ok
+repl_pin#T5               e2e         full chain.
+repl_rebase#T1            ml-unit     the whole point, end to end: A pinned, B init from pin@A + steps; A gains a definition and re-pins; rebase B -> steps stale; replay B -> a NEW step in
+repl_rebase#T2            ml-unit     stale pin blocks rebase with the resolve_spec error.
+repl_rebase#T3            ml-unit     non-From_Theory origins are refused (forks, document/segment repls).
+repl_rebase#T4            ml-unit     rebase does NOT replay (spec'd division of labor): after rebase, state -1 still shows the OLD final state until replay runs.
+repl_rebase#T5            e2e         full chain.
+repl_remove#T1            ml-unit     removing an unknown repl is a status error ("No REPL"), not ok — the tool is not idempotent by design; the model learns the id was wrong.
+repl_remove#T2            ml-unit     removal is recursive and reports every removed id.
+repl_remove#T3            ml-unit     pin dependents block removal.
+repl_remove#T4            bridge      a busy descendant blocks removal (nothing is half-removed).
+repl_remove#T5            e2e         full chain: the e2e create/step/remove loop (shared with plans/repl_init T7).
+repl_replay#T1            ml-unit     no stale steps -> ok no-op ("Replayed 0"), not an error.
+repl_replay#T2            ml-unit     replay executes exactly the stale suffix and re-chains states: after edit 0 + replay, the states are consistent (state -1 equals a from-scratch run of
+repl_replay#T3            ml-unit     failure mid-replay surfaces as a status error and leaves the already-replayed prefix clean, the failing-and-after steps stale — the repl is inspectabl
+repl_replay#T4            ml-unit     replay respects the repl's timeout per step (exec_text carries #timeout r).
+repl_replay#T5            e2e         full chain.
+repl_show#T1              ml-unit     the output carries what the description promises: origin, step indices starting at 0, stale marks.
+repl_show#T2              ml-unit     read-only honesty: no claim, repeatable, callable on a busy repl? — NO: the_repl on a Claimed entry errors ("is busy"). the description must not promi
+repl_show#T3              e2e         full chain.
+repl_state#T1             ml-unit     index arithmetic matches the description: on a repl with 2 steps, valid indices are 0, 1, 2 and -1..-3; -1 equals 2.
+repl_state#T2             ml-unit     reading a state does not disturb the repl: no claim taken, works while another repl is busy, repeatable.
+repl_state#T3             e2e         full chain.
+repl_step#T1              ml-unit     isar text survives the trip byte-clean: newlines, quotes, Isabelle symbols (\<Longrightarrow>), unicode. (encoding half already covered by the I2 roun
+repl_step#T2              ml-unit     failure atomicity — the description's central promise: a failing step leaves step count and last state unchanged, and the repl is NOT left claimed.
+repl_step#T3              ml-unit     a timed-out step behaves like a failed step.
+repl_step#T4              ml-unit     proof-state output: a successful step inside a proof prints the goal state (what the model steers by), not just "ok".
+repl_step#T5              bridge      async under load (I1): a slow step on repl A does not delay repl_list or a step on repl B.
+repl_step#T6              e2e         full chain.
+repl_text#T1              ml-unit     byte fidelity end to end: what repl_step sent is what repl_text returns — through the args encoding INBOUND and the yxml stripping OUTBOUND (I4). risk
+repl_text#T2              ml-unit     zero steps -> ok with empty output (not an error); the model probes freely.
+repl_text#T3              e2e         full chain: extract-and-splice.
+repl_timeout#T1           ml-unit     the set value actually bounds steps: secs=1 makes a sleeping step fail, 0 makes it run to completion.
+repl_timeout#T2           ml-unit     negative secs: pin the engine behavior while implementing — likely accepted and nonsensical; if so, reject scala-side (schema minimum: 0 is advisory o
+repl_timeout#T3           ml-unit     show reflects it ("timeout=5s" / "unlimited").
+repl_timeout#T4           bridge      full chain.
+repl_truncate#T1          ml-unit     index semantics: NOTE truncate's negative mapping (n+idx-1) differs from state/fork's (n+1+idx) — truncate -1 KEEPS n-1 steps, i.e. drops one. the des
+repl_truncate#T2          ml-unit     the kept prefix is untouched and usable (no re-execution, no staleness added).
+repl_truncate#T3          ml-unit     orphan removal (shared with plans/repl_fork T5): forks at discarded states disappear, forks at kept states survive.
+repl_truncate#T4          bridge      a busy orphan blocks the whole truncate (atomicity).
+repl_truncate#T5          ml-unit     pin goes stale (mark_pin_stale), so pin-dependents can't silently build on a state that no longer exists.
+repl_truncate#T6          e2e         full chain.
+repl_unpin#T1             ml-unit     unpinning without a pin is an error naming the repl.
+repl_unpin#T2             ml-unit     dependents block: pin A, init B [pin@A], unpin A -> error; remove B, unpin A -> ok; A's steps unchanged throughout.
+repl_unpin#T3             bridge      full chain.
+scope_add#T1              unstated    S1 (above).
+scope_add#T2              scala-unit  match counts in the reply are computed against the full known universe (image + filesystem via D1), tier included.
+scope_add#T3              scala-unit  idempotency: adding the same pattern twice -> same scope, no duplicate listing entries, second reply says already present (count still reported).
+scope_add#T4              bridge      load_theory auto-adds; unload removes (the deferred T5/T4 of wave 2).
+scope_add#T5              e2e         full chain.
+scope_remove#T1           scala-unit  add then remove restores the previous resources/list exactly; list_changed fires on both edges (S1's test extended).
+scope_remove#T2           scala-unit  literal semantics: add "HOL-Library.*", remove "HOL-Library.Multiset" -> reply notes the pattern was not in scope; the glob remains; Multiset still li
+scope_remove#T3           bridge      implicit members survive: with a loaded fixture in scope via load_theory, scope_remove of its name-as-pattern does not delist it (it is in scope by lo
+scope_remove#T4           e2e         full chain.
+scope_show#T1             scala-unit  the default scope on a fresh server is exactly the working set: no patterns, the startup theory listed as loaded, no repls.
+scope_show#T2             scala-unit  it reflects every mutation source: scope_add pattern, a created repl, a load_theory, a registered mcp_resource each show up; the corresponding removal
+scope_show#T3             scala-unit  agreement with resources/list: everything scope_show names is listed, nothing else is (S1 restated from the read side — one assertion loop over both o
+scope_show#T4             e2e         full chain.
+search_sources#T1         scala-unit  hits carry theory long names (not raw paths) and correct line numbers.
+search_sources#T2         scala-unit  the cap: a broad pattern truncates at max_results and says so; max_results is respected per call.
+search_sources#T3         scala-unit  session widening: default set misses HOL-Library; sessions: ["HOL-Library"] finds multiset hits — the discovery-bridge behavior in one test.
+search_sources#T4         scala-unit  invalid regex -> isError (pinned in step 1); a pattern with regex metacharacters intended literally is the caller's problem, per the description.
+search_sources#T5         scala-unit  performance sanity: "*" over the full distribution (1467+ files) completes in interactive time with the cap doing its job early (stop reading once max
+search_sources#T6         e2e         full chain.
+session_structure#A1      scala-unit  D1 (restated from plans/list_sessions, implementation moved here): load_structure + deps over the bundled distribution enumerates HOL and HOL-Library 
+session_structure#A2      scala-unit  startup cost: structure+deps computation stays within interactive startup budget (seconds) on the configured dirs.
+session_structure#A3      scala-unit  resolve_theory tier truthfulness and precedence: (a) HOL.Main -> image even though it also appears in the structure (image wins); (b) a load_theory'd 
+session_structure#A4      scala-unit  /commands for filesystem theories: command spans need outer syntax. VERIFY BY SPIKE before step 2: scala-side Outer_Syntax.parse_spans with the owning
+session_structure#A5      bridge      resource widening end to end (the testing-checklist rows): resources/read on isabelle://theory/HOL-Library.Multiset serves file content WITHOUT loadin
+session_structure#A6      bridge      load_theory session-qualified resolution: {"name": "HOL-Library.Multiset"} with no master_dir resolves and starts checking (assert resolution + node a
+session_structure#A7      scala-unit  nothing regresses for image names: the wave-2 image_theory tests (normalization matrix: base name, session-qualified, foreign qualifier, ambiguous) pa
+session_structure#A8      bridge      loaded tier follows the document (the spec's 2026-07-11 loaded-tier decision; the testing-checklist row added with it): with fixture theories A import
+sledgehammer#T1           scala-unit  optional-arg plumbing: omitted timeout_secs reaches the engine as 15. (dispatcher default already exercised by the I2 tests; here the SCALA omission p
+sledgehammer#T2           ml-unit     not mid-proof -> clean status error (Toplevel.proof_of raises), not a hang or empty reply.
+sledgehammer#T3           bridge      the happy path finds a proof for a trivial goal and the reply contains "Try this"; the suggested one-liner actually closes the goal via a subsequent s
+sledgehammer#T4           bridge      the sledgehammer_state handoff is concurrency-safe enough for our serialized dispatcher use — two CONCURRENT sledgehammer calls would race the shared 
+sledgehammer#T5           bridge      async under load (I1): repl_list / repl_step on another repl return while a 15s sledgehammer runs.
+sledgehammer#T6           e2e         full chain.
+unload_theory#T1          bridge      load -> unload -> the snapshot is gone: diagnostics/entities resources answer "filesystem tier", and re-loading works fresh.
+unload_theory#T2          scala-unit  unloading a never-loaded or image theory is a clean isError naming the reason (not found vs image tier).
+unload_theory#T3          bridge      repls initialized from the theory's document survive the unload with their captured states (Toplevel.state values are self-contained) — OR break; PIN 
+unload_theory#T4          unstated    scope drop (deferred to plans/scope_add, like load_theory T5).
+unload_theory#T5          e2e         full chain.

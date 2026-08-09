@@ -1,7 +1,7 @@
 repl_text — implementation plan
 ================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list). pass-through ("text" => keys
 ["repl"]); read-only. this is the EXTRACTION tool — step 5 of the
@@ -70,7 +70,7 @@ done when
 
 - T1..T3 green; tools/list shows the row above.
 
-status: done (2026-07-09). T1..T2 fully green, T3 partially (ml unit:
+landed: done (2026-07-09). T1..T2 fully green, T3 partially (ml unit:
 mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy -- T1 byte fidelity including a
 symbol, doubled inner spaces, and an embedded newline; T2 zero steps is
 ok with empty output; bridge: isabelle mcp_test -b, T1's scala-side

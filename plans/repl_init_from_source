@@ -1,7 +1,7 @@
 repl_init_from_source — implementation plan
 ============================================
 
-status: done (2026-07-16). T1..T5 green; see CHANGELOG 2026-07-16
+status: done (2026-07-16)
 "repl_init_from_source: command/segment-target attach lands".
 
 implementation notes (2026-07-16)

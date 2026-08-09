@@ -1,7 +1,7 @@
 repl_rebase — implementation plan
 ==================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list); pin lifecycle owned by
 plans/repl_pin. pass-through ("rebase" => keys ["repl"]).
@@ -73,7 +73,7 @@ done when
 
 - T1..T5 green; tools/list shows the row above.
 
-status: done (2026-07-09). T1..T5 green at all layers. T1 exercised the
+landed: done (2026-07-09). T1..T5 green at all layers. T1 exercised the
 whole point end to end: A gains a definition and re-pins, rebase B
 marks its steps stale, replay lets a NEW step in B use A's new
 definition, and a second rebase with nothing changed replies "already

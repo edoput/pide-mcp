@@ -1,7 +1,7 @@
 repl_back — implementation plan
 ================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list). pass-through ("back" => keys
 ["repl"]); pure sugar — ir.ML:664 defines back id = truncate id ~1.
@@ -66,7 +66,7 @@ done when
 
 - T1..T3 green; tools/list shows the row above.
 
-status: done (2026-07-09). T1..T3 green at all layers. T1 confirmed
+landed: done (2026-07-09). T1..T3 green at all layers. T1 confirmed
 repl_back is exactly truncate -1's sugar: 2 steps -> back -> 1 step ->
 back -> 0 steps -> back -> "out of range" error, the same message
 truncate gives on an empty repl. T2 confirmed the description's trap is

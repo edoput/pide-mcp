@@ -1,7 +1,7 @@
 list_sessions — implementation plan
 ====================================
 
-status: implemented (2026-07-12) — D1's infrastructure shared with
+status: done (2026-07-12)
 plans/session_structure (wave umbrella); tool implemented in backend +
 builtin registry, with tests passing
 

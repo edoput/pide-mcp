@@ -1,7 +1,7 @@
 scope_remove — implementation plan
 ===================================
 
-status: DONE (2026-07-13)
+status: done (2026-07-13)
 
 wave 4; references S1 (plans/scope_add). Implemented alongside
 scope_add in the same change (mcp_session.scala's scope_patterns

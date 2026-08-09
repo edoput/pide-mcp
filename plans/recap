@@ -1,7 +1,7 @@
 recap (generated Recap.thy) — implementation plan
 ==================================================
 
-status: planned (spec "recap theory", recorded 2026-07-14; this plan
+status: planned (2026-07-14)
 2026-07-14). NOT scheduled into a wave yet — it depends on nothing
 unbuilt (mcp_tool_command is DONE), so it can land whenever a wave
 opens for it.
@@ -34,7 +34,7 @@ if a later wave wants recap available in contexts that don't import it,
 promoting it to a builtin is a mechanical move (mirror row + table row,
 same ML entry point) — do not pre-pay for it.
 
-spec refinement: recap targets THEORIES, not repls
+spec refinement [OPEN]: recap targets THEORIES, not repls
 ---------------------------------------------------
 
 the spec's mechanism sketch says "session/repl id in". a repl id is

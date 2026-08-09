@@ -1,7 +1,7 @@
 find_theorems — implementation plan
 ====================================
 
-status: planned (2026-07-09)
+status: done (2026-07-12)
 
 references I1..I5 (plans/repl_list). pass-through ("find_theorems" =>
 keys ["repl", "query", "max_results"], default 40 in the dispatcher).
@@ -100,7 +100,7 @@ done when
   auto-quoting decision is recorded in the CHANGELOG when the tool
   lands.
 
-status: done (2026-07-10). T1..T6 green at all layers.
+landed: done (2026-07-10). T1..T6 green at all layers.
 
 T1 (scala unit) confirmed a query string with embedded double quotes and
 underscores ("\"_ + _ = _\"") crosses tools/call -> backend.ir intact,
@@ -143,7 +143,7 @@ ml unit: MCP_Repl_Tests.thy; scala unit: isabelle mcp_test; bridge
 context promotion (decided 2026-07-12): repl? | theory?
 --------------------------------------------------------
 
-status: implemented (2026-07-12) — the shipped tool above required repl;
+landed: implemented (2026-07-12) — the shipped tool above required repl;
 this section is the delta. spec: "proof search", promotion note.
 
 implementation notes: the default context (neither repl nor theory) is

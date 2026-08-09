@@ -1,7 +1,7 @@
 unload_theory — implementation plan
 ====================================
 
-status: planned (2026-07-09)
+status: done (2026-07-10)
 
 wave 2, scala-side (see plans/load_theory for the registry split).
 
@@ -81,7 +81,7 @@ done when
 - T1..T3, T5 green (T3 pinned in the description); tools/list shows
   the row above.
 
-status: done (2026-07-10)
+landed: done (2026-07-10)
 --------------------------
 
 T1 (bridge): load a fixture, unload it, load it fresh again -- all

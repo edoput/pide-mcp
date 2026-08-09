@@ -1,7 +1,7 @@
 repl_list — implementation plan (pilot)
 =======================================
 
-status: planned (2026-07-09)
+status: done (date not recorded)
 
 why this tool first: it is the minimal full-chain builtin — zero
 arguments, read-only, backed by an fname the ML dispatcher already
@@ -29,7 +29,7 @@ inputSchema   {"type": "object"}
               tool metadata". no properties, no required.)
 annotations   {"readOnlyHint": true, "idempotentHint": true,
                "openWorldHint": false}
-              spec refinement: the spec's annotation blanket puts all
+              spec refinement [OPEN]: the spec's annotation blanket puts all
               of repl_* on the mutating side. repl_list (like
               repl_show/repl_state/repl_text, planned later) only
               reads the repl table — Ir.repls is a Synchronized.value
