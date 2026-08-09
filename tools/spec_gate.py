@@ -175,7 +175,7 @@ say("\nrefinement queue")
 open_re = re.compile(r"spec refinement\s*\[(OPEN|FOLDED\s+\d{4}-\d{2}-\d{2})\]", re.I)
 bare_re = re.compile(r"spec refinement\s*:")
 bare, states = [], {"OPEN": 0, "FOLDED": 0}
-for f in plan_files + [SPEC]:
+for f in plan_files + [SPEC, PLANS / "README"]:
     if not f.exists():
         continue
     text = f.read_text()
