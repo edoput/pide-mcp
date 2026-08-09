@@ -1,7 +1,7 @@
 readiness_catalog — implementation plan
 ========================================
 
-status: PLANNED (2026-07-30)
+status: planned (2026-07-30)
 
 infrastructure plan (not a single tool): successor to plans/readiness.
 spec section "the catalog is the long pole, not the build".

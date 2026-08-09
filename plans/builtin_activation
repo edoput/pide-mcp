@@ -1,7 +1,7 @@
 builtin activation unification — implementation plan
 =====================================================
 
-status: DONE (decided 2026-07-13, implemented 2026-07-16; spec: phase 3
+status: done (2026-07-16)
 "builtin tools in the activation layer"; CHANGELOG same date). no new
 mcp tool — this is a feature plan (like mcp_tool_registry): the
 existing activation layer (attribute, bundles, tool_scope) grows to

@@ -1,7 +1,7 @@
 mcp_tool registry pivot — implementation plan
 ==============================================
 
-status: DONE (implemented 2026-07-11; spec: phase 3 "the pivot" +
+status: done (2026-07-11)
 "visibility" sections, implementation-order checkbox flipped; see
 CHANGELOG "registry pivot LANDED"). deviations from the plan as
 written: the two registries share an MCP_Registry ML functor (mirror

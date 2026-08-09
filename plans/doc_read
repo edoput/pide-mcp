@@ -1,7 +1,7 @@
 doc_read — implementation plan
 ==============================
 
-status: implemented and green (2026-07-14). spec section:
+status: done (2026-07-14)
 "documentation for the agent (manuals, requirements, recap)".
 wave 5 (documentation), pure scala — no MCP.ir, no ML. depends on
 doc_list's Doc_Catalog (plans/doc_list Q1); implement doc_list

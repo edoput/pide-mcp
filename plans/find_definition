@@ -1,7 +1,7 @@
 find_definition — implementation plan
 ======================================
 
-status: done (2026-07-13). T1..T6 green; see CHANGELOG 2026-07-13
+status: done (2026-07-13)
 "find_definition: NAME-based lookup lands".
 
 dependency note (2026-07-13): the context-selector interface this plan

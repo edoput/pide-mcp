@@ -1,7 +1,7 @@
 repl_remove — implementation plan
 ==================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list). pure pass-through; the dispatcher
 entry exists ("remove" => keys ["repl"]). semantics worth pinning:
@@ -75,7 +75,7 @@ done when
 - the destructiveHint refinement is folded into the spec (+CHANGELOG)
   or rejected and the annotations here flip.
 
-status: done (2026-07-09). T1..T5 green at all layers (ml unit:
+landed: done (2026-07-09). T1..T5 green at all layers (ml unit:
 mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy T1-T3; bridge: isabelle mcp_test -b
 T4, a real Future.fork'd busy descendant blocking removal; scala unit:
 isabelle mcp_test, builtin metadata + tools/call wiring; e2e:

@@ -1,7 +1,7 @@
 repl_list — implementation plan (pilot)
 =======================================
 
-status: planned (2026-07-09)
+status: done (date not recorded)
 
 why this tool first: it is the minimal full-chain builtin — zero
 arguments, read-only, backed by an fname the ML dispatcher already

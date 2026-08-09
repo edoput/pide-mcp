@@ -2,7 +2,7 @@ param schema v2 (enum, list, optional, ptyp variant, annotations,
 exactly_one) — implementation plan
 ==============================================================================
 
-status: DONE (all 7 steps landed 2026-07-30 through 2026-08-02; spec
+status: done (2026-08-02)
 phase-3 "the parameter spec language (params clause) and schema
 derivation" and "builtins as ML tools" implementation-order items
 updated with the landed shape; CHANGELOG "param schema v2: enum,

@@ -1,7 +1,7 @@
 repl_timeout — implementation plan
 ===================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list). pass-through ("timeout" => keys
 ["repl", "secs"]).
@@ -69,7 +69,7 @@ done when
 
 - T1..T4 green (T2 pinned); tools/list shows the row above.
 
-status: done (2026-07-09). T1..T4 green at all layers. T1 confirmed the
+landed: done (2026-07-09). T1..T4 green at all layers. T1 confirmed the
 set value bounds steps: secs=1 makes a 2s sleeping step time out
 ("timed out"), secs=0 lets the same step run to completion. T2's engine
 behavior is now pinned, with a genuine surprise on the RENDERING side:

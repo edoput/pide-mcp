@@ -1,7 +1,7 @@
 read_theory — resource-read tool mirror (DECIDED, planned)
 ==========================================================
 
-status: DECIDED 2026-07-15, planned (wave TBD). supersedes the
+status: planned (2026-07-15)
 2026-07-12 "flagged, not scheduled" note.
 spec: "resource-read tool mirrors" under "mcp resources".
 umbrella: plans/resource_tool_mirrors (assumptions, shared uri-handler

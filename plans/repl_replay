@@ -1,7 +1,7 @@
 repl_replay — implementation plan
 ==================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list). pass-through ("replay" => keys
 ["repl"]). companion to repl_edit and repl_rebase — the only way to
@@ -80,7 +80,7 @@ done when
 - T1..T5 green (T3's actual behavior pinned); tools/list shows the
   row above.
 
-status: done (2026-07-09). T1..T5 green at all layers. FIXTURE NOTE:
+landed: done (2026-07-09). T1..T5 green at all layers. FIXTURE NOTE:
 genuinely stale steps (as opposed to repl_edit's tail, which this
 server's auto_replay=true default always replays immediately -- see
 plans/repl_edit T3) cannot be produced via repl_edit here either, so

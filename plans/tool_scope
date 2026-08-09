@@ -1,7 +1,7 @@
 tool_scope_show / tool_scope_set / tool_scope_include — implementation plan
 ============================================================================
 
-status: DONE (implemented 2026-07-13; spec: phase 3 "visibility"
+status: done (2026-07-13)
 section, "agent context on the scala side" implementation-order item
 flipped; see CHANGELOG same date). UNBLOCKED 2026-07-13: the
 mcp_tool_registry dependency below landed 2026-07-11 (see

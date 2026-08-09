@@ -1,7 +1,7 @@
 readiness — implementation plan
 ================================
 
-status: IMPLEMENTED (2026-07-21)
+status: done (2026-07-21)
 
 infrastructure plan (not a single tool): the server's startup
 lifecycle. spec section "server startup and readiness".
@@ -110,7 +110,7 @@ Thy_Info listing (which needs a round trip):
     session: MCP-HOL
     dirs: ...
     theory: MCP_Repl
-    status: not ready (building MCP-HOL)
+    landed: not ready (building MCP-HOL)
 
 implementation steps
 --------------------

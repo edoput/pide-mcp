@@ -1,7 +1,7 @@
 repl_init — implementation plan
 ================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references the shared infrastructure assumptions I1..I5 stated in
 plans/repl_list. I2 (named-args encoding) is done (2026-07-09); the
@@ -146,7 +146,7 @@ done when
 - tools/list shows repl_init with the metadata block above.
 - the e2e create/step/remove loop passes against a live server.
 
-status: done (2026-07-09). T1..T5, T7 green at all layers (ml unit:
+landed: done (2026-07-09). T1..T5, T7 green at all layers (ml unit:
 mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy; scala unit + bridge: isabelle
 mcp_test -b; e2e: mcp/test/test_mcp.py). T6 partially green: the
 mixed-spec and pin@ error paths are ml-unit tested (they trip before

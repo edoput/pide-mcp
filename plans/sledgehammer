@@ -1,7 +1,7 @@
 sledgehammer — implementation plan
 ===================================
 
-status: planned (2026-07-09)
+status: done (2026-07-10)
 
 references I1..I5 (plans/repl_list). pass-through ("sledgehammer" =>
 keys ["repl", "timeout_secs"], default 15 already in the dispatcher).
@@ -114,7 +114,7 @@ done when
 - T1..T6 green (T4's decision recorded here + CHANGELOG); step 1's
   prover inventory recorded; tools/list shows the row above.
 
-status: done (2026-07-10). T1..T6 green at all layers.
+landed: done (2026-07-10). T1..T6 green at all layers.
 
 step 1 (prover inventory, confirmed via `isabelle components -l`):
 cvc5-1.2.0-1, spass-3.8ds-2, vampire-4.8, verit-2021.06.2-rmx-3,

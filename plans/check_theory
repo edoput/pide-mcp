@@ -1,7 +1,7 @@
 check_theory — implementation plan
 ===================================
 
-status: planned (2026-07-09)
+status: done (2026-07-10)
 
 wave 2, scala-side (see plans/load_theory). the RE-VERIFICATION tool —
 step 7 of the spec's proving workflow: the client spliced repl_text
@@ -90,7 +90,7 @@ done when
 - T1..T4 green; tools/list shows the row above; the warning policy
   is recorded (here + description).
 
-status: done (2026-07-10)
+landed: done (2026-07-10)
 --------------------------
 
 CORRECTION to this plan's central premise: "PURGE BEFORE RE-LOADING"

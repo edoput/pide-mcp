@@ -1,7 +1,7 @@
 recap (generated Recap.thy) — implementation plan
 ==================================================
 
-status: planned (spec "recap theory", recorded 2026-07-14; this plan
+status: planned (2026-07-14)
 2026-07-14). NOT scheduled into a wave yet — it depends on nothing
 unbuilt (mcp_tool_command is DONE), so it can land whenever a wave
 opens for it.

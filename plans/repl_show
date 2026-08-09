@@ -1,7 +1,7 @@
 repl_show — implementation plan
 ================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list). pass-through ("show" => keys
 ["repl"]); read-only.
@@ -70,7 +70,7 @@ done when
 
 - T1..T3 green; tools/list shows the row above.
 
-status: done (2026-07-09). T1..T3 green at all layers (ml unit:
+landed: done (2026-07-09). T1..T3 green at all layers (ml unit:
 mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy -- T1 step count/origin/indices,
 T2 read-only and repeatable; bridge: isabelle mcp_test -b T2's busy half,
 show on a REPL claimed by a Future.fork'd slow step errors "is busy",

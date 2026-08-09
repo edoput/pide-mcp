@@ -1,7 +1,7 @@
 repl_truncate — implementation plan
 ====================================
 
-status: planned (2026-07-09)
+status: done (2026-07-09)
 
 references I1..I5 (plans/repl_list). pass-through ("truncate" => keys
 ["repl", "idx"]). destructive; shares the orphan rule with repl_fork
@@ -80,7 +80,7 @@ done when
 - T1..T6 green; tools/list shows the row above; destructiveHint
   refinement folded into the spec or rejected (with repl_remove).
 
-status: done (2026-07-09). T1..T6 green at all layers. T1 confirmed the
+landed: done (2026-07-09). T1..T6 green at all layers. T1 confirmed the
 negative-index mapping (n+idx-1) differs from state/fork (n+1+idx):
 truncate -1 keeps n-1 steps, dropping exactly the last one; out-of-range
 idx (too low or too high) errors "out of range" without mutating

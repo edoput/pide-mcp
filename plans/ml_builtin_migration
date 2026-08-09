@@ -1,7 +1,7 @@
 builtins as ML tools — implementation plan
 ===========================================
 
-status: STEPS 1, 3, 4, 5 LANDED 2026-07-28 (step 3's D2 gap -- the
+status: partial (date not recorded)
 "(annotations ...) required for capture" registration-time check --
 closed 2026-08-05 once plans/param_schema_v2 landed the mechanism);
 S1 still undecided, waves 1..6 not started (decided 2026-07-28, commit 40d30471;
