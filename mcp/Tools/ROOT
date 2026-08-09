@@ -3,7 +3,7 @@ session "MCP-Tools" = Pure +
   theories
     MCP_Tools
 
-session "MCP-Assumption" = Pure +
+session "MCP-Assumption" in "Assumption" = Pure +
   description "Checked citation of plan assumptions from theories (test infrastructure)"
   theories
     MCP_Assumption
