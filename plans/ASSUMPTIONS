@@ -221,6 +221,16 @@ search_sources#T3         scala-unit  session widening: default set misses HOL-L
 search_sources#T4         scala-unit  invalid regex -> isError (pinned in step 1); a pattern with regex metacharacters intended literally is the caller's problem, per the description.
 search_sources#T5         scala-unit  performance sanity: "*" over the full distribution (1467+ files) completes in interactive time with the cap doing its job early (stop reading once max
 search_sources#T6         e2e         full chain.
+session_dirs_errors#A1    unstated    VERIFIED 2026-08-07. load_root_files + forcing Root_File.entries never enters the fold that throws on duplicates — the pre-scan can see a colliding se
+session_dirs_errors#T1    scala-unit  fixture with two colliding roots; assert check() returns a Collision naming both root paths and lines, and does not throw.
+session_dirs_errors#A2    unstated    VERIFIED 2026-08-07. Position.T on Session_Entry carries file + line, so the message can cite "…/ROOT line 5": Scratch line=5 file=.../alpha/ROOT Scra
+session_dirs_errors#T2    scala-unit  assert both are populated for a parsed Session_Entry.
+session_dirs_errors#A3    unstated    VERIFIED 2026-08-07. Provenance is knowable by subtracting the Nil baseline from a per-dir load, by Root_File.key: baseline roots (dirs = Nil): 933   
+session_dirs_errors#T3    scala-unit  a -d root colliding with a REGISTERED component session is classified From_Components, not From_Dir, and the message says "rename yours" rather than d
+session_dirs_errors#A4    unstated    MOOT (2026-08-07 policy decision) — was "dropping the later -d yields a structure that loads". check() no longer drops anything; it only diagnoses, an
+session_dirs_errors#A5    unstated    MOOT (2026-08-07 policy decision) — was "a degraded server is fully functional for the surviving roots". There is no degraded server. Replaced by the 
+session_dirs_errors#A6    heap        VERIFIED 2026-08-07 — the pre-scan does not materially slow startup. It forces a ROOT parse of the component baseline (933 roots with AFP registered) 
+session_dirs_errors#A7    unstated    MOOT (2026-08-07 policy decision) — was "fatal cases still produce a readable Failed" for the -s-names-a-dropped-session and Structure.make-still-thro
 session_structure#A1      scala-unit  D1 (restated from plans/list_sessions, implementation moved here): load_structure + deps over the bundled distribution enumerates HOL and HOL-Library 
 session_structure#A2      scala-unit  startup cost: structure+deps computation stays within interactive startup budget (seconds) on the configured dirs.
 session_structure#A3      scala-unit  resolve_theory tier truthfulness and precedence: (a) HOL.Main -> image even though it also appears in the structure (image wins); (b) a load_theory'd 
