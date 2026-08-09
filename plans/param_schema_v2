@@ -486,20 +486,20 @@ ASSUMPTIONS -> tests
 spec refinements (fold back into the spec at step 7)
 -----------------------------------------------------
 
-- spec refinement: an enum value substitutes VERBATIM into the format,
+- spec refinement [OPEN]: an enum value substitutes VERBATIM into the format,
   like args/fact and unlike string. the spec's quoting bullet does not
   say. rationale: enum items exist to name command keywords
   ("find_definition kind: const" breaks if quoted), and membership
   validation against a declaration-time set makes the splice safe where
   a free string would not be — which is why param also checks the items
   are token-safe.
-- spec refinement: "list of <scalar>" joins with a SINGLE SPACE after
+- spec refinement [OPEN]: "list of <scalar>" joins with a SINGLE SPACE after
   per-element type-directed quoting. the spec says "space- or
   comma-joined per an optional join spec"; the join spec is DEFERRED
   (no declared user), one join rule ships.
-- spec refinement: a List_Of param takes no "= default". a list-literal
+- spec refinement [OPEN]: a List_Of param takes no "= default". a list-literal
   default syntax is not specced; rejected at registration, DEFERRED.
-- spec refinement: an absent (optional) param substitutes the EMPTY
+- spec refinement [OPEN]: an absent (optional) param substitutes the EMPTY
   STRING in the format. the spec says "omitted = absent from the
   format" / "omitted optionals erase their segment", which presupposes
   segment machinery that does not exist — $flag?text is specced and
@@ -508,18 +508,18 @@ spec refinements (fold back into the spec at step 7)
   ml_run/capture-form tools with no format clause at all, so nothing is
   blocked. check_format already tolerates an unused non-required param,
   so no change there.
-- spec refinement: validate takes the constraint list as an argument
+- spec refinement [OPEN]: validate takes the constraint list as an argument
   rather than the constraints being checked by a sibling function the
   callers could forget. the existing three-argument call sites in
   MCP_Tools_Tests.thy (:274, :278, :287, :289, :291, :294-297) update
   with it.
-- spec refinement: the isar (annotations ...) clause takes ONE of the
+- spec refinement [OPEN]: the isar (annotations ...) clause takes ONE of the
   five bucket names. arbitrary combinations of the four hints stay
   reachable from ML only (the combinators take an annotations record) —
   the spec's "a genuinely new combination needs no spec edit" is a
   statement about the ML constants, and giving isar a per-hint syntax
   before a user needs it would be a second surface.
-- spec refinement: the exactly_one sentence is generated ML-side at
+- spec refinement [OPEN]: the exactly_one sentence is generated ML-side at
   tool construction, so nothing about constraints crosses the wire.
 
 done when

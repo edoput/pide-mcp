@@ -23,7 +23,7 @@ inputSchema   {"type": "object",
                "required": ["repl"]}
 annotations   {"readOnlyHint": false, "idempotentHint": false,
                "destructiveHint": true, "openWorldHint": false}
-              spec refinement: the spec's blanket only separates
+              spec refinement [OPEN]: the spec's blanket only separates
               read-only from mutating; repl_remove (and repl_truncate)
               destroy state irrecoverably, so they honestly carry
               destructiveHint true. fold into the spec's "advertised

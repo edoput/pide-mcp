@@ -57,7 +57,7 @@ batch related assertions into one ml() call.
 plans refine the spec where per-tool honesty demands it (e.g. the
 spec's coarse "repl_* is mutating" annotation blanket vs the actually
 read-only repl_list); every such refinement is flagged with
-"spec refinement:" so it can be folded back into the spec.
+"spec refinement [OPEN]:" so it can be folded back into the spec.
 
 each plan has a parallel agent evaluation under evals/ (same name:
 evals/repl_step for plans/repl_step). plans verify the mechanism;
