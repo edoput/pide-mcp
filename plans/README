@@ -176,6 +176,22 @@ server lifecycle (infrastructure, no tool of its own):
         question: measured, the build is never the slow part for an
         installed user. decided 2026-07-30, spec "the catalog is the
         long pole, not the build")
+  - [x] session_dirs_errors    plans/session_dirs_errors  (BUG FIX, no
+        spec/changelog: a bad -d set — duplicate session name across
+        roots, bad dir, ROOT syntax error — used to propagate out of
+        load_structure into an opaque Failed, so ONE colliding root
+        made every other root unreachable, catalog-only tools
+        included. FAIL-FAST POLICY (decided 2026-08-07, supersedes the
+        plan's original "degrade, do not fail" draft): MCP_Config.check
+        pre-flights every -d over Sessions.load_root_files, attributing
+        each session name to a ROOT file + line without entering the
+        fold that throws; on any issue MCP_Server.run exits the process
+        cleanly via error(...) before Future.fork/serve() ever run --
+        an actionable multi-line message on stderr, nothing on stdout,
+        nonzero exit. No degrading, no isabelle://session/list_sessions
+        surfacing. Reproducer: mcp/test/repro_duplicate_session.py
+        (rewritten to assert the exit, not a Failed status); analysis:
+        ROOTS_ANALYSIS.md. Prereq: the Exn.message YXML decode fix.)
 
 phase 3 — the ML tool surface (decided 2026-07-28, spec commit
   40d30471). two feature plans, in this order; the second depends on

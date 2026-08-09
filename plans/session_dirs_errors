@@ -1,0 +1,504 @@
+session_dirs_errors — implementation plan
+==========================================
+
+status: IMPLEMENTED and GREEN (2026-08-07)
+
+infrastructure plan (not a single tool): how the server reacts to a
+BAD -d SESSION DIRECTORY SET. bug fix — no spec section, no changelog
+entry (the spec's "server startup and readiness" already owns the
+Failed state; this plan does not touch that contract at all — a `-d`
+config error is now caught and reported BEFORE readiness has any state
+to be in; see "the exit path" below for why the two are disjoint).
+
+prerequisite: the Exn.message YXML decode fix (ROOTS_ANALYSIS.md
+"Finding 2", mcp_server.scala:1642-1643) landed first. It still matters
+for this plan's own Bad_Dir/Root_Error details (see A2/the exit path),
+even though the flagship Collision message no longer needs it (built
+directly from Position.Line/File.get, not from Exn.message).
+
+the defect
+----------
+
+Reproducer: mcp/test/repro_duplicate_session.py. Two projects, each
+with its own ROOT, colliding on exactly one session name:
+
+    proj_alpha/ROOT   defines sessions  Alpha   and  Scratch
+    proj_beta/ROOT    defines sessions  Beta    and  Scratch
+
+Observed against the real server:
+
+    CONTROL: -d proj_alpha
+      isabelle://session status: ready
+      list_sessions .... ok        | Alpha  Unsorted  121
+
+    REPRO: -d proj_alpha  -d proj_beta
+      isabelle://session status: failed (Duplicate session "Scratch"...)
+      list_sessions .... isError
+
+Alpha and Beta are unrelated, validly named, independently developed.
+Neither is reachable. Every tool fails — INCLUDING catalog-only tools
+like list_sessions that need nothing from the prover.
+
+Mechanism: Sessions.load_structure builds one global session graph over
+every -d directory and errors on the first duplicate name
+(Pure/Build/sessions.scala:871, the info_graph fold). That error is not
+attributed to a root and not recoverable; it propagates out of
+MCP_Session.build (mcp_session.scala:314, via Build.build) into
+Failed(...), and the server serves nothing for the rest of its life.
+
+This is a CONFIGURATION error — the user wrote a `-d` set that cannot
+be loaded — but it is reported as if the build broke. The README tells
+users to run exactly this configuration (README:65, "-d DIR …
+repeatable"), so it is reachable by following the documentation.
+
+the class of error, not one error
+----------------------------------
+
+Duplicate session names are one member. All of these are user -d
+configuration mistakes, all currently produce the same opaque Failed,
+and all are verified reachable (measured 2026-08-07 via `isabelle
+build -n -d ...`):
+
+  duplicate session name across roots
+    *** Duplicate session "Form_A" (line 1 of ".../formC/ROOT")
+        (line 1 of ".../formA/ROOT")
+
+  duplicate session name against an ALREADY-REGISTERED component
+    *** Duplicate session "Alpha_Beta_Pruning"
+        (line 1 of ".../user/ROOT")
+        (line 3 of ".../afp-2025-06-04/thys/Alpha_Beta_Pruning/ROOT")
+
+  -d directory that is not a session directory
+    *** Bad session root directory: ".../does_not_exist"
+    ***   (missing "ROOT" or "ROOTS")
+
+  ROOT syntax error
+    *** [line 2 of ".../bad/ROOT"] error: bad input
+
+  (also in the class, not separately reproduced here: "Duplicate use of
+  directory", "Duplicate global theory", "Bad parent session", "Cyclic
+  session dependency" — same fold, same opaque path.)
+
+The component-collision case matters because the REMEDY DIFFERS. Two
+-d roots colliding: drop or rename either. A -d root colliding with a
+registered AFP/distribution session: the user must rename theirs — AFP
+is shared infrastructure and is not the server's to drop. A message
+that does not distinguish these is not actionable.
+
+backing mechanism
+-----------------
+
+Sessions.load_structure decomposes into two public halves
+(sessions.scala:33-42):
+
+    val roots = Sessions.load_root_files(dirs = dirs, select_dirs = ...)
+    Sessions.Structure.make(options, augment_options, roots = roots, ...)
+
+and Root_File carries the parse LAZILY (sessions.scala:1290-1294):
+
+    sealed case class Root_File(path: Path, select: Boolean) {
+      val key: JFile = path.canonical_file
+      def dir: Path = path.dir
+      lazy val entries: List[Entry] = Parsers.parse_root(path)
+    }
+
+So a pre-flight pass can discover roots, force `entries` per root
+inside Exn.capture, and attribute every name to a specific ROOT file
+and position — all WITHOUT entering the global fold that throws. That
+is the whole mechanism: the information needed for an actionable
+message already exists one layer below the error.
+
+  new: MCP_Config (mcp/src/mcp_config.scala), pure scala, no prover
+
+    sealed abstract class Issue { def message: String }
+    case class Bad_Dir(dir: Path, detail: String) extends Issue
+    case class Root_Error(root: Path, detail: String) extends Issue
+    case class Collision(name: String, sites: List[Site]) extends Issue
+    case class Site(root: Path, pos: Position.T, provenance: Provenance)
+
+    sealed abstract class Provenance     // which -d contributed this root,
+    case class  From_Dir(dir: Path)      // or the component/distribution
+    case object From_Components          // baseline (not ours to drop)
+
+    def check(session_dirs: List[Path]): List[Issue]   // empty = fine
+    def render(issues: List[Issue]): String             // the message
+
+check() procedure (as shipped — see "deviations from the plan" below
+for the two corrections found during implementation):
+
+ 1. if session_dirs is empty, return Nil immediately — nothing of the
+    caller's to check, and this also skips the baseline force entirely
+    on the default no--d launch (see A6).
+ 2. partition session_dirs by Sessions.is_session_dir; every failure
+    becomes Bad_Dir. Test each dir INDEPENDENTLY — Sessions.
+    check_session_dir throws on the first, so a user with two typos
+    would otherwise learn about one. Report all.
+ 3. baseline: Sessions.load_root_files(dirs = Nil) — the component
+    path (distribution ROOTS, registered AFP, the mcp component).
+    Force entries ONCE; index session name -> Site(From_Components). A
+    baseline ROOT that itself fails to parse is a component/
+    distribution problem, not the user's -d set, and is skipped rather
+    than turned into an Issue.
+ 4. per surviving -d dir: Sessions.load_root_files(dirs = List(dir)),
+    minus the baseline keys, forcing entries inside Exn.capture. A
+    throw becomes Root_Error attributed to that root path (or to the
+    -d directory itself, if load_root_files throws before any
+    Root_File is even produced — e.g. a ROOTS catalog naming a bad
+    subdirectory). Running per-dir (rather than once over all dirs) is
+    what makes Provenance knowable — load_root_files does not record
+    which -d a root arrived through, and ROOTS catalogs make it
+    non-obvious.
+
+    COST TRAP — do not write the naive version. Sessions.directories
+    prepends Components.directories() on EVERY call, so
+    load_root_files(dirs = List(d)) returns the whole baseline plus
+    d's roots, every time. Measured with AFP registered (2026-08-07):
+    baseline = 933 roots, one -d = 934. Discovery is cheap (file
+    existence + ROOTS text), but forcing `entries` is not — so:
+    force the baseline ONCE, and per -d force entries only on the
+    post-subtraction remainder (subtract by Root_File.key, the
+    canonical JFile — verified to isolate exactly the contributed
+    root). Written naively this is N+1 parses of ~933 roots.
+ 5. group all Sites by session name; a name with sites in >1 distinct
+    root file is a Collision, PROVIDED at least one site is From_Dir.
+    Two baseline/component roots colliding only with each other (a
+    broken install, not a -d mistake) must not be attributed to a -d
+    the caller didn't even pass — found and fixed during review, see
+    "deviations from the plan".
+
+policy: fail fast, do not degrade
+----------------------------------
+
+DECIDED 2026-08-07 (see "open questions" for how this supersedes the
+"degrade, do not fail" policy this plan originally proposed). A `-d`
+configuration error EXITS the process cleanly at startup. It does not
+serve, degraded or otherwise.
+
+Rationale: a configuration error is knowable before any expensive
+work (before Build.build, before start_session — check() is pure scala
+over ROOT text), and it is unambiguously the USER's to fix, not the
+server's to route around. It is also hit at setup time, before a
+client has completed a handshake — there is no request in flight to
+answer gracefully, no session an agent is mid-conversation with. A
+server that comes up anyway, silently missing a project because one
+`-d` collided with another, trades a loud and immediate failure for a
+quiet and open-ended one: the agent (or the human who configured the
+client) has to notice the gap on their own, later, with less context
+than they have right now at launch. Failing fast with a message an
+operator can find in their own terminal beats that.
+
+This also sidesteps the entire "degrade, do not fail" section this
+plan originally worked through — first-vs-last -d precedence, per-
+directory drop granularity, the convergence re-check after dropping a
+root, the two residually-fatal cases. None of that machinery is
+needed: check() only diagnoses, it never decides what to keep.
+
+the exit path
+-------------
+
+MCP_Server.run calls MCP_Config.check(session_dirs) SYNCHRONOUSLY, as
+the very first thing — before the Future.fork that runs build/boot,
+and before serve() is called. Nothing is served on a bad config:
+
+    val config_issues = MCP_Config.check(session_dirs)
+    if (config_issues.nonEmpty) error(MCP_Config.render(config_issues))
+
+`error(...)` raises an ERROR exception that Command_Line.tool (the
+isabelle launcher `isabelle mcp_server` runs through) catches: it
+prints each line of the message prefixed with "***" to STDERR and
+exits the process nonzero, with no Scala stack trace. Verified against
+the real launcher (2026-08-07) — see "the message, as rendered" below
+for the exact captured output, including the "***" framing and the
+nonzero exit code. stdout is never touched; it is the JSON-RPC
+channel, and non-JSON there would corrupt a client's parse.
+
+Build/boot failures (a genuinely broken heap, a theory that won't
+compile) are a DIFFERENT class of problem, reachable only after this
+check passes, and are UNCHANGED: they still go through Future.fork
+and the existing Failed readiness path (mcp_server.scala, the
+`case Exn.Exn(exn) => cell.change(... Failed(plain_message(exn)))`
+branch). This plan does not touch that branch at all.
+
+the message, as rendered
+-------------------------
+
+Actionable = what, where, what to do. Captured verbatim from a real
+`isabelle mcp_server -d proj_alpha -d proj_beta` run against the
+two-project collision fixture (2026-08-07), exactly as it appears on
+stderr with the launcher's own "***" framing:
+
+    *** config error in -d session directories:
+    ***
+    ***   duplicate session name "Scratch"
+    ***     declared at /home/u/proj_alpha/ROOT line 6
+    ***           and at /home/u/proj_beta/ROOT line 6
+    ***     session names must be unique across every -d directory.
+    ***     rename one, or drop one -d.
+    ***
+    *** the server cannot start until this is fixed.
+
+exit code 2, stdout empty. Multi-line ERROR messages keep their line
+structure through the launcher exactly as ROOTS_ANALYSIS.md's own
+"Bad session root directory" example promised — confirmed, not just
+assumed.
+
+For the component-collision case, MCP_Config.Collision.message renders
+a different tail instead of "rename one, or drop one -d" — it lists
+only the caller's own From_Dir sites under "declared at", then:
+
+        collides with a session already registered by a component:
+          .../afp-2025-06-04/thys/Alpha_Beta_Pruning/ROOT line 3
+        components are not yours to drop -- rename your session instead.
+
+surfacing
+---------
+
+stderr only, via the exit path above — nothing else. The
+isabelle://session `config errors:` section and the list_sessions
+footer this plan originally proposed are WITHDRAWN along with the
+degrade policy: there is no live server for either resource to belong
+to when a config error fires, since the process has already exited by
+the time serve() would otherwise start reading stdin. progress.echo
+was never used for this path either — MCP_Server.run raises before
+`progress` does anything relevant, and the launcher's own stderr
+framing is the entire surface.
+
+NOT used: MCP logging (deprecated in the 2026-07-28 revision alongside
+roots and sampling), and no new notification — there is no notification
+channel until a client has connected, and a client can't connect to a
+process that has already exited.
+
+implementation steps
+--------------------
+
+ 0. PREREQUISITE (landed): decode Exn.message before it reaches
+    Failed. Still needed for Bad_Dir/Root_Error `detail` strings, which
+    are captured from Sessions' own Exn.message and decoded the same
+    way (MCP_Server.decode_message) before being embedded — even
+    though the flagship Collision message never goes through Exn.message
+    at all (built directly from Position.Line/File.get).
+
+ 1. MCP_Config: Issue/Site/Provenance ADT + check() + render(). Pure,
+    no prover, no MCP_Session dependency. Fully unit-testable over
+    temp-dir fixtures.
+
+ 2. Wire into the startup path: MCP_Server.run calls check() first,
+    synchronously, before the Future.fork; on any issue, error(render(
+    issues)) and the process exits via Command_Line.tool's own catch.
+    No MCP_Session/MCP_Config coupling needed — check() runs on the raw
+    session_dirs the CLI already parsed, before MCP_Session.build ever
+    sees them.
+
+ 3. (WITHDRAWN — see "surfacing" above; no live server, nothing to
+    surface into.)
+
+ 4. Widen check() to the remaining members of the class (duplicate
+    directory, duplicate global theory, bad parent, cycles) as far as
+    they are detectable pre-fold; whatever is not stays covered by the
+    unchanged build/boot Failed path, which was already a strict
+    improvement over the pre-plan opaque propagation and remains one.
+    NOT done in this pass — the plan's four Issue-producing cases
+    (duplicate name x2 provenances via Collision, bad dir via Bad_Dir,
+    and a syntax-broken ROOT file via Root_Error — all four now VERIFIED
+    by a dedicated unit test each) cover the reproducer and the
+    prompt's test list; the remaining members (Bad parent session,
+    Cyclic session dependency, Duplicate global theory) still fall
+    through to the unchanged build/boot Failed path today, same as
+    before this plan.
+
+deviations from the plan
+-------------------------
+
+Two corrections made during implementation, neither changing the
+shape of check()/render() but both changing what counts as a
+Collision:
+
+  - baseline-only collisions are now excluded (procedure step 5
+    above). The plan as first written would have reported ANY name
+    spanning >1 root file, including two baseline/component roots
+    colliding with only each other — misattributing a broken install
+    to a -d the caller may not have even passed. Fixed by requiring at
+    least one From_Dir site. (This environment's baseline has no such
+    collision, so it is a defensive fix, not one this run's tests
+    could exercise directly; T2 and the dedicated regression test both
+    stand as evidence the fix does not introduce false positives on a
+    clean run.)
+
+  - check(Nil) short-circuits before touching the baseline at all
+    (procedure step 1). The default `isabelle mcp_server` launch
+    passes no -d, and there is nothing of the caller's to check in
+    that case — no reason to pay the baseline-force cost (T6 below) on
+    every ordinary launch.
+
+  - Bad_Dir.message renders `dir.expand.toString`, not `dir.implode` —
+    matching Sessions.check_session_dir's own wording for "missing
+    ROOT or ROOTS" (dir.expand.toString), so a relative -d echoes back
+    expanded rather than relative, and the message reads the same as
+    the one a bare `isabelle build` would already show for the same
+    mistake.
+
+assumptions and tests
+---------------------
+
+A1. VERIFIED 2026-08-07. load_root_files + forcing Root_File.entries
+    never enters the fold that throws on duplicates — the pre-scan can
+    see a colliding set that load_structure refuses. Measured, same
+    process, same dirs:
+
+      forcing entries on the colliding set
+        .../alpha/ROOT -> Alpha, Scratch
+        .../beta/ROOT  -> Beta, Scratch      (no throw)
+      load_structure over those same dirs
+        throws: Duplicate session "Scratch" ...
+
+    This is the plan's foundation and it is now fact, not inference.
+    T1 [scala unit]: fixture with two colliding roots; assert check()
+    returns a Collision naming both root paths and lines, and does not
+    throw.
+
+A2. VERIFIED 2026-08-07. Position.T on Session_Entry carries file +
+    line, so the message can cite "…/ROOT line 5":
+
+      Scratch line=5 file=.../alpha/ROOT
+      Scratch line=5 file=.../beta/ROOT
+
+    Note Position.File.get returns String (not Option) — the message
+    renderer must handle the empty-string case, not a None case.
+    T2 [scala unit]: assert both are populated for a parsed
+    Session_Entry.
+
+A3. VERIFIED 2026-08-07. Provenance is knowable by subtracting the Nil
+    baseline from a per-dir load, by Root_File.key:
+
+      baseline roots (dirs = Nil): 933      (AFP registered)
+      with one -d                : 934
+      delta by key               : 1 -> .../alpha/ROOT
+
+    Exactly the contributed root, correctly isolated. See the COST
+    TRAP under the mechanism for what those 933 mean for the loop.
+    T3 [scala unit]: a -d root colliding with a REGISTERED component
+    session is classified From_Components, not From_Dir, and the
+    message says "rename yours" rather than dropping the component.
+    (The collision itself was reproduced by hand 2026-08-07 against
+    the registered AFP: a user session named Alpha_Beta_Pruning. The
+    shipped test uses "HOL" instead, deliberately — HOL is always in
+    the baseline via the distribution's own ROOTS, unlike an AFP
+    session name, so the test does not depend on AFP being registered
+    in whatever environment runs it.)
+
+    T3b [scala unit, added on review]: a ROOT file that EXISTS (so it
+    is not a Bad_Dir) but fails to parse produces a Root_Error naming
+    that ROOT path, exercising the second Exn.capture layer (forcing
+    Root_File.entries) and the decode_message path Bad_Dir/Root_Error
+    details travel. Not covered by T1/T2/T3, which only exercise
+    Collision and Bad_Dir; this was a gap until review caught it.
+
+A4. MOOT (2026-08-07 policy decision) — was "dropping the later -d
+    yields a structure that loads". check() no longer drops anything;
+    it only diagnoses, and the process exits instead of ever calling
+    Structure.make over a filtered root list. No replacement test.
+
+A5. MOOT (2026-08-07 policy decision) — was "a degraded server is
+    fully functional for the surviving roots". There is no degraded
+    server. Replaced by the exit-path claims below.
+
+A5'. VERIFIED 2026-08-07. A colliding -d set exits the process cleanly
+    before serve() ever runs, and a valid multi-root config still comes
+    up and serves. T5 [e2e, mcp/test/repro_duplicate_session.py,
+    rewritten]: CONTROL (-d proj_alpha) reaches `ready` and
+    list_sessions shows Alpha, exactly as before; REPRO (-d proj_alpha
+    -d proj_beta) now asserts exit code != 0, the rendered message on
+    stderr naming both ROOT paths, and stdout strictly empty (no
+    JSON-RPC reply was ever served — there was nothing to reply to).
+    Observed directly against the built launcher (2026-08-07):
+
+      $ isabelle mcp_server -s MCP-Tools -d proj_alpha -d proj_beta
+      exit code: 2
+      stdout: (empty)
+      stderr: *** config error in -d session directories: ...
+
+    matching Sessions.check_session_dir's own "Bad session root
+    directory" precedent cited in the task brief — multi-line ERROR
+    messages keep their "***"-per-line structure through
+    Command_Line.tool, confirmed rather than assumed.
+
+    Two robustness fixes made on review, neither changing the verdict:
+    CONTROL's "list_sessions shows Alpha" check now requires a
+    session-name COLUMN exactly equal to "Alpha" (has_exact_session),
+    not a substring match — a bare "Alpha" in text would silently pass
+    off the unrelated AFP session Alpha_Beta_Pruning in the baseline,
+    which is visible in this environment's own list_sessions output.
+    REPRO's timeout-and-kill branch now sets an explicit timed_out flag
+    that the verdict checks, so a hang (proc.kill() leaves a
+    negative/None returncode, which is nonzero) cannot be mistaken for
+    the fail-fast behavior working. Also note: REPRO_TIMEOUT's default
+    (180s) covers ROOT-parsing failures fine (REPRO fails in ~2s), but
+    CONTROL waits on an actual session build — a cold MCP-Tools heap
+    (e.g. right after scala_build invalidates it) can exceed 180s and
+    read as a false CONTROL failure; the script's docstring now says so.
+
+A6. VERIFIED 2026-08-07 — the pre-scan does not materially slow
+    startup. It forces a ROOT parse of the component baseline (933
+    roots with AFP registered) once per launch that passes at least one
+    -d; the default no--d launch skips it entirely (deviation, see
+    above). T6 [measurement]: check() over one real -d
+    ($ISABELLE_MCP_HOME/Tools) measured at 1100ms end to end (via
+    `isabelle scala`, so this includes JVM/class-loading overhead on
+    top of the check() body — an over-estimate, not an under-estimate).
+    Budget: << the ~20s catalog (spec:469) and << the ~39s full startup
+    the plan's own earlier measurements record; comfortably cheap
+    enough that the originally-planned fallback (skip forcing the
+    baseline, let component collisions fall through uncaught) was
+    never needed.
+
+A7. MOOT (2026-08-07 policy decision) — was "fatal cases still produce
+    a readable Failed" for the -s-names-a-dropped-session and
+    Structure.make-still-throws-after-filtering cases. Neither case
+    exists once nothing is dropped: -s naming a colliding session
+    surfaces as an ordinary Collision like any other, caught by the
+    same check() before Structure.make is ever called.
+
+open questions
+--------------
+
+- FIRST -d WINS vs LAST -d WINS for -d-vs--d collisions. MOOT — nothing
+  is ever dropped, so there is no precedence to choose. (Left here, not
+  deleted, as the record of a question the fail-fast policy made
+  irrelevant rather than one that was resolved.)
+
+- degrade-by-default vs fail-by-default. RESOLVED 2026-08-07: fail-by-
+  default. A `-d` configuration error exits the process cleanly at
+  startup rather than serving degraded. Decided because the error is
+  knowable before any expensive work and is unambiguously the user's to
+  fix, and because it is hit at setup time — before any client has
+  completed a handshake, so there is no in-flight conversation a clean
+  refusal disrupts that a degraded server would have preserved. See
+  "policy: fail fast, do not degrade" above for the full rationale;
+  this supersedes the "degrade, do not fail" section this plan
+  originally carried in its place.
+
+- ordering against plans/readiness_catalog. RESOLVED as a non-issue:
+  that plan extracts structure/deps/store/doc_catalog out of
+  MCP_Session's constructor into an MCP_Catalog computed on its own
+  future, entirely downstream of MCP_Server.run's Future.fork. check()
+  now runs synchronously BEFORE that fork even starts, so the two plans
+  no longer share any construction path to merge — readiness_catalog
+  can land in either order with no interaction at all.
+
+- this plan's relationship to plans/readiness' own open question
+  ("should a Failed server exit instead of serving errors forever?",
+  left as serve-errors there). RESOLVED for CONFIGURATION errors only
+  by this plan's policy — plans/readiness itself is NOT changed, and
+  its build/boot Failed path is explicitly out of scope here (see "the
+  exit path" above). The distinction that lets both answers stand at
+  once: a `-d` config error is caught before serve() starts reading
+  stdin and before any client could have connected, so exiting breaks
+  no in-flight request — there is no client on the other end of the
+  pipe yet, only whoever launched the process, watching the same
+  terminal the "***" lines land on. A build/boot failure, by contrast,
+  happens strictly after serve() is already accepting connections (the
+  whole point of plans/readiness' Not_Ready/Ready/Failed split), so a
+  client may already be mid-conversation by the time it fires; exiting
+  there really would turn a legible error into a bare broken pipe,
+  which is exactly the case plans/readiness' reasoning was written for.
+  Both plans are right about the case they each actually cover.
