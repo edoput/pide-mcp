@@ -11,6 +11,12 @@ we want the mcp to allow users to write custom tools using the isabelle/ml
 language. this will allow for reuse of pre-existing tools implemented by the
 community.
 
+the flagship demonstration of that goal is the REPL module: an
+interactive proving tool family declared entirely through the isar
+extension mechanism below, with isabelle/scala reduced to generic
+transport and session infrastructure carrying no repl-specific logic.
+see "the repl as the flagship example" under phase 3.
+
 directories
 -----------
 id: S-directories
@@ -1326,7 +1332,10 @@ no new backend: each mirror is a thin call into the exact resolution
 path resources/read already uses (theory-name normalization, tier
 resolution, lazy/truncation/slicing). the hard rule — factor each uri
 handler so tool and resource share ONE function; a mirror must never
-grow behavior its resource lacks, or the two surfaces drift.
+grow behavior its resource lacks, or the two surfaces drift. NOR may it
+LACK behavior its resource HAS (added 2026-07-30): that is the same
+drift running the other way, and it is the direction parameterised
+resources actually broke — see the invariant below.
 
 activation (the tools half — clean, rides the phase-3 activation layer):
 the mirrors are new BUILTIN tools, so once they exist they mirror into
@@ -1352,11 +1361,112 @@ disposition on the designated agent-context theory (the autonomous_proving
 theory) that makes resources/list and resources/templates/list return
 empty for that context. sketch only; settle the mechanism in the plan.
 
+EVERY DECLARED RESOURCE IS REACHABLE AS A TOOL (decided 2026-07-30;
+mechanism PENDING)
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+
+the six-tool list above is not the rule, it is one INSTANCE of the rule
+evaluated on 2026-07-15, when the readable resources were seven
+hand-written \<open>MCP_Server.resource_templates\<close> rows plus a
+\<open>mcp_resource\<close> command that produced exactly one shape (no arguments,
+one concrete uri \<open>isabelle://named/<declname>\<close>). the rule itself is:
+
+  every resource this server DECLARES must also be readable through a
+  tool — the same content, from the same handler, for a client (or a
+  mode) that only ever sees tools.
+
+"declares" includes what USERS declare. parameterised resources (see
+that section) turned \<open>mcp_resource\<close> into a real extension point: a
+resource now carries \<open>params\<close> — the SAME param/ptyp universe as tools —
+and may claim a uri outside the reserved \<open>theory/ repl/ session
+named/\<close> prefixes. two consequences, both of which the hand-written
+list gets WRONG today and neither of which is a mere omission:
+
+- \<open>read_named {name}\<close> is strictly LESS capable than the resource it
+  mirrors. its schema has one string property and no argument slot, so
+  a parameterised named resource (\<open>goal_hints{?depth}\<close>) is readable at
+  \<open>isabelle://named/goal_hints?depth=5\<close> and NOT readable by tool at all
+  — the tool can only ever request the defaults. this violates the
+  no-drift rule in the LACK direction stated above.
+- a resource in the free namespace has no tool twin whatsoever, and
+  nothing anywhere notices. the six names are a literal list in the
+  spec, the plans and the bundle; a registry that grows entries at
+  theory-declaration time cannot be tracked by a literal list.
+
+TERMINOLOGY, because "mirror" is already overloaded (a builtin's ML
+MIRROR ROW under "builtin tools in the activation layer" is an
+activation-registry shadow of a scala row — an entirely different
+relation): call the resource→tool relation a TOOL TWIN. the six shipped
+ones keep the name "mirror" in their section title, plan filenames and
+the bundle, since renaming working plans is churn.
+
+MECHANISM: OPEN. three candidates, recorded so a plan does not invent a
+fourth silently. do not implement one before the choice is settled.
+
+- (a) \<open>read_named\<close> grows an argument passthrough — {name, args} where
+  args is an untyped blob (a query string, or a list of pairs). one
+  tool covers every named resource, present and future, with no
+  registry walk. ARGUMENT AGAINST, and it is the strong one: an
+  untyped args blob is exactly what param_schema_v2 exists to abolish
+  — resources reuse the tool param machinery precisely so their
+  arguments are typed and validated, and this hands the model a
+  string to guess at. it also leaves the free namespace uncovered.
+- (b) one GENERIC \<open>read_resource {uri}\<close> tool, routing any uri through
+  \<open>mcp_resource_read\<close>. covers the whole surface including query
+  parameters in one row, and is the shape claude code's own
+  ReadMcpResourceTool already has. against: it puts uri construction
+  on the model, publishes no per-resource schema, and its coverage is
+  bounded by the ROUTING GAP (see parameterised resources) — for the
+  free namespace it would return "Unknown MCP resource" like
+  resources/read does.
+- (c) GENERATED twins: project each registry entry into a tool row
+  mechanically, since resource params ARE tool params — the same move
+  that makes resources/templates/list a generated listing. the twin
+  emits a derived inputSchema (no contradiction with the "resources
+  have no inputSchema" asymmetry: that asymmetry is about the mcp
+  Resource object, and a twin is a Tool object). ARGUMENT FOR, and it
+  is a real one: ML resources are addressed by (name, args), NOT by
+  template matching, so a generated twin dispatches straight to
+  \<open>MCP.read_resource\<close> and READS the free namespace that resources/read
+  cannot route — the tool surface would close the routing gap without
+  giving ML a template matcher. ARGUMENTS AGAINST: generated names
+  land in the TOOL namespace, where the free resource namespace can
+  collide with a builtin tool name (a user resource named
+  \<open>load_theory\<close>), so a naming/collision rule is needed; and the
+  Isabelle/Scala-resident theory-tier resources cannot be generated
+  this way at all — tier resolution has no ML equivalent — so (c) is
+  a mechanism for the ML half only and the shipped six stay
+  hand-written either way.
+
+FOURTH DISCRIMINATOR — ACTIVATION, which cuts hardest against (c): the
+\<open>autonomous_proving\<close> bundle above is itself a literal six-name list,
+and this section has just argued that a literal list cannot track a
+registry growing at theory-declaration time. under (b) the bundle
+merely gains \<open>read_resource\<close>. under (c) the bundle CANNOT NAME its
+twins — a twin for a user resource does not exist until the user
+declares it, yet the twins ship REGISTERED-BUT-INACTIVE, so a generated
+twin would arrive inactive with nothing able to activate it. closing
+that needs either a set-valued activation (activate every resource
+twin — a kind [[mcp_tools add: ...]] does not have today) or generated
+twins defaulting to ACTIVE, which reopens the tools/list clutter the
+inactive-by-default rule exists to prevent. settle this WITH the
+mechanism, not after it.
+
+DRIFT GATE the invariant requires (the reason to state it as a rule and
+not a list): declared-resource set ≡ resource-read-tool set, both
+directions, checked by a test — the same shape as the builtin drift
+gate. this is the gate whose ABSENCE the parameterised-resources
+section complains about for \<open>resource_templates\<close> ("advertised before
+their backing exists, and with NO drift gate — unlike the builtin
+mirror list, nothing checks them against reality"). the twin gate must
+not be a second literal list; it reads both registries.
+
 plans: plans/read_theory, plans/read_commands, plans/read_diagnostics,
 plans/list_entities, plans/read_session, plans/read_named (per-tool),
 under the umbrella plans/resource_tool_mirrors (assumptions, the shared
 uri-handler factoring, the autonomous_proving bundle, resource
-suppression).
+suppression, and the twin invariant + its open mechanism and drift
+gate).
 
 exploring the library universe (theories outside the heap)
 -----------------------------------------------------------
@@ -2546,7 +2656,12 @@ ACTIVATION LAYER over TWO IMPLEMENTATION SUBSTRATES.
 - resources are NOT mirrored: the resource surface has its own scope
   mechanism (scope_add patterns over theory names), and resource
   templates are not per-name entities the way tools are. MCP_Resource
-  (named resources) already rides the registry natively.
+  (named resources) already rides the registry natively. this is about
+  the ACTIVATION registry only, and says nothing about READ ACCESS: a
+  resource still owes a TOOL TWIN, per "every declared resource is
+  reachable as a tool". riding the activation registry natively does
+  NOT make a resource tool-readable — read_named's insufficiency for
+  parameterised resources is exactly that confusion cashed out.
 
 SCOPED 2026-07-28 (see "builtins as ML tools" below): everything above
 holds for builtins that REMAIN Isabelle/Scala-backed. For the ~20
@@ -2752,6 +2867,95 @@ worked example theory.
 plans: plans/ml_builtin_migration (step 2, now a documentation-only
 step — see the plan).
 
+the repl as the flagship example (decided 2026-08-05)
+--------------------------------------------------------
+id: D-2026-08-05-repl-flagship-example
+
+restates and sharpens the goal above, now that phase 3 exists to make
+it literal. the CONTRIBUTION this project claims is not the REPL and
+not the MCP server: it is the mcp_tool/mcp_resource ISAR EXTENSION
+MECHANISM — registry + params clause + validate/capture + activation
++ bundles + antiquotations ("builtin tools in the activation layer",
+"the parameter spec language", "builtins as ML tools", "the
+self-extension loop"). the REPL module is the FLAGSHIP EXAMPLE offered
+in evidence: once plans/ml_builtin_migration lands, an interactive,
+stateful, prover-internal tool family of real size (repl lifecycle,
+stepping, forking/merging/pinning/rebasing, sledgehammer,
+find_theorems — the ~20 tools enumerated in "builtins as ML tools") is
+declared EXACTLY ONCE EACH, in isar, in MCP_Repl.thy — not because the
+REPL is special, but because the mechanism is general enough that even
+the server's own "privileged" builtins turn out to be ordinary
+instances of it. that sentence is already in the spec ("builtins stop
+being privileged relative to the user tools the goal is about"); this
+section exists to say plainly that THAT is the paper's claim, and the
+REPL is what proves it rather than what it is about.
+
+consequence for isabelle/scala's role, stated as the end state rather
+than left implicit in the migration plan: after ml_builtin_migration,
+mcp_server.scala carries no repl-specific business logic at all — no
+tool descriptions, no argument schemas, no dispatch table for Ir.*.
+what remains scala-side is generic: json-rpc transport, session
+lifecycle (readiness, build, PIDE boot), and the handful of
+capabilities enumerated below that genuinely have no ML equivalent.
+the repl's entire tool surface becomes legible by reading one isar
+theory.
+
+the honest boundary — what "completely in isabelle/ml or isar" does
+NOT mean, audited so the paper's claim survives review:
+
+- TRANSPORT stays scala by a phase-0 decision, not an oversight: ML
+  has no json library, and its stdio is owned by the PIDE protocol
+  when managed by scala (phase 0's first research question). symbol
+  recoding at the client edge is scala for the same reason.
+- fifteen builtins stay scala because they wrap isabelle/scala-only
+  apis with no ML counterpart, not because moving them was deferred:
+  load_theory/unload_theory/check_theory (headless-PIDE use_theories,
+  a registry Thy_Info cannot see); list_sessions/list_theories/
+  search_sources/doc_list/doc_read (Sessions.load_structure/deps/
+  Store, filesystem); scope_*/tool_scope_* (per-connection Handler
+  state that exists nowhere else — there is no "connection" concept in
+  ML). see "builtins as ML tools" for the full accounting.
+- repl_init_from_source SPLITS rather than moves: its locator resolves
+  a source position against a live PIDE document snapshot
+  (Document.Node.command_iterator), which is isabelle/scala's alone.
+- find_theorems and find_definition are listed MOVABLE in "builtins as
+  ML tools" but are SPLIT CANDIDATES per plans/ml_builtin_migration's
+  S3/S4: their theory-name normalization
+  (MCP_Session.resolve_context_theory) and repl/theory
+  mutual-exclusion check have no ML equivalent either. do not claim
+  these two as clean moves until wave 6 resolves S3/S4.
+- MCP.ir does not retire with this migration — it survives at 8-10
+  dispatcher cases (repls, show/text, source/source_map/entities image
+  tier, init_from_document/init_from_segment), the isabelle/scala ->
+  ML call path for exactly the capabilities above that need a live
+  PIDE snapshot or session-structure lookup. "completely in isar"
+  describes the TOOL SURFACE users and the agent call; it does not
+  claim the bridge beneath it disappears.
+- ir.ML ITSELF IS NOT THIS PROJECT'S WORK. it is MIT-licensed prior art
+  (project ir/), reused verbatim with its copyright header intact —
+  a deliberate reuse decision (phase 2's "what we reuse from I/R"),
+  not original contribution. this repo's edits to it are small and
+  named explicitly, not folded silently into "verbatim": Ir.context_of
+  (added for tool_scope, commit 51bf4781) is the count as of this
+  decision. a paper crediting the repl ENGINE would be crediting the
+  wrong project; the claim here is about the REGISTRATION MECHANISM
+  around it, which is wholly this repo's.
+
+what already exists to typeset this for a paper: the antiquotation
+rendering styles under "explorability, antiquotations, documentation"
+(@{mcp_tool_schema name}, "table — params/types/descriptions for
+papers") are specced for exactly this use, and generate FROM the live
+registry rather than being hand-transcribed — so a paper figure stays
+correct as the tool set evolves, the same registration-position/
+checked-reference argument the spec already makes for theory documents
+about tools.
+
+status: this is a NARRATIVE decision (which claim the project makes),
+not a new technical one — the mechanism it points at (param_schema_v2,
+the capture form, the repl_init naming convention) is already fully
+specced. the remaining work is exactly plans/ml_builtin_migration's
+waves 1..6 — see plans/README.
+
 parameterised resources (decided 2026-07-28; enumeration PENDING)
 ------------------------------------------------------------------
 id: D-2026-07-28-parameterised-resources
@@ -2858,6 +3062,18 @@ Isabelle/Scala growing a fallback that resolves an unmatched uri to a
 registry entry, which necessarily gives ML some template matching after
 all and so partly walks back "metadata only" for the user namespace.
 that mechanism is undecided; do not let a plan invent it.
+
+TOOL ACCESS (added 2026-07-30): whatever a user declares here must also
+be readable through a TOOL, per the invariant under "resource-read tool
+mirrors". parameterising this record is what broke the existing
+arrangement — \<open>read_named {name}\<close> has no slot for a resource's params,
+so a declaration with a \<open>params\<close> clause is reachable by uri and not by
+tool. the twin mechanism is OPEN there (three candidates); note only
+that candidate (c), generating a twin per registry entry, interacts
+with BOTH of this section's open items: it would route the free
+namespace by (name, args) and so sidestep the routing gap above, and it
+needs no enumerator, since a twin advertises a schema rather than
+instances. neither of those is a reason to settle decision 3 early.
 
 PENDING (decision 3, deferred 2026-07-28): enumeration — how a templated
 resource reports which instances currently exist, so resources/list can

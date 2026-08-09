@@ -109,6 +109,47 @@ record; entries here point at the section that carries the details.
   needs to be named in `repl_init`'s `theories` list the same way.
 - waves 1..6 of plans/ml_builtin_migration are UNBLOCKED again.
 
+2026-08-05 (spec: the repl as the flagship example)
+-----------------------------------------------------
+
+- narrative decision, no technical change: spec "the repl as the
+  flagship example" states plainly what phase 3 already implies. The
+  project's contribution is the mcp_tool/mcp_resource ISAR EXTENSION
+  MECHANISM (registry, params clause, validate/capture, activation,
+  bundles, antiquotations), not the REPL and not the MCP server. The
+  REPL is the flagship worked example: once plans/ml_builtin_migration
+  lands, the ~20 repl/search tools are each declared exactly once, in
+  Isar, in MCP_Repl.thy, and mcp_server.scala carries no REPL-specific
+  business logic at all — only generic transport, session lifecycle,
+  and the capabilities enumerated below that have no ML equivalent.
+  Goal section gains a one-paragraph forward pointer to this section.
+- the section's real content is an AUDITED BOUNDARY, so the paper
+  claim survives review: transport stays Scala (phase 0: no JSON in
+  ML, stdio owned by the PIDE protocol); 15 builtins stay Scala
+  because they wrap Scala-only APIs (use_theories, Sessions.Structure/
+  Deps/Store, per-connection Handler state) with no ML counterpart,
+  not because moving them was deferred; repl_init_from_source SPLITS
+  (its locator needs a live PIDE snapshot); find_theorems/
+  find_definition are SPLIT CANDIDATES per plans/ml_builtin_migration's
+  S3/S4, not clean moves, until wave 6 resolves their scala-side theory-
+  name normalization; MCP.ir survives at 8-10 cases as the Scala->ML
+  call path for exactly those capabilities — "completely in Isar"
+  describes the tool surface, not the bridge beneath it.
+- provenance stated plainly: ir.ML is MIT-licensed prior art from
+  project ir/, reused verbatim with its copyright header — not this
+  project's contribution. This repo's own edit to it (Ir.context_of,
+  commit 51bf4781) is named rather than folded silently into
+  "verbatim". The claim is about the registration mechanism around the
+  engine, not the engine.
+- status recap folded in (no new work, corrects a stale plan note found
+  while writing this): plans/ml_builtin_migration's infrastructure
+  steps 1/3/4/5 are landed and param_schema_v2 landed 2026-08-02; the
+  repl-designation gap is resolved by the entry above, so waves 1..6
+  are UNBLOCKED — plans/ml_builtin_migration's own DEVIATIONS note
+  still read param_schema_v2 as "still planned only", which predates
+  the 2026-08-02 landing and is corrected in the same commit as this
+  entry.
+
 2026-08-02 (param schema v2: enum, list-of, (optional), annotations,
 exactly_one land)
 -------------------------------------------------------------------------
@@ -203,6 +244,62 @@ exactly_one land)
   session that fails to resolve is swallowed and silently leaves a hole
   in the catalog (observed with an AFP checkout whose HOL-Library
   imports do not match this Isabelle). AFP is also most of the ~20s.
+
+2026-07-30 (spec: every declared resource is reachable as a tool)
+-------------------------------------------------------------------
+
+- decided: the resource→tool relation is an INVARIANT, not the literal
+  six-tool list recorded on 2026-07-15. Every resource the server
+  DECLARES -- including every resource a USER declares with
+  `mcp_resource` -- must also be readable through a tool, same content
+  from the same handler, so a client or mode that sees only tools loses
+  no read access. Spec: "every declared resource is reachable as a
+  tool" under "resource-read tool mirrors".
+- the no-drift rule gains its missing direction: a twin must not GROW
+  behavior its resource lacks (already stated) and must not LACK
+  behavior its resource HAS (new). The second is the direction
+  parameterised resources actually broke.
+- two concrete breakages recorded, both consequences of the 2026-07-28
+  parameterised-resources decision: `read_named {name}` is strictly
+  LESS capable than the resource it mirrors, since its schema has no
+  argument slot and a resource with a `params` clause
+  (`goal_hints{?depth}`) can therefore only ever be tool-read at its
+  defaults; and a resource declared in the FREE namespace (outside the
+  reserved theory/ repl/ session named/ prefixes) has no tool twin at
+  all, with nothing to notice -- a literal list cannot track a registry
+  that grows entries at theory-declaration time.
+- MECHANISM PENDING, three candidates recorded with their
+  discriminators so no plan invents a fourth: (a) an args passthrough
+  on read_named, argued against because an untyped args blob is what
+  param_schema_v2 exists to abolish; (b) a generic `read_resource
+  {uri}`, bounded by the routing gap and schema-less; (c) generated
+  twins projected from the registry, which dispatch by (name, args) and
+  so would READ the free namespace that resources/read cannot route,
+  but land generated names in the tool namespace where collisions with
+  builtin names are possible, and cannot cover the Isabelle/Scala
+  theory tier at all.
+- fourth discriminator for the mechanism, ACTIVATION: the
+  `autonomous_proving` bundle is itself a literal six-name list. Under
+  (b) it gains one name; under (c) it cannot NAME a twin that does not
+  exist until a user declares its resource, while the twins ship
+  registered-but-INACTIVE -- so a generated twin arrives inactive with
+  nothing able to activate it. Needs either set-valued activation
+  ("all resource twins", which [[mcp_tools add: ...]] cannot express)
+  or active-by-default twins, which reopens the tools/list clutter
+  inactive-by-default prevents. To be settled WITH the mechanism.
+- DRIFT GATE required by the invariant: declared-resource set ≡
+  resource-read-tool set, both directions, read from both registries
+  rather than from a second literal list -- the gate whose absence the
+  parameterised-resources section already complains about for
+  `resource_templates`.
+- TERMINOLOGY: the resource→tool relation is a TOOL TWIN, to stop
+  colliding with a builtin's ML MIRROR ROW (an activation-registry
+  shadow of a scala row, an unrelated relation). The six shipped ones
+  keep "mirror" in their section title, plan filenames and bundle.
+- plans/resource_tool_mirrors + plans/read_named + plans/README updated;
+  the umbrella's Q1 (does claude code read resources autonomously?) is
+  CLOSED -- it was resolved POSITIVE in the spec on 2026-07-15 and the
+  plans still carried the UNVERIFIED/blocking wording.
 
 2026-07-28 (spec: parameterised resources; enumeration deferred)
 -------------------------------------------------------------------
