@@ -2031,3 +2031,193 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
 }
 
 
+/* plans/session_dirs_errors: MCP_Config.check/render over temp-dir ROOT
+   fixtures -- pure scala, no prover, no MCP_Session. A1/A2/A3 in the
+   plan are the empirical claims this suite locks down as regression
+   tests: forcing Root_File.entries on a colliding -d set never enters
+   the load_structure fold that throws (T1), Position carries file+line
+   per entry (exercised throughout via Site.location), and a -d root
+   colliding with an already-registered component is distinguishable
+   from a -d-vs--d collision (T4, using "HOL" -- always present in the
+   baseline, unlike an AFP session name, so the test does not depend on
+   AFP being registered in the environment it runs in). */
+
+class MCP_Config_Tests extends MCP_Suite {
+  private def root(dir: Path, sessions: (String, String)*): Unit = {
+    val text =
+      sessions.map { case (name, theory) =>
+        "session " + quote(name) + " = HOL +\n" +
+        "  theories\n" +
+        "    " + theory + "\n"
+      }.mkString("\n")
+    File.write(dir + Path.basic("ROOT"), text)
+  }
+
+  private def with_two_projects(body: (Path, Path, Path) => Unit): Unit =
+    Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
+      val alpha = base + Path.basic("proj_alpha")
+      val beta = base + Path.basic("proj_beta")
+      Isabelle_System.make_directory(alpha)
+      Isabelle_System.make_directory(beta)
+      root(alpha, "Alpha" -> "Alpha_Defs", "Scratch" -> "Alpha_Scratch")
+      root(beta, "Beta" -> "Beta_Defs", "Scratch" -> "Beta_Scratch")
+      body(base, alpha, beta)
+    }
+
+  /* T1 / A1: two colliding -d roots. check() must not throw (unlike
+     Sessions.load_structure over the same dirs) and must report exactly
+     one Collision naming "Scratch", both ROOT paths, and both lines. */
+  test("T1: two colliding -d roots produce a Collision, and check() does not throw") {
+    with_two_projects { (_, alpha, beta) =>
+      val issues = MCP_Config.check(List(alpha, beta))
+      val collisions = issues.collect { case c: MCP_Config.Collision => c }
+      assertEquals(collisions.length, 1, "expected exactly one Collision, got: " + issues)
+      val c = collisions.head
+      assertEquals(c.name, "Scratch")
+      assertEquals(c.sites.length, 2)
+      val roots = c.sites.map(_.root)
+      assert(roots.contains(alpha + Path.basic("ROOT")), "missing proj_alpha/ROOT: " + roots)
+      assert(roots.contains(beta + Path.basic("ROOT")), "missing proj_beta/ROOT: " + roots)
+      assert(c.sites.forall(s => Position.Line.get(s.pos) > 0),
+        "every colliding site should carry a line number: " + c.sites)
+    }
+  }
+
+  /* T2: a clean -d set (no collisions, no bad dirs) reports nothing. */
+  test("T2: a clean -d set produces an empty issue list") {
+    Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
+      val alpha = base + Path.basic("proj_alpha")
+      Isabelle_System.make_directory(alpha)
+      root(alpha, "Alpha" -> "Alpha_Defs")
+      assertEquals(MCP_Config.check(List(alpha)), Nil)
+    }
+  }
+
+  /* T3: a nonexistent -d dir is a Bad_Dir; two bad dirs produce two
+     issues (the report-everything requirement -- check_session_dir
+     itself throws on the first, so this is specifically what the
+     pre-flight buys). */
+  test("T3: a nonexistent -d dir produces a Bad_Dir") {
+    Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
+      val missing = base + Path.basic("does_not_exist")
+      val issues = MCP_Config.check(List(missing))
+      assertEquals(issues, List(MCP_Config.Bad_Dir(missing, "missing \"ROOT\" or \"ROOTS\"")))
+      // render() must cite the EXPANDED path (dir.expand.toString, not
+      // implode -- see "deviations from the plan" in
+      // plans/session_dirs_errors), matching Sessions.check_session_dir's
+      // own wording for this exact situation.
+      val text = MCP_Config.render(issues)
+      assert(text.contains(missing.expand.toString),
+        "render() should cite the expanded bad-dir path: " + text)
+      assert(text.contains("missing \"ROOT\" or \"ROOTS\""), "render(): " + text)
+    }
+  }
+
+  /* Root_Error: a ROOT file that exists (so it is not a Bad_Dir) but does
+     not parse. Exercises the OTHER Exn.capture layer in check() -- forcing
+     Root_File.entries, not Sessions.load_root_files itself -- and the
+     Bad_Dir/Root_Error detail path through MCP_Server.decode_message the
+     Exn.message-decode prerequisite exists for. */
+  test("T3: a ROOT file with a syntax error produces a Root_Error") {
+    Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
+      val bad = base + Path.basic("proj_bad")
+      Isabelle_System.make_directory(bad)
+      File.write(bad + Path.basic("ROOT"), "this is not valid ROOT syntax {{{\n")
+      val issues = MCP_Config.check(List(bad))
+      val errors = issues.collect { case e: MCP_Config.Root_Error => e }
+      assertEquals(errors.length, 1, "expected exactly one Root_Error, got: " + issues)
+      assertEquals(errors.head.root, bad + Path.basic("ROOT"))
+      assert(errors.head.detail.nonEmpty, "Root_Error detail should not be empty")
+      val text = MCP_Config.render(issues)
+      assert(text.contains((bad + Path.basic("ROOT")).implode),
+        "render() should cite the offending ROOT path: " + text)
+    }
+  }
+
+  test("T3: two bad -d dirs produce two issues, not just the first") {
+    Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
+      val missing1 = base + Path.basic("does_not_exist_1")
+      val missing2 = base + Path.basic("does_not_exist_2")
+      val issues = MCP_Config.check(List(missing1, missing2))
+      assertEquals(issues.length, 2, "expected two Bad_Dir issues, got: " + issues)
+      assert(issues.forall(_.isInstanceOf[MCP_Config.Bad_Dir]))
+    }
+  }
+
+  /* T4 / A3: a -d root colliding with an ALREADY-REGISTERED component
+     session ("HOL", always in the baseline -- see the class comment) is
+     classified From_Components, not From_Dir, and render() tells the
+     user to rename THEIRS, never mentioning dropping the component. */
+  test("T4: a -d session colliding with a component is classified From_Components") {
+    Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
+      val mine = base + Path.basic("myproj")
+      Isabelle_System.make_directory(mine)
+      root(mine, "HOL" -> "My_HOL_Clash")
+      val issues = MCP_Config.check(List(mine))
+      val collisions = issues.collect { case c: MCP_Config.Collision => c }
+      assertEquals(collisions.length, 1, "expected exactly one Collision, got: " + issues)
+      val c = collisions.head
+      assertEquals(c.name, "HOL")
+      val provenances = c.sites.map(_.provenance).toSet
+      assert(provenances.contains(MCP_Config.From_Components),
+        "expected a From_Components site: " + c.sites)
+      assert(provenances.exists { case MCP_Config.From_Dir(d) => d == mine; case _ => false },
+        "expected a From_Dir(mine) site: " + c.sites)
+
+      val text = MCP_Config.render(issues)
+      assert(text.contains("rename your session"),
+        "component collision should tell the user to rename theirs: " + text)
+      assert(!text.contains("drop one -d"),
+        "component collision is not a drop-either-one case: " + text)
+    }
+  }
+
+  /* T5: render() output is non-empty, multi-line, and names both the
+     session and both colliding file paths -- the "actionable" bar the
+     plan sets. */
+  test("T5: render() is non-empty, multi-line, and names the session and both paths") {
+    with_two_projects { (_, alpha, beta) =>
+      val issues = MCP_Config.check(List(alpha, beta))
+      val text = MCP_Config.render(issues)
+      assert(text.nonEmpty, "render() of a nonempty issue list should not be empty")
+      assert(text.contains("\n"), "render() should be multi-line: " + text)
+      assert(text.contains("Scratch"), "render() should name the colliding session: " + text)
+      assert(text.contains((alpha + Path.basic("ROOT")).implode),
+        "render() should cite proj_alpha/ROOT: " + text)
+      assert(text.contains((beta + Path.basic("ROOT")).implode),
+        "render() should cite proj_beta/ROOT: " + text)
+    }
+  }
+
+  test("render() of an empty issue list is empty") {
+    assertEquals(MCP_Config.render(Nil), "")
+  }
+
+  /* the default launch (no -d at all) must short-circuit before ever
+     forcing the baseline -- there is nothing of the caller's for check()
+     to report, and the baseline force is the expensive part (COST TRAP,
+     plans/session_dirs_errors: ~760ms with AFP registered). */
+  test("check() of an empty -d list is empty without forcing the baseline") {
+    assertEquals(MCP_Config.check(Nil), Nil)
+  }
+
+  /* regression guard for the "baseline-only collision" fix: a Collision
+     is only reported when at least one site is From_Dir. Two baseline/
+     component roots colliding with each other (not exercised here --
+     this environment's baseline has none) must never be attributed to a
+     -d the caller didn't even pass; this locks the SHAPE of that
+     guard down against a clean single -d, where by construction every
+     site but HOL/Pure/... is From_Dir or absent. */
+  test("a clean -d set never reports a Collision with only From_Components sites") {
+    Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
+      val alpha = base + Path.basic("proj_alpha")
+      Isabelle_System.make_directory(alpha)
+      root(alpha, "Alpha" -> "Alpha_Defs")
+      val collisions = MCP_Config.check(List(alpha)).collect { case c: MCP_Config.Collision => c }
+      assert(collisions.forall(_.sites.exists(_.provenance != MCP_Config.From_Components)),
+        "every reported Collision must have at least one From_Dir site: " + collisions)
+    }
+  }
+}
+
+

@@ -14,6 +14,7 @@ requirements = \
 sources = \
   src/mcp-main.scala \
   src/doc_catalog.scala \
+  src/mcp_config.scala \
   src/mcp_session.scala \
   src/mcp_server.scala
 

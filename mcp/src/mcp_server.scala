@@ -1617,6 +1617,22 @@ object MCP_Server {
     theory: String,
     progress: Progress = new Progress
   ): Unit = {
+    /* config pre-flight (plans/session_dirs_errors, decided 2026-08-07):
+       a bad -d set is a CONFIGURATION error, knowable before any prover
+       work and unambiguously the user's to fix -- so it is checked here,
+       synchronously, as the very first thing, before the Future.fork
+       below and before serve() ever reads a byte of stdin. Nothing is
+       served on a bad config. error() is caught by Command_Line.tool
+       (the isabelle launcher), which prints each line of the message
+       prefixed with "***" to STDERR and exits the process nonzero, with
+       no Scala stack trace -- never write this to stdout, which is the
+       JSON-RPC channel. Build/boot failures (a broken heap, a theory
+       that won't compile) are a different class of problem -- reachable
+       only after this check passes -- and keep going through the
+       existing Failed readiness path below, unchanged. */
+    val config_issues = MCP_Config.check(session_dirs)
+    if (config_issues.nonEmpty) error(MCP_Config.render(config_issues))
+
     /* changed_sender: the list_changed notifier serve() installs on
        entry (3a) -- there is no backend yet to register it on until the
        Ready transition below picks it up. shutting_down: the latch 3b

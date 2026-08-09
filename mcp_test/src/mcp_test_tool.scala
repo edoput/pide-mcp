@@ -27,7 +27,8 @@ object MCP_Test {
       classOf[MCP_Symbol_Tests],
       classOf[MCP_Locator_Tests],
       classOf[MCP_Doc_Catalog_Tests],
-      classOf[MCP_Doc_Read_Tests])
+      classOf[MCP_Doc_Read_Tests],
+      classOf[MCP_Config_Tests])
 
   /* prover-spawning suites, behind -b: heap suites (fresh ML_process
      per ml() call) first -- cheaper than the PIDE-session suites */
