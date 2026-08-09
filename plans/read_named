@@ -1,9 +1,17 @@
-read_named — resource-read tool mirror (DECIDED, planned)
+read_named — resource-read tool twin (DECIDED, planned;
+BLOCKED 2026-07-30 on the umbrella's Q4)
 =========================================================
 
-status: blocked (date not recorded)
-spec: "resource-read tool mirrors" under "mcp resources".
-umbrella: plans/resource_tool_mirrors.
+status: blocked (2026-07-30)
+decided: 2026-07-15
+wave: TBD
+blocked-on: plans/resource_tool_mirrors Q4 — the schema below is
+INSUFFICIENT as of the 2026-07-28 parameterised-resources decision. Do not
+build the {name}-only version: it would ship a tool that is permanently
+less capable than its resource.
+spec: "resource-read tool mirrors" under "mcp resources", including
+"every declared resource is reachable as a tool".
+umbrella: plans/resource_tool_mirrors (invariant, item 5, Q4).
 
 what it is: a builtin tool alias for the isabelle://named/{name}
 resource — user-registered resources from the mcp_resource command
@@ -26,6 +34,24 @@ inputSchema   {"type": "object",
 annotations   {"readOnlyHint": true, "idempotentHint": true,
                "openWorldHint": false}
 
+WHY THIS SCHEMA IS NOW WRONG (2026-07-30). It was written when
+mcp_resource produced exactly one shape — no arguments, one concrete
+uri isabelle://named/<declname>. Since the parameterised-resources
+decision a named resource carries typed params:
+
+    mcp_resource goal_hints
+      uri \<open>isabelle://named/goal_hints{?depth}\<close>
+      params (depth :: nat = 3 \<open>search depth\<close>)
+      = \<open>fn ctxt => fn args => ...\<close>
+
+isabelle://named/goal_hints?depth=5 is readable by uri. With the schema
+above the tool can only ever request depth=3 — the twin LACKS behavior
+its resource HAS, which the umbrella's no-drift rule now forbids in
+both directions. Whether the fix is an args slot here (candidate a), a
+generic read_resource (b), or a generated twin per registry entry (c)
+is the umbrella's Q4; this plan resumes once that lands, and under (b)
+or (c) this plan may be SUPERSEDED rather than implemented.
+
 backing: zero new mechanism — the same MCP_Resource read path
 (MCP.read_resource, MCP_Session.ml_read_resource) the
 isabelle://named/{name} read uses. one function, two surfaces.
@@ -39,4 +65,6 @@ need; not built now.
 
 tests (sketch): [scala unit] row + dispatch + parity with the resource
 read (over a registered demo resource, e.g. "greeting"); [e2e] read a
-named resource by tool and by resource, byte-identical payloads.
+named resource by tool and by resource, byte-identical payloads; [added
+2026-07-30] parity over a PARAMETERISED demo resource with a
+non-default argument — the case the {name}-only schema cannot pass.

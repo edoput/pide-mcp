@@ -1,10 +1,19 @@
 builtins as ML tools — implementation plan
 ===========================================
 
-status: partial (date not recorded)
+status: partial (2026-07-28)
 "(annotations ...) required for capture" registration-time check --
-closed 2026-08-05 once plans/param_schema_v2 landed the mechanism);
-S1 still undecided, waves 1..6 not started (decided 2026-07-28, commit 40d30471;
+closed 2026-08-05 once plans/param_schema_v2 landed the mechanism).
+STEP 2's DECISION WITHDRAWN 2026-08-05 -- option (a) ("repl
+designations resolve against a merged theory", decided 2026-07-30) was
+spiked, implemented, and found unworkable even in corrected form: see
+DEVIATIONS. The spec records no decision for option (a) any more; the
+REPLACEMENT decision landed the same day and is
+D-2026-08-05-repl-designations-put-tools-theory ("repl designations:
+put the tools theory in repl_init's own imports"), which states it
+"resolves the one question BLOCKING the move above". Waves 1..6 are
+therefore UNBLOCKED as of 2026-08-05 (this plan itself is
+decided 2026-07-28, commit 40d30471;
 spec: phase 3 "builtins as ML tools (decided 2026-07-28)", the AMENDED
 block in "ml bridge: async protocol commands", the SCOPED block in
 "builtin tools in the activation layer"). no new mcp tool — a feature
@@ -14,15 +23,95 @@ become ordinary ML registry entries.
 
 DEVIATIONS FROM THIS PLAN, recorded per .claude/rules/plan-tasks.md:
 
+- option (a) as WORDED BELOW ("Theory.merge + Proof_Context.transfer")
+  is not writable: Isabelle2025-2 has NO Theory.merge. Pure/theory.ML
+  exports none, and Context.join_certificate_theory only picks the
+  larger when one is already a subtheory. A merge of disjoint branches
+  IS Theory.begin_theory over both parents (Context.begin_thy ->
+  make_parents / merge_ancestors / merge_data). The predicate is
+  Context.subthy, not Theory.subthy. This correction was itself later
+  found insufficient -- see the WITHDRAWN bullet below; do not treat it
+  as the final word.
+- and transfer ALONE does not deliver the registry, which the plan did
+  not anticipate at all. The registry is Generic_Data;
+  Context.raw_transfer preserves proof data the context already has, so
+  a repl's empty inherited registry SHADOWS the merged theory's.
+  Spiked on a live repl: theory-level=true, fresh-proof=true,
+  transferred-proof=FALSE. Step 2's implementation therefore needs a
+  new MCP_Registry operation folding the theory-level view back into
+  the proof level, applied to MCP_Tool AND MCP_Resource.
+- checked, and it PASSES: merging over a DRAFT parent (a repl theory is
+  built at runtime and never end_theory'd) does not throw — begin_theory's
+  Sign.init_naming / local_path / begin_wrappers / Syntax.cache_syntax
+  all tolerate a runtime-built repl node. This was the plan's own
+  "untested interaction with repl theories built at runtime".
+- NEW GUARDRAIL the plan did not enumerate: repl ids become theory base
+  names, and begin_thy's eq_thy_consistent RAISES on two distinct nodes
+  sharing one. Verified — a repl with id "Main" makes the merge throw
+  THEORY "Duplicate theory name". Ir.init must reject or namespace
+  client-chosen ids. Unguarded this is a client-triggerable denial of
+  the whole repl tool surface, so it is part of step 2, not a follow-on.
+- NEW REQUIREMENT: memoize the merged node on the (theory_id,
+  theory_id) pair. merge_data runs every Theory_Data merge kind at HOL
+  size, and resolution happens per tools/list (connect + every
+  list_changed) and per tools/call. The plan accepted "a merge per
+  tools/list" without noticing that puts a full HOL merge on connect.
+- WITHDRAWN 2026-08-05: option (a), even after the correction above,
+  does not work. \<open>Theory.begin_theory\<close> cannot merge a repl's theory
+  while a proof is open on it -- Isar keeps the WHOLE underlying
+  theory's Name_Space change-tracking open for the length of an active
+  goal, on EVERY Theory_Data kind sharing that theory, not just the
+  registry's, and \<open>Name_Space.merge_tables -> Change_Table.merge\<close>
+  requires the SAME (base, depth) on both sides of a merge or raises
+  \<open>Fail "Cannot merge: incompatible change structure"\<close>. Verified by
+  hand across four repl states (fresh, one THEORY-level step, mid-proof,
+  proof closed) via \<open>isabelle ML_process\<close>: only the interval between a
+  step that OPENS a goal and the step that CLOSES it fails -- which is
+  exactly the state a repl sits in between repl_step calls, i.e. the
+  primary case wave 1's moved tools (repl_show, repl_state, ...) exist
+  to serve. A registry-only union (reading each theory's OWN
+  Theory_Data slot directly, with no Theory.begin_theory and no
+  Proof_Context.transfer) was tried as a replacement and can dodge the
+  crash, but the whole APPROACH -- resolving a repl designation by
+  reaching into the SERVER theory at designation-resolution time, in
+  any form -- was set aside in favor of a structurally simpler fix (see
+  below): make repl_init accept the tools theory as one of its OWN
+  imports up front, so the repl's theory ancestry already contains the
+  tools by construction and nothing needs resolving at call time. Spec
+  no longer records ANY decision for this gap; option (a) is REJECTED
+  in both its original and corrected forms and must not be
+  re-attempted without addressing the mid-proof finding above.
+  Skill: .claude/skills/mcp-tool-theories documents the replacement
+  pattern (import your tools theory into repl_init's `theories` list),
+  which resolves the ORDINARY case (a repl calling pre-existing tools)
+  without any of this machinery; it does not resolve the narrower case
+  a From_Segment repl (repl_init_from_source) still cannot cover, since
+  that repl's theory is fixed by an already-written document and cannot
+  be given extra imports after the fact. That narrower gap is NOT an
+  open question: D-2026-08-05-repl-designations-put-tools-theory closes
+  it explicitly -- the ordinary repl tools (repl_step, repl_show, ...)
+  are looked up against the DEFAULT designation, independent of which
+  repl the client is operating on, so a From_Segment repl loses
+  nothing. The only thing needing a repl's own theory to import
+  MCP_Tools is tool_scope_set {repl} (self-extension), which was
+  already unusable on such a repl for an unrelated reason: the
+  mcp_tool keyword itself requires that import, and an existing math
+  document was never going to have it. No workflow is newly broken.
+
 - step 3 landed WITHOUT the "(annotations ...) clause REQUIRED for the
   capture form" registration-time check described below. That
   mechanism (the annotations record, MCP_Tool.default_annotations, the
-  five named constants, the scala half) is param_schema_v2's D2, which
-  has not landed (param_schema_v2 is itself still "planned only" —
-  confirmed by grep, no annotations record exists anywhere in
-  MCP_Tools.thy yet). Capture-form tools declared today carry no
-  annotations at all; the scala side falls through to `case _ => None`
-  (mcp_server.scala:77, unchanged). Once D2 lands, add the
+  five named constants, the scala half) is param_schema_v2's D2. AS OF
+  THIS WRITING (2026-07-28) it had not landed, so there was nothing to
+  require or store yet; STATUS UPDATE 2026-08-02: param_schema_v2
+  LANDED (spec, CHANGELOG "param schema v2"), including D2 in full. The
+  registration-time check below is therefore now UNBLOCKED and still
+  outstanding — a real loose end, not a blocked one; do it before wave
+  1. Capture-form tools declared today (the solve_direct demo in
+  MCP.thy) still carry no annotations; the scala side falls through to
+  `case _ => None` (mcp_server.scala:77, unchanged) until this check
+  lands and every existing capture declaration gets an
+  (annotations ...) clause. Once landed, add the
   registration-time check to MCP_Tools.thy's `tool_cmd` (Tool_Capture
   branch) and retrofit it onto whatever capture tools already exist —
   this includes the mcp_tool command's outer-syntax `= capture \<open>...\<close>`
@@ -148,22 +237,63 @@ move.
 candidate resolutions, enumerated but NOT chosen here (this needs a spec
 decision from the parent, like the 2026-07-13 activation guardrails):
 
-  (a) resolve a repl designation to the repl context TRANSFERRED to a
-      theory merged with the server's own (Theory.merge +
-      Proof_Context.transfer). preserves the goal state, keeps one
-      registry; cost is a merge per tools/list and an untested
-      interaction with repl theories built at runtime.
+  (a) REJECTED 2026-08-05 (spiked, implemented, withdrawn -- see
+      DEVIATIONS): resolve a repl designation to the repl context
+      TRANSFERRED to a theory merged with the server's own
+      (Theory.merge + Proof_Context.transfer), or its corrected
+      registry-union variant. Both crash or were abandoned: a repl's
+      theory cannot be merged with the server's while a proof is open
+      on it, which is the repl's normal state between repl_step calls.
+      Do not re-propose either variant without addressing that finding.
   (b) a scala-side always-served CORE set: moved tools keep a static
       listing fallback when the designated context serves no row. this
       is the availability floor generalized, and it re-creates exactly
       the duplication the move deletes.
-  (c) declare the moved tools somewhere every repl imports. impossible:
-      a repl's imports are client-chosen.
+  (c) REVISED 2026-08-05, now the working default for the ORDINARY
+      case: declare the moved tools somewhere every repl imports. NOT
+      impossible as originally framed here -- a repl's imports are
+      client-chosen, but the CLIENT can choose to include the tools
+      theory: repl_init already accepts more than one theory name
+      (ir/ir.ML's Ir.init/from_specs calls Theory.begin_theory over
+      every named theory as a parent), so naming MCP_Repl (or a user's
+      own tools theory that imports it) alongside the target proof
+      theory in repl_init's `theories` list puts the tools theory
+      directly in the repl's own ancestry -- Context.subthy holds, no
+      designation-time resolution needed at all. Documented as the
+      general pattern in .claude/skills/mcp-tool-theories. Narrower
+      than a full fix: still does not cover repl_init_from_source (a
+      From_Segment repl's theory is fixed by an already-written
+      document, so it cannot be given an extra import after the fact)
+      -- and the spec closes that narrower gap too rather than leaving
+      it open: repl tools resolve against the DEFAULT designation
+      whatever repl they act on, so a From_Segment repl loses nothing.
+      ADOPTED by D-2026-08-05-repl-designations-put-tools-theory.
   (d) accept the narrowing and document it (repl scope loses the repl
       tools). rejected here on its face — it breaks the primary
       workflow — but recorded so the decision is explicit.
 
-until this is decided, waves 1..6 must not start. steps 1..5 may.
+DECIDED 2026-08-05, at the spec level, in favour of (c):
+D-2026-08-05-repl-designations-put-tools-theory. The narrowing this
+section hesitated to assert on the plan's behalf is exactly what the
+spec chose -- "only tools from imported theories are available in the
+repl", with `theories` an EXPLICIT, undefaulted parameter on the moved
+repl_init and no automatic injection of MCP_Repl. A client wanting
+repl-scoped tools names the theory itself, every time:
+
+  repl_init(repl="my_repl", theories=["HOL.Main", "MCP-HOL.MCP_Repl"])
+
+why the narrowing was acceptable, per the spec: self-extension ALREADY
+required it. Declaring a tool live inside a repl via repl_step needs
+that repl rooted in a theory importing MCP_Tools, or the mcp_tool
+keyword does not parse -- every existing self-extension test already
+roots its repl in MCP_Repl for exactly this reason. The decision costs
+that workflow nothing new; it only makes the ordinary case as explicit
+as self-extension already was.
+
+waves 1..6 are UNBLOCKED as of 2026-08-05. steps 1..5 may proceed
+regardless, as before. What remains before wave 1 is implementation,
+not decision -- plus the still-outstanding param_schema_v2 D2
+registration-time check noted above.
 
 dependency on param_schema_v2
 ------------------------------
@@ -416,12 +546,35 @@ rebuild/verify commands (per .claude/rules, always through the flatpak
    "shout" resolve at designation ""), plus the pre-existing MCP-Tools-
    Tests coverage of designation "" with no hook set (A7's other half).
 
-2. [spec] resolve the repl-designation gap ("blocking open question").
-   not code — a decision the parent records in the spec, with the
-   guardrail wording the 2026-07-13 activation decision got. waves 1..6
-   are BLOCKED until it lands; steps 3..5 are not.
-   verify: spec section + CHANGELOG entry exist; this plan's wave table
-   updated with whatever it decides.
+2. [spec DECIDED 2026-08-05, option (c) / ml DOCUMENTATION-ONLY] the
+   repl-designation gap is resolved by
+   D-2026-08-05-repl-designations-put-tools-theory: a repl sees the
+   tools of the theories it imports, and a client that wants
+   repl-scoped tools names the tools theory in repl_init's own
+   `theories` list. There is no runtime resolution mechanism to build,
+   so this step carries no ML edits -- it is satisfied by the pattern
+   documented at .claude/skills/mcp-tool-theories plus repl_init's
+   `theories` parameter becoming explicit and undefaulted when it moves
+   in wave 1.
+
+   Previously marked "spec DECIDED 2026-07-30, option (a)" with a
+   three-edit ML implementation sketched below; that implementation was
+   attempted, found to crash any repl mid-proof (Isar's Name_Space
+   change-tracking cannot merge an open-proof theory with a finished
+   one — see DEVIATIONS for the mechanism and the four-state bisect
+   that pinned it), and withdrawn along with the spec section it
+   depended on. Nothing described in a prior version of this step
+   should be implemented as written, and option (a) must not be
+   re-proposed in either form.
+
+   what actually remains open: the "candidate resolutions" list above
+   now records (c) — naming the tools theory in repl_init's own
+   `theories` list — as a working pattern for the ordinary case
+   (documented for general use in .claude/skills/mcp-tool-theories),
+   but this plan has not yet made a formal decision to rely on it for
+   wave 1, nor resolved the repl_init_from_source gap (c) cannot reach.
+   Do not start ML work on this step until that decision is recorded
+   here or in the spec.
 
 3. [ml] [LANDED 2026-07-28, PARTIAL] CAPTURE FORM. MCP_Tool.form grows Capture (form_tag "capture");
    MCP_Combinators.capture + arg/arg_int (arg_opt/arg_all land with

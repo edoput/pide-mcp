@@ -8,12 +8,17 @@ umbrella: plans/resource_tool_mirrors (assumptions, shared uri-handler
 factoring, autonomous_proving bundle, resource suppression).
 
 what it is: a builtin tool alias for the isabelle://theory/{name}
-resource. rationale (updated 2026-07-15): the primary human-in-the-loop
-mode reaches resources by user @-mention, and it is UNVERIFIED whether
-claude code lets the model read resources autonomously; the mirror
-tools are the model-invoked surface a fully-autonomous-proving mode
-serves in place of resources. ships registered-but-inactive; the
-autonomous_proving bundle activates it.
+resource. rationale (updated 2026-07-30): the primary human-in-the-loop
+mode reaches resources by user @-mention; claude code DOES let the
+model read resources autonomously (RESOLVED POSITIVE 2026-07-15 — this
+plan carried the stale "UNVERIFIED" until 2026-07-30), which relieves
+urgency without removing the requirement, since clients that surface
+resources to humans only still need tools and a fully-autonomous mode
+still wants the reads as tools it is nudged to call. the twin tools are
+that model-invoked surface. ships registered-but-inactive; the
+autonomous_proving bundle activates it. the invariant these serve —
+every declared resource, users' included, is reachable as a tool — is
+in the umbrella.
 
 advertised metadata (sketch)
 ----------------------------
@@ -40,7 +45,8 @@ same resolution path resources/read uses for isabelle://theory/{name}
 snapshot node source / session-structure path map; ?lines= slicing
 and truncation rules included). if implemented, factor the uri
 handler so tool and resource share one function — the tool must
-never grow behavior the resource lacks, or the two surfaces drift.
+never grow behavior the resource lacks, and (added 2026-07-30) never
+LACK behavior the resource has; either direction is drift.
 
 tests (sketch): [scala unit] row + dispatch + parity with the
 resource read on Fake_Backend; [e2e] read a filesystem-tier theory

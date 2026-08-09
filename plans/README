@@ -205,12 +205,18 @@ phase 3 — the ML tool surface (decided 2026-07-28, spec commit
         repl/search builtins stop being declared three times and
         become ordinary ML registry entries; capture form, async
         MCP.run_tool, mirror list + drift gate shrink to the
-        scala-resident remainder. Design fully resolved: infra steps
-        1/3/4/5 landed 2026-07-28, the repl-designation gap that
-        blocked wave 1 DECIDED 2026-07-30 (spec: "repl designations
-        resolve against a merged theory") -- waves 1..6 UNBLOCKED but
-        not started; step 2's ML implementation of that decision is
-        also not started. spec: "the repl as the flagship example"
+        scala-resident remainder. infra steps 1/3/4/5 landed
+        2026-07-28; the repl-designation gap that BLOCKED wave 1
+        (2026-07-30, "repl designations resolve against a merged
+        theory") was spiked, implemented, and WITHDRAWN 2026-08-05 --
+        the mechanism cannot survive a repl mid-proof, see the plan's
+        own DEVIATIONS. RESOLVED the same day by
+        D-2026-08-05-repl-designations-put-tools-theory: a repl sees
+        the tools of the theories it imports, so a client names the
+        tools theory in repl_init's own `theories` list (pattern at
+        .claude/skills/mcp-tool-theories). waves 1..6 are UNBLOCKED;
+        what remains is implementation, not decision. spec: "the repl
+        as the flagship example"
         names this migration as the paper's worked example.)
 
 flagged, NOT scheduled (no wave):

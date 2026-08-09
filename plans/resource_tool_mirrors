@@ -1,8 +1,16 @@
-resource_tool_mirrors — umbrella (DECIDED 2026-07-15, planned)
+resource_tool_mirrors — umbrella (DECIDED 2026-07-15, planned;
+AMENDED 2026-07-30 — the mirror set is an instance of an INVARIANT)
 ==============================================================
 
 status: planned (2026-07-15)
-spec: "resource-read tool mirrors" under "mcp resources".
+decided: 2026-07-15
+wave: TBD
+amended: 2026-07-30 — the rule is "every declared resource is reachable as
+a tool"; the six-tool list below is that rule evaluated against the
+resources that existed on 2026-07-15. Mechanism for the open half
+PENDING (Q4).
+spec: "resource-read tool mirrors" under "mcp resources", including
+its "every declared resource is reachable as a tool" subsection.
 per-tool plans: plans/read_theory, plans/read_commands,
 plans/read_diagnostics, plans/list_entities, plans/read_session,
 plans/read_named.
@@ -14,15 +22,49 @@ why (the two operating assumptions)
   human directing the model through claude code; the user @-mentions
   resources when needed. autonomous resource-reading is NOT required
   for this mode.
-- SECONDARY, UNVERIFIED — MUST BE RESOLVED: we assume claude code lets
-  the model enumerate/read resources autonomously. named check: does
-  the client surface resources to the model on its own, or only via
-  user @server:uri? if NEGATIVE, resources in default mode are
-  human-mention-only, which forces the choice of exposing resources by
-  default vs. shipping these mirrors active-by-default.
+- SECONDARY — RESOLVED POSITIVE (2026-07-15, tested against claude
+  code; this plan carried the stale "UNVERIFIED" wording until
+  2026-07-30): claude code DOES let the model enumerate and read
+  resources autonomously, mid-turn, with no user @-mention —
+  ListMcpResourcesTool + two ReadMcpResourceTool reads
+  (isabelle://session, isabelle://named/greeting) all returned
+  content. this RELIEVES but does not eliminate the case for tool
+  twins: they are still required for clients that surface resources to
+  the HUMAN only, and for a mode that hides the resource surface and
+  wants the reads as tools the model is nudged to call. see Q1
+  (closed).
 
-the mirror set (one tool per readable resource)
------------------------------------------------
+the invariant (added 2026-07-30 — read this before the list)
+------------------------------------------------------------
+
+every resource the server DECLARES must also be readable through a
+tool: same content, same handler. "declares" includes what USERS
+declare, which is what changed — parameterised resources (spec,
+2026-07-28) made mcp_resource a real extension point with typed params
+and a FREE uri namespace, so the readable-resource set is now an
+open-ended REGISTRY and a literal six-name list cannot track it.
+
+two breakages this plan must fix, not merely note:
+
+- read_named {name} is strictly LESS capable than its resource. no
+  argument slot in the schema, so a resource declared with a params
+  clause (goal_hints{?depth}, readable at
+  isabelle://named/goal_hints?depth=5) is tool-readable only at its
+  defaults. see plans/read_named, which is BLOCKED on Q4.
+- a resource in the free namespace (outside theory/ repl/ session
+  named/) has no twin at all and nothing notices.
+
+no-drift rule, both directions: a twin must never GROW behavior its
+resource lacks (the original rule) and must never LACK behavior its
+resource HAS (added 2026-07-30; the direction that actually broke).
+
+terminology: TOOL TWIN for the resource→tool relation. a builtin's ML
+MIRROR ROW (activation registry shadowing a scala row) is a different
+relation; the six below keep "mirror" in their names since renaming
+landed plans is churn.
+
+the shipped set (the invariant evaluated on 2026-07-15)
+------------------------------------------------------
 
   read_theory      {name, lines?}            = isabelle://theory/{name}
   read_commands    {theory, start?, count?}  = .../commands
@@ -31,7 +73,11 @@ the mirror set (one tool per readable resource)
   read_session     {}                        = isabelle://session
   read_named       {name}                    = isabelle://named/{name}
 
-already covered, NO mirror added: isabelle://repl/{id} and .../text are
+these six stay HAND-WRITTEN whatever Q4 decides: five of them resolve
+tiers through Sessions.load_structure / deps / Store, which has no ML
+equivalent, so they cannot be generated from an ML registry.
+
+already covered, NO twin added: isabelle://repl/{id} and .../text are
 already served by the repl_show / repl_text builtins (same Ir.show /
 Ir.text backing).
 
@@ -64,20 +110,88 @@ shared design
    resources/list + resources/templates/list return empty. SETTLE HERE
    before implementing — this is the one genuinely new mechanism.
 
+5. twins for USER-DECLARED resources (added 2026-07-30, MECHANISM
+   OPEN — Q4). the six above cover the server-shipped resources; the
+   ML resource registry is open-ended and needs its own answer. do NOT
+   implement one of these before Q4 is settled:
+
+   (a) read_named grows {name, args} with args an untyped blob. one
+       tool, no registry walk. AGAINST (strongest single argument in
+       the set): an untyped args blob is precisely what
+       plans/param_schema_v2 exists to abolish, and resources reuse the
+       tool param machinery so their arguments ARE typed. also leaves
+       the free namespace uncovered.
+   (b) a generic read_resource {uri} routing through
+       mcp_resource_read. covers query params in one row; same shape as
+       claude code's ReadMcpResourceTool. AGAINST: uri construction
+       moves to the model, no per-resource schema, and coverage is
+       bounded by the spec's ROUTING GAP — the free namespace returns
+       "Unknown MCP resource" exactly as resources/read does.
+   (c) GENERATED twins, projecting each registry entry into a tool row
+       (resource params ARE tool params). FOR: ML resources are
+       addressed by (name, args), never by template matching, so a
+       generated twin dispatches straight to MCP.read_resource and
+       reads the free namespace resources/read cannot route — it closes
+       the routing gap from the tool side without giving ML a template
+       matcher, and needs no enumerator (a twin advertises a schema,
+       not instances). AGAINST: generated names land in the TOOL
+       namespace, so the free resource namespace can collide with a
+       builtin name (a user resource called load_theory) and a
+       collision rule is needed; covers the ML half only.
+
+   fourth discriminator, ACTIVATION — it cuts against (c) and item 3's
+   bundle is where it bites: `bundle autonomous_proving = [[mcp_tools
+   add: read_theory ... read_named]]` is a literal six-name list, the
+   very thing the invariant says cannot track a growing registry. under
+   (b) the bundle just gains read_resource. under (c) the bundle cannot
+   NAME a twin that does not exist until a user declares its resource,
+   while item 3 ships twins registered-but-INACTIVE — so a generated
+   twin arrives inactive with nothing able to activate it. fixing that
+   means either set-valued activation ("all resource twins", a kind
+   [[mcp_tools add: ...]] lacks today) or generated twins active by
+   default, which reopens the tools/list clutter inactive-by-default
+   exists to prevent. settle it WITH Q4, not after.
+
+   whichever wins, the twin must reuse MCP_Resource's validate /
+   check_value — no second copy of the param machinery, same rule
+   param_schema_v2 sets.
+
 open questions
 --------------
 
-- Q1 (blocking the whole point of default vs. autonomous): resolve the
-  SECONDARY assumption — does claude code read resources autonomously?
+- Q1: CLOSED 2026-07-15 — claude code DOES read resources
+  autonomously (see the SECONDARY assumption above). the mirror
+  decision stands regardless; the resolution relieves urgency, it does
+  not remove the requirement.
 - Q2: resource-suppression mechanism (item 4).
 - Q3: wave slotting in the spec implementation order (left open per the
   user's "we now need" without a when).
+- Q4 (added 2026-07-30, BLOCKS plans/read_named and any twin for
+  user-declared resources): which mechanism from item 5 — (a) args
+  passthrough, (b) generic read_resource, (c) generated twins? depends
+  on the param-schema work landing (all three want ptyp/validate) and,
+  for (c), on a tool-namespace collision rule. the six hand-written
+  twins are NOT blocked on this.
 
 tests (shape; per-tool plans carry the specifics)
 -------------------------------------------------
 
-- [scala unit] each mirror: row + dispatch + PARITY with its resource
+- [scala unit] each twin: row + dispatch + PARITY with its resource
   read over Fake_Backend.
 - [e2e] read by tool and by resource, assert byte-identical payloads.
 - [drift gate] each new builtin has its ML mirror row (existing
   builtin_activation gate covers this once the tools land).
+- [drift gate, the invariant's own — added 2026-07-30] declared-
+  resource set ≡ resource-read-tool set, BOTH directions: a resource
+  with no twin fails, a twin whose resource is gone fails. it must read
+  the two registries, NOT a literal name list — a literal list is the
+  failure mode the spec already indicts for
+  MCP_Server.resource_templates ("advertised before their backing
+  exists, and with NO drift gate"). shape: the builtin drift gate over
+  the live bridge. cannot be written until Q4 fixes what the twin set
+  is; until then this is an obligation, not a test.
+- [parity, params direction — added 2026-07-30] for a parameterised
+  resource, a twin call passing a non-default argument must return the
+  SAME payload as the equivalent uri read (goal_hints depth=5 vs
+  isabelle://named/goal_hints?depth=5). this is the case that pins the
+  no-LACK direction of the drift rule.
