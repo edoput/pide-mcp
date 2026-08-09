@@ -4,6 +4,67 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-09 (spec: every section carries a stable id)
+--------------------------------------------------------------------------
+
+- decided: spec sections get stable ids, written as a metadata block
+  under the heading rule. `D-<date>-<slug>` for a section that records a
+  decision, `S-<slug>` for narrative or structure. The date is the
+  section's own, which the headings already carry ("(decided
+  2026-07-21)", "(measured 2026-07-30)") — this extends how the prose
+  already refers to decisions rather than introducing a parallel scheme.
+  54 sections: 24 decisions, 30 narrative, 7 of the decisions carrying
+  no date anywhere and so named `D-undated-<slug>`.
+
+- why, demonstrated rather than argued: the spec explorer built on
+  2026-08-09 had to address sections BY LINE NUMBER, because the file
+  offered nothing else. Those keys were minted against a 3761-line
+  working copy; the committed spec is 3546 lines, and all 13 probe line
+  numbers land on unrelated content. The keys were stale before they
+  were a day old. `see "the catalog is the long pole"` has the same
+  defect more slowly: it breaks on a rewording, silently. 22 such
+  quoted-prose references exist in the spec and 12 more in plans/.
+
+- supersedes/superseded_by are now fields, not prose. 15 sections carry
+  them, recovered from the explorer extraction and re-keyed by heading
+  text. The readiness chain is the worked example:
+
+      id: D-2026-07-21-server-startup-readiness
+      superseded_by: D-2026-07-30-catalog-long-pole-build
+
+  A reversal chain is a grep rather than a reading exercise.
+
+- also landed, same hygiene pass:
+
+  - one authoritative `status:` per plan. It had been recorded in up to
+    three disagreeing places and 21 of 45 plans were stale, plans/repl_list
+    (the pilot every plan was copied from) among them: README box [x],
+    both status lines "planned", tool shipped for a month. Later in-file
+    status lines keep their text as `landed:` so they stop competing.
+    Where the done date was never recorded, the header now says so
+    rather than reusing the planned date.
+
+  - `spec refinement:` gains a close operation — `[OPEN]` or
+    `[FOLDED <date>]`. 14 markers existed against 11 occurrences of the
+    word "folded" anywhere; nothing recorded whether any was ever folded,
+    so the queue could only grow. All 14 are stamped OPEN.
+
+  - tools/spec_gate.py checks all of the above and exits nonzero, in the
+    same shape as the gates this project already trusts. Citation
+    coverage is REPORTED, never enforced: requiring every assumption to
+    be cited would invite wrong-but-checked citations, which are worse
+    than absent ones because the gate would then certify them.
+
+- assumption ids: plans/ASSUMPTIONS is generated from plans/ (229
+  assumptions across 37 plans) and gives every assumption the address
+  `<plan>#<LABEL>`. Isabelle theories cite one with the checked
+  `\<^assumption>` antiquotation (mcp/Tools/MCP_Assumption.thy); an
+  unknown id fails `isabelle build` with a position. That is this
+  project's one enforcement idiom — a failed assert fails the build —
+  applied to the reference rather than the property. Not yet applied to
+  the test theories; the citations are generated and land once the id
+  scheme is settled in use.
+
 2026-08-05 (spec: repl designations resolve via repl_init's own imports)
 --------------------------------------------------------------------------
 
