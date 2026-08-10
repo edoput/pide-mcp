@@ -1136,6 +1136,49 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
       expect_ok(session.ir("remove", List("repl" -> "T5")))
     }
   }
+
+  /* plans/ml_builtin_migration wave 1: repl_show/repl_text/repl_back move
+     from Builtin_Tool rows + dispatcher cases to capture-form mcp_tools
+     declared in MCP_Repl.thy. This is the wave's one bridge exemplar
+     (per the plan's "test migration": one exemplar per wave, not one per
+     tool) -- tools/list shows the moved names with the right schema and
+     annotations, and tools/call repl_show round-trips against a live
+     repl with no yxml markup in the result (A3). repl_show/repl_text
+     ALSO keep a surviving MCP.ir dispatcher case above (resource reads);
+     this exercises the NEW mcp_tool entry point instead, over
+     MCP.run_tool. */
+  test("wave 1: tools/list shows repl_show/repl_text/repl_back as capture tools with their {repl} schema and annotations") {
+    val rows = session.ml_tools().rows
+    def row(name: String): MCP_Session.Tool_Row =
+      rows.find(_.name == "MCP_Repl." + name)
+        .getOrElse(fail("MCP_Repl." + name + " not in ml_tools: " + rows.map(_.name)))
+
+    val show = row("repl_show")
+    val text = row("repl_text")
+    val back = row("repl_back")
+
+    for (r <- List(show, text, back)) {
+      assertEquals(r.form, "capture")
+      assertEquals(r.params.map(p => (p.name, p.typ, p.required)),
+        List(("repl", MCP_Session.Ptyp_String, true)))
+    }
+    assertEquals(show.annotations.read_only, Some(true))
+    assertEquals(text.annotations.read_only, Some(true))
+    assertEquals(back.annotations.destructive, Some(true))
+  }
+
+  test("wave 1: tools/call repl_show round-trips against a live repl with no yxml markup") {
+    with_repl("Wave1Show") {
+      expect_ok(session.ir("step", List("repl" -> "Wave1Show", "isar_text" -> "lemma True")),
+        "step on Wave1Show")
+
+      val result = session.ml_run("MCP_Repl.repl_show", List("repl" -> "Wave1Show"))
+      val text = expect_ok(result, "repl_show on Wave1Show")
+      assert(text.contains("Wave1Show"), "repl_show output missing the repl id: " + text)
+      assert(!text.exists(c => c < ' ' && c != '\n' && c != '\t' && c != '\r'),
+        "repl_show output must contain no yxml control characters: " + text)
+    }
+  }
 }
 
 

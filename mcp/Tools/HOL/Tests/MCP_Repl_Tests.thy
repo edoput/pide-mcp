@@ -968,54 +968,11 @@ val (s_rm, _) = MCP_Repl.run "remove" [("repl", "Ttc5")];
 val _ = \<^assert> (s_rm = "ok");
 \<close>
 
-section \<open>repl_back (plans/repl_back): T1..T2\<close>
-
-text \<open>T1: back is truncate -1's sugar -- equivalent behavior including
-the out-of-range edge on a 0-step repl.\<close>
-ML \<open>
-val (s_init, _) = MCP_Repl.run "init" [("repl", "Tbk1"), ("theories", main)];
-val _ = \<^assert> (s_init = "ok");
-val (s1, _) = MCP_Repl.run "step" [("repl", "Tbk1"), ("isar_text", "lemma sb1: True")];
-val _ = \<^assert> (s1 = "ok");
-val (s2, _) = MCP_Repl.run "step" [("repl", "Tbk1"), ("isar_text", "by simp")];
-val _ = \<^assert> (s2 = "ok");
-
-val (s_b1, _) = MCP_Repl.run "back" [("repl", "Tbk1")];
-val _ = \<^assert> (s_b1 = "ok");
-val (_, o_show1) = MCP_Repl.run "show" [("repl", "Tbk1")];
-val _ = \<^assert> (String.isSubstring "1 steps" (plain o_show1));
-
-val (s_b0, _) = MCP_Repl.run "back" [("repl", "Tbk1")];
-val _ = \<^assert> (s_b0 = "ok");
-val (_, o_show0) = MCP_Repl.run "show" [("repl", "Tbk1")];
-val _ = \<^assert> (String.isSubstring "0 steps" (plain o_show0));
-
-val (s_berr, o_berr) = MCP_Repl.run "back" [("repl", "Tbk1")];
-val _ = \<^assert> (s_berr = "error");
-val _ = \<^assert> (String.isSubstring "out of range" (plain o_berr));
-
-val (s_rm, _) = MCP_Repl.run "remove" [("repl", "Tbk1")];
-val _ = \<^assert> (s_rm = "ok");
-\<close>
-
-text \<open>T2: the description's trap -- back after a FAILED step discards
-the last GOOD step, since a failed repl_step never joins the repl.\<close>
-ML \<open>
-val (s_init, _) = MCP_Repl.run "init" [("repl", "Tbk2"), ("theories", main)];
-val _ = \<^assert> (s_init = "ok");
-val (s1, _) = MCP_Repl.run "step" [("repl", "Tbk2"), ("isar_text", "lemma sb2: True")];
-val _ = \<^assert> (s1 = "ok");
-val (s_fail, _) = MCP_Repl.run "step" [("repl", "Tbk2"), ("isar_text", "this is not isar")];
-val _ = \<^assert> (s_fail = "error");
-
-val (s_b, _) = MCP_Repl.run "back" [("repl", "Tbk2")];
-val _ = \<^assert> (s_b = "ok");
-val (_, o_show) = MCP_Repl.run "show" [("repl", "Tbk2")];
-val _ = \<^assert> (String.isSubstring "0 steps" (plain o_show));
-
-val (s_rm, _) = MCP_Repl.run "remove" [("repl", "Tbk2")];
-val _ = \<^assert> (s_rm = "ok");
-\<close>
+text \<open>repl_back (plans/repl_back) T1..T2 moved to Ir_Tests.thy, which
+calls \<^ML>\<open>Ir.back\<close> directly (plans/ml_builtin_migration wave 1: "back"
+is no longer a dispatcher fname -- \<^ML>\<open>MCP_Repl.run "back"\<close> would now
+error "unknown function". repl_back is declared as a capture-form
+mcp_tool below; see its params/annotations block.)\<close>
 
 section \<open>repl_merge (plans/repl_merge): T1..T3\<close>
 
@@ -1796,5 +1753,71 @@ val _ =
 
 (*drop this session's repl churn and wrapper state -- see MCP_Repl.reset*)
 ML \<open>MCP_Repl.reset ()\<close>
+
+section \<open>Wave 1 (plans/ml_builtin_migration): repl_show/repl_text/repl_back
+as capture-form mcp_tools\<close>
+
+text \<open>A9 interface preservation, structural half: each tool has exactly
+the deleted Builtin_Tool row's single \<open>repl :: string\<close> required param
+and annotation bucket. The behavioral half (does the tool actually call
+\<^ML>\<open>Ir.show\<close>/\<^ML>\<open>Ir.text\<close>/\<^ML>\<open>Ir.back\<close>) is exercised at the bridge
+layer (mcp_bridge_tests.scala) for repl_show, plus Ir_Tests.thy's direct
+\<^ML>\<open>Ir.back\<close> coverage for repl_back's semantics -- this block only
+checks the declaration matches the interface the deleted row advertised.\<close>
+ML \<open>
+val context = Context.Proof \<^context>;
+
+fun single_repl_param (tool: MCP_Tool.tool) =
+  (case #params tool of
+    [p] =>
+      #name p = "repl" andalso #typ p = MCP_Tool.String andalso
+      #required p andalso #default p = NONE
+  | _ => false);
+
+val repl_show_tool = MCP_Tool.get context "MCP_Repl.repl_show";
+val repl_text_tool = MCP_Tool.get context "MCP_Repl.repl_text";
+val repl_back_tool = MCP_Tool.get context "MCP_Repl.repl_back";
+
+val _ = \<^assert> (#form repl_show_tool = MCP_Tool.Capture);
+val _ = \<^assert> (#form repl_text_tool = MCP_Tool.Capture);
+val _ = \<^assert> (#form repl_back_tool = MCP_Tool.Capture);
+
+val _ = \<^assert> (single_repl_param repl_show_tool);
+val _ = \<^assert> (single_repl_param repl_text_tool);
+val _ = \<^assert> (single_repl_param repl_back_tool);
+
+val _ = \<^assert> (#annotations repl_show_tool = MCP_Tool.read_only);
+val _ = \<^assert> (#annotations repl_text_tool = MCP_Tool.read_only);
+val _ = \<^assert> (#annotations repl_back_tool = MCP_Tool.destructive);
+\<close>
+
+text \<open>the surviving dispatcher cases for "show"/"text" (resource reads,
+isabelle://repl/{id} and .../text) still work; "back" is gone from the
+dispatcher entirely (superseded by the mcp_tool declaration above), and
+calling it now fails as an unknown function, not a silent success.\<close>
+ML \<open>
+val (s_show_alive, _) = MCP_Repl.run "show" [("repl", "nonexistent-repl-id")];
+val _ = \<^assert> (s_show_alive = "error"); (*repl id lookup fails, not the fname*)
+val (s_text_alive, _) = MCP_Repl.run "text" [("repl", "nonexistent-repl-id")];
+val _ = \<^assert> (s_text_alive = "error");
+val (s_back_gone, o_back_gone) = MCP_Repl.run "back" [("repl", "nonexistent-repl-id")];
+val _ = \<^assert> (s_back_gone = "error" andalso String.isSubstring "unknown function" (plain o_back_gone));
+\<close>
+
+text \<open>A3 regression: \<open>Ir.show\<close>'s token rendering (\<open>Markup.markups\<close> in
+\<open>Ir.render_isar_text\<close>) emits yxml markup UNCONDITIONALLY, the same
+failure mode found against Sledgehammer's \<open>Active.sendback\<close>
+(Ir_Tests.thy) -- plain print mode alone does not suffice.
+\<^ML>\<open>MCP_Combinators.capture\<close> now strips unconditionally; this pins the
+fix against the exact tool that first exposed the gap.\<close>
+ML \<open>
+val _ = MCP_Repl.run "init" [("repl", "ShowStrip"), ("theories", main)];
+val _ = MCP_Repl.run "step" [("repl", "ShowStrip"), ("isar_text", "lemma True")];
+val show_out = MCP_Tool.run \<^context> "MCP_Repl.repl_show" [("repl", "ShowStrip")];
+val _ = \<^assert> (not (String.isSubstring (chr 5) show_out));
+val _ = \<^assert> (not (String.isSubstring (chr 6) show_out));
+val _ = \<^assert> (String.isSubstring "ShowStrip" show_out);
+val _ = MCP_Repl.run "remove" [("repl", "ShowStrip")];
+\<close>
 
 end

@@ -359,43 +359,6 @@ object MCP_Server {
           "required" -> List("repl", "state_idx")),
       annotations = read_only_annotations)
 
-  val repl_show_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "repl_show",
-      fname = "show",
-      description =
-        "Describe one REPL: origin, timeout, pin status, and the " +
-        "numbered list of its steps with staleness marks and proof-level " +
-        "indentation. This is the map of the REPL -- use it to find the " +
-        "step index for repl_edit / repl_truncate / repl_fork, and to " +
-        "see which steps are stale after repl_edit / repl_rebase. For " +
-        "the state at a point use repl_state; for the raw Isar text use " +
-        "repl_text.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" -> JSON.Object("repl" -> JSON.Object("type" -> "string")),
-          "required" -> List("repl")),
-      annotations = read_only_annotations)
-
-  val repl_text_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "repl_text",
-      fname = "text",
-      description =
-        "Print the concatenated Isar text of all steps in a REPL, " +
-        "newline-separated, exactly as they were sent. This is the " +
-        "verified proof script: after a successful proof, splice this " +
-        "text into the theory file. Stale steps are included as-is -- " +
-        "run repl_replay first if you need the text to be verified " +
-        "end-to-end.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" -> JSON.Object("repl" -> JSON.Object("type" -> "string")),
-          "required" -> List("repl")),
-      annotations = read_only_annotations)
-
   val repl_edit_tool: Builtin_Tool =
     Builtin_Tool(
       name = "repl_edit",
@@ -454,23 +417,6 @@ object MCP_Server {
             "repl" -> JSON.Object("type" -> "string"),
             "idx" -> JSON.Object("type" -> "integer")),
           "required" -> List("repl", "idx")),
-      annotations = destructive_annotations)
-
-  val repl_back_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "repl_back",
-      fname = "back",
-      description =
-        "Revert the last SUCCESSFUL step (shorthand for repl_truncate " +
-        "with idx -1). Only call it after a step that succeeded -- a " +
-        "FAILED repl_step left the state unchanged, so repl_back after " +
-        "a failure would discard the last GOOD step. Sub-REPLs forked " +
-        "from the discarded state are removed; a pin goes stale.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" -> JSON.Object("repl" -> JSON.Object("type" -> "string")),
-          "required" -> List("repl")),
       annotations = destructive_annotations)
 
   val repl_merge_tool: Builtin_Tool =
@@ -985,8 +931,8 @@ object MCP_Server {
 
   val builtins: List[Builtin_Tool] =
     List(repl_list_tool, repl_init_tool, repl_init_from_source_tool, repl_fork_tool, repl_remove_tool, repl_step_tool, repl_state_tool,
-      repl_show_tool, repl_text_tool, repl_edit_tool, repl_replay_tool, repl_truncate_tool,
-      repl_back_tool, repl_merge_tool, repl_timeout_tool, repl_pin_tool, repl_unpin_tool,
+      repl_edit_tool, repl_replay_tool, repl_truncate_tool,
+      repl_merge_tool, repl_timeout_tool, repl_pin_tool, repl_unpin_tool,
       repl_rebase_tool, sledgehammer_tool, find_theorems_tool, find_definition_tool,
       load_theory_tool, unload_theory_tool, check_theory_tool,
       list_sessions_tool, list_theories_tool, search_sources_tool,

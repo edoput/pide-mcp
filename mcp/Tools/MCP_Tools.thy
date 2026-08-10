@@ -991,6 +991,13 @@ fun diag ctxt (cmd, pos) {description, params, format = fmt, constraints} : MCP_
   -- run_tool_result (mcp_session.scala) does not strip yxml markup the
   way the repl bridge's ir_result does, so captured text must already
   be plain, the same reason exec_text uses Print_Mode.with_modes [].
+  PLAIN MODE ALONE IS NOT ENOUGH, though (plans/ml_builtin_migration
+  wave 1, found the hard way against Ir.show): some markup -- Sledgehammer's
+  Active.sendback, and Ir.render_isar_text's Markup.markups token
+  highlighting -- is emitted unconditionally, independent of the current
+  print mode. So the captured output is stripped through
+  XML.content_of o YXML.parse_body unconditionally before it is returned;
+  this is a safe identity on text that never had any yxml to strip.
   ANNOTATIONS ARE MANDATORY here (D2, closed out plans/param_schema_v2's
   follow-up): unlike diag_wrap (Keyword.is_diag proves read_only+
   idempotent) or string_fun (one fixed param, no real behavior claim to
@@ -1003,17 +1010,18 @@ fun capture description params annotations constraints f : MCP_Tool.tool =
   let
     val params = map param params;
     val _ = List.app (check_constraint params) constraints;
+    val plain = XML.content_of o YXML.parse_body;
   in
     {description = describe_constraints description constraints, params = params,
      constraints = constraints, form = MCP_Tool.Capture, annotations = annotations,
      run = fn ctxt => fn args =>
       (case MCP_Output.captured (fn () =>
           Print_Mode.with_modes [] (fn () => f ctxt (validate ctxt params constraints args)) ()) of
-        (Exn.Res (), output) => output
+        (Exn.Res (), output) => plain output
       | (Exn.Exn exn, output) =>
           if Exn.is_interrupt exn then Exn.reraise exn
           else error (if output = "" then Runtime.exn_message exn
-                      else output ^ "\n" ^ Runtime.exn_message exn))}
+                      else plain output ^ "\n" ^ Runtime.exn_message exn))}
   end;
 
 (*total accessors for a capture tool's own function: validate already
@@ -1875,12 +1883,9 @@ val _ =
        ("repl_remove", "Remove a REPL and all sub-REPLs forked from it."),
        ("repl_step", "Apply one Isar command to a REPL and print the resulting proof state."),
        ("repl_state", "Print the proof/theory state of a REPL at a given index."),
-       ("repl_show", "Describe one REPL: origin, timeout, pin status, and its steps."),
-       ("repl_text", "Print the concatenated Isar text of all steps in a REPL."),
        ("repl_edit", "Replace a REPL step with new Isar text and re-execute from there."),
        ("repl_replay", "Re-execute all stale steps in a REPL, in order."),
        ("repl_truncate", "Discard all REPL steps after a given index."),
-       ("repl_back", "Revert the last successful REPL step."),
        ("repl_merge", "Merge a sub-REPL back into its parent."),
        ("repl_timeout", "Set the per-step timeout in seconds for one REPL."),
        ("repl_pin", "Pin (snapshot) a REPL's current theory state."),

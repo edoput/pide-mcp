@@ -374,25 +374,12 @@ class MCP_Tools_Tests extends MCP_Suite {
       "state", List("repl" -> "T", "state_idx" -> "-1"))
   }
 
-  test("tools/list includes repl_show with readOnlyHint and its {repl} schema") {
-    val row = tool_row("repl_show")
-    assertEquals(required_args(row), List("repl"))
-    assertEquals(annotation(row, "readOnlyHint"), true)
-  }
-
-  test("tools/call repl_show reaches backend.ir with (\"show\", [(\"repl\", ...)])") {
-    assert_dispatch("repl_show", JSON.Object("repl" -> "T"), "show", List("repl" -> "T"))
-  }
-
-  test("tools/list includes repl_text with readOnlyHint and its {repl} schema") {
-    val row = tool_row("repl_text")
-    assertEquals(required_args(row), List("repl"))
-    assertEquals(annotation(row, "readOnlyHint"), true)
-  }
-
-  test("tools/call repl_text reaches backend.ir with (\"text\", [(\"repl\", ...)])") {
-    assert_dispatch("repl_text", JSON.Object("repl" -> "T"), "text", List("repl" -> "T"))
-  }
+  // repl_show/repl_text table-membership + dispatch assertions moved:
+  // plans/ml_builtin_migration wave 1 declares both as capture-form
+  // mcp_tools in MCP_Repl.thy, so there is no scala Builtin_Tool row
+  // left for Fake_Backend to serve here. Structural coverage (params,
+  // annotations) now lives in MCP_Repl_Tests.thy's "Wave 1" section;
+  // behavioral/wire coverage lives in mcp_bridge_tests.scala.
 
   test("tools/list includes repl_edit with its idx/isar_text schema") {
     val row = tool_row("repl_edit")
@@ -429,15 +416,9 @@ class MCP_Tools_Tests extends MCP_Suite {
       "truncate", List("repl" -> "T", "idx" -> "-1"))
   }
 
-  test("tools/list includes repl_back with destructiveHint true and its {repl} schema") {
-    val row = tool_row("repl_back")
-    assertEquals(required_args(row), List("repl"))
-    assertEquals(annotation(row, "destructiveHint"), true)
-  }
-
-  test("tools/call repl_back reaches backend.ir with (\"back\", [(\"repl\", ...)])") {
-    assert_dispatch("repl_back", JSON.Object("repl" -> "T"), "back", List("repl" -> "T"))
-  }
+  // repl_back table-membership + dispatch assertions moved: see the
+  // repl_show/repl_text note above -- repl_back is wave 1's third
+  // moved tool, same reasoning.
 
   test("tools/list includes repl_merge with destructiveHint true and its {repl} schema") {
     val row = tool_row("repl_merge")

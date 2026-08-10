@@ -361,7 +361,6 @@ fun dispatch fname args =
          Ir.edit (get "repl") (get_int "idx") (get "isar_text"))
     | "replay" => (keys ["repl"]; Ir.replay (get "repl"))
     | "truncate" => (keys ["repl", "idx"]; Ir.truncate (get "repl") (get_int "idx"))
-    | "back" => (keys ["repl"]; Ir.back (get "repl"))
     | "merge" => (keys ["repl"]; Ir.merge (get "repl"))
     | "pin" => (keys ["repl"]; Ir.pin (get "repl"))
     | "unpin" => (keys ["repl"]; Ir.unpin (get "repl"))
@@ -536,16 +535,51 @@ end;
 
 section \<open>Default designation\<close>
 
-text \<open>plans/ml_builtin_migration step 1 calls for a THROWAWAY probe here
-(its own words: "use a throwaway declaration until wave 1 supplies a
-real one"), standing in for the repl tools that wave 1 will declare
-once the S1 repl-designation spec decision lands and
-plans/param_schema_v2's D2 (annotations) is available. Not a real MCP
-tool; it exists solely so step 1 has something in MCP_Repl.thy to check
-the default designation against. Remove it when wave 1 lands.\<close>
-mcp_tool "mcp_repl_default_designation_probe" = \<open>fn _ => "ok"\<close>
-  (description \<open>Throwaway probe for the default-designation hook
-    (plans/ml_builtin_migration step 1); superseded once wave 1 lands.\<close>)
+section \<open>Wave 1: single-\<open>repl\<close> read/destructive tools (plans/ml_builtin_migration)\<close>
+
+text \<open>The minimum shape: one \<open>repl :: string\<close> param, no defaults, no
+optionals, three distinct annotation buckets. Each declaration reproduces
+the deleted Builtin_Tool row's description VERBATIM (interface
+preservation) and calls exactly the \<^ML_structure>\<open>Ir\<close> function the
+deleted dispatcher case called -- \<^ML>\<open>MCP_Combinators.arg\<close> replaces the
+dispatcher's own \<open>get\<close>, total for a declared param once \<open>validate\<close> has
+run.
+
+\<open>show\<close> and \<open>text\<close> keep their dispatcher cases above (surviving MCP.ir:
+isabelle://repl/{id} and .../text still call them directly) -- these
+declarations are an ADDITIONAL entry point for tools/call, not a
+replacement. \<open>back\<close> has no surviving MCP.ir caller, so its dispatcher
+case is deleted in the same commit as this section.\<close>
+
+mcp_tool "repl_show" = capture \<open>fn _ => fn args => Ir.show (MCP_Combinators.arg args "repl")\<close>
+  (description \<open>Describe one REPL: origin, timeout, pin status, and the
+    numbered list of its steps with staleness marks and proof-level
+    indentation. This is the map of the REPL -- use it to find the
+    step index for repl_edit / repl_truncate / repl_fork, and to
+    see which steps are stale after repl_edit / repl_rebase. For
+    the state at a point use repl_state; for the raw Isar text use
+    repl_text.\<close>)
+  (params repl :: string \<open>the REPL id\<close>)
+  (annotations read_only)
+
+mcp_tool "repl_text" = capture \<open>fn _ => fn args => Ir.text (MCP_Combinators.arg args "repl")\<close>
+  (description \<open>Print the concatenated Isar text of all steps in a REPL,
+    newline-separated, exactly as they were sent. This is the
+    verified proof script: after a successful proof, splice this
+    text into the theory file. Stale steps are included as-is --
+    run repl_replay first if you need the text to be verified
+    end-to-end.\<close>)
+  (params repl :: string \<open>the REPL id\<close>)
+  (annotations read_only)
+
+mcp_tool "repl_back" = capture \<open>fn _ => fn args => Ir.back (MCP_Combinators.arg args "repl")\<close>
+  (description \<open>Revert the last SUCCESSFUL step (shorthand for repl_truncate
+    with idx -1). Only call it after a step that succeeded -- a
+    FAILED repl_step left the state unchanged, so repl_back after
+    a failure would discard the last GOOD step. Sub-REPLs forked
+    from the discarded state are removed; a pin goes stale.\<close>)
+  (params repl :: string \<open>the REPL id\<close>)
+  (annotations destructive)
 
 text \<open>Widen the out-of-the-box designation ("") from MCP_Tools to this
 theory: MCP_Protocol.default_theory (MCP_Tools.thy) otherwise hardcodes
@@ -558,9 +592,11 @@ at the old default stays visible.\<close>
 ML \<open>MCP_Protocol.set_default_theory \<^theory>\<close>
 
 text \<open>A7: the default designation now sees a tool declared in THIS
-theory, not just MCP_Tools -- the whole point of step 1. Also checks
-that the pre-existing MCP_Tools-resident demo tool ("shout") is still
-reachable, i.e. the widening is strict, not a replacement.\<close>
+theory, not just MCP_Tools -- the whole point of step 1. \<open>repl_show\<close>
+(wave 1, declared above) stands in for the probe this assert used to
+check before wave 1 supplied a real moved tool. Also checks that the
+pre-existing MCP_Tools-resident demo tool ("shout") is still reachable,
+i.e. the widening is strict, not a replacement.\<close>
 ML \<open>
 val _ =
   let
@@ -571,7 +607,7 @@ val _ =
       map (Long_Name.base_name o #1)
         (MCP_Tool.list (Context.Proof (MCP_Protocol.designated_context "" [])));
   in
-    \<^assert> (member (op =) bases "mcp_repl_default_designation_probe");
+    \<^assert> (member (op =) bases "repl_show");
     \<^assert> (member (op =) bases "shout")
   end;
 \<close>
