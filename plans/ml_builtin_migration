@@ -1,7 +1,10 @@
 builtins as ML tools — implementation plan
 ===========================================
 
-status: partial (2026-07-28)
+status: partial (2026-08-10) — steps 1..5 landed; WAVE 1 landed
+2026-08-10 (repl_show, repl_text, repl_back; see step 6). waves 2..6
+remain.
+"(annotations ...) required for capture" registration-time check --
 "(annotations ...) required for capture" registration-time check --
 closed 2026-08-05 once plans/param_schema_v2 landed the mechanism).
 STEP 2's DECISION WITHDRAWN 2026-08-05 -- option (a) ("repl
@@ -650,6 +653,49 @@ same commit.
    three with the right schemas and annotations, tools/call repl_show
    round-trips against a live repl, and its text carries NO yxml markup
    (A3).
+
+   LANDED 2026-08-10. All three declared in MCP_Repl.thy (capture form);
+   their Builtin_Tool rows (mcp_server.scala), mirror rows (MCP_Tools.thy)
+   and dispatcher case deleted in the same commit -- EXCEPT "show"/"text",
+   whose dispatcher cases survive on purpose (isabelle://repl/{id} and
+   .../text still call \<open>MCP.ir\<close> directly, per "surviving MCP.ir" above);
+   only "back" lost its dispatcher case outright, since it has no
+   surviving caller. repl_back's old dispatcher-level T1/T2 semantic
+   tests in MCP_Repl_Tests.thy were deleted, not migrated -- Ir_Tests.thy
+   already covers the same claims by calling \<open>Ir.back\<close> directly (that
+   theory landed first, on the ir-tests-migration branch, merged into
+   master immediately before this wave).
+
+   DEVIATION found while landing this wave, NOT anticipated by A3's
+   original wording ("capture runs in plain print mode" was treated as
+   sufficient on its own): \<open>Ir.show\<close>'s token rendering
+   (\<open>Ir.render_isar_text\<close> -> \<open>Markup.markups\<close>) emits yxml control bytes
+   (chr 5 / chr 6, keyword/kind markup) UNCONDITIONALLY, the same failure
+   shape Ir_Tests.thy had already found against Sledgehammer's
+   \<open>Active.sendback\<close> -- but that earlier fix only patched the TEST
+   harness's own \<open>run_ir\<close> helper, not the production \<open>capture\<close>
+   mechanism, so it went uncaught until a real markup-producing function
+   (\<open>Ir.show\<close>) was actually wired up as a capture-form tool for the
+   first time. Confirmed by instrumenting a throwaway ML probe printing
+   \<open>Char.ord\<close> codes of a live \<open>repl_show\<close> call's output (same technique
+   as the Sledgehammer bisect). FIX, at the shared mechanism rather than
+   per-tool: \<open>MCP_Combinators.capture\<close> (MCP_Tools.thy) now applies
+   \<open>XML.content_of o YXML.parse_body\<close> unconditionally to the captured
+   output before returning it -- a safe identity on text that never had
+   any yxml to strip, so every existing capture-form fixture
+   (MCP_Tools_Tests.thy's capture_ok/capture_err/... ) stays green
+   unchanged. A3's wording above should be read as "plain print mode,
+   AND unconditional stripping" from here on; later waves do not need to
+   re-discover this -- \<open>capture\<close> already covers it for every tool that
+   moves through it.
+
+   Also landed, unrelated pre-existing breakage found while rebuilding
+   for this wave: mcp/Tools/ROOT's MCP-Assumption session had no \<open>in\<close>
+   clause, so its implicit directory collided with MCP-Tools's, and
+   \<open>isabelle build\<close> refused to parse the ROOT file AT ALL (no target
+   session could be built, migration-related or not) until
+   MCP_Assumption.thy moved into its own Assumption/ subdirectory. Fixed
+   first, as a standalone commit, before any wave-1 edit.
 
 7. WAVE 2 — the rest of the single-`repl` family; exercises all five
    annotation buckets against D2.
