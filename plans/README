@@ -224,7 +224,7 @@ flagged, NOT scheduled (no wave):
         human verifies with isabelle build; ML-only, no scala. spec
         refinement: targets THEORIES, not repls — a repl's transient
         facts exist in no file, so no recap can import them)
-  - [ ] proof_tasks            plans/proof_tasks  (the machine-checked
+  - [x] proof_tasks            plans/proof_tasks  (the machine-checked
         task list: every `sorry` in a theory is an obligation the
         prover knows is open, so the agent's task list is READ out of
         the theory rather than written by the agent. ML-only, no
@@ -236,6 +236,10 @@ flagged, NOT scheduled (no wave):
         recap's fact-filter question (recap A2) and its trust-audit
         APIs (recap A3, already settled on paper 2026-08-12 — oracles
         record at the default proof level, no proof terms needed).
-        one open assumption, A1: telling a DIRECT sorry from one
-        inherited through a dependency; settled by fixture, and the
-        tool degrades to a flat list if it comes out negative.)
+        IMPLEMENTED 2026-08-12, engine green; the BRIDGE step and A5
+        remain, so the [x] covers the ML layer only. A1 settled
+        NEGATIVE by fixture -- the own-proof-body reading yields
+        nothing at all -- and the dependency-walk fallback ships. The
+        fixture also settled recap's A2: package output DOES rest on
+        skipped proofs, so the filter is mandatory, and the kind tag
+        is what discriminates.)

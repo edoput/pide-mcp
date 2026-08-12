@@ -1,10 +1,38 @@
 proof_tasks (the machine-checked task list) — implementation plan
 =================================================================
 
-status: planned (2026-08-12)
-NOT scheduled into a wave. depends on nothing unbuilt (mcp_tool_command
-is DONE), so it can land whenever a wave opens. spec:
-D-2026-08-12-machine-checked-task-list.
+status: IMPLEMENTED and green (2026-08-12), steps 1-5 and 7; step 6
+(bridge) NOT done. spec: D-2026-08-12-machine-checked-task-list.
+Sources: mcp/Tools/HOL/MCP_Task_List.thy, with
+mcp/Tools/HOL/Tests/MCP_Fixture_Sorry.thy and MCP_Task_List_Tests.thy.
+
+DEVIATIONS, all forced by the fixture (the plan is the record, so they
+are written here rather than quietly absorbed):
+
+- A1 came out NEGATIVE, and for a reason this plan did not anticipate.
+  The own-proof-body reading does not misclassify — it yields NOTHING.
+  Every thm's PBody oracles field is empty, sorry_direct included, so
+  the fulfill_norm_proof/promise hazard was beside the point. A1b (walk
+  named dependencies) ships instead and classifies correctly.
+- the FACT FILTER moved from "do not block on it" to REQUIRED. The
+  plan's reasoning — "a sorry'd package theorem is not a thing that
+  happens" — is false: a bare `datatype` emits cheated Quickcheck and
+  Narrowing generator equations. The kind tag (Markup.kindN =
+  Thm.theoremK) is the discriminator, so recap's A2 is settled too.
+- A3 inverted: the oracle carries no term at all (and hence no
+  position). The tool always read Thm.prop_of, so it is unaffected,
+  but the plan's "oracle position as a secondary hint" is retired.
+- two traps not in the plan: facts are stored TRIMMED (Thm.transfer
+  before touching a proof body, else CONTEXT "No content for theory
+  certificate"), and Thy_Info has no entry for a theory DURING the
+  build that defines it, so the tests take the theory value from the
+  \<^theory> antiquotation.
+
+STILL OPEN: step 6 (bridge, mcp_test -b) and A5 (repl refusal) — the
+engine and its registration are green in-process, but proof_tasks has
+never been called over a live MCP.run_tool. A4 (position survives a
+heap load, MCP_Heap_Suite) is likewise untested: positions are
+asserted non-empty in-build only.
 
 shares stages 1-2 with plans/recap (enumerate the theory's own facts,
 filter package noise). it is the SMALLER of the two: it reports a list,
