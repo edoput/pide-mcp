@@ -4,6 +4,61 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-12 (the machine-checked task list: sorry as the work item)
+--------------------------------------------------------------------------
+
+- decided: an agent's task list is READ out of the theory, not written
+  by the agent. every `sorry` is a claim the prover knows is unproved,
+  so it is a machine-checked TODO. spec
+  "the machine-checked task list (sorry as the work item)"
+  (D-2026-08-12-machine-checked-task-list); plan plans/proof_tasks,
+  ML-only, not scheduled into a wave.
+
+- why it fits the existing design: the theory is already the record
+  (see the recap section's "a repl is NOT a sound input" refinement).
+  This makes the same file the WORK LIST too, and makes progress
+  prover-measured — prove the lemma, the sorry disappears, the list
+  shrinks. An agent cannot report done what the prover counts as open.
+  No session state anywhere: it is a pure function of a theory value.
+
+- mechanism is a kernel fact, not a grep for the word "sorry":
+  Skip_Proof invokes an oracle (Pure/skip_proof.ML:29) and Pure ships
+  the predicate Thm_Deps.has_skip_proof (Pure/thm_deps.ML:35).
+  Enumeration is recap's, unchanged: Facts.dest_static with the
+  parents' fact tables as exclusion bases.
+
+- VERIFIED 2026-08-12 against the bundled Isabelle2025-2, settling what
+  plans/recap listed as the open A3 worry: oracles are recorded at
+  NORMAL build settings, full proof terms NOT required. etc/options has
+  `record_proofs : int = -1`, leaving Proofterm.proofs at its default 6
+  (proofterm.ML:496); `oracle_enabled 6` is true (:494), so the oracle
+  keeps a position and the skipped term (thm.ML:1213).
+
+- two hazards pinned as behavior rather than left implicit:
+  the statement comes from Thm.prop_of on the FACT, never from the
+  oracle's term (cheat_tac's term is the skipped SUBGOAL with local
+  assumptions prepended, which differs from the lemma inside a
+  structured proof); and skip_proofs (Goal.skip_proofs_enabled,
+  Isar/proof.ML:1190) turns every non-relevant proof into the same
+  oracle, so under quick_and_dirty every lemma reads as a task — the
+  tool must refuse or stamp the answer with the setting.
+
+- OPEN, to be settled by fixture and not by reading source: telling a
+  DIRECT sorry from one inherited through a dependency.
+  Thm_Deps.all_oracles is transitive; a thm's own proof body would
+  discriminate (and give blocked-by ordering free) except that
+  fulfill_norm_proof (proofterm.ML:1999) unions promise oracles into
+  that field under parallel proofs. plans/proof_tasks A1.
+
+- also recorded, from the same investigation: the isabelle-ml skill
+  gained a Thy_Info topic (.claude/skills/isabelle-ml/SKILL.md plus
+  references/thy-info.md) — the theory database is a dependency graph
+  keyed by name with one entry per name, reload discards the old value
+  and every dependent, and `record_theories` gives history only INSIDE
+  one load. Consequence for tooling: to diff two versions of a theory,
+  load the old file under a different theory name; the prover holds no
+  history of its own.
+
 2026-08-09 (spec: every section carries a stable id)
 --------------------------------------------------------------------------
 

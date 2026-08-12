@@ -1719,6 +1719,78 @@ diffing Global_Theory.facts_of against the imports; the reply also
 carries the trust audit (oracles, sorries, axioms) so a recap that
 rests on a skipped proof says so.
 
+the machine-checked task list (sorry as the work item)
+-------------------------------------------------------
+id: D-2026-08-12-machine-checked-task-list
+
+decided 2026-08-12 (CHANGELOG same date). plan written
+(plans/proof_tasks), NOT scheduled into a wave.
+
+an agent working a long proof needs a task list. the usual shape is
+prose the agent writes about its own progress, which drifts from the
+theory and cannot be checked. the theory already carries a better
+one: every `sorry` in it is a claim the prover KNOWS is unproved. so
+the task list is not written, it is READ — out of the same theory
+value recap reads.
+
+  lemma no_starvation: "\<And>t. t \<in> tasks \<Longrightarrow> eventually_runs t"
+    sorry                                   <- one task
+
+this makes the theory file both the record and the work list, and it
+makes progress prover-measured: prove the lemma, the sorry goes away,
+the list shrinks by one. an agent cannot report a task done that the
+prover still counts as open.
+
+mechanism: `sorry` runs through an oracle (Thm.add_oracle
+"skip_proof", Pure/skip_proof.ML:29), so this is a kernel fact, not a
+text search for the word. enumerate the theory's own facts exactly as
+recap does — Facts.dest_static with the parents' fact tables as the
+exclusion bases — and keep those whose derivation carries that
+oracle. Pure ships the predicate: Thm_Deps.has_skip_proof
+(Pure/thm_deps.ML:35).
+
+VERIFIED 2026-08-12 against the bundled Isabelle2025-2: oracles are
+recorded at NORMAL build settings, no proof terms needed. etc/options
+carries `record_proofs : int = -1`, which leaves Proofterm.proofs at
+its default 6 (Pure/proofterm.ML:496), and `oracle_enabled 6` is true
+(:494) — so each oracle keeps a position and the skipped term
+(Pure/thm.ML:1213).
+
+a task entry carries: the fact name (externed), the position (from
+the fact space — Name_Space.the_entry on Global_Theory.fact_space,
+the idiom MCP_Repl.entities already uses; the oracle's own position
+is a secondary hint), and the statement.
+
+two hazards, both pinned as behavior:
+
+- the statement comes from Thm.prop_of on the FACT, never from the
+  oracle's term. Skip_Proof.cheat_tac builds its oracle over
+  `Logic.list_implies (map Thm.term_of assms, goal)` — the skipped
+  SUBGOAL with the local assumptions prepended. that coincides with
+  the lemma only for a top-level `lemma foo: "P" sorry`; inside a
+  structured proof, or for a sorry in a nested have, it does not.
+- skip_proofs poisons the list. Goal.skip_proofs_enabled
+  (Pure/Isar/proof.ML:1190) turns every non-relevant proof into the
+  same oracle, so under quick_and_dirty EVERY lemma reads as a task.
+  the tool must read that setting and refuse, or stamp the answer
+  with it. a silently-wrong task list is worse than no task list.
+
+OPEN: whether a lemma proved honestly FROM a sorry'd one can be told
+apart from one sorry'd directly. Thm_Deps.all_oracles is transitive —
+it recurses the dependency closure — so it flags both. a thm's own
+proof body should hold only its own oracles, which would discriminate
+and give blocked-by ordering for free; but fulfill_norm_proof
+(Pure/proofterm.ML:1999) unions promise oracles into that same field,
+and whether a cited lemma arrives as a promise depends on parallel
+proofs, which MCP-HOL builds with. settled by fixture, not by reading
+— see plans/proof_tasks A1.
+
+relation to recap: same enumeration, opposite direction. recap says
+what a theory HAS proved and hands the human a file to build; the
+task list says what it has NOT. the task list is the smaller tool —
+no restatement, no round-trip pre-flight, no A1-grade printing risk —
+so it is the cheaper first build of the two.
+
 editing theories and persisting changes
 ----------------------------------------
 id: D-undated-editing-theories-persisting-changes
