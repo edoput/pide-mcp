@@ -3,6 +3,7 @@ paths:
   - "mcp/Tools/**/*.thy"
   - "mcp/Tools/ROOT"
   - "ir/*.ML"
+  - "tools/wt-isabelle-build.sh"
 ---
 
 # Rebuild after theory/ML changes
@@ -51,116 +52,60 @@ anything:
     (line 1 of "/home/edoput/repo/isabelle-mcp/mcp/Tools/ROOT")
 ```
 
-Follow these steps. `<name>` is the worktree's name throughout; keep it
-the same in all of them.
-
-### Step 1 — pin the worktree path in a variable
-
-Do this in every shell you build from. `-d` is resolved relative to the
-current directory, so a stray `cd` (or a resumed session, which resets
-the working directory to the main checkout) will silently build the MAIN
-checkout instead — with no error, because that path is the one the
-component already registers.
+Use `tools/wt-isabelle-build.sh <name> [setup|build|clean|teardown]`,
+run from the main checkout. `<name>` is the worktree's name, matching
+`.claude/worktrees/<name>`.
 
 ```
-WT=/home/edoput/repo/isabelle-mcp/.claude/worktrees/<name>
+tools/wt-isabelle-build.sh <name> build       # setup (idempotent) + build
+tools/wt-isabelle-build.sh <name> clean       # force-rebuild MCP-HOL-Tests
+tools/wt-isabelle-build.sh <name> teardown    # rm -rf the scratch user dir
 ```
 
-Use `$WT/mcp/Tools` as the `-d` argument from here on, never a relative
-path.
+`build` runs `setup` first if the scratch Isabelle user directory
+(`~/.isabelle/wt-<name>`) doesn't exist yet, then invokes
+`isabelle build` under `ISABELLE_IDENTIFIER=wt-<name>` against
+`.claude/worktrees/<name>/mcp/Tools`. Run it from the main checkout
+(or with an absolute path) — the script hardcodes the worktree root, so
+a stray `cd` inside the worktree itself doesn't matter, but it must
+still be invoked with `bash`/`sh` finding it via the repo path, not a
+copy.
 
-### Step 2 — create the scratch Isabelle user directory (once per worktree)
-
-Symlink only the `HOL` and `Pure` heap **files**. Everything else —
-`log/` and the `MCP-*` heaps — stays private to the worktree.
-
-```
-S=~/.isabelle/wt-<name>
-R=~/.isabelle/Isabelle2025-2/heaps/polyml-5.9.2_x86_64_32-linux
-H="$S/heaps/polyml-5.9.2_x86_64_32-linux"
-
-mkdir -p "$S/etc" "$H/log"
-ln -s "$R/HOL" "$H/HOL"
-ln -s "$R/Pure" "$H/Pure"
-cp "$R/log/HOL.db" "$R/log/Pure.db" "$H/log/"
-printf '/home/edoput/repo/afp-current/afp-2025-06-04\n' > "$S/etc/components"
-cp ~/.isabelle/Isabelle2025-2/ROOTS "$S/ROOTS"
-```
-
-The `etc/components` file above is the real one **minus** the two repo
-component lines (`.../isabelle-mcp/mcp` and `.../isabelle-mcp/mcp_test`).
-Those are what put the main checkout's `ROOT` in scope. Keep the AFP line
-only if a session you build needs it.
-
-**Do not symlink the whole `heaps` directory.** `log/` lives *inside*
-it, and `log/` holds one SQLite database per session
-(`MCP-HOL-Tests.db` and friends). Sharing those makes the build die
-after compiling everything, with:
-
-```
-*** [SQLITE_CONSTRAINT_PRIMARYKEY] A PRIMARY KEY constraint failed
-    (UNIQUE constraint failed: isabelle_session_info.session_name)
-```
-
-because the main checkout already wrote a row for that session name.
-`isabelle build -c` does not clear it — the clean removes the heap, not
-the database row. Symlinking the two heap files instead keeps the
-databases separate and the collision never happens.
-
-Keeping the `MCP-*` heaps private has a second payoff: the worktree no
-longer overwrites the main checkout's heaps, so a running
-`isabelle mcp_server` keeps serving main-checkout theories while you
-work, and step 6 below becomes cleanup rather than repair.
-
-### Step 3 — build, selecting that directory with `ISABELLE_IDENTIFIER`
-
-```
-flatpak run --env=ISABELLE_IDENTIFIER=wt-<name> \
-  --command=isabelle de.tum.in.isabelle.Isabelle build \
-  -d "$WT/mcp/Tools" -v MCP-Tools MCP-Tools-Tests MCP-HOL MCP-HOL-Tests
-```
-
-Do **not** try `--env=ISABELLE_HOME_USER=...` instead — it is silently
-ignored (see "Why" below).
-
-### Step 4 — confirm it built the worktree, not the main checkout
+### Confirming it built the worktree, not the main checkout
 
 Check the theory list in the output against the worktree's `ROOT`:
 
 ```
-... | grep "MCP-HOL-Tests: theory"
+tools/wt-isabelle-build.sh <name> build | grep "MCP-HOL-Tests: theory"
 ```
 
 Every theory named in the worktree's `ROOT` must appear, and any theory
 that exists only in the main checkout's `ROOT` must not. If the lists are
-swapped, `-d` pointed at the wrong tree — go back to step 1.
+swapped, the worktree doesn't exist at the expected path — check
+`.claude/worktrees/<name>`.
 
-### Step 5 — forcing a rebuild
+### Forcing a rebuild
 
 Isabelle keys staleness off file **content**, not mtime, so `touch` does
 nothing. To re-run a session whose sources have not changed (e.g. to see
-its output again), clean it first:
+its output again), use the `clean` action — it runs `isabelle build -c`.
+
+### When finished with the worktree
 
 ```
-flatpak run --env=ISABELLE_IDENTIFIER=wt-<name> \
-  --command=isabelle de.tum.in.isabelle.Isabelle build -c \
-  -d "$WT/mcp/Tools" -v MCP-HOL-Tests
+tools/wt-isabelle-build.sh <name> teardown
 ```
 
-### Step 6 — when finished with the worktree
+That is all, **provided the scratch dir kept the `MCP-*` heaps
+private** (which `setup` always does). The symlinks it creates point at
+`HOL` and `Pure` only, and neither is ever rebuilt by an MCP session, so
+the main checkout is untouched and needs no rebuild.
 
-```
-rm -rf ~/.isabelle/wt-<name>
-```
-
-That is all, **provided step 2 kept the `MCP-*` heaps private**. The
-symlinks point at `HOL` and `Pure` only, and neither is ever rebuilt by
-an MCP session, so the main checkout is untouched and needs no rebuild.
-
-If you instead symlinked the whole `heaps` directory (the older form of
-step 2), the worktree's `MCP-HOL` heap overwrote the main checkout's
-heap of the same name, and a running `isabelle mcp_server` serves
-worktree theories until you rebuild it:
+If a worktree's scratch dir was ever set up by hand with the whole
+`heaps` directory symlinked (the old, unscripted approach), the
+worktree's `MCP-HOL` heap overwrote the main checkout's heap of the
+same name, and a running `isabelle mcp_server` serves worktree theories
+until you rebuild it:
 
 ```
 cd /home/edoput/repo/isabelle-mcp && flatpak run --command=isabelle \
@@ -168,30 +113,44 @@ cd /home/edoput/repo/isabelle-mcp && flatpak run --command=isabelle \
   MCP-Tools MCP-Tools-Tests MCP-HOL MCP-HOL-Tests
 ```
 
-### Why each step is shaped that way
+### Why the script is shaped that way
 
-- **The collision (step 2).** `mcp` is a registered user-space Isabelle
-  component: `$ISABELLE_HOME_USER/etc/components` lists
+- **The collision `setup` avoids.** `mcp` is a registered user-space
+  Isabelle component: `$ISABELLE_HOME_USER/etc/components` lists
   `/home/edoput/repo/isabelle-mcp/mcp`, and that directory's `ROOTS` file
   contains `Tools`. So the main checkout's `mcp/Tools/ROOT` is in scope
   for every build from anywhere. Passing `-d` for the worktree's copy
-  puts the same four session names in scope twice.
-- **`ISABELLE_IDENTIFIER`, not `ISABELLE_HOME_USER` (step 3).**
+  puts the same four session names in scope twice unless the scratch
+  `etc/components` drops the two repo component lines — which is why
+  `setup` filters them out rather than copying the file verbatim.
+- **`ISABELLE_IDENTIFIER`, not `ISABELLE_HOME_USER`.**
   `etc/settings:78-81` assigns
   `ISABELLE_HOME_USER="$USER_HOME/.isabelle/$ISABELLE_IDENTIFIER"`
   unconditionally, overwriting whatever the environment said.
   `ISABELLE_IDENTIFIER` *is* honoured from the environment
-  (`lib/scripts/getsettings:71-73`), so it is the supported lever.
-- **`HOL` and `Pure` must be symlinked (step 2).** The flatpak's system
+  (`lib/scripts/getsettings:71-73`), so the script sets that instead.
+- **`HOL` and `Pure` are symlinked, not rebuilt.** The flatpak's system
   heaps (`/app/heaps`) are EMPTY, and heap lookup is user-then-system
   with no fallback, so a scratch heaps directory with nothing in it
   forces a full Pure → HOL rebuild — which on this machine gets
   OOM-killed partway. With the two symlinks, `HOL` is reused and only
   the MCP sessions rebuild (~20s).
-- **but only those two (step 2).** Sharing `log/` shares the per-session
-  SQLite databases, and the build then fails at the very end on a
-  PRIMARY KEY conflict against the main checkout's row. Sharing the
-  `MCP-*` heaps makes the worktree overwrite the main checkout's. Both
-  are avoided by symlinking the two files rather than the directory.
-  The `.db` copies for `HOL`/`Pure` are needed because a heap without
-  its database row does not count as built.
+- **but only those two, not the whole `heaps` dir.** `log/` lives
+  *inside* `heaps/`, and holds one SQLite database per session
+  (`MCP-HOL-Tests.db` and friends). Symlinking the whole directory
+  shares those, and the build then dies at the very end on:
+
+  ```
+  *** [SQLITE_CONSTRAINT_PRIMARYKEY] A PRIMARY KEY constraint failed
+      (UNIQUE constraint failed: isabelle_session_info.session_name)
+  ```
+
+  because the main checkout already wrote a row for that session name,
+  and `isabelle build -c` clears the heap, not the database row.
+  Symlinking the two heap files instead keeps the databases separate
+  and the collision never happens — and as a second payoff, the
+  worktree never overwrites the main checkout's `MCP-*` heaps, so a
+  running `isabelle mcp_server` keeps serving main-checkout theories
+  while you work, and `teardown` is cleanup rather than repair. The
+  `.db` copies for `HOL`/`Pure` are needed because a heap without its
+  database row does not count as built.
