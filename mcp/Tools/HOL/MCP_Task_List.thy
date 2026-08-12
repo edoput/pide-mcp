@@ -27,7 +27,6 @@ sig
     {name: string, pos: Position.T, statement: string, direct: bool}
   val tasks_of: theory -> task list
   val tasks: string list -> string
-  val directly_skipped: thm -> bool
   val rests_on_skip: thm -> bool
 end;
 
@@ -40,30 +39,59 @@ type task =
 
 (* the skip_proof oracle *)
 
-(*a thm's OWN proof body vs its whole dependency closure. Thm_Deps
-  .all_oracles recurses the closure (Pure/thm_deps.ML), so a lemma
-  proved honestly FROM a sorry'd one reports the oracle too -- true,
-  but not a task: it closes for free when its dependency closes. The
-  own-body reading is what separates them, and it is plans/proof_tasks
-  A1 -- see MCP_Fixture_Sorry.thy, which settles it empirically. If A1
-  comes out negative the classification degrades to "everything is
-  direct" and the assembled text says so, rather than lying.*)
-fun own_oracles thm =
-  (case Thm.proof_body_of thm of Proofterm.PBody {oracles, ...} => oracles);
-
-fun is_skip ((name, _): string * Position.T, _: term option) =
-  name = \<^oracle_name>\<open>skip_proof\<close>;
-
-fun directly_skipped thm = exists is_skip (own_oracles thm);
+(*Thm_Deps.all_oracles recurses the whole dependency closure
+  (Pure/thm_deps.ML), so a lemma proved honestly FROM a sorry'd one
+  reports the oracle too -- true, but not a task: it closes for free
+  when its dependency closes. Separating the two is plans/proof_tasks
+  A1, and it is settled EMPIRICALLY by MCP_Fixture_Sorry.thy.*)
 fun rests_on_skip thm = Thm_Deps.has_skip_proof [thm];
 
-(*the oracle's own position is the SORRY SITE, which is a better hint
-  than the declaration site when they differ (a sorry nested inside a
-  long structured proof). Secondary: the fact-space entry is primary,
-  see task_of below.*)
-fun skip_positions thm =
-  own_oracles thm |> map_filter (fn (o' as ((_, pos), _)) =>
-    if is_skip o' andalso pos <> Position.none then SOME pos else NONE);
+(*A1 came out NEGATIVE (2026-08-12). The obvious reading -- a thm's OWN
+  proof body holds only its own oracles -- does not merely misclassify,
+  it yields NOTHING: every thm's PBody oracles field is empty, a
+  directly sorry'd one included. The oracles live behind the proof
+  futures and are only reachable by joining and recursing, which is what
+  all_oracles does (Proofterm.join_thms in its `collect`). Do not retry
+  the own-body reading; the fixture asserts it stays empty.
+
+  A1b, the plan's stated fallback, DOES work and is what runs here: walk
+  the NAMED dependencies. A fact resting on a skipped proof is INHERITED
+  when another sorry-resting fact of the same theory is among its
+  dependencies, and DIRECT otherwise.
+
+  Known edge: a lemma that is BOTH sorry'd itself and uses a sorry'd
+  lemma classifies as inherited. It is still listed, just in the second
+  block -- under-reporting a task, never inventing one.*)
+fun dep_names thy thm =
+  Thm_Deps.thm_deps thy [thm] |> map (#1 o #2);
+
+
+(* the fact filter *)
+
+(*Package output DOES rest on skipped proofs -- the optimistic reading
+  ("a sorry'd package theorem is not a thing that happens") is simply
+  false. A bare `datatype` emits Quickcheck/Narrowing generator
+  equations proved by cheating:
+
+    color.full_exhaustive_color.simps :: kind="(none)"
+    color.narrowing_color.simps       :: kind="(none)"
+    sorry_direct                      :: kind="theorem"
+
+  (measured on MCP_Fixture_Sorry, 2026-08-12). Without a filter every
+  datatype in the target theory contributes two phantom tasks.
+
+  Neither of those is CONCEALED, which confirms the standing note that
+  Name_Space.is_concealed under-filters. The KIND TAG does discriminate:
+  a fact stated by the user through lemma/theorem/corollary carries
+  Markup.kindN = Thm.theoremK ("theorem" -- Isabelle normalises all
+  three commands to it), and package output carries no kind at all.
+
+  This also answers plans/recap's A2 for recap, empirically, and by a
+  route recap can reuse verbatim.*)
+fun is_stated thm =
+  (case Properties.get (Thm.get_tags thm) Markup.kindN of
+    SOME kind => kind = Thm.theoremK
+  | NONE => false);
 
 
 (* the skip_proofs gate *)
@@ -107,27 +135,28 @@ fun own_facts thy =
 (*name: the EXTERNED spelling -- the name a user would actually type.
   position: from the fact space (Name_Space.the_entry on
     Global_Theory.fact_space), the DECLARATION site. This is the idiom
-    already in this tree (MCP_Repl.entities). The oracle's position is
-    reported as a secondary hint when it differs.
+    already in this tree (MCP_Repl.entities), and it is now the ONLY
+    source: the oracle's own position would have been the sorry site,
+    but thm.ML:1213 takes the position and the term from the same
+    branch, and this session records neither (MCP_Fixture_Sorry's A3).
   statement: Thm.prop_of on the FACT -- never the oracle's term.
     Skip_Proof.cheat_tac builds its oracle over
     `Logic.list_implies (map Thm.term_of assms, goal)`, the skipped
-    SUBGOAL with the local assumptions prepended; inside a structured
-    proof that is NOT the lemma (MCP_Fixture_Sorry.sorry_structured is
-    exactly this case).*)
-fun task_of ctxt thy (name, thm) =
+    SUBGOAL with the local assumptions prepended, which inside a
+    structured proof is NOT the lemma. Moot in practice, since no term
+    is recorded at all -- but the rule stands whatever the proof level.*)
+fun task_of ctxt thy direct (name, thm) =
   let
     val facts = Global_Theory.facts_of thy;
     val extern = Facts.extern ctxt facts name;
-    (*the_entry raises for a name with no entry (dynamic facts); fall
-      back to the oracle's own sorry-site position, then to none*)
+    (*the_entry raises for a name with no entry (dynamic facts)*)
     val pos =
       (case try (#pos o Name_Space.the_entry (Facts.space_of facts)) name of
         SOME p => p
-      | NONE => (case skip_positions thm of p :: _ => p | [] => Position.none));
+      | NONE => Position.none);
     val stmt = Syntax.string_of_term ctxt (Thm.prop_of thm);
   in
-    {name = extern, pos = pos, statement = stmt, direct = directly_skipped thm}
+    {name = extern, pos = pos, statement = stmt, direct = direct}
   end;
 
 fun tasks_of thy =
@@ -135,19 +164,44 @@ fun tasks_of thy =
     val _ = check_skip_proofs ();
     val ctxt = Proof_Context.init_global thy;
     (*a fact is a thm LIST; report the ones that rest on a skipped
-      proof, keeping the fact name (indexed when the fact is plural)*)
-    fun entries (name, thms) =
-      let val n = length thms in
+      proof. Two names are carried: the INTERNAL one, which is what the
+      dependency walk matches against, and the display one (indexed when
+      the fact is plural).*)
+    (*facts are stored TRIMMED (Thm.trim_context, to keep theory values
+      small), and a trimmed thm carries only a certificate id. Touching
+      its proof body then raises
+        CONTEXT ("No content for theory certificate ...")
+      from thm.ML. Transfer each thm back into the theory first -- this
+      is required before has_skip_proof, prop_of or anything else that
+      reaches into the derivation.*)
+    fun entries (name, thms0) =
+      let
+        val thms = map (Thm.transfer thy) thms0;
+        val n = length thms;
+      in
         thms |> map_index (fn (i, thm) =>
-          if rests_on_skip thm then
-            SOME (if n = 1 then name else name ^ "(" ^ string_of_int (i + 1) ^ ")", thm)
+          if is_stated thm andalso rests_on_skip thm then
+            SOME (name,
+              (if n = 1 then name else name ^ "(" ^ string_of_int (i + 1) ^ ")", thm))
           else NONE)
         |> map_filter I
       end;
+
+    val skipped = own_facts thy |> maps entries;
+    val skipped_names = map #1 skipped;
+
+    (*A1b: inherited iff some OTHER sorry-resting fact of this theory is
+      among the named dependencies*)
+    fun classify (internal, entry as (_, thm)) =
+      let
+        val deps = dep_names thy thm;
+        val inherited =
+          exists (fn other =>
+            other <> internal andalso member (op =) deps other) skipped_names;
+      in task_of ctxt thy (not inherited) entry end;
   in
-    own_facts thy
-    |> maps entries
-    |> map (task_of ctxt thy)
+    skipped
+    |> map classify
     |> sort (fn (t1: task, t2: task) =>
          int_ord (the_default 0 (Position.line_of (#pos t1)),
                   the_default 0 (Position.line_of (#pos t2))))

@@ -29,5 +29,6 @@ session "MCP-HOL-Tests" in "HOL/Tests" = "MCP-HOL" +
   theories
     MCP_Fixture_Nav
     MCP_Fixture_Sorry
+    MCP_Task_List_Tests
     MCP_Repl_Tests
     Ir_Tests
