@@ -1749,19 +1749,22 @@ exclusion bases — and keep those whose derivation carries that
 oracle. Pure ships the predicate: Thm_Deps.has_skip_proof
 (Pure/thm_deps.ML:35).
 
-VERIFIED 2026-08-12 against the bundled Isabelle2025-2: oracles are
-recorded at NORMAL build settings, no proof terms needed. etc/options
-carries `record_proofs : int = -1`, which leaves Proofterm.proofs at
-its default 6 (Pure/proofterm.ML:496), and `oracle_enabled 6` is true
-(:494) — so each oracle keeps a position and the skipped term
-(Pure/thm.ML:1213).
+oracles are recorded at NORMAL build settings, with no proof terms
+needed — a source reading (etc/options carries `record_proofs : int =
+-1`, leaving Proofterm.proofs at its default 6, Pure/proofterm.ML:496,
+and `oracle_enabled 6` is true, :494) that the tool's own build then
+CONFIRMED. what that same reading got WRONG, corrected 2026-08-12 from
+the build rather than the source: the recorded oracles carry NO term.
+Pure/thm.ML:1213 takes the term and the position from the same branch,
+so there is no oracle position either. reading an oracle's term was
+already ruled out below; it now turns out there is nothing to read.
 
-a task entry carries: the fact name (externed), the position (from
-the fact space — Name_Space.the_entry on Global_Theory.fact_space,
-the idiom MCP_Repl.entities already uses; the oracle's own position
-is a secondary hint), and the statement.
+a task entry carries: the fact name (externed), the position — from
+the fact space (Name_Space.the_entry on Global_Theory.fact_space, the
+idiom MCP_Repl.entities already uses), which is the ONLY source, the
+oracle's own position being absent per above — and the statement.
 
-two hazards, both pinned as behavior:
+three hazards, all pinned as behavior:
 
 - the statement comes from Thm.prop_of on the FACT, never from the
   oracle's term. Skip_Proof.cheat_tac builds its oracle over
@@ -1771,19 +1774,47 @@ two hazards, both pinned as behavior:
   structured proof, or for a sorry in a nested have, it does not.
 - skip_proofs poisons the list. Goal.skip_proofs_enabled
   (Pure/Isar/proof.ML:1190) turns every non-relevant proof into the
-  same oracle, so under quick_and_dirty EVERY lemma reads as a task.
-  the tool must read that setting and refuse, or stamp the answer
-  with it. a silently-wrong task list is worse than no task list.
+  same oracle, so EVERY lemma would read as a task. the tool refuses
+  when it is set. a silently-wrong task list is worse than none.
+  NOTE, corrected 2026-08-12: this is the `skip_proofs` build option,
+  NOT `quick_and_dirty`, which an earlier draft of this section
+  conflated with it. they are different levers — quick_and_dirty
+  (Goal.quick_and_dirty, a context config) merely PERMITS `sorry` and
+  adds no oracle of its own; a theory containing sorries needs it and
+  must still be listable. only skip_proofs manufactures the noise.
+- PACKAGE OUTPUT rests on skipped proofs, so the fact filter is
+  mandatory, not a nicety (measured 2026-08-12: a bare `datatype`
+  emits color.full_exhaustive_color.simps and
+  color.narrowing_color.simps, both cheated, neither concealed). the
+  KIND TAG discriminates: a user statement carries Markup.kindN =
+  Thm.theoremK, package output carries no kind. this also settles
+  plans/recap's A2, by a route recap reuses verbatim.
 
-OPEN: whether a lemma proved honestly FROM a sorry'd one can be told
-apart from one sorry'd directly. Thm_Deps.all_oracles is transitive —
-it recurses the dependency closure — so it flags both. a thm's own
-proof body should hold only its own oracles, which would discriminate
-and give blocked-by ordering for free; but fulfill_norm_proof
-(Pure/proofterm.ML:1999) unions promise oracles into that same field,
-and whether a cited lemma arrives as a promise depends on parallel
-proofs, which MCP-HOL builds with. settled by fixture, not by reading
-— see plans/proof_tasks A1.
+RESOLVED 2026-08-12 (was OPEN): a lemma proved honestly FROM a sorry'd
+one CAN be told apart from one sorry'd directly, but not the way this
+section first proposed.
+
+Thm_Deps.all_oracles is transitive — it recurses the dependency
+closure — so it flags both. the proposal was that a thm's own proof
+body holds only its own oracles. that is FALSE, and not marginally:
+every thm's PBody oracles field is EMPTY, a directly sorry'd one
+included. the oracles live behind the proof futures and are reachable
+only by joining and recursing, which is exactly what all_oracles does.
+so the own-body reading yields nothing at all, and the worry about
+fulfill_norm_proof unioning promise oracles was beside the point.
+
+what ships instead is the fallback: walk the NAMED dependencies
+(Thm_Deps.thm_deps). a fact resting on a skipped proof is INHERITED
+when another sorry-resting fact of the same theory is among its
+dependencies, and DIRECT otherwise. known edge, accepted: a lemma both
+sorry'd itself AND using a sorry'd lemma classifies as inherited — it
+is still listed, in the second block, so the failure mode is
+under-promoting a task, never inventing one.
+
+one further trap, found the same day and worth stating because it
+costs an hour: facts are stored TRIMMED, so reaching into a proof body
+raises CONTEXT ("No content for theory certificate ..."). transfer
+each thm into the theory (Thm.transfer) before inspecting it.
 
 relation to recap: same enumeration, opposite direction. recap says
 what a theory HAS proved and hands the human a file to build; the

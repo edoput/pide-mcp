@@ -50,6 +50,39 @@ record; entries here point at the section that carries the details.
   fulfill_norm_proof (proofterm.ML:1999) unions promise oracles into
   that field under parallel proofs. plans/proof_tasks A1.
 
+- IMPLEMENTED the same day, and four of this entry's claims did not
+  survive the build. proof_tasks is green (MCP_Task_List.thy in
+  MCP-HOL; MCP_Fixture_Sorry + MCP_Task_List_Tests in MCP-HOL-Tests),
+  and the spec section is corrected from what the build showed rather
+  than what the sources suggested:
+
+  - A1 RESOLVED, negative. The own-proof-body reading yields NOTHING:
+    every thm's PBody oracles field is empty, a directly sorry'd one
+    included. Oracles sit behind the proof futures, reachable only by
+    joining and recursing — which is what all_oracles already does.
+    The plan's fallback ships: walk named dependencies with
+    Thm_Deps.thm_deps, and call a sorry-resting fact inherited when
+    another sorry-resting fact is among them.
+  - the FACT FILTER is mandatory, not optional. A bare `datatype`
+    emits Quickcheck/Narrowing generator equations proved by cheating,
+    so every datatype would contribute two phantom tasks. Neither is
+    concealed, confirming is_concealed under-filters. The kind tag
+    discriminates: user statements carry Markup.kindN = Thm.theoremK,
+    package output carries none. This settles plans/recap's A2 too.
+  - the oracle carries NO TERM (and so no position — thm.ML:1213 takes
+    both from one branch). The entry above claimed it kept both. The
+    tool never depended on it, but "oracle position as a secondary
+    hint" is retired.
+  - quick_and_dirty vs skip_proofs were CONFLATED above. Only
+    `skip_proofs` manufactures the noise the gate exists for.
+    `quick_and_dirty` merely permits `sorry` — a theory full of
+    sorries needs it and must still be listable. Related: declaring
+    quick_and_dirty above a `fun` makes its package skip the
+    termination proof through the same oracle, which made an honestly
+    proved lemma report as unproved.
+  - facts are stored TRIMMED; touching a proof body without
+    Thm.transfer raises CONTEXT ("No content for theory certificate").
+
 - also recorded, from the same investigation: the isabelle-ml skill
   gained a Thy_Info topic (.claude/skills/isabelle-ml/SKILL.md plus
   references/thy-info.md) — the theory database is a dependency graph
