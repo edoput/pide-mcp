@@ -71,10 +71,18 @@ path.
 
 ### Step 2 — create the scratch Isabelle user directory (once per worktree)
 
+Symlink only the `HOL` and `Pure` heap **files**. Everything else —
+`log/` and the `MCP-*` heaps — stays private to the worktree.
+
 ```
 S=~/.isabelle/wt-<name>
-mkdir -p "$S/etc"
-ln -s ~/.isabelle/Isabelle2025-2/heaps "$S/heaps"
+R=~/.isabelle/Isabelle2025-2/heaps/polyml-5.9.2_x86_64_32-linux
+H="$S/heaps/polyml-5.9.2_x86_64_32-linux"
+
+mkdir -p "$S/etc" "$H/log"
+ln -s "$R/HOL" "$H/HOL"
+ln -s "$R/Pure" "$H/Pure"
+cp "$R/log/HOL.db" "$R/log/Pure.db" "$H/log/"
 printf '/home/edoput/repo/afp-current/afp-2025-06-04\n' > "$S/etc/components"
 cp ~/.isabelle/Isabelle2025-2/ROOTS "$S/ROOTS"
 ```
@@ -83,6 +91,26 @@ The `etc/components` file above is the real one **minus** the two repo
 component lines (`.../isabelle-mcp/mcp` and `.../isabelle-mcp/mcp_test`).
 Those are what put the main checkout's `ROOT` in scope. Keep the AFP line
 only if a session you build needs it.
+
+**Do not symlink the whole `heaps` directory.** `log/` lives *inside*
+it, and `log/` holds one SQLite database per session
+(`MCP-HOL-Tests.db` and friends). Sharing those makes the build die
+after compiling everything, with:
+
+```
+*** [SQLITE_CONSTRAINT_PRIMARYKEY] A PRIMARY KEY constraint failed
+    (UNIQUE constraint failed: isabelle_session_info.session_name)
+```
+
+because the main checkout already wrote a row for that session name.
+`isabelle build -c` does not clear it — the clean removes the heap, not
+the database row. Symlinking the two heap files instead keeps the
+databases separate and the collision never happens.
+
+Keeping the `MCP-*` heaps private has a second payoff: the worktree no
+longer overwrites the main checkout's heaps, so a running
+`isabelle mcp_server` keeps serving main-checkout theories while you
+work, and step 6 below becomes cleanup rather than repair.
 
 ### Step 3 — build, selecting that directory with `ISABELLE_IDENTIFIER`
 
@@ -122,17 +150,23 @@ flatpak run --env=ISABELLE_IDENTIFIER=wt-<name> \
 ### Step 6 — when finished with the worktree
 
 ```
-# rebuild the main checkout's heaps from the main checkout
-cd /home/edoput/repo/isabelle-mcp && flatpak run --command=isabelle \
-  de.tum.in.isabelle.Isabelle build -d mcp/Tools \
-  MCP-Tools MCP-Tools-Tests MCP-HOL MCP-HOL-Tests
 rm -rf ~/.isabelle/wt-<name>
 ```
 
-Step 6 matters because `heaps` is shared: an `MCP-HOL` heap built from
-the worktree **overwrites** the main checkout's heap of the same name, so
-a running `isabelle mcp_server` serves worktree theories until you
-rebuild.
+That is all, **provided step 2 kept the `MCP-*` heaps private**. The
+symlinks point at `HOL` and `Pure` only, and neither is ever rebuilt by
+an MCP session, so the main checkout is untouched and needs no rebuild.
+
+If you instead symlinked the whole `heaps` directory (the older form of
+step 2), the worktree's `MCP-HOL` heap overwrote the main checkout's
+heap of the same name, and a running `isabelle mcp_server` serves
+worktree theories until you rebuild it:
+
+```
+cd /home/edoput/repo/isabelle-mcp && flatpak run --command=isabelle \
+  de.tum.in.isabelle.Isabelle build -d mcp/Tools \
+  MCP-Tools MCP-Tools-Tests MCP-HOL MCP-HOL-Tests
+```
 
 ### Why each step is shaped that way
 
@@ -148,8 +182,16 @@ rebuild.
   unconditionally, overwriting whatever the environment said.
   `ISABELLE_IDENTIFIER` *is* honoured from the environment
   (`lib/scripts/getsettings:71-73`), so it is the supported lever.
-- **`heaps` must be a symlink (step 2).** The flatpak's system heaps
-  (`/app/heaps`) are EMPTY, and heap lookup is user-then-system with no
-  fallback, so a scratch `heaps` directory of its own forces a full
-  Pure → HOL rebuild. With the symlink, `HOL` is reused and only the MCP
-  sessions rebuild (~20s).
+- **`HOL` and `Pure` must be symlinked (step 2).** The flatpak's system
+  heaps (`/app/heaps`) are EMPTY, and heap lookup is user-then-system
+  with no fallback, so a scratch heaps directory with nothing in it
+  forces a full Pure → HOL rebuild — which on this machine gets
+  OOM-killed partway. With the two symlinks, `HOL` is reused and only
+  the MCP sessions rebuild (~20s).
+- **but only those two (step 2).** Sharing `log/` shares the per-session
+  SQLite databases, and the build then fails at the very end on a
+  PRIMARY KEY conflict against the main checkout's row. Sharing the
+  `MCP-*` heaps makes the worktree overwrite the main checkout's. Both
+  are avoided by symlinking the two files rather than the directory.
+  The `.db` copies for `HOL`/`Pure` are needed because a heap without
+  its database row does not count as built.
