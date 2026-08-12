@@ -248,6 +248,26 @@ ASSUMPTIONS -> tests   (ranked by risk)
   under the session's normal proof-recording settings (NOT only with
   full proof terms — verify), and Theory.all_axioms_of minus parents
   yields exactly an axiomatization's axioms. [ml unit]
+
+  the proof-recording half is SETTLED ON PAPER (2026-08-12, source
+  read, still wants the ml unit): oracles ARE recorded at normal
+  settings. etc/options carries `record_proofs : int = -1`, which
+  leaves Proofterm.proofs at its default 6 (Pure/proofterm.ML:496),
+  and `oracle_enabled 6` is true (:494) — so the oracle keeps both a
+  position and the skipped term (Pure/thm.ML:1213). full proof terms
+  are not needed. Pure also ships Thm_Deps.has_skip_proof
+  (Pure/thm_deps.ML:35) so the sorry test need not be hand-rolled.
+  CAVEAT recap must respect, from the same reading: all_oracles is
+  TRANSITIVE, so a theorem proved honestly from a sorry'd one also
+  reports skip_proof — recap's audit line must say which of the two it
+  means, or it will look like it is accusing clean theorems. see
+  plans/proof_tasks A1, which owns settling direct-vs-inherited.
+
+  BUILD ORDER (2026-08-12): plans/proof_tasks is the smaller tool and
+  shares this plan's stages 1-2. its fixture (a datatype + fun +
+  definition + lemmas + a sorry'd lemma) is the same fixture A2 needs.
+  building task_list first settles A2 and A3 empirically and leaves
+  recap with only A1 genuinely open.
 - A4 IMPORT-NAME RESOLUTION: the theory names recap writes into the
   `imports` clause resolve from the directory the client writes
   Recap.thy into (session-qualified vs base names). get this wrong and
