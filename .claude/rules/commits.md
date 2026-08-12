@@ -24,9 +24,14 @@ Never mix these three kinds in a single commit. Because a `git add` hook
 keeps every tracked file staged, commit each group with an explicit
 pathspec rather than committing the whole index, e.g.:
 
-    git commit -- spec CHANGELOG -m "..."
-    git commit -- plans/ -m "..."
-    git commit -- mcp/ mcp_test/ -m "..."
+    git commit -m "..." -- spec CHANGELOG
+    git commit -m "..." -- plans/
+    git commit -m "..." -- mcp/ mcp_test/
+
+The message must come BEFORE the `--`. Everything after `--` is a
+pathspec, so `git commit -- spec CHANGELOG -m "..."` makes git treat
+`-m` and the message itself as filenames and fail with
+`error: pathspec '-m' did not match any file(s) known to git`.
 
 One logical change may therefore produce up to three commits, in the
 order above.
