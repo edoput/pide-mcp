@@ -201,3 +201,67 @@ open questions / follow-ups (not blocking this experiment)
   1ms floor is exceeded; sub-millisecond commands report as zero
   across the board. Not worth chasing at this MVP stage --
   the point is finding the multi-second outlier, not micro-profiling.
+
+addendum: profile_proof_time_grouped (hierarchical, decided 2026-08-13)
+--------------------------------------------------------------------------
+
+spec: D-2026-08-13-proof-profiler-time-hierarchical. status: landed,
+same PR/branch as the base tool.
+
+advertised metadata: name profile_proof_time_grouped, same
+inputSchema ({theory, text}, both quoted param names for the same
+outer-syntax-keyword-collision reason as the base tool) and
+annotations (read_only) as profile_proof_time.
+
+mechanism: `MCP_Profile_Time.collect` (extracted from the base tool's
+`profile` so both tools share one code path for building the scratch
+state and folding transitions) now tags every `entry` with `level =
+Toplevel.level` of the post-transition state (or the pre-transition
+state, unchanged, for a failed transition -- it never advances).
+`group_entries` folds the document-order entry list into blocks: a
+block closes on the entry whose level reads 0 and a new one opens
+right after; Toplevel.level is 0 at theory level and >0 anywhere
+inside a goal/proof, so this is exactly "one lemma/theorem statement
+through its close", or a singleton block for a command that never
+leaves level 0 (definition, a fun whose termination proof is internal
+to that one transition). No hardcoded command-name whitelist --
+tried and rejected first, because it would silently miss any
+goal-opening command the list didn't happen to name (interpretation,
+lift_definition with a proof obligation, ...).
+format_grouped_report sorts blocks by their own summed elapsed time,
+slowest first; within a block, entries are still sorted
+slowest-command-first (reusing the base tool's `format_entry`/
+`by_elapsed_desc`, indented one level).
+
+implementation steps
+----------------------
+
+1. widen `entry` with a `level` field; populate it in `go`'s two
+   branches. [done -- purely additive, no existing field removed]
+2. `group_entries` / `group_total` / `group_label` /
+   `by_group_elapsed_desc` / `format_group` / `format_grouped_report`.
+   [done]
+3. extract `collect` (state-build + transition-fold, shared by
+   `profile` and the new `profile_grouped`) out of the base tool's
+   `profile` without changing `profile`'s own output format or
+   tested behavior. [done -- T1-T5 from the base tool still pass
+   unmodified]
+4. `profile_grouped` + `mcp_tool "profile_proof_time_grouped"`. [done]
+5. tests: T6 (two real lemma blocks + one singleton `fun` block, 3
+   groups total, the block containing a genuinely slow command sorts
+   first) and T7 (registry wiring). [done, both green]
+
+ASSUMPTIONS -> tests
+----------------------
+
+- A6 `Toplevel.level` reaching 0 is a correct, general block
+  boundary -- verified interactively (`isabelle console`) against a
+  `lemma ... proof - show ... qed` block (level: 1, 2, 3, 2, 0) and a
+  single-line `lemma ... by ...` block (level: 1, 0) before writing
+  any code; both match the intended grouping. [ml unit: T6 -- exactly
+  3 groups for fun/lemma/lemma, verifying the boundary count, not
+  just isolated interactive probing]
+- A7 grouping is purely additive: it must not change
+  `profile_proof_time`'s existing behavior or output format. [ml
+  unit: base tool's own T1-T5 pass unmodified after this addendum --
+  same file, same test IDs, re-run as part of the same build]
