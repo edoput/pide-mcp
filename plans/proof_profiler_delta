@@ -43,13 +43,21 @@ constraint shared with other in-flight work).
 input contract
 --------------
 
-  profile_proof_delta {theory: "HOL.Main", text: "lemma ... qed"}
+  profile_proof_delta {theory: "HOL.Main", isar_text: "lemma ... qed"}
     -> profiling report TEXT
+
+NAMING DEVIATION FROM THE BRIEF, found empirically while building this
+(trust the code over the brief, per the ground rules): the brief's
+input contract said `text`, but bare `text` is itself a registered
+Isar COMMAND keyword, so `Outer_Syntax` splits the `mcp_tool`
+declaration's own span right at that token -- "name expected, but
+end-of-input was found". Renamed to `isar_text`, which also matches
+`repl_step`'s own parameter name for the same kind of argument.
 
 `theory` resolved via `Thy_Info.get_theory` (idiom `MCP_Repl.entities`
 already uses, `MCP_Repl.thy:101`) — the theory must already be
 heap-resident (built into the session the MCP server loaded), same
-precondition `Ir.init` documents for its own specs. `text` is Isar
+precondition `Ir.init` documents for its own specs. `isar_text` is Isar
 source, typed `source` (not `string`) in the `params` clause — it will
 routinely contain embedded newlines (a multi-command proof script),
 and `check_value` (`MCP_Tools.thy:681-686`) rejects newlines in a
@@ -126,7 +134,7 @@ error handling: WHOLE-CALL, not partial results
 `Toplevel.command_exception false tr st` — the same shape as
 `ir/ir.ML`'s `exec_text` (`ir/ir.ML:369-384`) — means a transition that
 raises propagates out of the fold immediately; nothing catches it here
-either. So a syntax error or a failing tactic anywhere in `text` fails
+either. So a syntax error or a failing tactic anywhere in `isar_text` fails
 the WHOLE `profile_proof_delta` call, with no partial report for the
 commands that ran before the failure.
 
@@ -153,7 +161,7 @@ implementation steps
    `Thy_Info.get_theory` + `Theory.begin_theory` + `Toplevel.make_state`.
    [ml unit: builds without error for a heap-resident theory name;
    errors clearly for an unknown theory name]
-3. the profiling fold: parse `text` into transitions, fold
+3. the profiling fold: parse `isar_text` into transitions, fold
    `Toplevel.command_exception false tr st`, measuring before/after
    each transition, collecting `{name, pos, before, after}` entries.
    [ml unit: entry count matches transition count for a short
@@ -164,7 +172,7 @@ implementation steps
 5. sort + format + summary line. [ml unit: golden text for a small
    fixture proof with a known growth step]
 6. `mcp_tool profile_proof_delta` declaration (`run` form: full
-   context + args, params `theory :: string`, `text :: source`,
+   context + args, params `theory :: string`, `isar_text :: source`,
    annotations `read_only`). [ml unit: tool is registered, callable
    through `MCP_Tool`'s own run path]
 7. rebuild (`tools/wt-isabelle-build.sh <name> build`), confirm
@@ -190,9 +198,9 @@ ASSUMPTIONS -> tests
   in `qed`; assert the two read differently (real negative delta vs
   N/A). [ml unit]
 - A3 NON-PROOF COMMANDS READ N/A, NEVER 0. test: a `definition`/
-  `datatype` command in the middle of `text` (outside any proof)
+  `datatype` command in the middle of `isar_text` (outside any proof)
   reports N/A on both subgoal and size columns. [ml unit]
-- A4 WHOLE-CALL FAILURE. a `text` whose last command fails (bad
+- A4 WHOLE-CALL FAILURE. an `isar_text` whose last command fails (bad
   tactic) fails the ENTIRE `profile_proof_delta` call — no partial
   report reaches the caller — mirroring `repl_step`'s atomicity.
   test: fixture with 3 good commands then 1 bad one; assert the tool
