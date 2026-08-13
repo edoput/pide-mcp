@@ -43,18 +43,20 @@ constraint shared with other in-flight work).
 input contract
 --------------
 
-  profile_proof_delta {theory: "HOL.Main", isar_text: "lemma ... qed"}
+  profile_proof_delta {theory_name: "HOL.Main", isar_text: "lemma ... qed"}
     -> profiling report TEXT
 
 NAMING DEVIATION FROM THE BRIEF, found empirically while building this
 (trust the code over the brief, per the ground rules): the brief's
-input contract said `text`, but bare `text` is itself a registered
-Isar COMMAND keyword, so `Outer_Syntax` splits the `mcp_tool`
-declaration's own span right at that token -- "name expected, but
-end-of-input was found". Renamed to `isar_text`, which also matches
-`repl_step`'s own parameter name for the same kind of argument.
+input contract said `{theory, text}`, but bare `theory` and `text` are
+THEMSELVES registered Isar COMMAND keywords (`theory ... imports ...
+begin`, `text \<open>...\<close>`), so `Outer_Syntax` splits the `mcp_tool`
+declaration's own span right at either token -- "name expected, but
+end-of-input was found". Renamed to `theory_name` / `isar_text`;
+`isar_text` also matches `repl_step`'s own parameter name for the same
+kind of argument.
 
-`theory` resolved via `Thy_Info.get_theory` (idiom `MCP_Repl.entities`
+`theory_name` resolved via `Thy_Info.get_theory` (idiom `MCP_Repl.entities`
 already uses, `MCP_Repl.thy:101`) — the theory must already be
 heap-resident (built into the session the MCP server loaded), same
 precondition `Ir.init` documents for its own specs. `isar_text` is Isar
@@ -127,6 +129,19 @@ a summary line closes the report: total command count, count with a
 real delta, count that grew (nprems_delta > 0 or size_delta > 0), N/A
 count.
 
+a transition-count surprise, found empirically
+------------------------------------------------
+
+`Outer_Syntax.parse_text` inserts an `<ignored>` transition
+(`Toplevel.ignoredN`) for every whitespace/comment gap between real
+commands, not just leading/trailing ones — a 5-real-command text
+parses to 10 transitions. `Toplevel.command_exception` treats these as
+no-ops (same as `ir/ir.ML`'s own `exec_text`, which folds over them
+too without special-casing), so they are harmless to RUN, but left in
+they would double the report with spurious rows. `profile_entries`
+filters them with `Toplevel.is_ignored` before building its entry
+list, so "one line per command" means one line per REAL command.
+
 error handling: WHOLE-CALL, not partial results
 ------------------------------------------------
 
@@ -172,7 +187,7 @@ implementation steps
 5. sort + format + summary line. [ml unit: golden text for a small
    fixture proof with a known growth step]
 6. `mcp_tool profile_proof_delta` declaration (`run` form: full
-   context + args, params `theory :: string`, `isar_text :: source`,
+   context + args, params `theory_name :: string`, `isar_text :: source`,
    annotations `read_only`). [ml unit: tool is registered, callable
    through `MCP_Tool`'s own run path]
 7. rebuild (`tools/wt-isabelle-build.sh <name> build`), confirm
