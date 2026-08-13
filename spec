@@ -3888,3 +3888,38 @@ peak/delta memory per command, proof-size delta (goal state growth)
 per command.
 
 plan: plans/proof_profiler_time.
+
+profile_proof_time_grouped: hierarchical grouping by lexical block (decided 2026-08-13)
+------------------------------------------------------------------------------------------
+id: D-2026-08-13-proof-profiler-time-hierarchical
+
+follow-up to D-2026-08-13-proof-profiler-time, same worktree/PR. the
+flat report answers "which command is slow"; it does not answer
+"which LEMMA is slow", which matters more first when a script has many
+lemmas and only a couple are worth opening at all.
+
+mechanism: group the same per-command entries into lexical blocks
+using Toplevel.level, not a keyword list. level is 0 at theory level
+and >0 anywhere inside a goal/proof; a block is exactly the run of
+entries between two level-0 points (inclusive), so `lemma foo ...
+qed` and `theorem bar: P by simp` are both single blocks, and a bare
+theory-level command that never leaves level 0 (a `definition`, a
+`fun` whose termination proof is internal to the one transition) is
+its own singleton block. this generalizes for free to goal-opening
+commands the tool was never told the name of (interpretation,
+lift_definition with a proof obligation, ...) because it reads
+Isabelle's own tracked nesting depth rather than pattern-matching
+command names -- the keyword-list approach considered and rejected
+first would have silently missed exactly those.
+
+output: blocks sorted by their own total elapsed time, slowest first;
+each block's own commands still sorted slowest-first inside it. one
+report, two granularities.
+
+tool: profile_proof_time_grouped, same input shape and error policy
+(partial results, fresh throwaway state, never touches a live repl)
+as profile_proof_time -- same theory, same mcp_tool params clause,
+sibling declaration. Both tools share the underlying collection
+routine; only the two report formatters differ.
+
+plan: plans/proof_profiler_time (same file, addendum section).

@@ -23,6 +23,16 @@ record; entries here point at the section that carries the details.
   MCP-HOL-Tests). Demoed against real AFP entries (Depth-First-Search,
   Ackermanns_not_PR, Roy_Floyd_Warshall). spec: "profile_proof_time:
   per-command wall/cpu/gc timing"; plan: plans/proof_profiler_time.
+- decided/added: `profile_proof_time_grouped`, a hierarchical
+  follow-up on the same tool/branch — groups the same per-command
+  entries into lexical blocks (one `lemma ... qed`/`by` block, or a
+  singleton block for a bare theory-level command) using
+  `Toplevel.level` reaching 0, not a hardcoded command-name list, so
+  it generalizes to any goal-opening command uniformly. Blocks sorted
+  by their own total elapsed time, slowest first; each block's own
+  commands still sorted slowest-first inside it. spec:
+  "profile_proof_time_grouped: hierarchical grouping by lexical
+  block".
 
 2026-08-09 (spec: every section carries a stable id)
 --------------------------------------------------------------------------
