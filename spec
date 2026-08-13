@@ -3830,3 +3830,107 @@ never flattens, so it must apply the recode to the text nodes inside
 the body instead — both make_html-style conversion and Pretty.formatted
 take a recode parameter for exactly this. wire it there or the app
 silently reintroduces raw symbol notation.
+
+profile_proof_memory: an experimental per-command memory profiler (decided 2026-08-13)
+----------------------------------------------------------------------------------------
+id: D-2026-08-13-proof-profiler-memory
+
+purpose: find memory-hungry commands in a proof script -- given a block
+of Isar text, report which individual command retained the most
+memory, as a proxy for which step is most likely to blow up memory at
+scale in a larger/similar proof.
+
+mechanism, and what it actually took to find it (the honest part):
+Poly/ML exposes \<open>PolyML.Statistics\<close> (heap/GC counters) and
+\<open>PolyML.fullGC\<close> (force a collection), but neither is reachable by
+NAME from an ordinary theory's ML block. \<open>Pure/ML_Bootstrap.thy\<close>
+compiles \<open>Pure/ML/ml_statistics.ML\<close> and \<open>Pure/ML/ml_heap.ML\<close> against
+the full low-level \<open>PolyML\<close> structure once, early, then deliberately
+REPLACES \<open>PolyML\<close> for every theory built afterwards with a stub that
+drops \<open>Statistics\<close> entirely. What survives are the two ALREADY-
+COMPILED closures those files exported: \<^ML_structure>\<open>ML_Statistics\<close>
+(\<open>get: unit -> (string * string) list\<close>, i.e. Isabelle's own wrapper,
+guessed correctly in the brief) and \<^ML_structure>\<open>ML_Heap\<close>
+(\<open>full_gc: unit -> unit\<close>, needed and NOT guessed in advance). Both are
+first-class, reachable names post-bootstrap; \<open>PolyML.Statistics\<close>
+itself is not.
+
+the harder finding: the obvious byte-level signals from
+\<open>ML_Statistics.get\<close> are USELESS as allocation proxies in this
+environment, confirmed empirically (\<open>isabelle console -l HOL\<close>, not
+guessed) before committing to a design --
+- \<open>size_allocation - size_allocation_free\<close> ("bytes live in the
+  nursery"): Poly/ML grows \<open>size_allocation\<close> on demand and
+  \<open>size_allocation_free\<close> grows in lockstep, so their difference stays
+  near-constant even across tens of megabytes of real allocation.
+- \<open>size_heap\<close> taken as a raw before/after delta: tracks allocation
+  only while the process still needs to grow its heap: once the heap
+  is already large enough to absorb an allocation into existing
+  headroom (true of any live proving session, and even of this
+  project's own build-time test session after its first few theories),
+  the same multi-megabyte allocation reads as a flat 0.
+
+what actually works: force a full GC (\<open>ML_Heap.full_gc\<close>) at EACH
+sample point, then read \<open>size_heap - size_heap_free_last_full_GC\<close> --
+immediately after a real collection this is the TRUE live-byte count,
+not a growable gauge. The reported signal is therefore the delta in
+that figure across one command: NET memory RETAINED, not gross
+allocation churn -- a command that allocates heavily but reclaims
+almost all of it before the next sample reads as cheap. This is an
+honest, deliberate choice, not an accident: retained state is what
+compounds and eventually blows up a long proof script, while reclaimed
+churn does not, so retained-bytes is arguably the more relevant signal
+for the stated purpose even though it undercounts gross allocation.
+Cost: two forced full GCs per profiled command, slower than an
+unprofiled run -- accepted for an experimental tool that prefers a
+real number to a fast, meaningless one.
+
+mechanism, the execution side: input \<open>{theory_name: string, isar_text:
+source}\<close>. \<open>theory_name\<close> is resolved via \<open>Thy_Info.get_theory\<close> (same
+lookup as \<open>repl_init\<close>'s \<open>theories\<close>); a FRESH, throwaway state is built
+exactly the way \<open>Ir.init\<close>'s \<open>from_specs\<close> branch does
+(\<open>Theory.begin_theory\<close> + \<open>Toplevel.make_state\<close>, ir/ir.ML:439-462) --
+never a live \<open>Ir\<close> repl, so this tool cannot mutate \<open>repl_step\<close> state
+and is read-only/exploratory by construction, not by convention.
+\<open>isar_text\<close> is parsed once via \<open>Outer_Syntax.parse_text\<close> (dropping
+the "<ignored>" pseudo-transitions the parser interleaves for
+whitespace -- confirmed via \<open>isabelle console\<close> that these are no-op
+\<open>Keep\<close> transitions, not real commands) and each remaining transition
+runs through \<open>Toplevel.command_exception\<close> in turn, sampled before and
+after.
+
+error handling: PARTIAL RESULTS, not whole-call failure. On the first
+failing command, execution stops (later commands may depend on the
+failed one's state) and that row is reported as ABORTED with its
+error message; every command before it still gets a full memory
+reading. A script that blows up on command 7 of 10 still tells you
+commands 1..6's profile, which is the data an agent chasing a memory
+blow-up actually wants.
+
+output: one line per command (index, source line, command keyword,
+bytes retained, or ABORTED + message), sorted highest-first, plus a
+summary line (commands profiled, total bytes retained, and where
+profiling stopped if it did).
+
+tool: \<open>profile_proof_memory\<close>, capture form, \<open>read_only\<close> annotation,
+declared in a new theory \<open>mcp/Tools/HOL/MCP_Profile_Memory.thy\<close>
+(\<^ML_structure>\<open>MCP_Profile_Memory\<close>), added to session \<open>MCP-HOL\<close>.
+Tests in \<open>mcp/Tools/HOL/Tests/MCP_Profile_Memory_Tests.thy\<close>, session
+\<open>MCP-HOL-Tests\<close>.
+
+known param-naming trap, worth recording since it cost real debugging
+time: a declared \<open>mcp_tool\<close> param name that collides with an Isar
+OUTER-SYNTAX command keyword (\<open>theory\<close>, \<open>text\<close>, ...) truncates the
+\<open>mcp_tool\<close> command's own span at the outer-syntax scanning pass,
+before the params-clause parser ever runs -- the same hazard
+\<open>MCP_Tools.thy\<close>'s \<open>ptyp_parser\<close> already documents for \<open>term\<close>/\<open>typ\<close> as
+TYPE names, but it applies equally to param NAMES and is not
+mentioned there. Renamed to \<open>theory_name\<close>/\<open>isar_text\<close> (matching
+existing dispatcher argument-key conventions in \<open>MCP_Repl.thy\<close>).
+
+out of scope / not done: no cross-request isolation from the
+PROCESS-WIDE nature of \<open>ML_Statistics\<close> (concurrent activity from other
+requests can still pollute a reading, forcing a GC does not fix this);
+no time profiling (that is a separate, independently-developed
+profiler); no attempt to distinguish which SUB-EXPRESSION within a
+command drove its retention.

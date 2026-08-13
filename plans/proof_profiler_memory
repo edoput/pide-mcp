@@ -1,0 +1,141 @@
+proof_profiler_memory (the experimental per-command memory profiler) — implementation plan
+============================================================================================
+
+status: implemented, build/AFP demo pending. spec:
+D-2026-08-13-proof-profiler-memory. one of three independent profiler
+experiments landing in parallel (time, memory, proof-size-delta) — each
+its own theory, its own tool, its own PR; no shared state between them
+beyond the pattern they all borrow from ir/ir.ML's exec_text.
+
+advertised metadata
+--------------------
+
+  name          profile_proof_memory
+  description   see the `mcp_tool` declaration in
+                mcp/Tools/HOL/MCP_Profile_Memory.thy — the description
+                text there IS the advertised description, kept in one
+                place rather than duplicated here.
+  inputSchema   theory_name :: string, isar_text :: source
+  annotations   read_only
+
+why `theory_name` / `isar_text`, not `theory` / `text`: both of the
+obvious names are themselves Isar outer-syntax command keywords, and a
+command keyword used as a param NAME truncates the `mcp_tool`
+declaration's own span at the outer-syntax scanning pass, before the
+params-clause parser ever runs — the same class of hazard
+`MCP_Tools.thy`'s `ptyp_parser` documents for `term`/`typ` as TYPE
+names, but that comment doesn't cover param names and this cost real
+debugging time to rediscover. Renamed to match `MCP_Repl.thy`'s own
+dispatcher argument-key conventions.
+
+backing mechanism
+------------------
+
+Full narrative (the Poly/ML API archaeology, the two dead-end signals,
+why a forced-GC live-byte reading is the one that works) lives in the
+spec section itself (D-2026-08-13-proof-profiler-memory) and in
+MCP_Profile_Memory.thy's own theory-level `text` block — not repeated
+here. Summary:
+
+- input resolves `theory_name` via `Thy_Info.get_theory` (same lookup
+  `repl_init`'s `theories` and `proof_tasks` use) and builds a FRESH,
+  throwaway `Toplevel.state` exactly the way `Ir.init`'s `from_specs`
+  branch does for a single theory spec (`Theory.begin_theory` +
+  `Toplevel.make_state`, ir/ir.ML:439-462). This tool never touches
+  `Ir.repl_tab` — it cannot mutate a live `repl_step` repl, and no
+  `Ir` function is called at all. Not a modification of the
+  verbatim-reused ir.ML; new ML alongside it.
+- `isar_text` is parsed once via `Outer_Syntax.parse_text`. The
+  "<ignored>" pseudo-transitions the parser interleaves for
+  whitespace/comment gaps (a no-op `Keep`, confirmed via
+  `isabelle console`, not guessed) are dropped before profiling so a
+  report line always corresponds to a real command.
+- each remaining transition runs through `Toplevel.command_exception`
+  in turn. Immediately before and after, `ML_Heap.full_gc ()` forces a
+  collection and `ML_Statistics.get ()`'s `size_heap -
+  size_heap_free_last_full_GC` fields are read and diffed — this pair
+  is reachable post-bootstrap even though `PolyML.Statistics` itself
+  is hidden from ordinary theories (Pure/ML_Bootstrap.thy swaps in a
+  stub `PolyML` for everything built after Pure; `ML_Statistics`/
+  `ML_Heap` survive as already-compiled closures over the pre-swap
+  structure). The reported number is therefore NET bytes retained by
+  the command, not gross allocation — a command that allocates heavily
+  but reclaims nearly all of it before the next sample reads as cheap.
+  Deliberate: retained state is what compounds across a proof script;
+  reclaimed churn does not. Cost: two forced full GCs per profiled
+  command — slow, accepted for an experimental tool that wants a real
+  number over a fast, meaningless one (the two signals that don't need
+  a forced GC — a raw `size_allocation - size_allocation_free` delta,
+  or a raw `size_heap` delta — were tried first and are both useless
+  once a session's heap has grown past its first few theories; see the
+  spec section for the measured numbers).
+- error handling: PARTIAL RESULTS, not whole-call failure. Profiling
+  stops at the first failing command (later commands may depend on its
+  state) and that row is reported ABORTED with the error message;
+  every command before it still carries a full reading.
+- output: one line per command (index, source line, keyword, bytes
+  retained or ABORTED+message), sorted highest-first, plus a summary
+  line (commands profiled, total retained, where it stopped if it
+  did).
+
+name/argument mapping across the layers
+-----------------------------------------
+
+  mcp        profile_proof_memory {theory_name, isar_text}
+  bridge     MCP.run_tool -> registry row "profile_proof_memory"
+             (capture form, mcp_tool_command machinery)
+  engine     MCP_Profile_Memory.profile : string -> string -> string
+
+implementation steps
+----------------------
+
+1. API discovery: confirm `ML_Statistics.get` / `ML_Heap.full_gc` are
+   reachable from an ordinary theory's ML block and that
+   `PolyML.Statistics` is not; confirm which of the candidate byte
+   signals actually tracks a known-size allocation. [done —
+   interactive isabelle console probes, findings recorded in the spec
+   section and the theory header]
+2. `MCP_Profile_Memory` structure: `fresh_state`, `live_bytes`,
+   `profile_rows` (the transition loop), `format_report`, `profile`.
+   [done — mcp/Tools/HOL/MCP_Profile_Memory.thy]
+3. `mcp_tool profile_proof_memory` declaration wired to `profile`.
+   [done]
+4. wire into mcp/Tools/ROOT: MCP_Profile_Memory under session
+   "MCP-HOL", MCP_Profile_Memory_Tests under "MCP-HOL-Tests". [done]
+5. tests (ml unit, `\<^assert>`-based, mcp/Tools/HOL/Tests/
+   MCP_Profile_Memory_Tests.thy): command count, large-allocation-
+   ranks-first, error partial-results, empty input, repl_tab isolation,
+   mcp_tool registration + end-to-end call. [done]
+6. REBUILD: `tools/wt-isabelle-build.sh <worktree-name> build`,
+   confirm MCP-HOL and MCP-HOL-Tests both green. [pending — do this
+   before trusting anything above]
+7. AFP demo: run profile_proof_memory against real proof scripts from
+   afp-2025-06-04/thys (candidates: Efficient-Mergesort, Derangements,
+   Sauer_Shelah_Lemma — single-file entries whose ROOT session depends
+   on plain HOL only). [pending]
+8. close-out: PR with the AFP findings in the body. [pending]
+
+ASSUMPTIONS -> tests
+----------------------
+
+- A1 `ML_Statistics`/`ML_Heap` are reachable from an ordinary theory's
+  ML block even though `PolyML.Statistics` is not. CONFIRMED
+  (mechanism section above); the theory would fail to compile
+  otherwise, so every build IS this test.
+- A2 a forced-GC live-byte reading (`size_heap -
+  size_heap_free_last_full_GC` immediately after `ML_Heap.full_gc`)
+  moves measurably and correctly-signed for a known large allocation,
+  where the two unforced signals do not. [ml unit: "large allocation
+  ranks above trivial proof" section, MCP_Profile_Memory_Tests.thy]
+- A3 the statistics interface is PROCESS-WIDE: concurrent activity
+  from unrelated requests can pollute a reading, and forcing a GC does
+  not isolate this call from other threads' allocations racing with
+  it. NOT mitigated — recorded as a known limitation, not tested (no
+  reasonable single-process test demonstrates an absence of
+  interference; documented instead in the spec section and the tool's
+  own description text).
+- A4 profiling never creates or touches an `Ir.repl_tab` entry. [ml
+  unit: "isolation" section — repls listing unchanged before/after a
+  profile call, modulo unrelated concurrent test churn]
+- A5 error handling is partial-results-then-stop, not whole-call
+  failure. [ml unit: "error handling" section]
