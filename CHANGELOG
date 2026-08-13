@@ -4,6 +4,33 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-13 (profile_proof_delta: per-command goal-size profiler)
+--------------------------------------------------------------------------
+
+- decided: one of three independent, parallel profiler experiments
+  (time / memory / proof-size-delta) — this entry covers
+  proof-size-delta. spec "profile_proof_delta (per-command goal-size
+  profiler)" (D-2026-08-13-proof-profiler-delta); plan
+  plans/proof_profiler_delta, ML-only, not scheduled into a wave.
+
+- mechanism: builds a fresh, disposable toplevel state rooted in a
+  named theory (Theory.begin_theory + Toplevel.make_state, mirroring
+  ir/ir.ML's own init/from_specs as NEW code — ir/ir.ML stays
+  untouched, verbatim reuse), folds Toplevel.command_exception over
+  the parsed text like ir/ir.ML's exec_text, and measures the goal
+  before/after each transition when Toplevel.is_proof holds:
+  Thm.nprems_of (subgoal count) and size_of_term (Thm.prop_of goal)
+  (term size, Pure/term.ML) via Proof.goal. Theory-level commands
+  report N/A, not zero; a step that enters or leaves a proof (lemma,
+  qed) reports N/A for its own delta since the two states either side
+  are not comparable goal states.
+
+- read-only / exploratory: touches no live repl in ir.ML's repl_tab.
+  output is one line per command sorted by largest growth first, plus
+  a summary; error handling is WHOLE-CALL (matches exec_text/
+  repl_step's own failure-atomicity convention) rather than partial
+  results.
+
 2026-08-09 (spec: every section carries a stable id)
 --------------------------------------------------------------------------
 

@@ -3830,3 +3830,65 @@ never flattens, so it must apply the recode to the text nodes inside
 the body instead — both make_html-style conversion and Pretty.formatted
 take a recode parameter for exactly this. wire it there or the app
 silently reintroduces raw symbol notation.
+
+profile_proof_delta (per-command goal-size profiler)
+-----------------------------------------------------
+id: D-2026-08-13-proof-profiler-delta
+
+one of three independent, parallel profiler experiments for Isabelle
+proof scripts (time / memory / proof-size-delta); this entry covers
+proof-size-delta only, the other two are separate spec entries of
+their own.
+
+purpose: an agent driving a proof cannot see, from the text alone,
+whether a step is making progress toward Q.E.D. or making the goal
+state WORSE — more subgoals, bigger terms, both symptoms of a tactic
+that "succeeded" (no error) but did something unhelpful (e.g. `induct`
+without the right generalization, or an `unfold` that expands a
+recursive definition into a much larger term). the fix is not a new
+proof method, it is VISIBILITY: report, per command, how the goal
+state's SIZE changed, so the agent can spot the step that blew up the
+proof rather than shrinking it.
+
+mechanism: `profile_proof_delta {theory, text}` builds a fresh,
+disposable toplevel state rooted in `theory` (`Thy_Info.get_theory`
+plus `Theory.begin_theory` + `Toplevel.make_state`, mirroring
+`ir/ir.ML`'s own `init`/`from_specs`, but as new code — `ir/ir.ML` is
+verbatim-reused and is not touched), parses `text` into transitions
+(`Outer_Syntax.parse_text`), and folds `Toplevel.command_exception`
+over them exactly like `ir/ir.ML`'s `exec_text`. Before and after each
+transition, if the toplevel state is mid-proof (`Toplevel.is_proof`),
+the goal is measured: `Thm.nprems_of` (subgoal count) and
+`size_of_term (Thm.prop_of goal)` (term size, `Pure/term.ML`) via
+`Proof.goal (Toplevel.proof_of st)`. A theory-level state (not
+mid-proof) reports both numbers as ABSENT (N/A), not zero — a
+theory-level command is not "a proof step that shrank from nothing",
+it simply isn't a proof step. The delta (after minus before) is
+reported only when BOTH sides are mid-proof; a step that ENTERS a
+proof (`lemma`) or LEAVES one (`qed`) therefore reports N/A for that
+step's own delta, by design — the two states either side of it are
+not comparable goal states.
+
+input: `{theory: string, text: string}` — `text` is a batch of Isar
+source (one or more commands/lemmas), not a single repl_step; this
+tool builds its own private toplevel state and is entirely separate
+from the `ir/ir.ML` repl machinery — it reads a theory and returns a
+report, it never touches `repl_tab` and never claims/releases a repl.
+read-only / exploratory, like `find_theorems`'s theory-context path.
+
+output: one line per command (name, position, subgoal-count delta,
+term-size delta or N/A), sorted with the largest-growing proof steps
+first (steps that shrink, hold steady, or are N/A sort after, in
+source order), plus a summary line.
+
+error handling: WHOLE-CALL error, matching `exec_text`'s own fold —
+if any transition raises, the whole call fails with the offending
+command's name/position in the message and no partial report. Chosen
+for consistency with `repl_step`'s existing failure semantics ("if a
+step FAILS, state is unchanged") rather than inventing a second
+convention; the tool's job is to profile TEXT THAT WORKS, not to
+triage syntax errors — `repl_step`/`check_theory` already do that.
+
+plan: plans/proof_profiler_delta. implementation:
+mcp/Tools/HOL/MCP_Profile_Delta.thy, structure MCP_Profile_Delta,
+`mcp_tool profile_proof_delta`.
