@@ -4,6 +4,36 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-13
+----------
+
+- decided/added: `profile_proof_time`, an experimental per-command
+  timing profiler (one of three parallel profiler experiments — time
+  only here). Read-only tool, {theory, text} in; runs the text as a
+  fresh throwaway proof state (never a live repl_tab entry) built the
+  way Ir.init builds one, folding `Timing.timing (Exn.result
+  (Toplevel.command_exception false tr))` over the parsed transitions
+  so each command's elapsed/cpu/GC time is captured even for a
+  transition that errors. Failure policy: partial results up to and
+  including the failing transition, not a clean whole-call error — see
+  spec for why. Report: one text block, slowest-elapsed-first, one
+  line per command (name/line/Timing.message), total summary line.
+  New theory mcp/Tools/HOL/MCP_Profile_Time.thy (session MCP-HOL),
+  tests in mcp/Tools/HOL/Tests/MCP_Profile_Time_Tests.thy (session
+  MCP-HOL-Tests). Demoed against real AFP entries (Depth-First-Search,
+  Ackermanns_not_PR, Roy_Floyd_Warshall). spec: "profile_proof_time:
+  per-command wall/cpu/gc timing"; plan: plans/proof_profiler_time.
+- decided/added: `profile_proof_time_grouped`, a hierarchical
+  follow-up on the same tool/branch — groups the same per-command
+  entries into lexical blocks (one `lemma ... qed`/`by` block, or a
+  singleton block for a bare theory-level command) using
+  `Toplevel.level` reaching 0, not a hardcoded command-name list, so
+  it generalizes to any goal-opening command uniformly. Blocks sorted
+  by their own total elapsed time, slowest first; each block's own
+  commands still sorted slowest-first inside it. spec:
+  "profile_proof_time_grouped: hierarchical grouping by lexical
+  block".
+
 2026-08-09 (spec: every section carries a stable id)
 --------------------------------------------------------------------------
 

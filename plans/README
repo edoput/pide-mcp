@@ -224,3 +224,11 @@ flagged, NOT scheduled (no wave):
         human verifies with isabelle build; ML-only, no scala. spec
         refinement: targets THEORIES, not repls — a repl's transient
         facts exist in no file, so no recap can import them)
+
+profiler experiments (2026-08-13, no wave — three independent,
+parallel, standalone mcp_tool experiments, not scala builtins):
+  - [x] proof_profiler_time    plans/proof_profiler_time (time only —
+        per-command wall/cpu/GC via Timing.timing over a fresh
+        throwaway proof state, ir.ML's from_specs pattern reused
+        without editing ir.ML itself. memory and proof-size-delta are
+        sibling experiments on separate branches, not covered here.)

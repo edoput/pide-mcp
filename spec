@@ -3830,3 +3830,96 @@ never flattens, so it must apply the recode to the text nodes inside
 the body instead — both make_html-style conversion and Pretty.formatted
 take a recode parameter for exactly this. wire it there or the app
 silently reintroduces raw symbol notation.
+
+profile_proof_time: per-command wall/cpu/gc timing (decided 2026-08-13)
+------------------------------------------------------------------------
+id: D-2026-08-13-proof-profiler-time
+
+problem: when a proof script is slow, nothing in the tool surface says
+WHICH command is slow. An agent staring at a 40s repl_replay has to
+bisect by hand (truncate, replay half, compare) to find the one
+`apply`/`sledgehammer`/induction step that dominates. This is the
+first of three independent profiler experiments (time / memory /
+proof-size-delta), built in parallel; this decision covers time only.
+
+decision: a new read-only tool, `profile_proof_time`, that takes a
+theory name and a block of Isar text, runs the text as a *fresh*,
+throwaway proof state built from that theory (never a live repl_tab
+entry — nothing here can corrupt or advance a repl a client is
+mid-proof in), and reports per-command elapsed/cpu/GC time.
+
+mechanism: mirrors ir.ML's own `exec_text` (`Outer_Syntax.parse_text`
+then fold `Toplevel.command_exception false tr` over the resulting
+transitions) closely enough to reuse its shape, but is NOT a change to
+ir.ML — ir.ML is verbatim-reused (MIT header, shared with other work)
+and out of scope to edit. Instead: `Thy_Info.get_theory` resolves the
+named theory (already loaded — same precondition Ir.init states for
+its own specs), `Theory.begin_theory (id, Position.none) [thy]` then
+`Toplevel.make_state (SOME thy')` builds the fresh state exactly the
+way Ir.init's `from_specs` does for a single spec. Each transition
+runs under `Timing.timing (Exn.result (Toplevel.command_exception
+false tr)) st`, which is `Timing.command_timing`'s own idiom for
+measuring a call that may raise — the timing record is always
+captured, even for the transition that fails.
+
+failure policy: PARTIAL RESULTS, not a clean error. The fold stops at
+the first failing transition (its own timing is measured before the
+error propagates out of `Toplevel.command_exception`), and the report
+includes every transition run so far, the failing one marked with its
+error message, and nothing after it — there IS no "after it", since
+running further transitions against a state that never advanced past
+the failure would misattribute their timing to code that never ran.
+This mirrors repl_step's own failure-atomicity contract (a failed step
+leaves state unchanged) rather than sledgehammer's or check_theory's
+"collect everything, then decide status" shape, because a Toplevel
+fold has no meaningful "everything" once one link breaks.
+
+report shape: one formatted text block (the return-value convention
+every existing capture-form repl tool already uses — repl_show,
+repl_text), sorted slowest-elapsed-first, each line naming the
+command (`Toplevel.name_of`), its source line (`Position.line_of` on
+`Toplevel.pos_of`), and `Timing.message` verbatim (elapsed/cpu/GC, already
+formatted) rather than a hand-rolled numeric format. A total-elapsed
+summary line carries the command count and, if the run stopped early,
+which line it stopped at.
+
+not covered here (see the sibling experiments, separate branches):
+peak/delta memory per command, proof-size delta (goal state growth)
+per command.
+
+plan: plans/proof_profiler_time.
+
+profile_proof_time_grouped: hierarchical grouping by lexical block (decided 2026-08-13)
+------------------------------------------------------------------------------------------
+id: D-2026-08-13-proof-profiler-time-hierarchical
+
+follow-up to D-2026-08-13-proof-profiler-time, same worktree/PR. the
+flat report answers "which command is slow"; it does not answer
+"which LEMMA is slow", which matters more first when a script has many
+lemmas and only a couple are worth opening at all.
+
+mechanism: group the same per-command entries into lexical blocks
+using Toplevel.level, not a keyword list. level is 0 at theory level
+and >0 anywhere inside a goal/proof; a block is exactly the run of
+entries between two level-0 points (inclusive), so `lemma foo ...
+qed` and `theorem bar: P by simp` are both single blocks, and a bare
+theory-level command that never leaves level 0 (a `definition`, a
+`fun` whose termination proof is internal to the one transition) is
+its own singleton block. this generalizes for free to goal-opening
+commands the tool was never told the name of (interpretation,
+lift_definition with a proof obligation, ...) because it reads
+Isabelle's own tracked nesting depth rather than pattern-matching
+command names -- the keyword-list approach considered and rejected
+first would have silently missed exactly those.
+
+output: blocks sorted by their own total elapsed time, slowest first;
+each block's own commands still sorted slowest-first inside it. one
+report, two granularities.
+
+tool: profile_proof_time_grouped, same input shape and error policy
+(partial results, fresh throwaway state, never touches a live repl)
+as profile_proof_time -- same theory, same mcp_tool params clause,
+sibling declaration. Both tools share the underlying collection
+routine; only the two report formatters differ.
+
+plan: plans/proof_profiler_time (same file, addendum section).

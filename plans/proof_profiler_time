@@ -1,0 +1,267 @@
+proof_profiler_time — implementation plan
+==========================================
+
+status: implemented (2026-08-13, experimental)
+
+spec: "profile_proof_time: per-command wall/cpu/gc timing"
+(D-2026-08-13-proof-profiler-time). One of three independent profiler
+experiments (time / memory / proof-size-delta) built in parallel in
+separate worktrees; this plan covers TIME only. Not part of the
+wave-numbered rollout in plans/README's index — it is a standalone
+ML-registry tool (mcp_tool, plans/ml_builtin_migration's pattern), not
+a scala builtin, so it needs no scala-side wiring at all.
+
+advertised metadata (the mcp_tool declaration)
+-----------------------------------------------
+
+name          profile_proof_time
+description   "Run Isar text against a FRESH, throwaway proof state
+              built from the named (already-loaded) theory, and
+              report per-command wall/cpu/GC time, slowest first.
+              Use this to find which apply/sledgehammer/induction
+              step in a proof is slow. This does NOT touch any live
+              REPL -- it builds its own state and discards it. If a
+              command in the text errors, the report includes every
+              command that ran before it (with the failing one
+              marked) and stops there; commands after the error never
+              ran and are not in the report."
+inputSchema   {"type": "object",
+               "properties": {
+                 "theory": {"type": "string"},
+                 "text": {"type": "string"}},
+               "required": ["theory", "text"]}
+annotations   read_only (MCP_Tool.ptyp annotation bucket; no repl_tab
+              mutation, no theory-graph mutation -- Theory.begin_theory
+              builds a value that is never registered anywhere)
+outputSchema  none (single formatted text block, same convention as
+              repl_show/repl_text's capture-form tools)
+
+params        theory :: string  "the loaded theory to build the fresh
+                                 proof state from (Thy_Info.get_theory
+                                 key, e.g. HOL.Main -- same spelling
+                                 contract as MCP_Repl's entities/
+                                 find_theorems theory param)"
+              text :: source    "Isar proof text to run and profile
+                                 (source, not string, so it may
+                                 contain newlines -- see MCP_Tools.thy
+                                 check_value)"
+
+name/argument mapping across the layers
+-----------------------------------------
+
+  mcp client edge    tools/call "profile_proof_time",
+                      {"theory": "HOL.Main", "text": "lemma ...\n..."}
+  ml dispatch         MCP_Tool.run / MCP_Protocol.run_tool resolve the
+                      qualified name "MCP_Profile_Time.profile_proof_time"
+                      (theory-qualified registry, same as every other
+                      mcp_tool) and call the capture-form function,
+                      which calls MCP_Profile_Time.profile
+  engine              mcp/Tools/HOL/MCP_Profile_Time.thy,
+                      MCP_Profile_Time.profile: Thy_Info.get_theory,
+                      Theory.begin_theory + Toplevel.make_state (Ir.init's
+                      own from_specs pattern, ir/ir.ML:439-462, NOT a
+                      call into Ir -- Ir's own signature has no hook
+                      for a repl-free profiling run, and ir.ML itself
+                      is out of scope to edit), Outer_Syntax.parse_text,
+                      then a fold over transitions timing each
+                      Toplevel.command_exception call.
+
+implementation steps (smallest first)
+----------------------------------------
+
+1. MCP_Profile_Time.thy: ML structure with one function,
+   `profile: string -> string -> string` (theory name -> Isar text ->
+   formatted report). No mcp_tool wiring yet -- just the engine,
+   directly testable via `MCP_Profile_Time.profile`.
+2. Wire the mcp_tool declaration (capture form, per MCP_Combinators.arg
+   for "theory" and "text") at the bottom of the same theory.
+3. Add MCP_Profile_Time to session "MCP-HOL" (mcp/Tools/ROOT) so it is
+   heap-resident.
+4. Tests theory MCP_Profile_Time_Tests.thy, added to session
+   "MCP-HOL-Tests". \<^assert>-based, calling the tool both directly
+   (MCP_Profile_Time.profile) and through the registry
+   (MCP_Tool.run \<^context> "MCP_Profile_Time.profile_proof_time" args)
+   so both the engine and the mcp_tool wiring are covered.
+5. Rebuild via tools/wt-isabelle-build.sh, confirm MCP-HOL and
+   MCP-HOL-Tests build clean.
+6. Demo against 2-3 AFP entries (Depth-First-Search, Ackermanns_not_PR,
+   Roy_Floyd_Warshall), captured in the PR body.
+
+design choices and why (folded from the brief, made concrete against
+the actual ir.ML/MCP_Tools.thy code)
+----------------------------------------------------------------------
+
+- fresh state, not a repl: building via Theory.begin_theory /
+  Toplevel.make_state exactly mirrors Ir.init's from_specs (single
+  spec case) but is written independently in MCP_Profile_Time.thy --
+  ir.ML is verbatim-reused (MIT header) and shared with two other
+  in-flight worktrees; editing it is out of scope and would collide.
+  The state this function builds is never inserted into Ir's
+  repl_tab, so nothing here can be seen or mutated by repl_* tools.
+- per-transition timing that survives a failure: Timing.timing itself
+  does NOT catch exceptions (Pure/General/timing.ML:69-73 -- `f x` is
+  called unguarded, `result start` only runs after `f x` returns), so
+  timing a call that may raise means wrapping it first:
+  `Timing.timing (Exn.result f) x`. This is exactly the idiom
+  Timing.command_timing (timing.ML:108-121) itself uses. Confirmed by
+  reading Pure/General/timing.ML directly (the flatpak-bundled
+  source at .../de.tum.in.isabelle.Isabelle/.../src/Pure/General/timing.ML)
+  -- this refines the brief's suggested one-liner
+  `Timing.timing (Toplevel.command_exception false tr) st`, which
+  would lose the timing of a failing transition entirely (the
+  exception propagates out of Timing.timing before `result start`
+  ever runs).
+- failure policy: PARTIAL RESULTS (see spec decision for the full
+  argument) -- the fold stops at the first failing transition, that
+  transition's own (measured) timing and error message are included
+  in the report, and nothing after it is attempted (there is no valid
+  "after": the fold's state never advanced past the failure, so
+  further transitions would run against the wrong state and their
+  timing would misattribute work to code that never executed against
+  the intended prior state).
+- sort key: raw `#elapsed (#timing entry)` (a Time.time), NOT a
+  string-parsed Timing.message -- sorting happens on the typed record
+  before formatting, so there is no reliance on Timing.message's
+  textual shape for anything but the final human-readable line.
+- registered under session MCP-HOL (not MCP-Tools): the tool needs
+  Toplevel/Outer_Syntax/Thy_Info against real HOL theories, so it is a
+  HOL-anchored theory like MCP_Repl.thy, importing "MCP-HOL.MCP" (the
+  footgun-avoiding entry point documented in MCP.thy) rather than
+  "MCP-Tools.MCP_Tools" directly.
+
+assumptions and how to test them
+-----------------------------------
+
+T1  the report lists exactly the right number of commands for a
+    proof text with no errors, and the total-elapsed summary line's
+    count matches.
+    test [ml unit]: profile a short multi-command lemma+by proof;
+    assert the report contains N per-command lines and a total line
+    naming N.
+T2  slowest-elapsed-first sorting: a deliberately expensive command
+    (a large arithmetic/simp goal, or an explicit induction over a
+    sizeable recursive definition) sorts above a trivial one
+    (e.g. a bare `lemma "True" by simp`), regardless of which one
+    appears first in the input text.
+    test [ml unit]: text with a cheap command first and an expensive
+    one second; assert the expensive command's line appears before
+    the cheap one's in the report.
+T3  a proof containing an error is handled per the documented
+    PARTIAL RESULTS policy: the report includes every command up to
+    and including the failing one (marked), the failing command's own
+    timing is present (not silently dropped), and the report contains
+    no line for any command that would have come after it.
+    test [ml unit]: text = [ok command, failing command
+    ("apply nonexistent_method" or similar), ok command that would
+    never run]; assert report has exactly 2 entries, the second
+    marked as an error and naming the failure, and the third
+    command's text/name does not appear anywhere in the report.
+T4  mcp_tool wiring: the tool is reachable via MCP_Tool.run under its
+    theory-qualified name with the {theory, text} argument shape, and
+    rejects a spurious argument key (registry-level validate, not
+    hand-rolled).
+    test [ml unit]: MCP_Tool.run \<^context>
+    "MCP_Profile_Time.profile_proof_time" [("theory", main),
+    ("text", "lemma \"True\" by simp")] succeeds and contains a
+    per-command line; a spurious key errors naming the key.
+T5  read-only / no repl mutation: calling the tool does not create,
+    modify, or leak any entry into Ir's repl_tab.
+    test [ml unit]: call Ir.repls () (or the MCP_Repl "repls"
+    dispatch) before and after a profile_proof_time call over a repl
+    id that happens to share a name with nothing yet created; assert
+    the listing is unchanged (in particular, no REPL exists under any
+    name the profiling call touched internally).
+
+done when
+---------
+
+- T1..T5 green in mcp/Tools/HOL/Tests/MCP_Profile_Time_Tests.thy.
+- MCP-HOL and MCP-HOL-Tests build clean via
+  tools/wt-isabelle-build.sh <name> build.
+- AFP demo (2-3 entries) captured in the PR body: command, position,
+  elapsed time for the slowest N commands per entry, one-line
+  takeaway per entry.
+
+landed: implemented 2026-08-13. T1..T5 green (mcp/Tools/HOL/Tests/
+MCP_Profile_Time_Tests.thy). MCP-HOL / MCP-HOL-Tests build clean under
+the worktree's scratch ISABELLE_IDENTIFIER. AFP demo results recorded
+in the PR body (not duplicated here -- see the PR for the actual
+timing table, since it is a one-off measurement, not a spec claim).
+
+open questions / follow-ups (not blocking this experiment)
+------------------------------------------------------------
+- no timeout on the whole run: unlike Ir.exec_text (default_timeout
+  10s), this tool runs the WHOLE text unbounded -- appropriate for a
+  profiler (a slow command is exactly what it exists to find; a
+  timeout would just turn "the slow command" into "an error" without
+  telling the agent which command was slow, or with what magnitude).
+  Revisit if profiling ever needs a hard wall-clock budget for a
+  runaway sledgehammer call.
+- GC time only distinguishes GC-bound commands if is_relevant_time's
+  1ms floor is exceeded; sub-millisecond commands report as zero
+  across the board. Not worth chasing at this MVP stage --
+  the point is finding the multi-second outlier, not micro-profiling.
+
+addendum: profile_proof_time_grouped (hierarchical, decided 2026-08-13)
+--------------------------------------------------------------------------
+
+spec: D-2026-08-13-proof-profiler-time-hierarchical. status: landed,
+same PR/branch as the base tool.
+
+advertised metadata: name profile_proof_time_grouped, same
+inputSchema ({theory, text}, both quoted param names for the same
+outer-syntax-keyword-collision reason as the base tool) and
+annotations (read_only) as profile_proof_time.
+
+mechanism: `MCP_Profile_Time.collect` (extracted from the base tool's
+`profile` so both tools share one code path for building the scratch
+state and folding transitions) now tags every `entry` with `level =
+Toplevel.level` of the post-transition state (or the pre-transition
+state, unchanged, for a failed transition -- it never advances).
+`group_entries` folds the document-order entry list into blocks: a
+block closes on the entry whose level reads 0 and a new one opens
+right after; Toplevel.level is 0 at theory level and >0 anywhere
+inside a goal/proof, so this is exactly "one lemma/theorem statement
+through its close", or a singleton block for a command that never
+leaves level 0 (definition, a fun whose termination proof is internal
+to that one transition). No hardcoded command-name whitelist --
+tried and rejected first, because it would silently miss any
+goal-opening command the list didn't happen to name (interpretation,
+lift_definition with a proof obligation, ...).
+format_grouped_report sorts blocks by their own summed elapsed time,
+slowest first; within a block, entries are still sorted
+slowest-command-first (reusing the base tool's `format_entry`/
+`by_elapsed_desc`, indented one level).
+
+implementation steps
+----------------------
+
+1. widen `entry` with a `level` field; populate it in `go`'s two
+   branches. [done -- purely additive, no existing field removed]
+2. `group_entries` / `group_total` / `group_label` /
+   `by_group_elapsed_desc` / `format_group` / `format_grouped_report`.
+   [done]
+3. extract `collect` (state-build + transition-fold, shared by
+   `profile` and the new `profile_grouped`) out of the base tool's
+   `profile` without changing `profile`'s own output format or
+   tested behavior. [done -- T1-T5 from the base tool still pass
+   unmodified]
+4. `profile_grouped` + `mcp_tool "profile_proof_time_grouped"`. [done]
+5. tests: T6 (two real lemma blocks + one singleton `fun` block, 3
+   groups total, the block containing a genuinely slow command sorts
+   first) and T7 (registry wiring). [done, both green]
+
+ASSUMPTIONS -> tests
+----------------------
+
+- A6 `Toplevel.level` reaching 0 is a correct, general block
+  boundary -- verified interactively (`isabelle console`) against a
+  `lemma ... proof - show ... qed` block (level: 1, 2, 3, 2, 0) and a
+  single-line `lemma ... by ...` block (level: 1, 0) before writing
+  any code; both match the intended grouping. [ml unit: T6 -- exactly
+  3 groups for fun/lemma/lemma, verifying the boundary count, not
+  just isolated interactive probing]
+- A7 grouping is purely additive: it must not change
+  `profile_proof_time`'s existing behavior or output format. [ml
+  unit: base tool's own T1-T5 pass unmodified after this addendum --
+  same file, same test IDs, re-run as part of the same build]
