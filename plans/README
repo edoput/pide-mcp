@@ -224,3 +224,10 @@ flagged, NOT scheduled (no wave):
         human verifies with isabelle build; ML-only, no scala. spec
         refinement: targets THEORIES, not repls — a repl's transient
         facts exist in no file, so no recap can import them)
+  - proof_profiler_delta       plans/proof_profiler_delta  (one of
+        three parallel profiler experiments -- time / memory /
+        proof-size-delta; this is the proof-size-delta one. ML-only,
+        no scala. per-command subgoal-count/term-size delta over a
+        disposable toplevel state built fresh from a named theory;
+        does not touch ir.ML's repl_tab. spec
+        D-2026-08-13-proof-profiler-delta.)

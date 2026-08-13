@@ -1,0 +1,240 @@
+proof_profiler_delta (per-command proof-state-size profiler) — implementation plan
+===================================================================================
+
+status: planned (2026-08-13)
+NOT scheduled into a wave. one of three independent, parallel profiler
+experiments (time / memory / proof-size-delta) built in separate
+worktrees; this plan covers proof-size-delta only. spec:
+D-2026-08-13-proof-profiler-delta.
+
+the name
+--------
+
+`profile_proof_delta`, not `proof_profiler` — the tool measures one
+specific thing (goal-state SIZE delta per command), and the name says
+what it reports rather than what family it belongs to. leaves room for
+sibling tools (`profile_proof_time`, `profile_proof_memory`) named the
+same way, each its own experiment.
+
+scala or ML?
+------------
+
+ML ONLY, same reasoning as plans/proof_tasks: this is a prover-side
+operation (parse text, run transitions, inspect a `Proof.state`'s
+goal) with no scala analogue, and `mcp_tool` registration gets
+`tools/list` for free. A new theory `MCP_Profile_Delta.thy` in the
+`MCP-HOL` tree (next to `MCP_Repl.thy`), importing `MCP-HOL.MCP` (the
+HOL-anchored entry point — never `MCP-Tools.MCP_Tools` directly, see
+`MCP.thy`'s own doc comment for the merge-order footgun), one
+`mcp_tool profile_proof_delta` declaration, ML structure
+`MCP_Profile_Delta`.
+
+why not `ir/ir.ML`/`MCP_Repl.repl_tab`: the brief and the spec entry
+are explicit — this tool must not mutate any live repl. It also has a
+different shape of input (a THEORY plus a whole batch of TEXT, not a
+single step against a named, already-claimed repl), so reusing
+`Ir.step`'s claim/release machinery would be the wrong abstraction
+even if mutation were acceptable. Instead it builds its OWN private,
+disposable `Toplevel.state`, the same construction `Ir.init`'s
+`from_specs` uses (`ir/ir.ML:439-448`) but written fresh here — new
+code, not an edit to `ir/ir.ML` (verbatim-reused symlink, MIT header
+constraint shared with other in-flight work).
+
+input contract
+--------------
+
+  profile_proof_delta {theory_name: "HOL.Main", isar_text: "lemma ... qed"}
+    -> profiling report TEXT
+
+NAMING DEVIATION FROM THE BRIEF, found empirically while building this
+(trust the code over the brief, per the ground rules): the brief's
+input contract said `{theory, text}`, but bare `theory` and `text` are
+THEMSELVES registered Isar COMMAND keywords (`theory ... imports ...
+begin`, `text \<open>...\<close>`), so `Outer_Syntax` splits the `mcp_tool`
+declaration's own span right at either token -- "name expected, but
+end-of-input was found". Renamed to `theory_name` / `isar_text`;
+`isar_text` also matches `repl_step`'s own parameter name for the same
+kind of argument.
+
+`theory_name` resolved via `Thy_Info.get_theory` (idiom `MCP_Repl.entities`
+already uses, `MCP_Repl.thy:101`) — the theory must already be
+heap-resident (built into the session the MCP server loaded), same
+precondition `Ir.init` documents for its own specs. `isar_text` is Isar
+source, typed `source` (not `string`) in the `params` clause — it will
+routinely contain embedded newlines (a multi-command proof script),
+and `check_value` (`MCP_Tools.thy:681-686`) rejects newlines in a
+`string`-typed argument outright.
+
+what a report line carries
+---------------------------
+
+  name       Toplevel.name_of tr — the command keyword ("lemma",
+             "apply", "qed", ...)
+  position   Toplevel.pos_of tr, formatted as a line number
+             (Position.line_of, the same idiom MCP_Repl.entities uses)
+  nprems_delta / size_delta
+             int, or the literal "N/A" — see "the N/A rule" below
+
+the N/A rule
+------------
+
+Before and after each transition, the toplevel state is measured IFF
+`Toplevel.is_proof st` holds:
+
+  Thm.nprems_of goal                          — subgoal count
+  size_of_term (Thm.prop_of goal)              — term size (Pure/term.ML)
+
+where `goal` comes from `#goal (Proof.goal (Toplevel.proof_of st))`.
+A theory-level state (not mid-proof) measures as ABSENT, not 0 — a
+theory-level command ("lemma", "qed", a bare "text" command) did not
+"shrink from nothing", it simply is not a proof step. Concretely:
+
+  - a command whose BEFORE state is theory-level and AFTER state is
+    mid-proof (`lemma` opening a goal) has no before-measurement to
+    diff against: delta = N/A.
+  - a command whose BEFORE state is mid-proof and AFTER state is
+    theory-level (`qed`, `done` closing the last goal) has no
+    after-measurement: delta = N/A. This is deliberate, not a gap —
+    see the spec entry's discussion of "the step is absent-from-proof
+    after qed": we do not invent a synthetic "0 subgoals" reading for
+    a state that has left proof mode; the state genuinely has no goal
+    to measure.
+  - a command whose BEFORE and AFTER are BOTH mid-proof (the common
+    case: `apply`, `by`, a `have`/`show` inside a structured proof)
+    reports a real delta = after − before, which can be positive
+    (growth), negative (shrink), or zero.
+  - a command whose BEFORE and AFTER are BOTH theory-level (anything
+    outside any proof — `definition`, `datatype`, a bare `text`)
+    reports N/A on both sides.
+
+`Proof.goal` can itself raise (e.g. a proof state with unresolved
+obligations elsewhere); the measurement is wrapped in `try`, and a
+raised exception during MEASUREMENT (not during the transition itself)
+also reads as N/A rather than aborting the whole call — an unusual
+proof-state shape should degrade the one number, not the entire
+report.
+
+sort order
+----------
+
+Report lines split into two groups, in this order:
+
+  1. lines with a REAL delta (both sides measured), sorted by
+     nprems_delta descending, ties broken by size_delta descending —
+     "largest growth first".
+  2. lines with delta = N/A, in original source order — listed (per
+     the spec: "less interesting but still listed"), not hidden.
+
+a summary line closes the report: total command count, count with a
+real delta, count that grew (nprems_delta > 0 or size_delta > 0), N/A
+count.
+
+a transition-count surprise, found empirically
+------------------------------------------------
+
+`Outer_Syntax.parse_text` inserts an `<ignored>` transition
+(`Toplevel.ignoredN`) for every whitespace/comment gap between real
+commands, not just leading/trailing ones — a 5-real-command text
+parses to 10 transitions. `Toplevel.command_exception` treats these as
+no-ops (same as `ir/ir.ML`'s own `exec_text`, which folds over them
+too without special-casing), so they are harmless to RUN, but left in
+they would double the report with spurious rows. `profile_entries`
+filters them with `Toplevel.is_ignored` before building its entry
+list, so "one line per command" means one line per REAL command.
+
+error handling: WHOLE-CALL, not partial results
+------------------------------------------------
+
+`Outer_Syntax.parse_text` + a `List.foldl` over
+`Toplevel.command_exception false tr st` — the same shape as
+`ir/ir.ML`'s `exec_text` (`ir/ir.ML:369-384`) — means a transition that
+raises propagates out of the fold immediately; nothing catches it here
+either. So a syntax error or a failing tactic anywhere in `isar_text` fails
+the WHOLE `profile_proof_delta` call, with no partial report for the
+commands that ran before the failure.
+
+This is a real design choice, not an oversight, and it deliberately
+matches `repl_step`'s documented failure semantics ("if a step FAILS,
+the REPL state is UNCHANGED") rather than inventing a second
+convention: this tool's job is to profile text that already WORKS
+(text an agent has already gotten to replay cleanly, e.g. via
+`repl_step`/`repl_replay`), not to triage syntax/tactic failures —
+`repl_step` and `check_theory` already own that job, with error
+messages tuned for it. A future iteration could offer partial results
+as an opt-in mode; not built here (see ASSUMPTIONS A3 below for the
+test that pins the current behavior).
+
+implementation steps
+---------------------
+
+1. `MCP_Profile_Delta.thy` skeleton: imports `MCP-HOL.MCP`, ML
+   structure with a `measure : Toplevel.state -> (int * int) option`
+   function (`Thm.nprems_of` / `size_of_term`, guarded by
+   `Toplevel.is_proof` + `try`). [ml unit: measure on a hand-built
+   mid-proof state vs a theory-level state]
+2. state construction: `build_state : string -> Toplevel.state`,
+   `Thy_Info.get_theory` + `Theory.begin_theory` + `Toplevel.make_state`.
+   [ml unit: builds without error for a heap-resident theory name;
+   errors clearly for an unknown theory name]
+3. the profiling fold: parse `isar_text` into transitions, fold
+   `Toplevel.command_exception false tr st`, measuring before/after
+   each transition, collecting `{name, pos, before, after}` entries.
+   [ml unit: entry count matches transition count for a short
+   multi-step proof]
+4. delta computation + N/A rule (mechanism above). [ml unit: entry
+   whose before/after are both mid-proof has a real int delta; entry
+   crossing the theory/proof boundary (lemma, qed) has delta = N/A]
+5. sort + format + summary line. [ml unit: golden text for a small
+   fixture proof with a known growth step]
+6. `mcp_tool profile_proof_delta` declaration (`run` form: full
+   context + args, params `theory_name :: string`, `isar_text :: source`,
+   annotations `read_only`). [ml unit: tool is registered, callable
+   through `MCP_Tool`'s own run path]
+7. rebuild (`tools/wt-isabelle-build.sh <name> build`), confirm
+   MCP-HOL / MCP-HOL-Tests green.
+8. AFP demo (see brief) — not a test, a manual capture of real output
+   against 2-3 AFP entries.
+
+ASSUMPTIONS -> tests
+--------------------
+
+- A1 GROWTH IS VISIBLE. the whole point of the tool: an `induct` (or
+  a case split) that turns 1 subgoal into N, and/or an `unfold` that
+  inflates term size, must show up as a large positive delta ranked
+  at the top. test: a fixture lemma proved by `(induct xs)` producing
+  ≥2 subgoals; assert the induct step's nprems_delta > 0 and it sorts
+  above a later `auto`/`simp` step that closes goals. [ml unit,
+  MCP_Profile_Delta_Tests.thy]
+- A2 SHRINK / CLOSE READS RIGHT. a step that closes the last subgoal
+  (nprems_of -> 0 mid-proof, e.g. `apply simp` finishing a proof still
+  inside `apply`-style) reports a real NEGATIVE delta, not N/A — only
+  the actual theory/proof BOUNDARY crossings (lemma-open, qed/done)
+  read as N/A. test: fixture with an `apply`-chain vs a fixture ending
+  in `qed`; assert the two read differently (real negative delta vs
+  N/A). [ml unit]
+- A3 NON-PROOF COMMANDS READ N/A, NEVER 0. test: a `definition`/
+  `datatype` command in the middle of `isar_text` (outside any proof)
+  reports N/A on both subgoal and size columns. [ml unit]
+- A4 WHOLE-CALL FAILURE. an `isar_text` whose last command fails (bad
+  tactic) fails the ENTIRE `profile_proof_delta` call — no partial
+  report reaches the caller — mirroring `repl_step`'s atomicity.
+  test: fixture with 3 good commands then 1 bad one; assert the tool
+  call itself errors (not "returns a 3-line report"). [ml unit]
+- A5 REPORT SORTING is stable and matches the documented order:
+  real-delta lines by nprems_delta desc / size_delta desc, N/A lines
+  after in source order. test: fixture mixing a shrink step, a growth
+  step, and an N/A (theory-level) step; assert output line order.
+  [ml unit]
+- A6 READ-ONLY / NO REPL MUTATION. calling `profile_proof_delta` does
+  not create, claim, or otherwise touch any entry in `Ir`'s
+  `repl_tab`. test: call `repl_list`/`Ir.repls` before and after a
+  `profile_proof_delta` call in the same session; assert no new
+  entries and no error about a busy repl. [ml unit, exercises
+  `Ir.repls` which is the same accessor `repl_list` uses]
+
+done when
+---------
+
+- A1..A6 green; `tools/list` shows `profile_proof_delta`; MCP-HOL and
+  MCP-HOL-Tests build clean; the AFP demo (see brief) captured against
+  2-3 real entries.
