@@ -83,6 +83,11 @@ ml_builtin_migration#A10  bridge      the DRIFT GATE stays green mid-migration: 
 ml_builtin_migration#A11  bridge      a moved tool is del'able AND uncallable (the SCOPED block: asymmetric callability dissolves for a tool whose logic is ML).
 ml_builtin_migration#A12  ml-unit     error TEXT change is client-visible and precise: a missing/unknown/ ill-typed argument names the parameter.
 ml_builtin_migration#A13  heap        OUTPUT ROUTING SURVIVES A FRESH PROCESS AGAINST THE SAVED HEAP. MCP_Output installs its Private_Output wrappers lazily and records \<open>wrapped\<clo
+proof_profiler_time#T1    ml-unit     the report lists exactly the right number of commands for a proof text with no errors, and the total-elapsed summary line's count matches.
+proof_profiler_time#T2    ml-unit     slowest-elapsed-first sorting: a deliberately expensive command (a large arithmetic/simp goal, or an explicit induction over a sizeable recursive defi
+proof_profiler_time#T3    ml-unit     a proof containing an error is handled per the documented PARTIAL RESULTS policy: the report includes every command up to and including the failing on
+proof_profiler_time#T4    ml-unit     mcp_tool wiring: the tool is reachable via MCP_Tool.run under its theory-qualified name with the {theory, text} argument shape, and rejects a spurious
+proof_profiler_time#T5    ml-unit     read-only / no repl mutation: calling the tool does not create, modify, or leak any entry into Ir's repl_tab.
 readiness#A1              unstated    initialize does not depend on the backend.
 readiness#T1              scala-unit  drive Handler with a readiness thunk fixed at Not_Ready("building"); assert initialize returns the normal capabilities reply, and that the thunk's bac
 readiness#A2              unstated    tools/list answers while not ready, with the builtin table.
