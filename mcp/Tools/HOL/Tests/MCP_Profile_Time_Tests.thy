@@ -143,4 +143,41 @@ val listing_after = run_ir Ir.repls;
 \<^assert> (not (String.isSubstring MCP_Profile_Time.scratch_id listing_after));
 \<close>
 
+section \<open>T6: profile_grouped groups by lexical block, slowest block first\<close>
+
+text \<open>Two `lemma ... qed`/`lemma ... by` blocks, one containing the
+same expensive \<open>slow_fib\<close> call T2 uses, the other trivial. The report
+must show exactly 2 groups (one per lemma), and the group containing
+\<open>slow_fib_30\<close> (identifiable by its line, since the group label is
+"line N  lemma") must appear before the trivial group's line.\<close>
+
+ML \<open>
+val text6 =
+  "fun slow_fib :: \"nat \<Rightarrow> nat\" where\n" ^
+  "  \"slow_fib 0 = 0\"\n" ^
+  "| \"slow_fib (Suc 0) = 1\"\n" ^
+  "| \"slow_fib (Suc (Suc n)) = slow_fib n + slow_fib (Suc n)\"\n" ^
+  "\n" ^
+  "lemma trivial_first: \"True\" by simp\n" ^
+  "\n" ^
+  "lemma slow_fib_30: \"slow_fib 30 = 832040\" by eval";
+val out6 = MCP_Profile_Time.profile_grouped main text6;
+(*the fun definition (level 0 the whole time) is its own singleton
+  group, plus one group per lemma -- 3 groups total*)
+\<^assert> (String.isSubstring "3 lexical group(s)" out6);
+val gi8 = the (index_of "line 8" out6);
+val gi6 = the (index_of "line 6" out6);
+\<^assert> (gi8 < gi6);
+\<close>
+
+section \<open>T7: profile_proof_time_grouped tool wiring\<close>
+
+ML \<open>
+val out7 =
+  MCP_Tool.run \<^context> "MCP_Profile_Time.profile_proof_time_grouped"
+    [("theory", main), ("text", "lemma \"True\" by simp")];
+\<^assert> (String.isSubstring "1 lexical group(s)" out7);
+\<^assert> (String.isSubstring "line 1  lemma" out7);
+\<close>
+
 end
