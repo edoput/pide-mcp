@@ -21,11 +21,14 @@ session "MCP-HOL" in "HOL" = HOL +
   theories
     MCP
     MCP_Repl
+    MCP_Task_List
 
 session "MCP-HOL-Tests" in "HOL/Tests" = "MCP-HOL" +
   description "Unit tests for the MCP.ir dispatcher (MCP_Repl) over the I/R engine"
   options [record_theories]
   theories
     MCP_Fixture_Nav
+    MCP_Fixture_Sorry
+    MCP_Task_List_Tests
     MCP_Repl_Tests
     Ir_Tests

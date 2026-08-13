@@ -1,0 +1,235 @@
+proof_tasks (the machine-checked task list) — implementation plan
+=================================================================
+
+status: IMPLEMENTED and green (2026-08-12), steps 1-5 and 7; step 6
+(bridge) NOT done. spec: D-2026-08-12-machine-checked-task-list.
+Sources: mcp/Tools/HOL/MCP_Task_List.thy, with
+mcp/Tools/HOL/Tests/MCP_Fixture_Sorry.thy and MCP_Task_List_Tests.thy.
+
+DEVIATIONS, all forced by the fixture (the plan is the record, so they
+are written here rather than quietly absorbed):
+
+- A1 came out NEGATIVE, and for a reason this plan did not anticipate.
+  The own-proof-body reading does not misclassify — it yields NOTHING.
+  Every thm's PBody oracles field is empty, sorry_direct included, so
+  the fulfill_norm_proof/promise hazard was beside the point. A1b (walk
+  named dependencies) ships instead and classifies correctly.
+- the FACT FILTER moved from "do not block on it" to REQUIRED. The
+  plan's reasoning — "a sorry'd package theorem is not a thing that
+  happens" — is false: a bare `datatype` emits cheated Quickcheck and
+  Narrowing generator equations. The kind tag (Markup.kindN =
+  Thm.theoremK) is the discriminator, so recap's A2 is settled too.
+- A3 inverted: the oracle carries no term at all (and hence no
+  position). The tool always read Thm.prop_of, so it is unaffected,
+  but the plan's "oracle position as a secondary hint" is retired.
+- two traps not in the plan: facts are stored TRIMMED (Thm.transfer
+  before touching a proof body, else CONTEXT "No content for theory
+  certificate"), and Thy_Info has no entry for a theory DURING the
+  build that defines it, so the tests take the theory value from the
+  \<^theory> antiquotation.
+
+STILL OPEN: step 6 (bridge, mcp_test -b) and A5 (repl refusal) — the
+engine and its registration are green in-process, but proof_tasks has
+never been called over a live MCP.run_tool. A4 (position survives a
+heap load, MCP_Heap_Suite) is likewise untested: positions are
+asserted non-empty in-build only.
+
+shares stages 1-2 with plans/recap (enumerate the theory's own facts,
+filter package noise). it is the SMALLER of the two: it reports a list,
+not source, so it needs no restatement and no round-trip pre-flight —
+recap's A1, the highest-risk assumption in that plan, does not exist
+here. if both are built, build this one first: it settles recap's fact
+FILTER (recap A2) and its trust-audit APIs (recap A3) on the way.
+
+the name
+--------
+
+`proof_tasks`, NOT `task_list`. the host agent (claude code and
+friends) has its own task tooling, and a tool called `task_list` served
+over the same MCP connection reads as "the agent's todo list" rather
+than "unproved obligations in a theory". the name says what the items
+ARE. `sorries` was the other candidate — rejected as jargon that only
+reads to an Isabelle user, and the tool's whole point is to drive an
+agent that may not be one.
+
+scala or ML?
+------------
+
+ML ONLY. no scala, same reasoning as plans/recap: enumerating a
+theory's facts and inspecting derivations are prover-side operations
+with no scala analogue, and registration through MCP_Tool.declare gets
+tools/list for free. a scala builtin would still need an ML mirror row
+AND still cross to ML for the work; the only thing it buys is being
+listed when the context does not import the tools theory, which an
+agent working a HOL session that already imports MCP-HOL does not need.
+
+so: a new theory MCP_Task_List.thy in the MCP-HOL tree (next to
+MCP_Repl.thy), an ML structure MCP_Task_List, one `mcp_tool`
+declaration. it imports `MCP` (the HOL-anchored wrapper), never
+`MCP-Tools.MCP_Tools` directly — see MCP.thy's own header for why a
+Pure-based theory must not land as first parent.
+
+input contract
+--------------
+
+  proof_tasks {theories: "Scheduler Tasks"} -> task list TEXT
+
+theory names, resolved with Thy_Info.get_theory (the idiom entities /
+find_theorems_theory already use, MCP_Repl.thy:101,159). an explicit
+param, NOT the ambient tool_scope designation — same call as recap
+made: the caller names the target rather than having to tool_scope_set
+first.
+
+THEORIES, not repls, for the reason plans/recap pins down: a repl's
+transient facts exist in no file. a task list over a repl would list
+obligations the client cannot act on by editing anything. refused, not
+approximated.
+
+what a task entry carries
+-------------------------
+
+  name       the externed fact name (Facts.extern against the theory's
+             fact space) — the name a user would type
+  position   file + line, from Name_Space.the_entry on
+             Global_Theory.fact_space. this is the DECLARATION site and
+             it is the idiom already in this tree (MCP_Repl.entities,
+             MCP_Repl.thy:99-124). the oracle's own Position (the sorry
+             site) is reported as a secondary hint when present and
+             when it differs.
+  statement  Thm.prop_of on the fact, printed in the theory's context.
+
+the statement is NOT taken from the oracle's term. Skip_Proof.cheat_tac
+(Pure/skip_proof.ML) builds its oracle over
+
+  Logic.list_implies (map Thm.term_of assms, goal)
+
+— the skipped SUBGOAL with the local assumptions prepended. for a
+top-level `lemma foo: "P" sorry` that happens to equal the lemma; for a
+sorry inside a structured proof (after fix/assume), or in a nested
+have, it does not. using it would silently misreport the task.
+
+mechanism
+---------
+
+1. enumerate: Facts.dest_static over Global_Theory.facts_of T with the
+   parents' facts_of as exclusion bases — recap's step 1 verbatim.
+     Facts.dest_static : bool -> Facts.T list -> Facts.T
+                           -> (string * thm list) list   (Pure/facts.ML:40)
+2. filter package noise, recap's step 2 — the datatype/fun output
+   (foo.simps, foo.induct) must not appear as tasks. shared code with
+   recap; whichever tool is built first owns it. Name_Space.is_concealed
+   UNDER-filters; the kind tag (Thm.get_tags -> Markup.kindN) is the
+   candidate, determined empirically (recap A2 / A3 here).
+   NOTE: in practice a sorry'd package theorem is near-impossible, so
+   this filter matters far less here than in recap — a wrong filter
+   costs recap correctness, but costs this tool almost nothing. do not
+   block on it.
+3. select: keep the facts resting on the skip_proof oracle.
+     Thm_Deps.has_skip_proof : thm list -> bool   (Pure/thm_deps.ML:35)
+   which is all_oracles + a name test against \<^oracle_name>\<open>skip_proof\<close>.
+4. classify DIRECT vs INHERITED (A1 — the one open question, see
+   below). direct = the lemma itself is sorry'd, and is a real task.
+   inherited = proved honestly but resting on a sorry'd lemma; not a
+   task, it closes for free when its dependency closes. an unclassified
+   list is still useful, so this step DEGRADES rather than blocks: if
+   A1 comes out negative, emit one flat list and say in the output that
+   direct/inherited could not be separated.
+5. skip_proofs GATE, before anything is reported:
+     Goal.skip_proofs_enabled ()   (Pure/Isar/proof.ML:1190)
+   when true, every non-relevant proof carries the same oracle and the
+   whole list is noise. the tool refuses with that sentence rather than
+   returning a plausible wrong answer. (a stamped-but-returned variant
+   was considered; refusing is the safer default and the caller can
+   rebuild without quick_and_dirty. revisit if a real workflow needs
+   the stamped form.)
+6. assemble the text: one section per theory, tasks in source-position
+   order (stable across calls — position order, not hash order), a
+   count, and the inherited block last if step 4 produced one.
+
+   (APIs verified 2026-08-12 against the bundled Isabelle2025-2:
+    Thm_Deps.has_skip_proof / all_oracles — Pure/thm_deps.ML:35,23;
+    the skip_proof oracle itself — Pure/skip_proof.ML:29;
+    oracle = (string * Position.T) * term option — proofterm.ML:234;
+    oracles recorded at the DEFAULT proof level: etc/options
+      `record_proofs : int = -1` leaves Proofterm.proofs at 6
+      (proofterm.ML:496) and oracle_enabled 6 = true (:494), so the
+      position and term are present — thm.ML:1213. full proof terms
+      are NOT needed. this settles what plans/recap listed as A3.)
+
+name/argument mapping across the layers
+---------------------------------------
+
+  mcp        proof_tasks {theories}
+  bridge     MCP.run_tool -> registry row "proof_tasks" (ml_run form)
+  engine     MCP_Task_List.tasks : string list -> string
+
+annotations: read_only. it reads a theory value and computes; it
+mutates nothing and repeats identically.
+
+implementation steps
+--------------------
+
+1. THE FIXTURE FIRST, before any tool code. mcp/Tools/HOL/Tests/
+   MCP_Fixture_Sorry.thy carrying: a datatype, a fun, a definition, two
+   real lemmas, one directly sorry'd lemma A, and one lemma B proved
+   `using A by simp`. wire into mcp/Tools/ROOT under MCP-HOL-Tests.
+   this single fixture settles A1 here AND recap's A2 filter question.
+   [ml unit]
+2. A1 EXPERIMENT on that fixture: does B's own proof body carry the
+   oracle? assert both readings so the build records which one holds.
+   the answer decides whether step 4 above ships or degrades. [ml unit]
+3. enumeration + selection (mechanism 1-3): theory in, sorry'd facts
+   out. [ml unit: exactly A (and B iff transitive), never the datatype
+   or fun theorems]
+4. entry assembly (name/position/statement) + the skip_proofs gate
+   (mechanism 5). [ml unit: statement matches Thm.prop_of and NOT the
+   oracle term for a structured-proof sorry; gate asserted]
+5. text assembly + the `mcp_tool "proof_tasks" = run ...` declaration.
+   [ml unit: golden text for the fixture]
+6. bridge: proof_tasks over MCP.run_tool in a live session returns the
+   list. [mcp_test -b]
+7. close-out: CHANGELOG entry, plans/README entry, spec OPEN resolved
+   with whatever A1 turned out to be.
+
+ASSUMPTIONS -> tests   (ranked by risk)
+---------------------------------------
+
+- A1 DIRECT vs INHERITED [highest risk, and the only real unknown].
+  Thm_Deps.all_oracles is transitive: it recurses the dependency
+  closure (thm_deps.ML:23, `collect` folding over the PBody's thms), so
+  a lemma proved honestly from a sorry'd one also reports skip_proof.
+  the hypothesis is that a thm's OWN proof body holds only its own
+  oracles, so `#oracles (Thm.proof_body_of thm)` discriminates. the
+  hazard is fulfill_norm_proof (proofterm.ML:1999), which unions
+  PROMISE oracles into exactly that field — so whether a cited lemma
+  reads as direct or inherited may depend on whether it arrived as a
+  promise or a thm_node, which depends on parallel_proofs. MCP-HOL
+  builds with parallel proofs on.
+  test: the step-1 fixture, `lemma A: "P" sorry` and
+  `lemma B: "Q" using A by simp`; assert whether B's own body is empty
+  of oracles. POSITIVE -> ship step 4 and blocked-by ordering.
+  NEGATIVE -> fall back to Thm_Deps.thm_deps to walk named
+  dependencies and intersect against the separately-computed direct
+  set; if that also fails, degrade to one flat list (mechanism 4).
+  do not describe the tool as having blocked-by ordering until this is
+  green. [ml unit]
+- A2 SKIP_PROOFS GATE actually fires. Goal.skip_proofs_enabled reads
+  the ambient setting, so assert that a quick_and_dirty context makes
+  the tool refuse rather than list every lemma in the fixture. this is
+  the difference between a useful list and a silently meaningless one.
+  [ml unit; may need MCP_Heap_Suite if the setting cannot be faked
+  in-process]
+- A3 STATEMENT SOURCE. for a sorry inside a structured proof
+  (fix/assume, or a nested have), assert Thm.prop_of on the fact is
+  what gets reported and that it DIFFERS from the oracle's term —
+  i.e. the fixture actually exercises the divergence rather than
+  passing by coincidence on a trivial case. [ml unit]
+- A4 POSITION SURVIVES THE HEAP. the fact-space entry position is
+  per-entry bookkeeping baked into the theory value at declaration
+  time, so it should serialize (this is the same claim
+  MCP_Repl.entities already relies on, plans/find_definition's
+  entities notes). assert a task's file/line is non-empty when the
+  theory comes from a saved heap rather than a fresh load.
+  [MCP_Heap_Suite]
+- A5 REFUSAL FOR REPLS, mirroring recap's A5: a repl id is not an
+  accepted target and says why. [bridge]

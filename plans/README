@@ -220,7 +220,26 @@ phase 3 — the ML tool surface (decided 2026-07-28, spec commit
         names this migration as the paper's worked example.)
 
 flagged, NOT scheduled (no wave):
-  - recap                      plans/recap  (generated Recap.thy the
+  - [ ] recap                  plans/recap  (generated Recap.thy the
         human verifies with isabelle build; ML-only, no scala. spec
         refinement: targets THEORIES, not repls — a repl's transient
         facts exist in no file, so no recap can import them)
+  - [x] proof_tasks            plans/proof_tasks  (the machine-checked
+        task list: every `sorry` in a theory is an obligation the
+        prover knows is open, so the agent's task list is READ out of
+        the theory rather than written by the agent. ML-only, no
+        scala. decided 2026-08-12, spec
+        D-2026-08-12-machine-checked-task-list. SHARES stages 1-2 with
+        recap but is strictly smaller — a list, not source, so no
+        restatement and no round-trip pre-flight, i.e. recap's A1 does
+        not exist here. build it FIRST of the two: its fixture settles
+        recap's fact-filter question (recap A2) and its trust-audit
+        APIs (recap A3, already settled on paper 2026-08-12 — oracles
+        record at the default proof level, no proof terms needed).
+        IMPLEMENTED 2026-08-12, engine green; the BRIDGE step and A5
+        remain, so the [x] covers the ML layer only. A1 settled
+        NEGATIVE by fixture -- the own-proof-body reading yields
+        nothing at all -- and the dependency-walk fallback ships. The
+        fixture also settled recap's A2: package output DOES rest on
+        skipped proofs, so the filter is mandatory, and the kind tag
+        is what discriminates.)
