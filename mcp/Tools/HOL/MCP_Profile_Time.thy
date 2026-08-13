@@ -73,8 +73,17 @@ fun go [] (st, entries) = (st, rev entries)
           Exn.Res st' =>
             go trs (st', {name = name, line = line, timing = timing, error = NONE} :: entries)
         | Exn.Exn exn =>
+            (* Runtime.exn_message may embed raw YXML markup (e.g. a
+               Position.here suffix on a name-resolution error) rather
+               than plain text -- strip it the same way every other
+               ML-unit test in this tree does (MCP_Repl_Tests.thy's
+               and Ir_Tests.thy's own "val plain = XML.content_of o
+               YXML.parse_body"), so a report line reads as prose
+               ("... (line 52)") and not a raw property dump
+               ("...positionline=52offset=...no_report"). *)
             (st, rev ({name = name, line = line, timing = timing,
-                       error = SOME (Runtime.exn_message exn)} :: entries))
+                       error = SOME (XML.content_of (YXML.parse_body (Runtime.exn_message exn)))}
+                :: entries))
       end;
 
 fun sum_timing entries : Timing.timing =
@@ -112,6 +121,16 @@ fun format_report thy_name entries stopped_early =
    never registered in Ir's repl_tab or anywhere else, so it is
    invisible to every repl_* tool and cannot be mutated by, or mutate,
    a live repl. *)
+(* Print_Mode.with_modes [] (plain text, no PIDE/YXML markup): profile
+   is called both directly (this ML function) and through the mcp_tool
+   capture wrapper (which separately forces the same plain mode for
+   ITS OWN output). Forcing it here too, around the error-message
+   extraction specifically, keeps a failing transition's
+   Runtime.exn_message plain regardless of which caller reaches this
+   function -- found empirically: called with no override active, a
+   position-carrying error's message came back with raw YXML report
+   markup spliced in ("...positionline=52offset=...no_report"), not
+   the clean parenthesised "(line 52)" a caller would expect. *)
 fun profile thy_name text =
   let
     val thy = Thy_Info.get_theory thy_name;
@@ -127,7 +146,8 @@ fun profile thy_name text =
          filters it (and any other ignored/comment-only span) out, so
          only genuine profiled commands reach the fold and the count. *)
       |> filter_out Toplevel.is_ignored;
-    val (_, entries) = go transitions (st0, []);
+    val (_, entries) =
+      Print_Mode.with_modes [] (fn () => go transitions (st0, [])) ();
     val stopped_early = (case entries of [] => false | _ => is_some (#error (List.last entries)));
   in format_report thy_name entries stopped_early end;
 
