@@ -81,9 +81,16 @@ fun profile_entries thy_name text =
       which folds over them too) but would otherwise double the report
       with spurious rows, so they are dropped here: "one line per
       command" means one line per REAL command.*)
+    (*Position.start (line 1, offset 1), NOT Position.none: Position.valid
+      treats a line/offset of 0 as absent (Pure/General/position.ML,
+      valid i = i > 0), and Position.none seeds both at 0 -- found
+      empirically, every reported line came back as N/A/0 under
+      Position.none. ir.ML's own exec_text seeds with Position.none too,
+      but it never reads line numbers back out, so the gap never showed
+      there.*)
     val transitions =
       filter (not o Toplevel.is_ignored)
-        (Outer_Syntax.parse_text base_thy (fn () => base_thy) Position.none text)
+        (Outer_Syntax.parse_text base_thy (fn () => base_thy) Position.start text)
     fun step (tr, (st, entries)) =
       let
         val before = measure st
@@ -105,7 +112,11 @@ fun delta_of ({before = SOME (n0, s0), after = SOME (n1, s1), ...}: entry) =
 
 fun line_of pos = the_default 0 (Position.line_of pos);
 
-fun fmt_signed n = if n >= 0 then "+" ^ string_of_int n else string_of_int n;
+(*string_of_int renders a negative int with SML's "~" (e.g. "~41"), not
+  a minus sign -- spell it out explicitly so the report reads like
+  ordinary signed-number notation*)
+fun fmt_signed n =
+  if n >= 0 then "+" ^ string_of_int n else "-" ^ string_of_int (~n);
 
 fun format_entry (e as {name, pos, ...}: entry) =
   let

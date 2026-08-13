@@ -124,7 +124,10 @@ step's is negative -- both are literal, distinctive substrings of the
 report line ("subgoals +1" / "subgoals <negative>"), so their relative
 position in the formatted text is a direct check of the sort contract
 without depending on line numbers or padding*)
-fun signed n = if n >= 0 then "+" ^ string_of_int n else string_of_int n;
+(*must match MCP_Profile_Delta.fmt_signed's own rendering (a real "-",
+  not SML's "~") since this is used to build search markers against
+  the tool's actual formatted output below*)
+fun signed n = if n >= 0 then "+" ^ string_of_int n else "-" ^ string_of_int (~n);
 
 val growth_marker = "subgoals " ^ signed (fst delta_induct);
 val shrink_marker = "subgoals " ^ signed (fst delta_auto);
