@@ -4,6 +4,25 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-13 (experimental profiler: profile_proof_memory)
+--------------------------------------------------------------------------
+
+- added: profile_proof_memory, an experimental per-command memory
+  profiler. Runs a block of Isar text as its own throwaway theory
+  state (never a live repl_step repl) and reports NET bytes retained
+  per command, highest first — a proxy for which step risks a memory
+  blow-up at scale. spec: "profile_proof_memory" ->
+  D-2026-08-13-proof-profiler-memory.
+- found: the obvious byte-level signals off ML_Statistics.get
+  (size_allocation - size_allocation_free; a raw size_heap delta) are
+  both useless as allocation proxies once a session's heap has grown
+  past its first few theories — Poly/ML's headroom absorbs real
+  allocation without moving either gauge. What works: force
+  ML_Heap.full_gc at each sample point, then read
+  size_heap - size_heap_free_last_full_GC, which is a true live-byte
+  count only right after a real collection. Cost: two forced full GCs
+  per profiled command.
+
 2026-08-09 (spec: every section carries a stable id)
 --------------------------------------------------------------------------
 
