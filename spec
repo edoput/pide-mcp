@@ -3850,7 +3850,7 @@ proof method, it is VISIBILITY: report, per command, how the goal
 state's SIZE changed, so the agent can spot the step that blew up the
 proof rather than shrinking it.
 
-mechanism: `profile_proof_delta {theory, isar_text}` builds a fresh,
+mechanism: `profile_proof_delta {theory_name, isar_text}` builds a fresh,
 disposable toplevel state rooted in `theory` (`Thy_Info.get_theory`
 plus `Theory.begin_theory` + `Toplevel.make_state`, mirroring
 `ir/ir.ML`'s own `init`/`from_specs`, but as new code — `ir/ir.ML` is
@@ -3869,14 +3869,15 @@ proof (`lemma`) or LEAVES one (`qed`) therefore reports N/A for that
 step's own delta, by design — the two states either side of it are
 not comparable goal states.
 
-input: `{theory: string, isar_text: string}` — named `isar_text`, not
-`text`: bare `text` is itself a registered Isar COMMAND keyword, so it
-cannot be used as an `mcp_tool` parameter name (the outer-syntax
-scanner splits the tool declaration's own span at that keyword; found
-empirically, see plans/proof_profiler_delta). `isar_text` also matches
-`repl_step`'s own parameter name for the same kind of argument.
-`isar_text` is a batch of Isar source (one or more commands/lemmas),
-not a single repl_step; this
+input: `{theory_name: string, isar_text: string}` — named `theory_name`
+and `isar_text`, not `theory`/`text`: both are themselves registered
+Isar COMMAND keywords (`theory ... imports ... begin`, `text \<open>...\<close>`),
+so neither can be used as an `mcp_tool` parameter name (the
+outer-syntax scanner splits the tool declaration's own span at that
+keyword; found empirically, see plans/proof_profiler_delta). `isar_text`
+also matches `repl_step`'s own parameter name for the same kind of
+argument. `isar_text` is a batch of Isar source (one or more
+commands/lemmas), not a single repl_step; this
 tool builds its own private toplevel state and is entirely separate
 from the `ir/ir.ML` repl machinery — it reads a theory and returns a
 report, it never touches `repl_tab` and never claims/releases a repl.
