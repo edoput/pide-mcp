@@ -144,10 +144,15 @@ fun profile_rows thy_name text =
       real commands; it carries no proof content and running it changes
       nothing, so it is dropped here rather than reported as a
       zero-content "command" in a per-command profile.*)
+    (*seed with Position.start, not Position.none: Position.line_of
+      treats an all-zero line/offset position as invalid, so every row
+      would report line 0 downstream (empirically confirmed) -- the
+      same fix plans/proof_profiler_delta's own exec_text-alike loop
+      needed.*)
     val transitions =
       filter (fn tr => Toplevel.name_of tr <> "<ignored>")
         (Outer_Syntax.parse_text (Toplevel.theory_of st0)
-          (fn () => Toplevel.theory_of st0) Position.none text)
+          (fn () => Toplevel.theory_of st0) Position.start text)
     fun step (tr, (st, idx, rows, stopped)) =
       if stopped then (st, idx, rows, stopped)
       else
