@@ -25,21 +25,32 @@ Isabelle has two implementation languages with distinct roles:
   Reference: `isabelle doc system`, chapter "Isabelle/Scala systems
   programming" (source: `src/Doc/System/Scala.thy`).
 
-In this repo the bundled distribution at
-`Isabelle2025-2_linux/Isabelle2025-2` is **reference sources only** —
-never execute its `bin/isabelle`. Run every Isabelle command through the
-flatpak:
+Run every Isabelle command through the flatpak:
 
 ```
 flatpak run --command=isabelle de.tum.in.isabelle.Isabelle <args>
 ```
 
-The two installs ship different Poly/ML binaries and share
-`$ISABELLE_HOME_USER/heaps`, and a root session's build digest is the
-SHA1 of the `poly` binary, so alternating between them invalidates Pure
-and forces a full Pure → HOL rebuild every time. Where the reference
-files below write `isabelle <cmd>`, that names the command — always
-invoke it through the flatpak above.
+Where the reference files below write `isabelle <cmd>`, that names the
+command — always invoke it through the flatpak above. Rationale: a second
+install ships a different Poly/ML binary while sharing
+`$ISABELLE_HOME_USER/heaps`, and a root session's build digest is the SHA1
+of the `poly` binary, so alternating between installs invalidates Pure and
+forces a full Pure → HOL rebuild every time.
+
+The flatpak is also where the **sources** live:
+
+    export S=~/.local/share/flatpak/app/de.tum.in.isabelle.Isabelle/current/active/files/src
+
+(`current/active` is a stable symlink — no build hash needed.) Every
+`src/...` path below and in the reference files resolves under `$S`.
+
+**The in-repo `Isabelle2025-2_linux/Isabelle2025-2` tree is empty** —
+verified 2026-08-14: nothing usable under `src/`, no `doc/`, no `bin/`.
+It is gitignored and was never part of the repo. Earlier revisions
+of this skill described it as "reference sources only"; that is now false
+in both halves — it is neither reference nor sources. Same version
+(**Isabelle2025-2**) either way, so `$S` is a drop-in replacement.
 
 ## References
 
@@ -75,6 +86,20 @@ source, anything carrying `\<Longrightarrow>` or a cartouche — consult
   parameter on the yxml serialiser
 - which parts of the distribution already recode, and where
 
+When a source location crosses between ML and scala — an error's line, a
+goto-definition target, anything carrying an `offset` — consult
+`references/positions.md` for:
+
+- the four coordinate systems, and which side speaks which
+- symbol-vs-char and 1-based-vs-0-based, and the single function that
+  performs both conversions
+- the file-addressed / id-addressed split and the four `Item_*` extractors
+  that discriminate it
+- the traps: `Position.Range` fabricating ranges, `line` meaning two
+  different things, `Snapshot.messages` synthesising a command-keyword
+  position, `unicode_symbols` deciding which text an offset indexes
+- the VSCode reference implementation, and what this repo does today
+
 When testing isabelle component in scala and ML, consult `references/testing.md` for:
 
 - unit testing scala code
@@ -98,3 +123,10 @@ When testing isabelle component in scala and ML, consult `references/testing.md`
   ML↔Scala function protocol, both sides.
 - `src/Pure/PIDE/protocol_command.ML`, `src/Pure/PIDE/session.scala`,
   `src/Pure/PIDE/headless.scala` — PIDE protocol plumbing.
+- `src/Pure/General/position.ML`, `src/Pure/General/position.scala`,
+  `src/Pure/General/symbol.scala` (`Index`/`Text_Chunk`),
+  `src/Pure/PIDE/line.scala` — source positions on both sides.
+- `src/Tools/VSCode/src/` (`vscode_rendering.scala`, `language_server.scala`,
+  `lsp.scala`) — the worked precedent for exposing PIDE state, positions
+  included, over a JSON protocol to an external client. Read it before
+  designing any equivalent for MCP.
