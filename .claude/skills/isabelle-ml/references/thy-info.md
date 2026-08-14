@@ -1,3 +1,43 @@
+### The theory database (Thy_Info): what it remembers, what it does not
+
+Manual: `src/Doc/Implementation/Integration.thy` (Isar toplevel, theory
+loader database).
+Sources: `src/Pure/Thy/thy_info.ML` (the database), `src/Pure/context.ML`
+(theory values, `Theory_Data`), `src/Pure/global_theory.ML`
+(`facts_of`, `dest_thms`), `src/Pure/facts.ML` (fact tables).
+
+Thy_Info is a graph of dependencies, not a history. It is a
+`String_Graph` keyed by theory name — one entry per name. Nodes are
+theory names, edges are the imports relation. It answers "what does
+this theory depend on" and "what depends on this theory". It does not
+answer "what did this theory look like yesterday".
+
+A theory value is immutable and self-contained: its own content plus
+everything inherited from its parents (name spaces, the facts table,
+axioms, defs, all `Theory_Data` slots). It carries no timestamp and no
+pointer to any earlier version of itself.
+
+**Reloading discards the old version.** When you reload a theory,
+Thy_Info removes the old node first and every theory that depends on
+it, then adds the new one. So after you edit and reload a theory there
+is exactly one value for that name — the old one, and the loaded state
+of everything downstream, is gone.
+
+There is a real history, but only inside one load: while a single file
+loads, each command produces a new theory value, and with the
+`record_theories` option those per-command states stay reachable
+(`Thy_Info.get_theory_segments`, `Thy_Info.get_theory_elements`). That
+is history inside one load, not history across edits.
+
+**Practical consequence.** To compare two versions of a theory (what
+changed in a file), the prover keeps only one value per name, so it
+won't do this for you directly. But two values coexist fine when their
+names differ — copy the old file under a different theory name, load
+it, and diff the two values with `Facts.dest_static`. See
+`references/thy-info.md` for the worked recipe, including the pitfall
+where the exclusion test is by name only, so a theorem whose statement
+changed but kept its name won't show up as new.
+
 # Thy_Info: the theory database, and how to diff two theory versions
 
 Thy_Info is the loader's database of theories. It is a graph, not a
