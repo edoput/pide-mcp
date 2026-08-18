@@ -71,7 +71,7 @@ When you need to work with types, terms, and theorems as values read `references
 - their concrete syntax: reading, printing, checking
 - pretty printing and markup of terms
 
-When you need to work with proofs read `references/proof.md` for:
+When you need to work with proofs read `references/proofs.md` for:
 
 - tactics, tacticals, and goals
 - equational reasoning through conversions and the simplifier
