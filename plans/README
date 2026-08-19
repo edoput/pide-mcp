@@ -229,7 +229,7 @@ scala-backed tools (decided 2026-08-19, spec
   D-2026-08-19-scala-backed-mcp-tools; investigation LINTER_FINDINGS.md).
   two plans, in this order; the second depends on the first and does not
   restate its steps:
-  - [ ] scala_mcp_fun          plans/scala_mcp_fun (TIER 1: wrap a
+  - [x] scala_mcp_fun          plans/scala_mcp_fun (TIER 1: wrap a
         Scala.Fun some component already registered. no reflection and
         no new scala code of ours — Scala.function already dispatches by
         string name, and Resources.check_scala_function validates the

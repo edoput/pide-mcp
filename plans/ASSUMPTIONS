@@ -202,12 +202,12 @@ repl_truncate#T6          e2e         full chain.
 repl_unpin#T1             ml-unit     unpinning without a pin is an error naming the repl.
 repl_unpin#T2             ml-unit     dependents block: pin A, init B [pin@A], unpin A -> error; remove B, unpin A -> ok; A's steps unchanged throughout.
 repl_unpin#T3             bridge      full chain.
-scala_mcp_fun#D1          unstated    the calling convention. it has two halves and only ONE of them is ours to decide. THE SHAPE HALF IS ALREADY SOLVED. Pure dispatches on the target's (s
+scala_mcp_fun#D1          unstated    landed exactly as decided: Pure's (single, bytes) dispatch is copied,
 scala_mcp_fun#D3          heap        (optional) params are FORBIDDEN on scala_mcp_fun, rejected at registration. this is the one hole D1's trust argument does not cover: the CLIENT decide
 scala_mcp_fun#D2          unstated    the result is the Fun's single output string, passed through verbatim as the tool's text content. no parsing, no json interpretation: a Fun that wants
 scala_mcp_fun#A1          bridge      the target is checked at DECLARATION: a scala_mcp_fun naming a nonexistent function fails at registration with a position, not at call time. the negat
 scala_mcp_fun#A2          bridge      the ONE mechanical check D1 leaves us: a single=true target declared with TWO OR MORE params is rejected at REGISTRATION, naming the flag and the coun
-scala_mcp_fun#A3          bridge      the BLOCKING cost is real and measured, not assumed: Scala.function parks the prover thread in Synchronized.guarded_access (Pure/System/scala.ML) unti
+scala_mcp_fun#A3          bridge      MEASURED 2026-08-19, and the answer is yes: the prover thread is held for the WHOLE scala call. `scala_mcp_fun napper = \<open>sleep\<close>` with a 3
 scala_mcp_fun#T1          bridge      the round trip end to end: a theory declares `scala_mcp_fun catalog = \<open>doc_names\<close>`, tools/list advertises the row, tools/call returns the
 scala_mcp_fun#T2          bridge      the three failure shapes (step 3) each surface as an mcp isError carrying the scala message: a Fun that raises, one that returns null, and one given a
 scala_mcp_fun#T3          bridge      a scala_mcp_fun row is an ORDINARY registry row: `declare [[mcp_tools del: catalog]]` removes it from tools/list, a bundle re-adds it, and tool_scope_

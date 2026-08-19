@@ -149,9 +149,17 @@ object Dynamic_Call {
 
         if (typ == classOf[Document.Snapshot])
           /* the ambient parameter needs a selector: which snapshot? by
-             convention it comes from a `theory` argument. */
-          named.get("theory")
-            .toRight("A Document.Snapshot parameter needs a `theory` argument naming the theory.")
+             convention it comes from a `theory` argument.
+
+             `thy` and `theory_name` are accepted too, and not merely as a
+             convenience: an Isar-declared param cannot be NAMED `theory`,
+             because the params clause parses names with Parse.name and
+             `theory` is a command keyword. So a scala_mcp_tool declaration
+             has to say `thy`, while a raw ML caller is free to say
+             `theory`. Both must work. */
+          List("theory", "thy", "theory_name").flatMap(named.get).headOption
+            .toRight("A Document.Snapshot parameter needs a `theory` argument " +
+              "(or `thy`, which is what an Isar declaration must use) naming the theory.")
             .flatMap(resolve_snapshot(session, _).map(_.asInstanceOf[AnyRef]))
         else if (typ == classOf[Session]) Right(session)
         else if (typ == classOf[Options]) Right(session.session_options)
@@ -185,12 +193,17 @@ object Dynamic_Call {
   def render(result: AnyRef): String =
     result match {
       case null => ""
+      /* a Fun that formats its own output is not second-guessed */
       case s: String => s
       case xml: XML.Tree => XML.content(List(xml))
-      case it: Iterable[_] => it.map(render_item).mkString("\n")
+      case it: Iterable[_] if it.nonEmpty && it.forall(_.isInstanceOf[Product]) =>
+        JSON.Format(it.toList.map(json_of))
+      case it: Iterable[_] => it.map(String.valueOf).mkString("\n")
+      case p: Product => JSON.Format(json_of(p))
       case other =>
-        /* a report-shaped object: prefer a no-arg accessor returning a
-           collection over the identity-hash toString. */
+        /* a report-shaped object is not itself a collection: prefer a
+           no-arg accessor that yields one over the identity-hash
+           toString, then render that. */
         val accessor =
           other.getClass.getMethods.toList
             .filter(m => m.getParameterTypes.isEmpty && !m.isSynthetic)
@@ -198,31 +211,42 @@ object Dynamic_Call {
         accessor.flatMap(m =>
           try {
             m.invoke(other) match {
-              case it: Iterable[_] => Some(it.map(render_item).mkString("\n"))
+              case it: Iterable[_] => Some(render(it))
               case _ => None
             }
           }
-          catch { case _: Throwable => None }
+          catch {
+            case _: IllegalAccessException => None
+            case _: InvocationTargetException => None
+          }
         ).getOrElse(String.valueOf(other))
     }
 
-  /* A finding-shaped result is almost always a case class. Render it by
-     FIELD NAME (scala 3 keeps productElementNames), which turns
-     Result(short_name,Name "f" is too short.,[587..588],...) into something
-     an agent can read -- and drop fields that drag half the document model
-     in with them (a Parsed_Command carries its whole Snapshot). */
+  /* D3: a finding has to be machine-readable, not merely human-readable,
+     or the client can only show it to a person. A result that is a case
+     class becomes a JSON object keyed by its real FIELD NAMES (scala 3
+     keeps productElementNames), and a collection of them becomes a JSON
+     array -- with no knowledge of the type on our side.
+
+     Fields holding collections are dropped: a lint Result's `commands`
+     field carries a Parsed_Command, which carries the whole Snapshot.
+
+     LIMIT, recorded rather than hidden: only CONSTRUCTOR fields are
+     visible this way. A lint Result carries its position as OFFSETS in
+     `range`; its line_range is a lazy val and does not appear. Offsets
+     are honest but less useful than line numbers, and closing that gap
+     needs something type-aware. */
   private val Bulky = 240
 
-  private def render_item(item: Any): String =
+  private def json_of(item: Any): JSON.T =
     item match {
       case p: Product =>
-        val fields =
+        JSON.Object(
           p.productElementNames.zip(p.productIterator).toList
             .filter({ case (_, v) => !v.isInstanceOf[Iterable[_]] })
             .map({ case (k, v) => k -> String.valueOf(v) })
             .filter({ case (_, v) => v.length <= Bulky })
-        if (fields.isEmpty) p.productPrefix
-        else fields.map({ case (k, v) => k + "=" + v }).mkString(p.productPrefix + "(", ", ", ")")
+            .map({ case (k, v) => k -> (v: JSON.T) }): _*)
       case other => String.valueOf(other)
     }
 
