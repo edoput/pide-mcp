@@ -115,10 +115,33 @@ DEVIATIONS from the plan as written, each a deliberate choice:
   without that a lint Result drags its whole Parsed_Command and Snapshot
   into every row. Honest status: readable, not machine-parseable.
 
-- Step 1 (the scala_mcp_tool outer syntax) is NOT built. Today the target
-  is named from ML via Scala.function directly. MCP.check_target already
-  exists and returns the parameter list, so the command's
-  declaration-time validation has its backend waiting.
+- Step 1 (the scala_mcp_tool outer syntax) is NOT built, and it turns out
+  NOT to be on the critical path. The existing mcp_tool ML escape hatch
+  already wraps dynamic_call into a served tool:
+
+      mcp_tool lint = \<open>fn thy => hd (Scala.function "MCP.dynamic_call"
+        ["isabelle.linter.Linter.lint_snapshot", "theory", thy])\<close>
+        (description \<open>style lints for a loaded theory\<close>)
+
+  declared via repl_step, `lint` appears in tools/list (38 rows) and
+  tools/call returns findings. So the linter IS reachable through the MCP
+  today. What step 1 still buys is ergonomics and declaration-time
+  validation -- MCP.check_target is built and returns the parameter list,
+  so its backend is waiting.
+
+- A1 IS met: the three resolution failures produce three different
+  messages ("no class X", "found X but it is a class, not a scala object",
+  "class X has no method Y; it has ..."), each tested. Getting there also
+  narrowed the catches from Throwable to ClassNotFoundException /
+  NoSuchFieldException -- a blanket catch there would swallow
+  Exn.Interrupt and turn a cancelled call into a bogus resolution error,
+  which matters given the plan already records that a lint holds the
+  prover thread for its whole run.
+
+- T1's own-jar targets live in mcp_test, not mcp: mcp.jar ships no test
+  code (.claude/rules/scala-rebuild.md). This costs nothing and is in
+  fact a better test -- mcp_test.jar is reached by exactly the same
+  reflection over the same classpath as a stranger's jar.
 
 FOUND LIVE, and it blocked everything until fixed: mcp/etc/settings
 carried `ISABELLE_CLASSPATH="...:$COMPONENT/lib/mcp.jar"` on top of
