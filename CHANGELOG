@@ -4,6 +4,81 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-19 (scala-backed mcp tools: scala_mcp_fun and scala_mcp_tool)
+--------------------------------------------------------------------------
+
+- decided: an mcp tool may be backed by a SCALA function that arrives
+  with a user-installed component, not only by a scala builtin we
+  compiled in or an ML tool. spec "scala-backed mcp tools:
+  scala_mcp_fun and scala_mcp_tool"
+  (D-2026-08-19-scala-backed-mcp-tools); plans plans/scala_mcp_fun and
+  plans/scala_mcp_tool, neither scheduled into a wave.
+
+- the gap it closes: components are registered by the USER, after our
+  build, so a tool they carry cannot be known to mcp.jar. the motivating
+  case is the isabelle linter — style anti-patterns in proof documents,
+  which is exactly the class of defect an LLM produces by default and a
+  human reviewer rejects a proof for. Its engine is one pure function,
+  lint_snapshot(Document.Snapshot, Lint_Store.Selection), taking the
+  object our server already holds. Investigation: LINTER_FINDINGS.md.
+
+- TWO TIERS, deliberately separate commands rather than one command with
+  a mode flag, because they solve different problems:
+
+  scala_mcp_fun (tier 1) wraps a registered Scala.Fun by NAME. No
+  reflection and no new scala code on our side — Scala.function already
+  dispatches by string (scala.scala:276). Covers tools the user WRITES:
+  they own the jar, so they can add a Fun subclass plus one services
+  line in etc/build.props.
+
+  scala_mcp_tool (tier 2) wraps any class+method on the classpath, via
+  ONE scala function of ours (MCP.dynamic_call) that reflects the
+  signature, checks the arguments and invokes. Covers tools whose author
+  never heard of us. The linter is this kind, which is why tier 2 exists
+  at all.
+
+  Both declare an ordinary row in the SAME ML registry mcp_tool writes
+  to, so activation, bundles, tool_scope and tools/list_changed apply
+  unchanged. They add a second BODY kind, not a second tool concept.
+
+- VERIFIED 2026-08-19 against Isabelle2025-2, settling the question the
+  design rests on: ML CAN call scala from inside an mcp tool body. The
+  reentrancy worry (an ML tool is invoked through a protocol command and
+  would be replying through another) does not materialise. Reproducer
+  mcp/test/repro_scala_bridge.py, 7/7 green — it registers a tool via
+  repl_step whose body calls `doc_names`, whose result (the doc catalog,
+  computed scala-side from the filesystem) ML could not fabricate, and
+  cross-checks it against `isabelle doc`. A pure-ML control tool runs
+  alongside to isolate the harness.
+
+- the fact that makes the linter reachable at all: a Scala.Fun receives
+  the SESSION, not just its arguments (`def invoke(session: Session,
+  args: List[Bytes])`, scala.scala:22). Fun_String/Fun_Strings are
+  conveniences that DROP it. So ML cannot produce a Document.Snapshot,
+  but the scala side can resolve one from the session by theory name —
+  which turns the signature check into DISPATCH: String/Int/Boolean come
+  from the ML call args, Document.Snapshot/Session/Options from server
+  state.
+
+- discovery and jar loading needed NO new mechanism, contrary to the
+  first framing of the question. Component jars are on java.class.path
+  at boot via `isabelle components -u`, and make_services resolves
+  service classes reflectively from META-INF/isabelle/services —
+  demonstrated by afp_build and find_facts_* appearing in `isabelle -?`
+  with Pure knowing nothing about them. A jar loaded AFTER boot is
+  visible only to its own loader (Isabelle_System.classpath() is a
+  cached singleton, Scala.functions a lazy val over it), so post-boot
+  loading buys hot-reload for us alone and does not extend the session.
+
+- four costs pinned as behavior rather than left implicit: Scala.function
+  BLOCKS the prover thread for the whole scala computation (the argument
+  for a scala-resident tool where one exists, and why async MCP.run_tool
+  matters more once these land); COERCION from ML strings to List[Path]/
+  Options/Severity.Level is the real work, not the plumbing; OVERLOADS
+  must be rejected as ambiguous rather than guessed; and the target is
+  validated at DECLARATION time, the way mcp_tool proves its
+  diagnostic-command target, so a typo fails at registration.
+
 2026-08-09 (spec: every section carries a stable id)
 --------------------------------------------------------------------------
 
