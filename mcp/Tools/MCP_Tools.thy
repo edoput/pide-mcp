@@ -1,6 +1,6 @@
 theory MCP_Tools
   imports Pure
-  keywords "mcp_tool" "mcp_resource" "mcp_test" :: thy_decl
+  keywords "mcp_tool" "scala_mcp_tool" "mcp_resource" "mcp_test" :: thy_decl
     and "print_mcp_tools" "print_mcp_resources" :: diag
     and "description" "params" "format" "run" "capture" "isar"
 begin
@@ -517,6 +517,8 @@ sig
   val func: string -> (string -> string) -> MCP_Tool.tool
   val ml_run: string -> MCP_Tool.param list -> MCP_Tool.annotations -> MCP_Tool.constraint list ->
     (Proof.context -> (string * string) list -> string) -> MCP_Tool.tool
+  val scala_call: string -> string -> MCP_Tool.param list -> MCP_Tool.annotations ->
+    MCP_Tool.constraint list -> MCP_Tool.tool
   val diag: Proof.context -> string * Position.T ->
     {description: string, params: MCP_Tool.param list, format: string,
      constraints: MCP_Tool.constraint list} -> MCP_Tool.tool
@@ -957,6 +959,25 @@ fun ml_run description params annotations constraints f : MCP_Tool.tool =
      run = fn ctxt => fn args => f ctxt (validate ctxt params constraints args)}
   end;
 
+(*tier 2 of plans/scala_mcp_tool: the body is a REFLECTIVE call into a
+  scala method named by a STRING. we never link against the target -- the
+  classpath resolves it at call time -- and the arguments cross as a LIST,
+  so each name and each value is its own element and no separator can
+  corrupt a value.*)
+fun scala_call description target params annotations constraints : MCP_Tool.tool =
+  let
+    val params' = map param params;
+    val _ = List.app (check_constraint params') constraints;
+  in
+    {description = describe_constraints description constraints, params = params',
+     constraints = constraints, form = MCP_Tool.String_Fun, annotations = annotations,
+     run = fn ctxt => fn args =>
+      let
+        val args' = validate ctxt params' constraints args;
+        val flat = maps (fn (k, v) => [k, v]) args';
+      in cat_lines (Scala.function "MCP.dynamic_call" (target :: flat)) end}
+  end;
+
 (*wrap a diagnostic command: registration-time checks here (position
   report -> ctrl+click on the command; keyword-class restriction), the
   run function validates + assembles + executes against the RUN
@@ -1367,6 +1388,41 @@ val _ =
     "register an MCP tool (diagnostic-command wrap or ML escape hatch)"
     (Parse.position Parse.name -- (Scan.option tool_form -- Scan.repeat clause)
       >> tool_cmd);
+
+
+(* scala_mcp_tool: a tool whose body is a scala method named by a string *)
+
+fun scala_tool_cmd (((name, pos), (target, tpos)), clauses) lthy =
+  let
+    val what = "scala_mcp_tool " ^ quote name;
+    val {descr, params, fmt, annot, constr, ...} = digest what false clauses;
+    val descr' = the_descr what pos descr;
+    val _ =
+      if is_some fmt
+      then error ("(format ...) clause is not meaningful for " ^ what)
+      else ();
+    (*PROVE the target now, so a typo fails HERE with a position rather
+      than at call time -- the same contract the diag form gets from
+      Outer_Syntax.check_command. The scala bridge is available at theory
+      BUILD time as well as in a live session (verified 2026-08-19), so
+      this does not make a declaring theory unbuildable.*)
+    val signature_text =
+      Scala.function1 "MCP.check_target" target
+        handle ERROR msg => error (msg ^ Position.here tpos);
+    (*the resolved signature is worth showing the client: it is the only
+      place the tool's real scala types are visible.*)
+    val descr'' =
+      descr' ^ "\n\nScala target: " ^ target ^ "(" ^ signature_text ^ ")";
+    val tool =
+      MCP_Combinators.scala_call descr'' target (these params)
+        (the_default MCP_Tool.default_annotations annot) (the_list constr);
+  in #2 (MCP_Tool.declare (Binding.make (name, pos)) tool lthy) end;
+
+val _ =
+  Outer_Syntax.local_theory \<^command_keyword>\<open>scala_mcp_tool\<close>
+    "register an MCP tool backed by a scala method resolved on the classpath"
+    (Parse.position Parse.name -- (Parse.$$$ "=" |-- Parse.position Parse.embedded) --
+      Scan.repeat clause >> scala_tool_cmd);
 
 
 (* mcp_resource *)

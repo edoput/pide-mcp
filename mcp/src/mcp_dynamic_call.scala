@@ -149,9 +149,17 @@ object Dynamic_Call {
 
         if (typ == classOf[Document.Snapshot])
           /* the ambient parameter needs a selector: which snapshot? by
-             convention it comes from a `theory` argument. */
-          named.get("theory")
-            .toRight("A Document.Snapshot parameter needs a `theory` argument naming the theory.")
+             convention it comes from a `theory` argument.
+
+             `thy` and `theory_name` are accepted too, and not merely as a
+             convenience: an Isar-declared param cannot be NAMED `theory`,
+             because the params clause parses names with Parse.name and
+             `theory` is a command keyword. So a scala_mcp_tool declaration
+             has to say `thy`, while a raw ML caller is free to say
+             `theory`. Both must work. */
+          List("theory", "thy", "theory_name").flatMap(named.get).headOption
+            .toRight("A Document.Snapshot parameter needs a `theory` argument " +
+              "(or `thy`, which is what an Isar declaration must use) naming the theory.")
             .flatMap(resolve_snapshot(session, _).map(_.asInstanceOf[AnyRef]))
         else if (typ == classOf[Session]) Right(session)
         else if (typ == classOf[Options]) Right(session.session_options)

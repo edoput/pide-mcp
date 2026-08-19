@@ -10,19 +10,31 @@ Nothing in mcp.jar links against the linter, and the linter knows nothing
 about us -- the only thing connecting them is the target string below.
 
 Cases:
-  1  check_target  resolves isabelle.linter.Linter.lint_snapshot and reports
-                   its real parameter names and types (Q4: names survive
-                   into the bytecode)
-  2  load_theory   a deliberately lint-dirty fixture, so the session holds a
-                   live snapshot for it
-  3  own-jar       Self_Test.snapshot_info proves the AMBIENT fill handed
-                   over a real snapshot, not an empty one
-  4  THE claim     lint_snapshot over that snapshot returns the findings the
-                   fixture was built to trigger
+  1   check_target  resolves isabelle.linter.Linter.lint_snapshot and reports
+                    its real parameter names and types (Q4: names survive
+                    into the bytecode)
+  2   load_theory   a deliberately lint-dirty fixture, so the session holds a
+                    live snapshot for it
+  3   own-jar       Self_Test.snapshot_info proves the AMBIENT fill handed
+                    over a real snapshot, not an empty one
+  4   THE claim     lint_snapshot over that snapshot returns the findings the
+                    fixture was built to trigger
+  5   errors        the three resolution failures give three DIFFERENT
+                    messages, and overloads are rejected rather than guessed
+  6   over MCP      a `lint` tool via the mcp_tool ML escape hatch: in
+                    tools/list, callable, returns findings
+  7   the command   scala_mcp_tool itself -- a bad target fails at
+                    REGISTRATION, a good one declares, advertises its
+                    resolved scala signature, and serves
+
+NOTE on param names (case 7): an Isar-declared param CANNOT be called
+`theory`. The params clause parses names with Parse.name and `theory` is
+a command keyword, so it is rejected -- as is `text`. Declarations use
+`thy`; dynamic_call accepts theory/thy/theory_name for that reason.
 
 Requires the linter component:
     isabelle components -u <linter checkout>/linter_base
-Skips cases 1 and 4 if it is absent, so the suite stays green without it.
+Skips cases 1, 4, 6 and 7 if it is absent, so the suite stays green.
 
 Usage:
   ISABELLE=/path/to/isabelle python3 mcp/test/repro_dynamic_call.py
@@ -172,6 +184,45 @@ def main():
         missing = [w for w in ["short_name", "tactic_proofs", "implicit_rule"]
                    if w not in out]
         T.verdict("6c tools/call lint returns findings -- THE LINTER OVER MCP",
+            not is_err(reply) and not missing,
+            "missing: %s" % missing if missing else out.strip().splitlines()[0][:110])
+
+    # --- 7. the scala_mcp_tool COMMAND: declare the target in Isar ---
+    if have_linter:
+        # 7a the point of the command: a typo fails at REGISTRATION, not at
+        #    call time, with a position -- like the diag form's
+        #    Outer_Syntax.check_command
+        reply = step(client,
+            r'scala_mcp_tool broken = \<open>no.such.Class.method\<close> '
+            r'(description \<open>should not register\<close>) '
+            r'(params thy :: string \<open>t\<close>)')
+        T.verdict("7a a bad target fails at REGISTRATION",
+            is_err(reply) and "Cannot resolve" in text_of(reply),
+            text_of(reply).strip().splitlines()[0][:110] if text_of(reply).strip() else "")
+
+        reply = step(client,
+            r'scala_mcp_tool lint2 = \<open>' + LINT_TARGET + r'\<close> '
+            r'(description \<open>style lints for a loaded theory\<close>) '
+            r'(params thy :: string \<open>theory to lint\<close>)')
+        T.verdict("7b scala_mcp_tool declares", not is_err(reply),
+            text_of(reply)[:120])
+
+        client.request("tools/call",
+            {"name": "tool_scope_set", "arguments": {"repl": REPL}})
+        tools = client.request("tools/list").get("result", {}).get("tools", [])
+        row = [x for x in tools if x.get("name") == "lint2"]
+        # the resolved scala signature is surfaced in the description --
+        # the only place the tool's real scala types are visible
+        T.verdict("7c lint2 advertises its resolved scala signature",
+            bool(row) and "Document$Snapshot" in row[0].get("description", ""),
+            (row[0].get("description", "")[-90:] if row else "absent"))
+
+        reply = client.request("tools/call",
+            {"name": "lint2", "arguments": {"thy": "Lint_Dirty"}})
+        out = text_of(reply)
+        missing = [w for w in ["short_name", "tactic_proofs", "implicit_rule"]
+                   if w not in out]
+        T.verdict("7d tools/call lint2 returns findings -- via the COMMAND",
             not is_err(reply) and not missing,
             "missing: %s" % missing if missing else out.strip().splitlines()[0][:110])
 
