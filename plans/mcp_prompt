@@ -1,0 +1,388 @@
+mcp_prompt — DRAFT spec change (proposed 2025-08-12, NOT landed)
+==================================================================
+
+status: PROPOSAL FOR REVIEW. nothing in `spec` or `CHANGELOG` has been
+edited. this file holds (a) the prose proposed for insertion into
+`spec`, (b) the draft CHANGELOG entry, (c) the open review items. once
+reviewed, (a) and (b) move into their files as ONE commit
+(.claude/rules/commits.md), this file is rewritten as the real plan,
+and only then does implementation start.
+
+branch: worktree-mcp-prompts
+
+insertion point in `spec`: phase 3, immediately after "parameterised
+resources (decided 2026-07-28; enumeration PENDING)" and before "the
+parameter spec language (params clause) and schema derivation". the
+new section is a sibling of the two existing registry decisions.
+
+
+================================================================
+(a) proposed spec text
+================================================================
+
+prompts as context entities (decided 2026-08-12)
+--------------------------------------------------
+
+We add prompts as context entities in a Isabelle theory. This allows
+Isabelle user to write a <mcp_prompt> command in their theories and the
+associated text will get served to the agent. We believe that the
+best prompts and guidance can be given by the authors of a theory
+and therefore having prompts encoded into Isabelle theories is best.
+
+As an example a very general prompt could be
+
+<mcp_prompt> name =
+<text>
+Step by step description of the workflow.
+</text>
+
+Then the user can reference the prompt with /name in their coding
+agent of choice. 
+
+the registry: a third MCP_Registry instance
+- - - - - - - - - - - - - - - - - - - - - - -
+
+MCP_Prompt is an exact mirror of MCP_Tool and MCP_Resource by
+construction — the same functor, so positions, ctrl+click,
+completion, theory-qualified names, import-following visibility,
+merge-by-union, and the activation set all arrive for free:
+
+    structure Registry =
+      MCP_Registry(
+        val kind = "mcp_prompt"
+        val changed = "MCP.prompts_changed"
+        type value = prompt);
+
+with the matching `mcp_prompts add:/del:` declaration attribute
+(PLURAL, same lexer reason as the other two) and `print_mcp_prompts`
+("!" includes inactive). bundles therefore scope prompts with zero
+new machinery, exactly as for tools: a bundle that activates a family
+of tools brings its prompts along.
+
+the prompt value type
+- - - - - - - - - - - -
+
+a tool returns a string; a resource returns a string; a prompt
+returns a MESSAGE ARRAY. that is the one place the mirror stops being
+mechanical:
+
+    datatype role = User | Assistant
+    datatype content = Text of string          (*wave 1: text only*)
+    type message = {role: role, content: content}
+    type argument = {name: string, description: string, required: bool}
+
+    type prompt =
+      {description: string,
+       arguments: argument list,
+       build: Proof.context -> (string * string) list -> message list}
+
+`build` is context-relative like `run`/`read`, so a prompt can quote
+live prover state (the current goal, a theory's fact names) rather
+than only static text.
+
+ASSUMPTION the text of the prompt is resolved at prompt invocation
+time and not at prompt definition time. The context of the invocation
+is not the context of the definition and therefore a proof goal,
+or in general the state of the prover is different between the two.
+
+DECISION — arguments are FLAT, not MCP_Tool.param. MCP's prompt
+argument descriptor is exactly {name, description, required}: there
+is no type field on the wire. reusing the nine-constructor `ptyp`
+universe would carry machinery that cannot be published, and would
+re-incur encode_ptyp's tag-order hazard (a mis-ordered scala list
+decodes Nat as Int SILENTLY) for zero client-visible gain. the cost
+is a second small parser clause — `(arguments ...)` rather than
+`(params ...)` — which is accepted. consequence to accept with it:
+enum-valued arguments are unavailable, and the mechanism that WOULD
+serve them (completion/complete over a ref/prompt) is already listed
+out of scope for this phase.
+
+scoping: the tool treatment, not the resource treatment
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+the two existing primitives are scoped DIFFERENTLY, and this matters:
+`MCP.tools` takes (designation, bundles) and the designation picks the
+context that DEFINES the tool set; `MCP.resources` takes designation
+only (mcp_session.scala:658) and the resource scope_* family filters a
+LISTING by theory glob.
+
+DECISION — prompts take the tool treatment: `MCP.prompts` takes
+(designation, bundles_yxml), resolves through
+MCP_Protocol.designated_context_safe, and degrades to the empty
+payload on a stale designation rather than leaving the client's
+prompts/list unanswered.
+
+DECISION — prompts ride the SAME designation as tools. no
+prompt_scope_* builtin family is added; tool_scope_set /
+tool_scope_include govern prompts too, and tool_scope_show reports
+them. rationale: the designation is a standpoint, not a per-primitive
+setting, and a bundle that activates tools for a task should not need
+a second, separately-set scope to bring its prompts. the wart is the
+name (tool_scope_* now governs two primitives); renaming is rejected
+as a client-visible break for cosmetics. the change this DOES make is
+client-visible and should be owned: tool_scope_show's reply grows a
+prompts section, so a shipped builtin's output changes. additive, not
+a break, but not invisible either. see review item 3.
+
+the wire
+- - - - -
+
+    MCP.prompts (designation, bundles_yxml)
+      -> MCP.prompts_result : list encode_prompt
+
+a FLAT list, deliberately not the (rows, builtins) pair `tools_body`
+uses. there are no builtin prompts — Isabelle/Scala publishes none —
+so there is no mirror set, no drift gate, and no availability floor to
+protect. the empty-payload floor is the empty list.
+
+    encode_prompt =
+      pair string (pair string (list encode_argument))
+        (full name, (description, arguments))
+    encode_argument =
+      pair string (pair string bool) (name, (description, required))
+
+    MCP.get_prompt (designation, bundles_yxml, name, args_yxml)
+      -> pair string (pair string (list encode_message))
+         (status, (error_text, messages))
+
+status is "ok" | "error", mirroring run_tool / read_resource, and the
+inactive policy mirrors them too: a registered-but-inactive prompt is
+not gettable, matching its absence from the listing. the shape is
+FIXED in both branches (on "ok" error_text is ""; on "error" messages
+is []) — the same discipline as empty_tools_body still being a pair.
+
+    encode_message = pair string string (role_tag, text)
+
+role_tag is "user" | "assistant". a bare pair rather than a variant
+while content is text-only; widening to image / resource_link /
+embedded resource turns the second component into a variant, and THAT
+is where the tag-order hazard would apply — noted now so the widening
+wave does not rediscover it.
+
+Isabelle/Scala
+- - - - - - - -
+
+- `initialize` gains `"prompts" -> JSON.Object("listChanged" -> true)`
+  (mcp_server.scala:1303).
+- `prompts/list` and `prompts/get` cases join the resources cases
+  (mcp_server.scala:1421–1441).
+- the readiness() split applies as it does to tools/list, but with the
+  opposite floor: Not_Ready / Failed serve an EMPTY prompts list, not
+  a static table, because no prompt exists outside the prover.
+- error mapping: unknown prompt name and missing required argument are
+  JSON-RPC -32602 (invalid params), NOT an isError content result.
+  prompts have no isError channel — that is a tools/call-only affordance.
+- name exposure: reuse MCP_Server.exposure() over the prompt row set,
+  with its OWN reserved set (empty — no builtins to shadow). MCP's
+  prompt schema does not itself impose the tool-name regex the
+  sanitizer was written for, but theory-qualified names carry dots and
+  clients surface prompts as slash commands, so the same
+  base-name-when-unambiguous / sanitized-qualified-name-on-collision
+  treatment is wanted for the same practical reason.
+- listChanged: MCP_Registry.notify_changed already emits
+  MCP.prompts_changed for free; Scala adds a prompts_changed handler
+  beside tools_changed / resources_changed (mcp_session.scala:560–573).
+  the server pins protocol version 2025-03-26 (mcp_server.scala:19),
+  where the notification is the bare `notifications/prompts/list_changed`
+  — NOT the subscriptions/listen flow of the 2026-07-28 draft spec.
+
+the isar surface
+- - - - - - - - -
+
+header: `mcp_prompt` :: thy_decl and `print_mcp_prompts` :: diag are
+new keywords. `arguments`, `messages`, `user`, `assistant` are matched
+by CONTENT with Args.$$$, the trick already used for `optional` / `enum`
+/ `list` / `of`. declaring `user` or `assistant` as minor keywords would
+lex them in every IMPORTING theory, breaking unrelated uses of two very
+common words.
+
+    mcp_prompt prove_lemma
+      (description ‹set up a proof of a named lemma in a fresh repl›)
+      (arguments
+        lemma_name ‹the lemma to prove›
+        style (optional) ‹"isar" or "apply"›)
+      (messages
+        user ‹Prove $lemma_name in the $style style. Start by calling
+              repl_init, then work in small repl_step increments.›)
+
+argument interpolation reuses HALF of the tools' machinery, and the
+split matters (checked 2026-08-12 against MCP_Combinators):
+
+- REUSED: `scan_format` / `placeholders` / `check_format` — the
+  `$name` grammar itself and the registration-time gates (unknown
+  `$name` in the text, required argument never used). free.
+- NOT REUSED: `assemble`. it is TYPE-DIRECTED QUOTING, built to make
+  values lex correctly as Isar command arguments — String becomes an
+  inner-string quoted+escaped, Source/Term/Typ get cartouche-framed.
+  applied to prose a human reads, it would splice quotes and
+  cartouches into the message text. prompts need a plain substituter
+  (~5 lines over the same chunk list).
+
+so "no second templating language" holds — same `$name` surface, same
+error messages — but the substitution FUNCTION is separate. worth
+being exact about, because reusing `assemble` verbatim is the obvious
+wrong move.
+
+`(optional)` is NOT literally the params clause's `optional_flag`
+either: there it sits after the TYPE (`x :: string (optional)`), and
+flat arguments have no type, so the flag necessarily moves to follow
+the name. same spelling and meaning, a second one-line parser.
+
+argument ORDER IS SIGNIFICANT — see the client note below.
+
+the ML hatch, for a prompt that must compute its messages:
+
+    mcp_prompt explain_state = ‹fn ctxt => fn args => [...]›
+      (description ‹...›) (arguments ...)
+
+the `messages` clause and the `= ‹ML›` form are mutually exclusive,
+the same conflict check mcp_resource already makes between its
+`(isar ...)` clause and its ML form.
+
+the client actually renders these (VERIFIED 2026-08-12)
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+the rendering-app section of this spec records the lesson the hard
+way: a client-side mechanism must be VERIFIED before the design is
+worth writing. checked against the claude code MCP docs, 2026-08-12:
+
+  "MCP servers can expose prompts that become available as commands
+  in Claude Code. […] MCP prompts appear with the format
+  /mcp__servername__promptname"
+
+  /mcp__github__pr_review 456
+  /mcp__jira__create_issue "Bug in login flow" high
+
+three consequences the design must absorb:
+
+1. ARGUMENTS ARE POSITIONAL, space-separated, in DECLARATION ORDER —
+   not named. so the order of the `(arguments ...)` clause is part of
+   the published interface, and a value containing spaces is quoted
+   by the USER at the slash command. this strengthens the flat-
+   argument decision: there is no named-argument channel for a type
+   to discriminate on anyway.
+2. the client namespaces the name as `mcp__<server>__<prompt>` and
+   replaces every character outside [A-Za-z0-9_-] with "_" — the same
+   mangling the tool-name sanitizer performs. a theory-qualified name
+   (My_Thy.prove_lemma) would arrive as `My_Thy_prove_lemma`, mangled
+   by the client rather than by us, unpredictably. that is the
+   concrete reason to run exposure() over prompt names too.
+3. list_changed is honored: "Claude Code supports MCP list_changed
+   notifications […] tools, prompts, and resources […] without
+   requiring you to disconnect and reconnect." the free
+   MCP.prompts_changed emit is therefore not decorative — a prompt
+   declared mid-session via repl_step reaches the menu.
+
+wave 1 boundary (explicitly out of scope)
+- - - - - - - - - - - - - - - - - - - - - -
+
+- image / audio content blocks
+- resource_link and embedded-resource content (the natural future
+  syntax is a `resource ‹isabelle://named/foo›` message item; it wants
+  the parameterised-resources decision above to settle first)
+- completion/complete for prompt arguments — a SEPARATE capability,
+  not part of `prompts`, and already out of scope for this phase
+- pagination of prompts/list (cursor / nextCursor)
+- 2026-07-28-draft-only fields: title, icons, resultType, ttlMs,
+  cacheScope, InputRequiredResult / multi-round-trip
+- builtin (scala-side) prompts — the whole surface is ML-registered
+
+testing (the four layers)
+- - - - - - - - - - - - - -
+
+1. ml unit (MCP-Tools-Tests): declare/activate/deactivate round trip;
+   merge across two importing theories; arguments encode/decode;
+   missing required argument errors; inactive prompt is not gettable;
+   `$name` interpolation including an absent optional argument.
+2. scala unit (Fake_Backend): decode_prompts over a synthetic body;
+   exposure over colliding prompt names; -32602 mapping for unknown
+   name and missing argument; empty list served when Not_Ready.
+3. bridge: MCP.prompts against a real designation; a bundle open/close
+   changes the served prompt set; prompts_changed fires on a repl_step
+   that declares a prompt.
+4. e2e (test_mcp.py): initialize advertises the prompts capability;
+   prompts/list is non-empty; prompts/get returns a well-formed
+   messages array; a del'd prompt leaves the listing AND is refused
+   (unlike a del'd builtin tool — prompts have no asymmetric
+   callability, since there is no second substrate).
+
+acceptance criteria
+- - - - - - - - - - -
+
+a user, writing only isar, declares a prompt with arguments in a
+theory; it appears in claude code's `/` menu as
+`/mcp__isabelle__<name>` and running it with positional arguments
+seeds the conversation with the rendered messages; `declare [[mcp_prompts del: ...]]` removes it from the menu
+and makes prompts/get refuse it; a bundle scopes it exactly while
+open; ctrl+click on the name jumps to the declaration; the agent can
+declare a prompt via repl_step and see it served after
+tool_scope_set {repl: R} with no rebuild.
+
+
+================================================================
+(b) draft CHANGELOG entry
+================================================================
+
+2026-08-12 — mcp prompts: the third primitive, on the tool registry
+
+  added "prompts as context entities" (phase 3)
+
+  The MCP server exposes prompts that the user writes in theories.
+  The underlying mechanisms is to add a Theory_Data just like
+  in the rest of the MCP_Registry instances. The mechanism
+  works as we expect and introduces a namespace for prompts
+  that respects the activation and scoping.
+
+  We restrict prompts arguments to be instances like {name, description, required}
+  rather than user-definable typed arguments.
+
+  the existing tool_scope_* designation rather than growing their own
+  family; and the Not_Ready floor is the EMPTY list, since unlike
+  tools there is no scala-side builtin table to fall back on. wave 1
+  is text content only. the client half is VERIFIED, not assumed:
+  claude code renders MCP prompts as /mcp__server__prompt with
+  positional arguments and honors prompts list_changed (checked
+  2026-08-12). no implementation yet — plans/mcp_prompt.
+
+
+================================================================
+(c) review items — decide these before the spec commit
+================================================================
+
+1. FLAT ARGUMENTS (highest-impact). the draft rejects reusing
+   MCP_Tool.param. this single choice fixes the isar surface, the
+   encoder, and the scala decoder together, and it is the one that
+   most changes shape if reversed. the case against the draft: enum
+   arguments are genuinely useful for a slash-command UI, and we
+   already have the parser for them. the case for: nothing enum-typed
+   can cross the prompts wire, so the type would exist only to drive
+   an ML-side check on a value a human just typed into a form.
+
+2. ONE SCOPE OR TWO. the draft has prompts ride tool_scope_*. the
+   alternative is a prompt_scope_* family (consistent naming, but a
+   third scope for the user to keep in sync) or renaming the tool
+   family to scope_* (client-visible break). picking "ride" now is
+   cheap to reverse before implementation and expensive after.
+
+3. get_prompt's FIXED PAIR vs a variant. (status, (error_text,
+   messages)) always encodes both halves. a variant would be tighter
+   but re-incurs the tag-order discipline for a two-case sum. the
+   draft prefers the fixed shape for consistency with
+   empty_tools_body's stated rationale.
+
+4. IS THE ML HATCH WAVE 1? the `= ‹fn ctxt => fn args => ...›` form
+   doubles the command's parser work. dropping it makes wave 1 a pure
+   declarative surface; keeping it matches what mcp_tool and
+   mcp_resource both do, and "explain the current proof state" — the
+   most obviously useful prompt for this server — needs it.
+
+5. ARGUMENT ORDER AS INTERFACE. because the client passes arguments
+   positionally, reordering an `(arguments ...)` clause silently
+   changes the meaning of every existing invocation. should the spec
+   say so as a stability rule (append-only after publication), or is
+   that over-engineering for a wave-1 feature?
+
+6. SHIPPABLE PROMPT SET. the spec section argues the primitive but
+   names no concrete prompt to ship. a wave-1 set of two or three
+   (prove_lemma, explain_state, port_apply_script?) should be decided
+   with it, or the feature lands with an empty menu.
