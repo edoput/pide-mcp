@@ -222,17 +222,40 @@ Q2  OPEN: whether MCP.dynamic_call should cache resolved Method handles.
     post-boot loading is visible only to its own loader, so a cache
     would silently serve the wrong class).
 
-Q4  OPEN, and it decides how much of D1 actually works: do parameter
-    NAMES survive into the bytecode? D1 says parameters are filled "by
-    parameter NAME", but javac only emits names with -parameters and
-    scala 3's default here is unverified — nor is it known what
-    Isabelle's own scala_build passes. TYPES are confirmed present
-    (A3's javap evidence), names are not. if names are absent the fill
-    degrades to POSITIONAL, i.e. tier 1's contract with types as a
-    partial check on top — still worth building, but a weaker claim
-    than this plan currently makes, and the plan's prose must be
-    corrected rather than quietly reinterpreted. one javap -v run
-    against mcp.jar settles it; do that BEFORE step 3.
+Q4  RESOLVED 2026-08-19, POSITIVE — parameter NAMES do survive into the
+    bytecode, so D1's fill-by-name works as written. `javap -v` finds a
+    MethodParameters attribute carrying real scala source names on both
+    jars tested:
+
+      isabelle.jar  isabelle.Doc$             path0, env, ml_settings, path
+      mcp.jar       isabelle.mcp.Doc_Catalog$ acc, session, variant_names
+
+    so java.lang.reflect.Parameter.getName() returns `ml_settings`, not
+    `arg0`.
+
+    the part that GENERALISES, and the reason this is not a lucky local
+    build: ISABELLE_SCALAC_OPTIONS carries no -parameters flag at all
+    (`-encoding UTF-8 -feature -java-output-version 21 -source 3.3
+    -old-syntax -no-indent -color never -pagewidth 78 ...`), yet the
+    attribute is emitted anyway. mcp.jar is built by `isabelle
+    scala_build` with exactly those options, which is the same path any
+    component jar takes — so a third-party component's prebuilt jar, the
+    linter's release included, carries names too.
+
+    LIMIT of the evidence, stated so nobody over-reads it: the BEHAVIOUR
+    is confirmed, the CAUSE is not. it was not isolated whether this is
+    a scala 3 default or a consequence of -java-output-version 21, and
+    only scala 3.3.4 as bundled was tested. a jar built entirely outside
+    the isabelle toolchain by a build that suppresses the attribute
+    would lack names.
+
+    CONSEQUENCE for the design, and it de-risks this plan rather than
+    merely unblocking it: names are an ENHANCEMENT, not a precondition.
+    when present, fill by name and let a mismatch fail at registration
+    with both name lists shown — the checkable contract tier 1 can never
+    have. when absent, fall back to declaration order, which is exactly
+    tier 1's rule. so tier 2 = tier 1's ordering plus a verifier that
+    degrades cleanly, and no jar can block it.
 
 Q3  OPEN, inherited from plans/scala_mcp_fun A3: the blocking cost is
     WORSE here than for tier 1, because a realistic target (linting a
