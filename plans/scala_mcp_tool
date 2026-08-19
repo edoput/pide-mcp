@@ -1,7 +1,11 @@
 scala_mcp_tool — wrap any classpath method as an mcp tool (tier 2)
 ====================================================================
 
-status: planned
+status: partial (2026-08-19) -- steps 1, 2, 3 and 5 landed and are green;
+step 4 (the coercion table) is deliberately String/Int/Boolean only,
+because nothing on the path to the linter needed Path or List and the
+plan's own rule is that an unbuildable type must be a loud error rather
+than a guess. Add entries when a target wants them. See WHAT LANDED.
 
 spec: "scala-backed mcp tools: scala_mcp_fun and scala_mcp_tool"
 (D-2026-08-19-scala-backed-mcp-tools). decided 2026-08-19, NOT scheduled
