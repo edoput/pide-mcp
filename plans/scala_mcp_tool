@@ -152,7 +152,8 @@ was merely cosmetic while the component only declared tools (the
 duplicate `mcp_server` row in `isabelle -?`), but became FATAL the moment
 it declared Scala functions: ML builds those into a Symtab and the
 repeated name raises `DUP "MCP.dynamic_call"` at session startup. The
-redundant line is removed.
+line was removed separately, as 64a703d (PR #7) -- so this plan DEPENDS
+on that fix rather than carrying it.
 
 ALSO FOUND: `isabelle lint` is NOT a usable control in this environment.
 Run against the same fixture through its own CLI it reports nothing,
