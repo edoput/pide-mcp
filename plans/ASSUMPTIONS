@@ -213,6 +213,7 @@ scala_mcp_fun#T2          bridge      the three failure shapes (step 3) each sur
 scala_mcp_fun#T3          bridge      a scala_mcp_fun row is an ORDINARY registry row: `declare [[mcp_tools del: catalog]]` removes it from tools/list, a bundle re-adds it, and tool_scope_
 scala_mcp_fun#Q1          unstated    RESOLVED 2026-08-19, recorded rather than dropped because the reasoning is the useful part: the params clause MUST allow zero params. a single=true Fu
 scala_mcp_fun#Q2          unstated    OPEN: whether a Fun with bytes=true (Fun_Bytes, e.g. Base64.encode) is worth supporting. check_scala_function reports the flag, so the command can rej
+scala_mcp_tool#A4         unstated    is therefore SETTLED POSITIVE: the snapshot our session holds is
 scala_mcp_tool#D1         unstated    the fill rule, and the reason a signature CHECK is worth having at all. UNLIKE tier 1, this does not rest on declaration order — the method's own sign
 scala_mcp_tool#D2         unstated    coercion is the real work, not the plumbing. ML hands over strings; a real target wants List[Path], Options, Severity.Level, Lint_Store.Selection. shi
 scala_mcp_tool#D3         unstated    result rendering: call toString on the returned value, EXCEPT where the target type has a known renderer. rationale: a Report or a case class renders 
@@ -220,7 +221,6 @@ scala_mcp_tool#D4         unstated    overloads are REJECTED, not resolved. getM
 scala_mcp_tool#A1         scala-unit  a target naming a missing class, a missing method, or a class with no MODULE$ (i.e. a scala CLASS, not an object) each fail at REGISTRATION with a mes
 scala_mcp_tool#A2         scala-unit  the class/method split is ambiguous and the resolution is longest-class-first: `a.b.C.d` tries class `a.b.C` method `d` before class `a.b` method `C.d
 scala_mcp_tool#A3         scala-unit  MODULE$ is how a scala object is reached — VERIFIED 2026-08-19 against mcp.jar: `object Doc_Catalog` compiles to class `isabelle.mcp.Doc_Catalog$` car
-scala_mcp_tool#A4         bridge      the AMBIENT fill works: a target taking a Document.Snapshot is called with a `theory` argument only, and the snapshot it receives is the one the sessi
 scala_mcp_tool#A5         bridge      the session a Scala.Fun receives IS the server's live session, not a fresh or stale one. asserted by resolving a theory that was loaded mid-session, a
 scala_mcp_tool#T1         bridge      the minimal round trip: scala_mcp_tool over a String-in/String-out method of our OWN jar, declared in a theory, advertised in tools/list, called, corr
 scala_mcp_tool#T2         scala-unit  the coercion table (D2): each supported type converts, and an unsupported type fails at registration naming the type.
