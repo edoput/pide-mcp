@@ -17,10 +17,18 @@ components whose author never heard of us.
         (params theory: string)
 
 DEPENDS ON plans/scala_mcp_fun and does not restate its steps. that plan
-settles the marshalling convention (its D1, a single YXML-encoded assoc
-list), the error mapping, and the fact that ML can call scala from inside
-a tool body at all. what is new here is one Scala.Fun of ours and the
-reflection behind it.
+settles the error mapping, the registry/activation story, and the fact
+that ML can call scala from inside a tool body at all. what is new here
+is one Scala.Fun of ours and the reflection behind it.
+
+it does NOT inherit tier 1's calling convention. tier 1's D1 makes
+declaration ORDER the contract and accepts that nothing checks it —
+defensible there because its audience wrote both the Fun and the
+declaration. tier 2's whole point is code whose author never heard of
+us, so that trust is unavailable. what tier 2 inherits is the PROBLEM
+statement: mcp arguments arrive named, scala wants them positional, and
+something must bridge that. reflection is how tier 2 pays for it —
+see D1 below and its open question Q4.
 
 WHY IT EXISTS AT ALL. the isabelle linter is the motivating case and it
 is exactly the kind tier 1 cannot reach: it ships
@@ -109,8 +117,9 @@ mechanical case, and keep the linter to one optional, skipped-if-absent
 integration case.)
 
 D1  the fill rule, and the reason a signature CHECK is worth having at
-    all. each parameter is filled from one of two sources, decided by
-    its type:
+    all. UNLIKE tier 1, this does not rest on declaration order — the
+    method's own signature is readable, so use it. each parameter is
+    filled from one of two sources, decided by its type:
       EXPLICIT  String, Int, Boolean, and anything in the coercion
                 table (D2) <- the ML call args, by parameter NAME
       AMBIENT   Document.Snapshot, Session, Options, Sessions.Deps
@@ -212,6 +221,18 @@ Q2  OPEN: whether MCP.dynamic_call should cache resolved Method handles.
     post-boot jar load is ever added (LINTER_FINDINGS.md section 6.3 —
     post-boot loading is visible only to its own loader, so a cache
     would silently serve the wrong class).
+
+Q4  OPEN, and it decides how much of D1 actually works: do parameter
+    NAMES survive into the bytecode? D1 says parameters are filled "by
+    parameter NAME", but javac only emits names with -parameters and
+    scala 3's default here is unverified — nor is it known what
+    Isabelle's own scala_build passes. TYPES are confirmed present
+    (A3's javap evidence), names are not. if names are absent the fill
+    degrades to POSITIONAL, i.e. tier 1's contract with types as a
+    partial check on top — still worth building, but a weaker claim
+    than this plan currently makes, and the plan's prose must be
+    corrected rather than quietly reinterpreted. one javap -v run
+    against mcp.jar settles it; do that BEFORE step 3.
 
 Q3  OPEN, inherited from plans/scala_mcp_fun A3: the blocking cost is
     WORSE here than for tier 1, because a realistic target (linting a
