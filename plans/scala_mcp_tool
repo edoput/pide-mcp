@@ -109,11 +109,17 @@ DEVIATIONS from the plan as written, each a deliberate choice:
   linter needs them, and the plan's own rule is that an unbuildable type
   is a loud error naming the type. Add them when a target wants them.
 
-- D3 rendering is better than toString but still not structured. A result
-  that is a case class renders by FIELD NAME (scala 3 keeps
-  productElementNames), and fields holding collections are dropped --
-  without that a lint Result drags its whole Parsed_Command and Snapshot
-  into every row. Honest status: readable, not machine-parseable.
+- D3 rendering is now STRUCTURED, not merely readable. A case-class
+  result becomes a JSON object keyed by its real field names, and a
+  collection of them a JSON array; the client parses it rather than
+  scraping prose. Plain strings still pass through untouched, so a Fun
+  that formats its own output is not second-guessed. Case 9 of the repro
+  parses the lint output and asserts the field names.
+  REMAINING LIMIT, recorded rather than hidden: only CONSTRUCTOR fields
+  are visible this way, so a lint Result reports its position as OFFSETS
+  (`range`) -- its line_range is a lazy val and does not appear. Offsets
+  are honest but less useful than line numbers, and closing that needs
+  something type-aware rather than generic.
 
 - Step 1 (the scala_mcp_tool outer syntax) IS NOW BUILT, after the note
   below was written. It declares, validates the target at registration
