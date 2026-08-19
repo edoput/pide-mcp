@@ -228,7 +228,7 @@ scala_mcp_tool#T3         scala-unit  overload rejection (D4): a target with two
 scala_mcp_tool#T4         bridge      error mapping end to end: a target that throws surfaces as an mcp isError with the CAUSE unwrapped, not a bare InvocationTargetException. the server s
 scala_mcp_tool#Q1         unstated    OPEN: whether the linter integration ships as a test at all. it is not installed here (LINTER_FINDINGS.md open questions), a release matching Isabelle
 scala_mcp_tool#Q2         unstated    OPEN: whether MCP.dynamic_call should cache resolved Method handles. reflection lookup per call is wasteful but the target set is tiny and correctness
-scala_mcp_tool#Q4         unstated    OPEN, and it decides how much of D1 actually works: do parameter NAMES survive into the bytecode? D1 says parameters are filled "by parameter NAME", b
+scala_mcp_tool#Q4         unstated    RESOLVED 2026-08-19, POSITIVE — parameter NAMES do survive into the bytecode, so D1's fill-by-name works as written. `javap -v` finds a MethodParamete
 scala_mcp_tool#Q3         unstated    OPEN, inherited from plans/scala_mcp_fun A3: the blocking cost is WORSE here than for tier 1, because a realistic target (linting a whole theory) runs
 scope_add#T1              unstated    S1 (above).
 scope_add#T2              scala-unit  match counts in the reply are computed against the full known universe (image + filesystem via D1), tier included.
