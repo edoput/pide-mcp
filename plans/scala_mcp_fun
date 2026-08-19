@@ -98,18 +98,41 @@ session with the protocol handler, which Fake_Backend does not have.)
 
 D1  the marshalling convention, and it is the one real design choice in
     this plan. a Fun is `string list -> string list`; an mcp tool is
-    `(string * string) list -> string`. three candidates were weighed:
-    (a) flatten alternating name/value, (b) positional by declared param
-    order, (c) one YXML-encoded assoc list as a single argument.
-    CHOOSE (c): it is unambiguous, it survives values containing
-    whitespace or the separator, and it matches the yxml named-args
-    encoding the project already uses across the bridge (plans/repl_list
-    I-refs). consequence: the target Fun must be single-argument, which
-    is what check_scala_function's `single` flag reports, so step 1 can
-    reject a mismatch at registration. (a) and (b) are rejected because
-    both silently corrupt a value that contains the separator, and (b)
-    additionally couples the declaration's param ORDER to the scala
-    signature with nothing checking it.
+    `(string * string) list -> string`.
+
+    the naive answer — always encode the whole assoc list into the one
+    argument slot — is WRONG, and the reason is worth writing down
+    because it is invisible until you try it. a Fun_String's single
+    argument is not a free payload slot: it is a MEANINGFUL argument.
+    `sleep` takes a seconds string (Pure/System/scala.scala:75),
+    `doc_names` takes an ml_platform (Pure/Tools/doc.scala:130). handing
+    either an encoded assoc list does not fail loudly — it is
+    misinterpreted. so a blanket encoding would make every already
+    registered Fun unreachable, which is most of the ones a user would
+    first point at.
+
+    CHOOSE arity-directed marshalling, keyed on the number of DECLARED
+    params:
+
+      0 params   pass ""                (matches doc_names, isabelle_id)
+      1 param    pass its value VERBATIM (matches sleep, doc_names with
+                 an explicit platform — the natural reading, and the one
+                 that makes existing Funs work unchanged)
+      n >= 2     pass one YXML-encoded assoc list, the same named-args
+                 encoding the project already uses across the bridge
+
+    the target Fun must be single-argument in all three cases, which is
+    what check_scala_function's `single` flag reports, so step 1 rejects
+    a mismatch at registration.
+
+    rejected: flattening alternating name/value, and positional by
+    declared order — both silently corrupt a value containing the
+    separator, and positional additionally couples the declaration's
+    param ORDER to the scala signature with nothing checking it.
+
+    the n>=2 case is for Funs written AGAINST this convention (a user's
+    own, tier 1's main audience). no Fun in Pure needs it, which is why
+    the 0- and 1-param cases carry the early tests.
     tier 2 reuses this convention unchanged.
 
 D2  the result is the Fun's single output string, passed through
@@ -118,22 +141,31 @@ D2  the result is the Fun's single output string, passed through
     reads it. rationale: we do not know the Fun's output shape and
     guessing would break every Fun whose output is not what we guessed.
 
-A1  [ml unit] the target is checked at DECLARATION: a scala_mcp_fun
+A1  [bridge] the target is checked at DECLARATION: a scala_mcp_fun
     naming a nonexistent function fails at registration with a position,
     not at call time. the negative case is the point — it is what makes
     a typo cheap.
+    NOT an ml-unit case, though it looks like one:
+    Resources.check_scala_function reads #scala_functions out of the
+    session base, and that table is Symtab.empty until Scala ships the
+    base in (Pure/Build/resources.ML:108). an \<^assert> theory built by
+    isabelle build, and MCP_Heap_Suite too, would test the EMPTY-table
+    path and pass for the wrong reason. it needs a live session.
 
-A2  [ml unit] a Fun declared with single=false is rejected at
+A2  [bridge] a Fun declared with single=false is rejected at
     registration with a message naming the flag, rather than failing
     later inside encode. (D1 makes single a precondition, so this is the
-    guard that keeps it honest.)
+    guard that keeps it honest.) same reason as A1 for the layer: the
+    flags come from the session base table.
 
 A3  [bridge] the BLOCKING cost is real and measured, not assumed:
     Scala.function parks the prover thread in
     Synchronized.guarded_access (Pure/System/scala.ML) until
     Scala.result returns. a scala_mcp_fun over the `sleep` Fun
-    (Pure/System/scala.scala:75, already registered) demonstrates the
-    prover is unresponsive for the duration — a second tools/call on an
+    (Pure/System/scala.scala:75, already registered — declared with ONE
+    param so D1's verbatim case applies and it receives a real seconds
+    string) demonstrates the prover is unresponsive for the duration —
+    a second tools/call on an
     unrelated ML tool does not complete while the sleep is in flight.
     this is the concrete argument for async MCP.run_tool
     (plans/ml_builtin_migration) and must be recorded as a measurement,
@@ -147,6 +179,11 @@ T1  [bridge] the round trip end to end: a theory declares
     not fabricate it and a passthrough cannot be mistaken for a round
     trip. mcp/test/repro_scala_bridge.py already proves the underlying
     mechanism this way; this test pins it through the new COMMAND.
+    declare it with NO params, so D1's 0-param case applies and
+    doc_names receives the `""` the reproducer already passes. this is
+    deliberate: doc_names' one argument is an ml_platform, not a payload
+    slot, and it is the case that would break under a blanket encoding —
+    so T1 is also the regression test for D1's arity rule.
 
 T2  [bridge] the three failure shapes (step 3) each surface as an mcp
     isError carrying the scala message: a Fun that raises, one that
@@ -160,12 +197,19 @@ T3  [bridge] a scala_mcp_fun row is an ORDINARY registry row:
     one serves it — i.e. the same three activation behaviours
     mcp_tool rows already have, asserted on this new kind.
 
-Q1  OPEN: whether the params clause should be allowed to declare NO
-    params (a nullary tool). D1's encoding makes the empty assoc list
-    representable, so nothing breaks mechanically; the question is
-    whether a tool with no arguments is useful enough to bother
-    advertising. settle by trying to write one against a real component
-    rather than on paper.
+Q1  RESOLVED 2026-08-19 while writing D1, recorded rather than dropped
+    because the reasoning is the useful part: the params clause MUST
+    allow zero params. it is not a nicety — a nullary declaration is the
+    only way to reach a Fun whose single argument has a default meaning
+    (doc_names' ml_platform), and those are most of the Funs already
+    registered. the 0/1/n>=2 rule in D1 exists because of this.
+
+Q2  OPEN: whether a Fun with bytes=true (Fun_Bytes, e.g. Base64.encode)
+    is worth supporting. check_scala_function reports the flag, so the
+    command can reject it cleanly today; the question is whether any
+    real target needs binary in or out. defer until one does — a
+    speculative Bytes path would double the marshalling surface for no
+    caller.
 
 done when
 ---------
@@ -173,5 +217,9 @@ done when
 - A1, A2, T1, T2, T3 green; A3 measured and its number written into this
   plan; tools/list shows a scala_mcp_fun row; the spec section's tier-1
   paragraph matches what shipped.
+- D1's three arity cases each have a green test: T1 covers 0 params, A3
+  covers 1, and at least one case covers n>=2 against a Fun written for
+  it (there is none in Pure, so this one needs a fixture Fun in
+  mcp.jar).
 - plans/scala_mcp_tool can be started: D1 is settled and the combinator
   from step 2 is the one it extends.
