@@ -204,13 +204,14 @@ repl_unpin#T2             ml-unit     dependents block: pin A, init B [pin@A], u
 repl_unpin#T3             bridge      full chain.
 scala_mcp_fun#D1          bridge      the marshalling convention, and it is the one real design choice in this plan. a Fun is `string list -> string list`; an mcp tool is `(string * string
 scala_mcp_fun#D2          unstated    the result is the Fun's single output string, passed through verbatim as the tool's text content. no parsing, no json interpretation: a Fun that wants
-scala_mcp_fun#A1          ml-unit     the target is checked at DECLARATION: a scala_mcp_fun naming a nonexistent function fails at registration with a position, not at call time. the negat
-scala_mcp_fun#A2          ml-unit     a Fun declared with single=false is rejected at registration with a message naming the flag, rather than failing later inside encode. (D1 makes single
+scala_mcp_fun#A1          bridge      the target is checked at DECLARATION: a scala_mcp_fun naming a nonexistent function fails at registration with a position, not at call time. the negat
+scala_mcp_fun#A2          bridge      a Fun declared with single=false is rejected at registration with a message naming the flag, rather than failing later inside encode. (D1 makes single
 scala_mcp_fun#A3          bridge      the BLOCKING cost is real and measured, not assumed: Scala.function parks the prover thread in Synchronized.guarded_access (Pure/System/scala.ML) unti
 scala_mcp_fun#T1          bridge      the round trip end to end: a theory declares `scala_mcp_fun catalog = \<open>doc_names\<close>`, tools/list advertises the row, tools/call returns the
 scala_mcp_fun#T2          bridge      the three failure shapes (step 3) each surface as an mcp isError carrying the scala message: a Fun that raises, one that returns null, and one given a
 scala_mcp_fun#T3          bridge      a scala_mcp_fun row is an ORDINARY registry row: `declare [[mcp_tools del: catalog]]` removes it from tools/list, a bundle re-adds it, and tool_scope_
-scala_mcp_fun#Q1          unstated    OPEN: whether the params clause should be allowed to declare NO params (a nullary tool). D1's encoding makes the empty assoc list representable, so no
+scala_mcp_fun#Q1          unstated    RESOLVED 2026-08-19 while writing D1, recorded rather than dropped because the reasoning is the useful part: the params clause MUST allow zero params.
+scala_mcp_fun#Q2          unstated    OPEN: whether a Fun with bytes=true (Fun_Bytes, e.g. Base64.encode) is worth supporting. check_scala_function reports the flag, so the command can rej
 scala_mcp_tool#D1         unstated    the fill rule, and the reason a signature CHECK is worth having at all. each parameter is filled from one of two sources, decided by its type: EXPLICI
 scala_mcp_tool#D2         unstated    coercion is the real work, not the plumbing. ML hands over strings; a real target wants List[Path], Options, Severity.Level, Lint_Store.Selection. shi
 scala_mcp_tool#D3         unstated    result rendering: call toString on the returned value, EXCEPT where the target type has a known renderer. rationale: a Report or a case class renders 

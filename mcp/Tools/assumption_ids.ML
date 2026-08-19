@@ -211,6 +211,7 @@ val ids =
   "scala_mcp_fun#T2",
   "scala_mcp_fun#T3",
   "scala_mcp_fun#Q1",
+  "scala_mcp_fun#Q2",
   "scala_mcp_tool#D1",
   "scala_mcp_tool#D2",
   "scala_mcp_tool#D3",
