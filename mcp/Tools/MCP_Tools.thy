@@ -1,6 +1,6 @@
 theory MCP_Tools
   imports Pure
-  keywords "mcp_tool" "scala_mcp_tool" "mcp_resource" "mcp_test" :: thy_decl
+  keywords "mcp_tool" "scala_mcp_tool" "scala_mcp_fun" "mcp_resource" "mcp_test" :: thy_decl
     and "print_mcp_tools" "print_mcp_resources" :: diag
     and "description" "params" "format" "run" "capture" "isar"
 begin
@@ -519,6 +519,8 @@ sig
     (Proof.context -> (string * string) list -> string) -> MCP_Tool.tool
   val scala_call: string -> string -> MCP_Tool.param list -> MCP_Tool.annotations ->
     MCP_Tool.constraint list -> MCP_Tool.tool
+  val scala_fun: string -> string -> bool -> MCP_Tool.param list -> MCP_Tool.annotations ->
+    MCP_Tool.constraint list -> MCP_Tool.tool
   val diag: Proof.context -> string * Position.T ->
     {description: string, params: MCP_Tool.param list, format: string,
      constraints: MCP_Tool.constraint list} -> MCP_Tool.tool
@@ -978,6 +980,44 @@ fun scala_call description target params annotations constraints : MCP_Tool.tool
       in cat_lines (Scala.function "MCP.dynamic_call" (target :: flat)) end}
   end;
 
+(*tier 1 of plans/scala_mcp_fun: the body is a Scala.Fun some component
+  ALREADY registered. The calling convention has two halves and only one
+  of them is ours to decide.
+
+  THE SHAPE HALF IS PURE'S. Dispatch on the target's (single, bytes)
+  flags, exactly as the \<^scala> antiquotation does
+  (Pure/Build/resources.ML:202). We copy it rather than invent one: Fun is
+  the wire, Fun_Strings/Fun_String/Fun_Bytes are scala-side ADAPTERS over
+  it, and those two flags are metadata shipped to ML precisely so the ML
+  side can pick the matching entry point.
+
+  THE ORDERING HALF IS OURS, because Pure has no opinion on it: every
+  \<^scala> caller is hand-written ML that writes its arguments in order
+  itself, while ours arrive NAMED from a client. Decided (D1): the params
+  clause IS the calling convention -- walk the DECLARED list in order and
+  look each name up. Nothing checks that this matches the Fun's own
+  parameter order, because (single, bytes) carries neither names nor
+  types. The trust is deliberate and correctly placed: tier 1's audience
+  wrote both the Fun and the declaration.*)
+fun scala_fun description target single params annotations constraints : MCP_Tool.tool =
+  let
+    val params' = map param params;
+    val _ = List.app (check_constraint params') constraints;
+    val names = map #name params';
+  in
+    {description = describe_constraints description constraints, params = params',
+     constraints = constraints, form = MCP_Tool.String_Fun, annotations = annotations,
+     run = fn ctxt => fn args =>
+      let
+        val args' = validate ctxt params' constraints args;
+        val ordered = map (fn n => the_default "" (AList.lookup (op =) args' n)) names;
+      in
+        if single
+        then Scala.function1 target (case ordered of [] => "" | v :: _ => v)
+        else cat_lines (Scala.function target ordered)
+      end}
+  end;
+
 (*wrap a diagnostic command: registration-time checks here (position
   report -> ctrl+click on the command; keyword-class restriction), the
   run function validates + assembles + executes against the RUN
@@ -1423,6 +1463,63 @@ val _ =
     "register an MCP tool backed by a scala method resolved on the classpath"
     (Parse.position Parse.name -- (Parse.$$$ "=" |-- Parse.position Parse.embedded) --
       Scan.repeat clause >> scala_tool_cmd);
+
+
+(* scala_mcp_fun: a tool whose body is an already-registered Scala.Fun *)
+
+fun scala_fun_cmd (((name, pos), (target, tpos)), clauses) lthy =
+  let
+    val what = "scala_mcp_fun " ^ quote name;
+    val {descr, params, fmt, annot, constr, ...} = digest what false clauses;
+    val descr' = the_descr what pos descr;
+    val _ =
+      if is_some fmt
+      then error ("(format ...) clause is not meaningful for " ^ what)
+      else ();
+    val ps = these params;
+
+    (*PROVE the target here, and learn its calling shape while we are at
+      it: ML already holds the scala function table (it is shipped in the
+      session base), so this costs nothing and a typo fails at
+      REGISTRATION with a position instead of at call time.*)
+    val (fname, (single, bytes)) = Resources.check_scala_function lthy (target, tpos);
+
+    val _ =
+      if bytes
+      then error ("Scala function " ^ quote fname ^ " is Bytes-shaped, and " ^ what ^
+        " declares string params" ^ Position.here tpos)
+      else ();
+    (*A2: a single-argument Fun runs Library.the_single on what it gets,
+      so two or more declared params are UNREPRESENTABLE. Both the flag
+      and the count are known here, so this is a registration error.*)
+    val _ =
+      if single andalso length ps > 1
+      then error ("Scala function " ^ quote fname ^ " takes exactly one argument, but " ^
+        what ^ " declares " ^ string_of_int (length ps) ^ " params" ^ Position.here tpos)
+      else ();
+    (*D3: (optional) params are forbidden. Positional filling has no way
+      to represent a hole, and it is the CLIENT that decides to omit an
+      argument at call time, so no amount of author diligence prevents
+      one -- this is the one gap D1's trust argument does not cover.*)
+    val _ =
+      (case filter_out #required ps of
+        [] => ()
+      | bad =>
+          error ("(optional) params are not allowed in " ^ what ^ ": " ^
+            commas_quote (map #name bad) ^
+            "\nThe call is filled positionally, so an omitted argument would " ^
+            "leave a hole in the middle of the list." ^ Position.here pos));
+
+    val tool =
+      MCP_Combinators.scala_fun descr' fname single ps
+        (the_default MCP_Tool.default_annotations annot) (the_list constr);
+  in #2 (MCP_Tool.declare (Binding.make (name, pos)) tool lthy) end;
+
+val _ =
+  Outer_Syntax.local_theory \<^command_keyword>\<open>scala_mcp_fun\<close>
+    "register an MCP tool backed by a registered Isabelle/Scala function"
+    (Parse.position Parse.name -- (Parse.$$$ "=" |-- Parse.position Parse.embedded) --
+      Scan.repeat clause >> scala_fun_cmd);
 
 
 (* mcp_resource *)

@@ -226,6 +226,57 @@ def main():
             not is_err(reply) and not missing,
             "missing: %s" % missing if missing else out.strip().splitlines()[0][:110])
 
+    # --- 8. scala_mcp_fun (tier 1): wrap an ALREADY-registered Scala.Fun ---
+    # No reflection and no scala code of ours: Scala.function dispatches by
+    # name, and Pure's own (single, bytes) flags pick the entry point.
+
+    # 8a a nullary declaration over doc_names (Fun_String => single).
+    #    Pure's Fun_String runs Library.the_single, so zero params sends
+    #    exactly one element, the Fun's own default "".
+    reply = step(client,
+        r'scala_mcp_fun catalog = \<open>doc_names\<close> '
+        r'(description \<open>the isabelle doc catalog\<close>)')
+    T.verdict("8a scala_mcp_fun declares over a registered Fun",
+        not is_err(reply), text_of(reply)[:120])
+
+    client.request("tools/call",
+        {"name": "tool_scope_set", "arguments": {"repl": REPL}})
+    reply = client.request("tools/call", {"name": "catalog", "arguments": {}})
+    out = text_of(reply)
+    cli = subprocess.run([ISABELLE, "doc"], capture_output=True, text=True).stdout
+    first = out.strip().splitlines()[0].strip() if out.strip() else ""
+    T.verdict("8b tools/call catalog matches `isabelle doc`",
+        not is_err(reply) and len(out.splitlines()) > 3 and first in cli,
+        "%d entries, first=%r" % (len(out.splitlines()), first))
+
+    # 8c an unknown Fun fails at REGISTRATION -- ML holds the function
+    #    table, so this costs nothing
+    reply = step(client,
+        r'scala_mcp_fun nofun = \<open>no_such_scala_function\<close> '
+        r'(description \<open>x\<close>)')
+    T.verdict("8c an unknown Scala.Fun fails at REGISTRATION", is_err(reply),
+        text_of(reply).strip().splitlines()[0][:110] if text_of(reply).strip() else "")
+
+    # 8d A2: a single-argument Fun cannot receive two params -- both the
+    #    flag and the count are known at declaration
+    reply = step(client,
+        r'scala_mcp_fun twoargs = \<open>doc_names\<close> '
+        r'(description \<open>x\<close>) '
+        r'(params a :: string \<open>a\<close> b :: string \<open>b\<close>)')
+    T.verdict("8d single Fun + 2 declared params is a registration error",
+        is_err(reply) and "exactly one argument" in text_of(reply),
+        text_of(reply).strip().splitlines()[0][:110] if text_of(reply).strip() else "")
+
+    # 8e D3: (optional) params are forbidden -- positional filling cannot
+    #    represent a hole, and the CLIENT decides to omit
+    reply = step(client,
+        r'scala_mcp_fun opt = \<open>doc_names\<close> '
+        r'(description \<open>x\<close>) '
+        r'(params a :: string (optional) \<open>a\<close>)')
+    T.verdict("8e an (optional) param is a registration error (D3)",
+        is_err(reply) and "optional" in text_of(reply),
+        text_of(reply).strip().splitlines()[0][:110] if text_of(reply).strip() else "")
+
     return 1 if T.failures else 0
 
 
