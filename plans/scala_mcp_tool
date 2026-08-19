@@ -75,6 +75,70 @@ need it: ML cannot express a Document.Snapshot, but the session can
 resolve one by theory name, and without that lint_snapshot is
 unreachable no matter how good the reflection is.
 
+WHAT LANDED 2026-08-19 (steps 2 and 3; the plan otherwise stands)
+-----------------------------------------------------------------
+
+MCP.dynamic_call and the ambient fill are IMPLEMENTED and green:
+mcp/src/mcp_dynamic_call.scala, proven end to end by
+mcp/test/repro_dynamic_call.py (4/4 PASS, exit 0). The linter is reached
+with no linter-specific code in mcp.jar -- the grep gate in "done when"
+holds. A real lint run over OUR headless snapshot returns:
+
+    Result(lint_name=short_name,    message=Name "f" is too short.,   range=[587..588])
+    Result(lint_name=short_name,    message=Name "g" is too short.,   range=[643..644])
+    Result(lint_name=tactic_proofs, message=Do not use tactic proofs., range=[821..836])
+    Result(lint_name=implicit_rule, message=Do not use implicit rule., range=[1007..1011])
+
+A4 is therefore SETTLED POSITIVE: the snapshot our session holds is
+accepted by lint_snapshot, with 27 commands and real span names.
+
+DEVIATIONS from the plan as written, each a deliberate choice:
+
+- D1 gained an AMBIENT rule the plan did not have, and it is the one that
+  makes the linter reachable without naming it. lint_snapshot's second
+  parameter is Lint_Store.Selection, a type mcp.jar cannot mention. The
+  rule: for an unknown parameter type, look for a companion
+  `apply(Options)` and build it from the session's own options
+  (Session.session_options). Generic -- it is the ordinary Isabelle idiom
+  for a configuration object -- and it needs no coercion table entry per
+  component. Without it the plan's D1 would have had to special-case the
+  linter, which the NON-GOALS forbid.
+
+- D2's coercion table landed only as String/Int/Boolean. Path,
+  List[String] and List[Path] were NOT built: nothing on the path to the
+  linter needs them, and the plan's own rule is that an unbuildable type
+  is a loud error naming the type. Add them when a target wants them.
+
+- D3 rendering is better than toString but still not structured. A result
+  that is a case class renders by FIELD NAME (scala 3 keeps
+  productElementNames), and fields holding collections are dropped --
+  without that a lint Result drags its whole Parsed_Command and Snapshot
+  into every row. Honest status: readable, not machine-parseable.
+
+- Step 1 (the scala_mcp_tool outer syntax) is NOT built. Today the target
+  is named from ML via Scala.function directly. MCP.check_target already
+  exists and returns the parameter list, so the command's
+  declaration-time validation has its backend waiting.
+
+FOUND LIVE, and it blocked everything until fixed: mcp/etc/settings
+carried `ISABELLE_CLASSPATH="...:$COMPONENT/lib/mcp.jar"` on top of
+build.props's own `module = lib/mcp.jar`. A component's module is already
+put on java.class.path, so the jar was there TWICE, Classpath.services
+scanned it twice, and every service class was instantiated twice. That
+was merely cosmetic while the component only declared tools (the
+duplicate `mcp_server` row in `isabelle -?`), but became FATAL the moment
+it declared Scala functions: ML builds those into a Symtab and the
+repeated name raises `DUP "MCP.dynamic_call"` at session startup. The
+redundant line is removed.
+
+ALSO FOUND: `isabelle lint` is NOT a usable control in this environment.
+Run against the same fixture through its own CLI it reports nothing,
+while our snapshot path reports four findings -- its batch route
+reconstructs a snapshot from Export.MARKUP, which this build does not
+populate. Do not use CLI agreement as the oracle for a snapshot-path
+test; read lints.scala and assert named lints instead, which is what the
+fixture and repro now do.
+
 the work items
 --------------
 
