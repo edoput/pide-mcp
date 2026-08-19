@@ -680,10 +680,16 @@ twice. The linter declares `module` and has **no** `classpath` line — and
 its three tools each appear exactly **once**. Same mechanism, one
 variable different.
 
-Fix: drop the `ISABELLE_CLASSPATH` line from `mcp/etc/settings`. (The
-project-state memory already flagged that line as redundant on other
-grounds; this is the observable consequence.) Not done here — it is a
-one-line change outside this branch's scope.
+FIXED in 64a703d (PR #7): the `ISABELLE_CLASSPATH` line is gone from
+`mcp/etc/settings`. Verified 1 occurrence of `mcp_server` in `isabelle -?`
+afterwards, against 2 before.
+
+It stopped being cosmetic the moment the component declared its first
+Scala function: a duplicated *tool* is a repeated row in a listing, but a
+duplicated *Scala function* raises `DUP "MCP.dynamic_call"` at session
+startup, because ML builds the function table into a `Symtab`. So the
+`scala_mcp_tool` work depends on this fix rather than merely benefiting
+from it.
 
 ## Sources
 
