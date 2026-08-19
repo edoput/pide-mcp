@@ -18,6 +18,7 @@ requirements = \
 
 sources = \
   src/mcp_testing.scala \
+  src/mcp_dynamic_call_targets.scala \
   src/mcp_handler_tests.scala \
   src/mcp_bridge_tests.scala \
   src/mcp_heap_tests.scala \

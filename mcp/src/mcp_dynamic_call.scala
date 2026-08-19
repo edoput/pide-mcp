@@ -33,14 +33,25 @@ object Dynamic_Call {
   }
 
   /* a scala `object Foo` compiles to class Foo$ with the singleton in a
-     public static final MODULE$ field (verified against mcp.jar). */
-  def load_module(class_name: String): Option[AnyRef] = {
+     public static final MODULE$ field (verified against mcp.jar).
+
+     The two failure modes are told APART on purpose (A1): "no such class"
+     and "that is a class, not an object" send the reader to different
+     fixes. Catches are narrow -- a blanket Throwable here would also
+     swallow Exn.Interrupt and turn a cancelled call into a bogus
+     resolution error. */
+  def load_module(class_name: String): Either[String, AnyRef] = {
     val loader = Isabelle_System.classpath().class_loader
     try {
       val c = Class.forName(class_name + "$", true, loader)
-      Some(c.getField("MODULE$").get(null))
+      try Right(c.getField("MODULE$").get(null))
+      catch {
+        case _: NoSuchFieldException =>
+          Left("found " + quote(class_name) + " but it is a class, not a scala object " +
+            "(no MODULE$ field), so it has no singleton to invoke on")
+      }
     }
-    catch { case _: Throwable => None }
+    catch { case _: ClassNotFoundException => Left("no class " + quote(class_name)) }
   }
 
   sealed case class Target(module: AnyRef, method: Method) {
@@ -48,20 +59,27 @@ object Dynamic_Call {
   }
 
   def resolve(target: String): Either[String, Target] = {
-    val attempts = splits(target)
-    val found =
-      attempts.iterator.flatMap({ case (cls, mth) =>
-        load_module(cls).toList.flatMap(module =>
-          module.getClass.getMethods.toList
-            .filter(m => m.getName == mth && !m.isSynthetic)
-            .map(m => (module, m)))
-      }).toList
+    val probed =
+      splits(target).map { case (cls, mth) =>
+        val outcome =
+          load_module(cls).flatMap { module =>
+            module.getClass.getMethods.toList
+              .filter(m => m.getName == mth && !m.isSynthetic) match {
+              case Nil =>
+                Left("class " + quote(cls) + " has no method " + quote(mth) + "; it has " +
+                  module.getClass.getMethods.toList.map(_.getName).distinct.sorted
+                    .take(12).mkString(", "))
+              case ms => Right(ms.map(m => (module, m)))
+            }
+          }
+        (cls, mth, outcome)
+      }
 
-    found match {
+    probed.collect({ case (_, _, Right(ms)) => ms }).flatten match {
       case Nil =>
         Left("Cannot resolve " + quote(target) + " on the component classpath.\n" +
-          "Tried (class, method): " +
-          attempts.map({ case (c, m) => quote(c) + ", " + quote(m) }).mkString("; "))
+          probed.collect({ case (c, m, Left(why)) =>
+            "  as class " + quote(c) + " method " + quote(m) + ": " + why }).mkString("\n"))
       case List((module, m)) => Right(Target(module, m))
       case several =>
         /* D4: overloads are rejected, not guessed -- the declaration
@@ -109,7 +127,10 @@ object Dynamic_Call {
           m.getParameterTypes.apply(0) == classOf[Options])
         .map(m => m.invoke(module, session.session_options))
     }
-    catch { case _: Throwable => None }
+    catch {
+      case _: ClassNotFoundException => None
+      case _: NoSuchFieldException => None
+    }
   }
 
   def fill(
@@ -261,23 +282,6 @@ object Dynamic_Call {
             .map(p => p.getName + ": " + p.getType.getName).mkString(", ")
         case Left(msg) => error(msg)
       }
-  }
-}
-
-/* Targets in our OWN jar, so the mechanism can be tested without depending
-   on any third-party component being installed (plans/scala_mcp_tool T1,
-   and the "must not become a test dependency" note in that plan). */
-object Self_Test {
-  def echo(text: String): String = text
-
-  def snapshot_info(snapshot: Document.Snapshot): String = {
-    val commands = snapshot.node.commands.toList
-    "node=" + snapshot.node_name.node +
-      " theory=" + snapshot.node_name.theory +
-      " commands=" + commands.length +
-      " source_chars=" + snapshot.node.source.length +
-      " spans=[" +
-      commands.filter(_.span.name.nonEmpty).map(_.span.name).mkString(",") + "]"
   }
 }
 

@@ -130,6 +130,51 @@ def main():
             "missing: %s" % missing if missing else
             "%d findings" % len([l for l in out.splitlines() if "lint_name=" in l]))
 
+    # --- 5. the error paths A1 requires: three failures, three messages ---
+    reply = step(client,
+        r'ML \<open>writeln (Scala.function1 "MCP.check_target" '
+        r'"no.such.Class.method")\<close>')
+    T.verdict("5a missing class says so", "no class" in text_of(reply),
+        text_of(reply).strip()[:110])
+
+    reply = step(client,
+        r'ML \<open>writeln (Scala.function1 "MCP.check_target" '
+        r'"isabelle.mcp.Self_Test.nope")\<close>')
+    T.verdict("5b missing method names it and lists what exists",
+        "has no method" in text_of(reply), text_of(reply).strip()[:110])
+
+    reply = step(client,
+        r'ML \<open>writeln (Scala.function1 "MCP.check_target" '
+        r'"isabelle.mcp.Self_Test.overloaded")\<close>')
+    T.verdict("5c overloads are rejected, not guessed (D4)",
+        "Ambiguous" in text_of(reply), text_of(reply).strip()[:110])
+
+    # --- 6. THE deliverable: a real `lint` tool in tools/list, over MCP ---
+    if have_linter:
+        body = (r'fn thy => hd (Scala.function "MCP.dynamic_call" '
+                r'["' + LINT_TARGET + r'", "theory", thy])')
+        reply = step(client,
+            r'mcp_tool lint = \<open>' + body + r'\<close> '
+            r'(description \<open>style lints for a loaded theory\<close>)')
+        T.verdict("6a declare a `lint` mcp_tool over dynamic_call",
+            not is_err(reply), text_of(reply)[:120])
+
+        client.request("tools/call",
+            {"name": "tool_scope_set", "arguments": {"repl": REPL}})
+        names = [x.get("name") for x in
+                 client.request("tools/list").get("result", {}).get("tools", [])]
+        T.verdict("6b `lint` is advertised in tools/list", "lint" in names,
+            "%d tools" % len(names))
+
+        reply = client.request("tools/call",
+            {"name": "lint", "arguments": {"input": "Lint_Dirty"}})
+        out = text_of(reply)
+        missing = [w for w in ["short_name", "tactic_proofs", "implicit_rule"]
+                   if w not in out]
+        T.verdict("6c tools/call lint returns findings -- THE LINTER OVER MCP",
+            not is_err(reply) and not missing,
+            "missing: %s" % missing if missing else out.strip().splitlines()[0][:110])
+
     return 1 if T.failures else 0
 
 
