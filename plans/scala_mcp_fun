@@ -1,0 +1,280 @@
+scala_mcp_fun — wrap a registered Scala.Fun as an mcp tool (tier 1)
+====================================================================
+
+status: planned
+
+spec: "scala-backed mcp tools: scala_mcp_fun and scala_mcp_tool"
+(D-2026-08-19-scala-backed-mcp-tools). decided 2026-08-19, NOT scheduled
+into a wave. investigation notes: LINTER_FINDINGS.md.
+
+TIER 1 of two. this plan wraps a Scala function that is ALREADY
+registered — an entry in some component's Scala.Functions service — as an
+ordinary mcp tool. plans/scala_mcp_tool is tier 2 and removes the
+"already registered" precondition by reflecting over the classpath; it
+depends on this plan and does not restate its steps.
+
+    scala_mcp_fun lint = \<open>my_lint\<close>
+        (description \<open>lint a theory\<close>)
+        (params theory: string)
+
+ORDERING, and it depends on the goal — read this before assuming tier 1
+comes first.
+
+this plan is strictly smaller and needs no new scala code at all. it is
+independently useful: it is the whole story for a user who writes their
+own scala tool, because they own the jar and can add a Fun.
+
+BUT it does not reach the linter, and it is not on the path to it. the
+linter ships no Scala.Functions service, so tier 1 cannot wrap it at any
+price; and after D1's rewrite tier 2 no longer inherits tier 1's calling
+convention either, so what the two actually share shrank to the error
+mapping, the registry/activation story and the command scaffolding —
+work tier 2 must do anyway.
+
+so: build tier 1 first if the goal is a good general facility with the
+cheapest first increment. build plans/scala_mcp_tool first if the goal is
+THE LINTER, because tier 1 is then a detour, not a stepping stone.
+(recorded 2026-08-19 — the linter is the stated near-term goal, so tier 2
+is the live path.)
+
+depends on plans/mcp_tool_command (DONE — the outer syntax, the params
+clause, the quoting/validation pipeline) and plans/param_schema_v2
+(DONE — the param/ptyp/annotations layer this reuses verbatim).
+composes with plans/ml_builtin_migration: that plan's async MCP.run_tool
+matters MORE once this lands, see A3.
+
+NON-GOALS. no reflection (that is tier 2). no new Scala.Fun of our own.
+no change to the registry, the activation attribute, bundles, tool_scope
+or tools/list_changed — a scala_mcp_fun row is an ordinary registry row
+and inherits all of that unchanged. no enumeration of available scala
+functions in tools/list: the user names the function they want.
+
+what already exists, and is the reason this is small
+-----------------------------------------------------
+
+VERIFIED 2026-08-19, reproducer mcp/test/repro_scala_bridge.py (7/7
+green): ML can call scala from inside an mcp tool body over a live
+server. the reentrancy worry — an ML tool is invoked THROUGH a protocol
+command and would be replying through another — does not materialise.
+
+ML also already has the scala function TABLE, so declaration-time
+validation costs nothing:
+
+    (* Pure/Build/resources.ML:26 *)
+    val check_scala_function:
+      Proof.context -> string * Position.T -> string * (bool * bool)
+
+it resolves against #scala_functions in the session base, which Scala
+ships to ML at session start (Pure/Build/resources.scala:51,57 encode
+Scala.functions into the base). the returned (single, bytes) flags say
+whether the Fun takes exactly one argument and whether it is Bytes- or
+string-shaped. so the command can PROVE its target exists at
+registration, the same way mcp_tool proves a diagnostic command with
+Outer_Syntax.check_command, and a typo fails with a position instead of
+at call time.
+
+and Pure already ships the CALLING dispatch those flags are for, so we
+do not design it — we copy it:
+
+    (* Pure/Build/resources.ML:202, the \<^scala> antiquotation *)
+    val (name, (single, bytes)) = check_scala_function ctxt arg;
+    val func =
+      (if single then "Scala.function1" else "Scala.function") ^
+      (if bytes then "_bytes" else "");
+
+this is the whole reason the Fun hierarchy exists. Fun is the real
+thing (invoke: Session -> Bytes.T list -> Bytes.T list); Fun_Strings,
+Fun_String and Fun_Bytes are scala-side ADAPTERS over that one wire
+shape, and (single, bytes) is metadata shipped to ML precisely so the
+ML side can pick the matching entry point. we did not invent any of it
+and must not reinvent it.
+
+the work items
+--------------
+
+1. the command. `scala_mcp_fun` as outer syntax in MCP_Tools.thy
+   (keyword :: thy_decl, alongside mcp_tool/mcp_resource). target is an
+   embedded name with position; description/params/annotations clauses
+   are the EXISTING parsers, reused, not reimplemented. at registration:
+   Resources.check_scala_function on the target, and reject a
+   single=false Fun when the marshalling convention (D1) needs single.
+   verified by A1, A2.
+
+2. the body combinator. MCP_Combinators gains
+
+       scala_fun : string -> MCP_Tool.param list -> tool_body
+
+   two steps, neither of them clever: order the incoming NAMED args by
+   the declared param list (D1), then call Pure's entry point for the
+   target's (single, bytes) flags. verified by T1.
+
+3. error mapping. Scala.function raises three ways: Scala.Null (the Fun
+   returned null), ERROR msg (scala-side error), Fail msg. all three
+   become an mcp isError carrying the scala message, never an ML
+   exception escaping into the protocol. verified by T2.
+
+4. tests below; rebuild per rules.
+
+5. close-out: spec checkbox, plans/README status, CHANGELOG entry.
+
+decisions and assumptions
+-------------------------
+
+(testing process: ml-unit cases as \<^assert> theories in
+mcp/Tools/Tests, bridge cases in mcp_test/src/mcp_bridge_tests.scala
+extending MCP_Session_Suite — see plans/README "testing process". the
+bridge layer is the one that matters here: Scala.function needs a live
+session with the protocol handler, which Fake_Backend does not have.)
+
+D1  the calling convention. it has two halves and only ONE of them is
+    ours to decide.
+
+    THE SHAPE HALF IS ALREADY SOLVED. Pure dispatches on the target's
+    (single, bytes) flags — resources.ML:202, quoted above. copy it. an
+    earlier draft of this plan invented an arity rule here and was
+    wrong twice over: it branched on the DECLARED param count rather
+    than on what the callee accepts, and it reinvented a dispatch Pure
+    already ships. Fun_Strings takes a real list (Isabelle_System's
+    Make_Directory, Copy_File, Rm_Tree, Bash_Functions all do), so
+    "encode everything into one slot" would have made those unreachable
+    while solving nothing.
+
+    THE ORDERING HALF IS OURS, because Pure has no opinion on it: every
+    \<^scala> caller is hand-written ML that writes its arguments in
+    order itself. our arguments arrive as a JSON object from a client,
+    so something must turn names into positions.
+
+    DECIDED: the params clause IS the calling convention. fill the
+    argument list by walking the DECLARED param list in order and
+    looking up each name in the incoming args.
+
+      Fun single   declared params   sent
+      -----------  ----------------  --------------------------------
+      false        n                 [v1 .. vn] in declaration order
+      true         1                 [v]
+      true         0                 [""]   (the Fun's own default —
+                                      what the reproducer passes to
+                                      doc_names)
+      true         >= 2              REGISTRATION ERROR, unrepresentable
+
+    this is a TRUST boundary and it is deliberately placed: nothing
+    checks that declaration order matches the Fun's parameter order,
+    because (single, bytes) does not carry parameter names or types.
+    it is acceptable here and only here — tier 1's audience owns BOTH
+    sides, having written the Fun and the declaration. tier 2 does not
+    get this luxury and must recover types by reflection instead, so it
+    does NOT inherit this rule; it inherits only the observation that
+    named-to-positional is the real problem.
+
+    CONSEQUENCE, and it must be said where a reader will edit: for a
+    scala_mcp_fun row, REORDERING THE PARAMS CLAUSE CHANGES THE CALL.
+    on an ordinary mcp_tool row the order is cosmetic (names are
+    matched), so this is a genuine behavioural difference between the
+    two kinds of row.
+
+D3  (optional) params are FORBIDDEN on scala_mcp_fun, rejected at
+    registration. this is the one hole D1's trust argument does not
+    cover: the CLIENT decides whether to omit an optional argument, at
+    call time, and no amount of author diligence prevents a hole in the
+    middle of a positional list. the alternatives were passing "" for a
+    missing optional (silent, and "" may be meaningful to the Fun) and
+    requiring optionals to be trailing (workable, more machinery).
+    forbid until something needs otherwise — it is the loud option and
+    the cheapest to relax later.
+
+D2  the result is the Fun's single output string, passed through
+    verbatim as the tool's text content. no parsing, no json
+    interpretation: a Fun that wants structure emits it and the client
+    reads it. rationale: we do not know the Fun's output shape and
+    guessing would break every Fun whose output is not what we guessed.
+
+A1  [bridge] the target is checked at DECLARATION: a scala_mcp_fun
+    naming a nonexistent function fails at registration with a position,
+    not at call time. the negative case is the point — it is what makes
+    a typo cheap.
+    NOT an ml-unit case, though it looks like one:
+    Resources.check_scala_function reads #scala_functions out of the
+    session base, and that table is Symtab.empty until Scala ships the
+    base in (Pure/Build/resources.ML:108). an \<^assert> theory built by
+    isabelle build, and MCP_Heap_Suite too, would test the EMPTY-table
+    path and pass for the wrong reason. it needs a live session.
+
+A2  [bridge] the ONE mechanical check D1 leaves us: a single=true
+    target declared with TWO OR MORE params is rejected at
+    REGISTRATION, naming the flag and the count. it is unrepresentable
+    — Fun_String routes through Library.the_single, which raises on a
+    2-list — and both the flag and the count are known at declaration,
+    so it must never become a call-time surprise. the negative case is
+    the test; single=false with n params, and single=true with 0 or 1,
+    all register fine.
+    same reason as A1 for the layer: the flags come from the session
+    base table, which is empty outside a live session.
+
+A3  [bridge] the BLOCKING cost is real and measured, not assumed:
+    Scala.function parks the prover thread in
+    Synchronized.guarded_access (Pure/System/scala.ML) until
+    Scala.result returns. a scala_mcp_fun over the `sleep` Fun
+    (Pure/System/scala.scala:75, already registered; single=true,
+    declared with ONE param, so it receives a real seconds string)
+    demonstrates the prover is unresponsive for the duration — a second
+    tools/call on an unrelated ML tool does not complete while the
+    sleep is in flight.
+    this is the concrete argument for async MCP.run_tool
+    (plans/ml_builtin_migration) and must be recorded as a measurement,
+    not left as a worry.
+
+T1  [bridge] the round trip end to end: a theory declares
+    `scala_mcp_fun catalog = \<open>doc_names\<close>`, tools/list advertises the
+    row, tools/call returns the doc catalog, and the value matches what
+    `isabelle doc` prints. doc_names is chosen deliberately over `echo`:
+    its result is computed scala-side from the filesystem, so ML could
+    not fabricate it and a passthrough cannot be mistaken for a round
+    trip. mcp/test/repro_scala_bridge.py already proves the underlying
+    mechanism this way; this test pins it through the new COMMAND.
+    declare it with NO params: doc_names is single=true, so D1's
+    zero-param row sends `[""]` — exactly what the reproducer passes.
+    that also makes T1 the regression test for the rule, since
+    doc_names' one argument is an ml_platform and would be silently
+    misread if we ever put a payload there.
+
+T2  [bridge] the three failure shapes (step 3) each surface as an mcp
+    isError carrying the scala message: a Fun that raises, one that
+    returns null, and one given an argument it rejects. no ML
+    exception escapes into the protocol and the server stays up for a
+    following call.
+
+T3  [bridge] a scala_mcp_fun row is an ORDINARY registry row:
+    `declare [[mcp_tools del: catalog]]` removes it from tools/list,
+    a bundle re-adds it, and tool_scope_set over a repl that declared
+    one serves it — i.e. the same three activation behaviours
+    mcp_tool rows already have, asserted on this new kind.
+
+Q1  RESOLVED 2026-08-19, recorded rather than dropped because the
+    reasoning is the useful part: the params clause MUST allow zero
+    params. a single=true Fun whose argument has a default meaning
+    (doc_names' ml_platform) is only reachable that way, and those are
+    common among the Funs already registered. D1's zero-param row
+    exists for this.
+
+Q2  OPEN: whether a Fun with bytes=true (Fun_Bytes, e.g. Base64.encode)
+    is worth supporting. check_scala_function reports the flag, so the
+    command can reject it cleanly today; the question is whether any
+    real target needs binary in or out. defer until one does — a
+    speculative Bytes path would double the marshalling surface for no
+    caller.
+
+done when
+---------
+
+- A1, A2, T1, T2, T3 green; A3 measured and its number written into this
+  plan; tools/list shows a scala_mcp_fun row; the spec section's tier-1
+  paragraph matches what shipped.
+- D1's four rows each have a green test: T1 covers single=true with 0
+  params, A3 covers single=true with 1, A2 covers the single=true n>=2
+  rejection, and one case covers single=false with n params against a
+  Fun_Strings (Isabelle_System.Make_Directory or a fixture Fun in
+  mcp.jar).
+- D3 has a green negative: an (optional) param on a scala_mcp_fun is
+  refused at registration.
+- plans/scala_mcp_tool can be started: D1 is settled and the combinator
+  from step 2 is the one it extends.

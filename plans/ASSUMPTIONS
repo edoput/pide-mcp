@@ -202,6 +202,34 @@ repl_truncate#T6          e2e         full chain.
 repl_unpin#T1             ml-unit     unpinning without a pin is an error naming the repl.
 repl_unpin#T2             ml-unit     dependents block: pin A, init B [pin@A], unpin A -> error; remove B, unpin A -> ok; A's steps unchanged throughout.
 repl_unpin#T3             bridge      full chain.
+scala_mcp_fun#D1          unstated    the calling convention. it has two halves and only ONE of them is ours to decide. THE SHAPE HALF IS ALREADY SOLVED. Pure dispatches on the target's (s
+scala_mcp_fun#D3          heap        (optional) params are FORBIDDEN on scala_mcp_fun, rejected at registration. this is the one hole D1's trust argument does not cover: the CLIENT decide
+scala_mcp_fun#D2          unstated    the result is the Fun's single output string, passed through verbatim as the tool's text content. no parsing, no json interpretation: a Fun that wants
+scala_mcp_fun#A1          bridge      the target is checked at DECLARATION: a scala_mcp_fun naming a nonexistent function fails at registration with a position, not at call time. the negat
+scala_mcp_fun#A2          bridge      the ONE mechanical check D1 leaves us: a single=true target declared with TWO OR MORE params is rejected at REGISTRATION, naming the flag and the coun
+scala_mcp_fun#A3          bridge      the BLOCKING cost is real and measured, not assumed: Scala.function parks the prover thread in Synchronized.guarded_access (Pure/System/scala.ML) unti
+scala_mcp_fun#T1          bridge      the round trip end to end: a theory declares `scala_mcp_fun catalog = \<open>doc_names\<close>`, tools/list advertises the row, tools/call returns the
+scala_mcp_fun#T2          bridge      the three failure shapes (step 3) each surface as an mcp isError carrying the scala message: a Fun that raises, one that returns null, and one given a
+scala_mcp_fun#T3          bridge      a scala_mcp_fun row is an ORDINARY registry row: `declare [[mcp_tools del: catalog]]` removes it from tools/list, a bundle re-adds it, and tool_scope_
+scala_mcp_fun#Q1          unstated    RESOLVED 2026-08-19, recorded rather than dropped because the reasoning is the useful part: the params clause MUST allow zero params. a single=true Fu
+scala_mcp_fun#Q2          unstated    OPEN: whether a Fun with bytes=true (Fun_Bytes, e.g. Base64.encode) is worth supporting. check_scala_function reports the flag, so the command can rej
+scala_mcp_tool#A4         unstated    is therefore SETTLED POSITIVE: the snapshot our session holds is
+scala_mcp_tool#D1         unstated    the fill rule, and the reason a signature CHECK is worth having at all. UNLIKE tier 1, this does not rest on declaration order — the method's own sign
+scala_mcp_tool#D2         unstated    coercion is the real work, not the plumbing. ML hands over strings; a real target wants List[Path], Options, Severity.Level, Lint_Store.Selection. shi
+scala_mcp_tool#D3         unstated    result rendering: call toString on the returned value, EXCEPT where the target type has a known renderer. rationale: a Report or a case class renders 
+scala_mcp_tool#D4         unstated    overloads are REJECTED, not resolved. getMethod needs parameter types; the declaration supplies names and arity. if more than one method matches, fail
+scala_mcp_tool#A1         scala-unit  a target naming a missing class, a missing method, or a class with no MODULE$ (i.e. a scala CLASS, not an object) each fail at REGISTRATION with a mes
+scala_mcp_tool#A2         scala-unit  the class/method split is ambiguous and the resolution is longest-class-first: `a.b.C.d` tries class `a.b.C` method `d` before class `a.b` method `C.d
+scala_mcp_tool#A3         scala-unit  MODULE$ is how a scala object is reached — VERIFIED 2026-08-19 against mcp.jar: `object Doc_Catalog` compiles to class `isabelle.mcp.Doc_Catalog$` car
+scala_mcp_tool#A5         bridge      the session a Scala.Fun receives IS the server's live session, not a fresh or stale one. asserted by resolving a theory that was loaded mid-session, a
+scala_mcp_tool#T1         bridge      the minimal round trip: scala_mcp_tool over a String-in/String-out method of our OWN jar, declared in a theory, advertised in tools/list, called, corr
+scala_mcp_tool#T2         scala-unit  the coercion table (D2): each supported type converts, and an unsupported type fails at registration naming the type.
+scala_mcp_tool#T3         scala-unit  overload rejection (D4): a target with two matching methods fails at registration listing both.
+scala_mcp_tool#T4         bridge      error mapping end to end: a target that throws surfaces as an mcp isError with the CAUSE unwrapped, not a bare InvocationTargetException. the server s
+scala_mcp_tool#Q1         unstated    PARTLY RESOLVED 2026-08-19 — the linter IS now installed here, so the integration case is available. corrections to what this plan first said: the rel
+scala_mcp_tool#Q2         unstated    OPEN: whether MCP.dynamic_call should cache resolved Method handles. reflection lookup per call is wasteful but the target set is tiny and correctness
+scala_mcp_tool#Q4         unstated    RESOLVED 2026-08-19, POSITIVE — parameter NAMES do survive into the bytecode, so D1's fill-by-name works as written. `javap -v` finds a MethodParamete
+scala_mcp_tool#Q3         unstated    OPEN, inherited from plans/scala_mcp_fun A3: the blocking cost is WORSE here than for tier 1, because a realistic target (linting a whole theory) runs
 scope_add#T1              unstated    S1 (above).
 scope_add#T2              scala-unit  match counts in the reply are computed against the full known universe (image + filesystem via D1), tier included.
 scope_add#T3              scala-unit  idempotency: adding the same pattern twice -> same scope, no duplicate listing entries, second reply says already present (count still reported).

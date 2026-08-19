@@ -224,3 +224,23 @@ flagged, NOT scheduled (no wave):
         human verifies with isabelle build; ML-only, no scala. spec
         refinement: targets THEORIES, not repls — a repl's transient
         facts exist in no file, so no recap can import them)
+
+scala-backed tools (decided 2026-08-19, spec
+  D-2026-08-19-scala-backed-mcp-tools; investigation LINTER_FINDINGS.md).
+  two plans, in this order; the second depends on the first and does not
+  restate its steps:
+  - [ ] scala_mcp_fun          plans/scala_mcp_fun (TIER 1: wrap a
+        Scala.Fun some component already registered. no reflection and
+        no new scala code of ours — Scala.function already dispatches by
+        string name, and Resources.check_scala_function validates the
+        target at REGISTRATION. build this FIRST: it settles the
+        marshalling convention tier 2 reuses, and it is the whole story
+        for a user who owns the jar and can add a Fun.)
+  - [ ] scala_mcp_tool         plans/scala_mcp_tool (TIER 2: wrap any
+        class+method on the classpath through ONE reflective Fun of
+        ours, MCP.dynamic_call. removes tier 1's "already registered"
+        precondition — which is exactly what the isabelle linter needs,
+        since it ships a CLI service and a lint extension point but no
+        Scala.Functions. the Fun must extend Scala.Fun DIRECTLY, not
+        Fun_String: only then does it receive the Session, and with it
+        the Document.Snapshot that ML cannot express.)

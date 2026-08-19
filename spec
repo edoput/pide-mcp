@@ -3238,6 +3238,164 @@ not code).
   precedence is written down here so it is a KNOWN gap rather than an
   undocumented one.
 
+scala-backed mcp tools: scala_mcp_fun and scala_mcp_tool
+----------------------------------------------------------
+id: D-2026-08-19-scala-backed-mcp-tools
+
+decided 2026-08-19 (CHANGELOG same date). two plans written
+(plans/scala_mcp_fun, plans/scala_mcp_tool), NOT scheduled into a wave.
+investigation notes: LINTER_FINDINGS.md at the repo root.
+
+why
+---
+id: S-scala-backed-tools-why
+
+a user installs an isabelle component that carries a scala tool. we did
+not know that tool existed when mcp.jar was built, and we cannot know:
+components are registered by the user, after our build.
+
+today an mcp tool is one of two things. a scala builtin compiled into
+mcp.jar, or an ML tool in the registry (mcp_tool). a scala function that
+arrives with a third-party component is neither, so it cannot be served.
+
+the isabelle linter is the motivating case. it flags anti-patterns in
+proof documents — the style problems a human reviewer rejects a proof
+for, and the ones an LLM produces by default. its engine is one pure
+function taking the object our server already holds:
+
+    (* isabelle-linter linter_base/src/linter.scala:131 *)
+    def lint_snapshot(snapshot: Document.Snapshot,
+                      lint_selection: Lint_Store.Selection): Report
+
+the value is high and the coupling must be zero. we must not link
+against the linter, and the linter must not know about us.
+
+what
+----
+id: S-scala-backed-tools-what
+
+two isar commands, companions to mcp_tool. both declare an ordinary row
+in the SAME ML registry mcp_tool writes to, so activation
+([[mcp_tools add/del: ...]]), bundles, tool_scope, the params clause and
+notifications/tools/list_changed all apply unchanged. neither command
+adds a second tool concept; they add a second BODY kind.
+
+TIER 1 — scala_mcp_fun. the target names a registered Scala.Fun, i.e. an
+entry in some component's Scala.Functions service:
+
+    scala_mcp_fun lint = \<open>my_lint\<close>
+        (description \<open>lint a theory\<close>)
+        (params theory: string)
+
+the tool body is Scala.function "my_lint" args. no reflection and no new
+scala code on our side — Scala.function already dispatches by string
+name. cost to the component author: a Fun subclass plus one line in
+etc/build.props.
+
+TIER 2 — scala_mcp_tool. the target is any class + method on the
+classpath:
+
+    scala_mcp_tool lint = \<open>isabelle.linter.Linter.lint_snapshot\<close>
+        (description \<open>lint a theory\<close>)
+        (params theory: string)
+
+the tool body calls ONE scala function of ours, MCP.dynamic_call, which
+resolves the target reflectively, checks the supplied arguments against
+the method signature, and invokes it.
+
+the division of labour: tier 1 covers tools the USER writes (they own
+the jar, they can add a Fun). tier 2 covers tools whose author never
+heard of us. the linter is the second kind, which is why tier 2 exists.
+
+how
+---
+id: S-scala-backed-tools-how
+
+the dataflow has two phases. at DECLARATION nothing is linked — the
+target is stored as a string:
+
+    ML registry row
+      { name   = "lint"
+      , descr  = "lint a theory"
+      , target = "isabelle.linter.Linter.lint_snapshot"   (* a STRING *)
+      , run    = fn ctxt => fn params =>
+                   Scala.function "MCP.dynamic_call" (target :: encode params) }
+
+at CALL time:
+
+    client --tools/call--> Handler --MCP.run_tool--> ML registry --> run
+      --Scala.function--> MCP.dynamic_call (our one Fun)
+        1. split target into class + method
+        2. Class.forName(cls, true, Isabelle_System.classpath().class_loader)
+        3. .getField("MODULE$").get(null)        (* scala object singleton *)
+        4. reflect the signature, check the args, invoke
+      --Scala.result--> ML unblocks --> Handler --> client
+
+five facts this rests on, all verified 2026-08-19 against Isabelle2025-2:
+
+- ML CAN call scala from inside an mcp tool body. the reentrancy worry
+  (an ML tool is invoked THROUGH a protocol command and would reply
+  through another) does not materialise. reproducer, 7/7 green:
+  mcp/test/repro_scala_bridge.py.
+
+- a Scala.Fun receives the SESSION, not just its arguments:
+
+      (* Pure/System/scala.scala:22 *)
+      abstract class Fun(val name: String, val thread: Boolean = false) {
+        def invoke(session: Session, args: List[Bytes]): List[Bytes]
+      }
+
+  Fun_String and Fun_Strings are conveniences that DROP the session;
+  extend Fun directly to keep it. this is what makes lint_snapshot
+  reachable at all — ML cannot produce a Document.Snapshot, but the
+  scala side can resolve one from the session by theory name.
+
+- so the signature check is also DISPATCH. each parameter is filled
+  from one of two places: String/Int/Boolean from the ML call args
+  (explicit), Document.Snapshot/Session/Options from server state
+  (ambient). ML supplies what ML can express; the server supplies what
+  only it has.
+
+- reflection targets are stable: a scala `object Foo` compiles to class
+  `Foo$` with the singleton in a `public static final MODULE$` field,
+  and generic parameter types survive in the Signature attribute, so
+  getGenericParameterTypes recovers List<Path> rather than bare List.
+
+- discovery and jar loading need NO new mechanism. component jars are on
+  java.class.path at boot (isabelle components -u), and
+  Isabelle_System.make_services resolves service classes reflectively
+  from META-INF/isabelle/services. a jar loaded AFTER boot is visible
+  only to the loader that loaded it — Isabelle_System.classpath() is a
+  cached singleton and Scala.functions is a lazy val over it — so
+  post-boot loading buys hot-reload for us alone and does not extend the
+  session.
+
+four costs, recorded as behavior rather than left implicit:
+
+- BLOCKING. Scala.function is synchronous: function_bytes in
+  Pure/System/scala.ML parks in Synchronized.guarded_access until the
+  Scala.result protocol command returns. the prover thread is held for
+  the whole scala computation. microseconds for doc_names, the full lint
+  for lint_snapshot. this is the main argument for a scala-resident tool
+  where one is available, and the reason MCP.run_tool going async
+  (plans/ml_builtin_migration) matters more once these commands exist.
+
+- COERCION is the real work, not the plumbing. ML hands over strings;
+  the method wants List[Path], Options, Severity.Level. the signature
+  says what is wanted, producing it is the job. a small String => T
+  table keyed by target type, and anything outside it is a hard error.
+
+- OVERLOADS. getMethod needs parameter types and ML supplies names and
+  arity. reject ambiguity and make the declaration disambiguate rather
+  than guessing.
+
+- TRUST. scala_mcp_tool names an arbitrary class and method from a
+  theory. theories already carry ML \<open>...\<close>, which is strictly more
+  powerful, so this opens no new hole — but validate the target at
+  DECLARATION time (class loadable, method present), the way mcp_tool
+  proves its diagnostic-command target with Outer_Syntax.check_command,
+  so a typo fails at registration and not at call time.
+
 under the sugar: the MCP_Combinators ML library
 ------------------------------------------------
 id: S-under-sugar-mcp-combinators-ml
