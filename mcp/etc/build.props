@@ -16,9 +16,11 @@ sources = \
   src/doc_catalog.scala \
   src/mcp_config.scala \
   src/mcp_session.scala \
-  src/mcp_server.scala
+  src/mcp_server.scala \
+  src/mcp_dynamic_call.scala
 
 # service providers: subclasses of isabelle.Isabelle_System.Service,
 # e.g. isabelle.Isabelle_Scala_Tools for command-line tools
 services = \
-  isabelle.mcp.Tools
+  isabelle.mcp.Tools \
+  isabelle.mcp.Functions

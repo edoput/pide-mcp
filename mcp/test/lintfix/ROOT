@@ -1,0 +1,8 @@
+session Lint_Fixture = HOL +
+  description "
+    Deliberately lint-dirty theory, so the linter CLI can be used as a
+    control against what MCP.dynamic_call gets from a live snapshot
+    (plans/scala_mcp_tool A4).
+  "
+  theories
+    Lint_Dirty
