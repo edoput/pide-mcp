@@ -634,12 +634,24 @@ implicit:
 
 ## Open questions
 
-- Does registering `linter_base` as a component perturb the base image or
-  session structure? (Expected: no — it is Scala-only, no ROOT.) Note the
-  release ships a **prebuilt** `lib/classes/isabelle_linter.jar` (per
-  `etc/settings`), so registering it may need no `scala_build` at all —
-  which matters given the read-only-jar problem the flatpak build already
-  has.
+- ~~Does registering `linter_base` perturb the base image?~~ **SETTLED
+  2026-08-19: installed, and it does not.** Corrections to what this file
+  previously asserted:
+  - The release ships **no prebuilt jar**. `Isabelle2025-2-v1.0.0` has
+    **zero assets** — it is a source tag. The earlier claim was inferred
+    from `etc/settings` naming `lib/classes/isabelle_linter.jar`, but that
+    path is the build's *output*, not a shipped file. You must build it.
+  - Building works under the flatpak: plain `isabelle scala_build` (no
+    `-f`) produced a 430KB `isabelle_linter.jar` in seconds. The
+    read-only-jar problem does not arise.
+  - Register `linter_base`, **not** the repo root — the root's
+    `etc/components` also lists `jedit_linter`, which wants jEdit jars.
+  - The jar reaches the classpath even though `linter_base/etc/settings`
+    has **no `classpath` line** — `build.props`'s `module =
+    $ISABELLE_LINTER_JAR` is enough. Confirmed by `isabelle -?` listing
+    `lint`, `lint_bundles`, `lint_descriptions`, all served by the jar's
+    `Linter_Tools` service. `isabelle lint_bundles` returns the five
+    bundles, so `Lint_Store` and its static bundle init work too.
 - Do we take a hard dependency on the component, or degrade gracefully
   when it is absent? (`ISABELLE_LINTER_JAR` is only on the classpath if
   installed, so this is a real branch.)
@@ -650,14 +662,28 @@ implicit:
   (§6.4). Still worth a regression test: `mcp_test/src/mcp_bridge_tests.scala`
   already has the tool_scope self-extension cases this would sit next to.
 
-## Unrelated observation
+## Solved in passing: why `isabelle -?` lists `mcp_server` twice
 
-`isabelle -?` lists `mcp_server` **twice**. Not related to this
-investigation and not chased here. Ruled out: duplicate entry in the user
-`etc/components` file, and a duplicate `mcp.jar` on `ISABELLE_CLASSPATH`
-(both checked, both single). Untested hypothesis: `mcp.jar` appearing
-twice on the JVM's `java.class.path`, which is not the same list as
-`ISABELLE_CLASSPATH`. Worth its own look.
+Installing the linter answered this by controlled comparison.
+
+A component's jar reaches `java.class.path` from its `build.props`
+`module` declaration alone. `mcp/etc/settings` *also* adds it explicitly:
+
+```sh
+# mcp/etc/settings — the redundant line
+ISABELLE_CLASSPATH="$ISABELLE_CLASSPATH:$COMPONENT/lib/mcp.jar"
+```
+
+So `mcp.jar` lands on the classpath twice, `Classpath.services` scans it
+twice, `isabelle.mcp.Tools` is instantiated twice, and the tool is listed
+twice. The linter declares `module` and has **no** `classpath` line — and
+its three tools each appear exactly **once**. Same mechanism, one
+variable different.
+
+Fix: drop the `ISABELLE_CLASSPATH` line from `mcp/etc/settings`. (The
+project-state memory already flagged that line as redundant on other
+grounds; this is the observable consequence.) Not done here — it is a
+one-line change outside this branch's scope.
 
 ## Sources
 

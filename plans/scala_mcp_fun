@@ -17,11 +17,25 @@ depends on this plan and does not restate its steps.
         (description \<open>lint a theory\<close>)
         (params theory: string)
 
-build this one FIRST. it is strictly smaller, it needs no new scala code
-at all, and it settles the marshalling convention (D1) that tier 2 then
-reuses unchanged. it is also independently useful: it is the whole story
-for a user who writes their own scala tool, because they own the jar and
-can add a Fun.
+ORDERING, and it depends on the goal — read this before assuming tier 1
+comes first.
+
+this plan is strictly smaller and needs no new scala code at all. it is
+independently useful: it is the whole story for a user who writes their
+own scala tool, because they own the jar and can add a Fun.
+
+BUT it does not reach the linter, and it is not on the path to it. the
+linter ships no Scala.Functions service, so tier 1 cannot wrap it at any
+price; and after D1's rewrite tier 2 no longer inherits tier 1's calling
+convention either, so what the two actually share shrank to the error
+mapping, the registry/activation story and the command scaffolding —
+work tier 2 must do anyway.
+
+so: build tier 1 first if the goal is a good general facility with the
+cheapest first increment. build plans/scala_mcp_tool first if the goal is
+THE LINTER, because tier 1 is then a detour, not a stepping stone.
+(recorded 2026-08-19 — the linter is the stated near-term goal, so tier 2
+is the live path.)
 
 depends on plans/mcp_tool_command (DONE — the outer syntax, the params
 clause, the quoting/validation pipeline) and plans/param_schema_v2

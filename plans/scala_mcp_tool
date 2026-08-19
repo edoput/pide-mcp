@@ -205,14 +205,18 @@ T4  [bridge] error mapping end to end: a target that throws surfaces as
     InvocationTargetException. the server survives and answers the next
     call.
 
-Q1  OPEN: whether the linter integration ships as a test at all. it is
-    not installed here (LINTER_FINDINGS.md open questions), a release
-    matching Isabelle2025-2 exists (Isabelle2025-2-v1.0.0, 2026-05-04),
-    and registering it is `isabelle components -u` with a prebuilt jar —
-    no scala_build, which matters given the read-only-jar problem under
-    the flatpak. settle by installing it once and seeing whether the
-    round trip works; if it does, the case ships SKIPPED-IF-ABSENT so
-    the suite stays green on a machine without the component.
+Q1  PARTLY RESOLVED 2026-08-19 — the linter IS now installed here, so
+    the integration case is available. corrections to what this plan
+    first said: the release has ZERO assets (it is a source tag, not a
+    prebuilt component), so it must be BUILT — plain `isabelle
+    scala_build`, which works fine under the flatpak and takes seconds.
+    register `linter_base`, not the repo root. the jar reaches the
+    classpath from build.props `module` alone, with no `classpath` line
+    in its settings — verified by `isabelle -?` serving `lint`,
+    `lint_bundles`, `lint_descriptions`, and by `isabelle lint_bundles`
+    returning the five bundles.
+    STILL OPEN: the test case ships SKIPPED-IF-ABSENT regardless, so the
+    suite stays green on a machine without the component.
 
 Q2  OPEN: whether MCP.dynamic_call should cache resolved Method handles.
     reflection lookup per call is wasteful but the target set is tiny
