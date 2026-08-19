@@ -115,8 +115,33 @@ DEVIATIONS from the plan as written, each a deliberate choice:
   without that a lint Result drags its whole Parsed_Command and Snapshot
   into every row. Honest status: readable, not machine-parseable.
 
-- Step 1 (the scala_mcp_tool outer syntax) is NOT built, and it turns out
-  NOT to be on the critical path. The existing mcp_tool ML escape hatch
+- Step 1 (the scala_mcp_tool outer syntax) IS NOW BUILT, after the note
+  below was written. It declares, validates the target at registration
+  (a bad target fails there with a position, not at call time), surfaces
+  the resolved scala signature in the tool description -- the only place
+  a client can see the target's real types -- and serves. Cases 7a-7d of
+  mcp/test/repro_dynamic_call.py.
+
+  TWO findings from building it:
+
+  * The ML -> Scala bridge IS available at theory BUILD time, not only in
+    a live session (verified by building a Pure-based probe theory whose
+    body calls Scala.function1 and asserts the result). That is what makes
+    registration-time validation legal: a theory declaring a
+    scala_mcp_tool can still be built by isabelle build.
+
+  * An Isar-declared param CANNOT be named `theory`. The params clause
+    parses names with Parse.name, and `theory` is a command keyword, so it
+    is rejected -- as is `text`. This is pre-existing behaviour of the
+    params clause, not something this command introduced, but it bites
+    here because `theory` is the natural name for the snapshot selector
+    AND the name the scala-side builtins already use. Declarations say
+    `thy`; dynamic_call accepts theory/thy/theory_name so the raw-ML and
+    Isar paths both work. Worth knowing for plans/ml_builtin_migration,
+    which will hit the same wall when it moves a builtin carrying a
+    `theory` param into the ML registry.
+
+  The note below stands as the reason step 1 was not blocking: The existing mcp_tool ML escape hatch
   already wraps dynamic_call into a served tool:
 
       mcp_tool lint = \<open>fn thy => hd (Scala.function "MCP.dynamic_call"
