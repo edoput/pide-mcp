@@ -1,7 +1,7 @@
 scala_mcp_fun — wrap a registered Scala.Fun as an mcp tool (tier 1)
 ====================================================================
 
-status: planned
+status: done (2026-08-19)
 
 spec: "scala-backed mcp tools: scala_mcp_fun and scala_mcp_tool"
 (D-2026-08-19-scala-backed-mcp-tools). decided 2026-08-19, NOT scheduled
@@ -88,6 +88,37 @@ Fun_String and Fun_Bytes are scala-side ADAPTERS over that one wire
 shape, and (single, bytes) is metadata shipped to ML precisely so the
 ML side can pick the matching entry point. we did not invent any of it
 and must not reinvent it.
+
+WHAT LANDED 2026-08-19
+----------------------
+
+IMPLEMENTED and green. The command, the combinator
+(MCP_Combinators.scala_fun) and the registration-time checks all exist;
+cases 8a-8e of mcp/test/repro_dynamic_call.py cover them.
+
+    scala_mcp_fun catalog = \<open>doc_names\<close>
+        (description \<open>the isabelle doc catalog\<close>)
+
+    tools/call catalog {}  ->  26 entries, matching `isabelle doc`
+
+D1 landed exactly as decided: Pure's (single, bytes) dispatch is copied,
+not reinvented, and the ONLY thing this plan decides is the ordering --
+walk the declared params in order and look each name up.
+
+The three registration-time refusals are real and tested:
+  * an unknown Scala.Fun            -> Bad scala_function "..."
+  * single Fun + >= 2 declared params -> "takes exactly one argument"  (A2)
+  * an (optional) param              -> not allowed, positional filling
+                                        cannot represent a hole         (D3)
+
+DEVIATION: A1/A2 were labelled [bridge] on the grounds that
+Resources.check_scala_function reads a session-base table that is empty
+outside a live session. That reasoning was WRONG about builds -- the
+ML/Scala bridge IS available at theory BUILD time (verified while
+building plans/scala_mcp_tool step 1), and the function table is
+populated there too. The cases are still exercised at the bridge layer
+because that is where the repro lives, but an ml-unit case would also
+have worked.
 
 the work items
 --------------

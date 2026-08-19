@@ -202,7 +202,7 @@ repl_truncate#T6          e2e         full chain.
 repl_unpin#T1             ml-unit     unpinning without a pin is an error naming the repl.
 repl_unpin#T2             ml-unit     dependents block: pin A, init B [pin@A], unpin A -> error; remove B, unpin A -> ok; A's steps unchanged throughout.
 repl_unpin#T3             bridge      full chain.
-scala_mcp_fun#D1          unstated    the calling convention. it has two halves and only ONE of them is ours to decide. THE SHAPE HALF IS ALREADY SOLVED. Pure dispatches on the target's (s
+scala_mcp_fun#D1          unstated    landed exactly as decided: Pure's (single, bytes) dispatch is copied,
 scala_mcp_fun#D3          heap        (optional) params are FORBIDDEN on scala_mcp_fun, rejected at registration. this is the one hole D1's trust argument does not cover: the CLIENT decide
 scala_mcp_fun#D2          unstated    the result is the Fun's single output string, passed through verbatim as the tool's text content. no parsing, no json interpretation: a Fun that wants
 scala_mcp_fun#A1          bridge      the target is checked at DECLARATION: a scala_mcp_fun naming a nonexistent function fails at registration with a position, not at call time. the negat
