@@ -56,6 +56,15 @@ Use `tools/wt-isabelle-build.sh <name> [setup|build|clean|teardown]`,
 run from the main checkout. `<name>` is the worktree's name, matching
 `.claude/worktrees/<name>`.
 
+`setup` and `teardown` run automatically: `.claude/hooks/isabelle-worktree`
+is wired into `.claude/settings.json` as a `PostToolUse` hook on
+`EnterWorktree` (runs `setup`) and a `PreToolUse` hook on `ExitWorktree`
+(runs `teardown`, only when `action` is `"remove"` — `"keep"` leaves the
+scratch heaps in place for next time). `build` and `clean` stay manual;
+a hook that ran a real `isabelle build` would block worktree creation on
+every failure. You only need the commands below by hand for `build`,
+`clean`, or to re-run `setup`/`teardown` outside the hook.
+
 ```
 tools/wt-isabelle-build.sh <name> build       # setup (idempotent) + build
 tools/wt-isabelle-build.sh <name> clean       # force-rebuild MCP-HOL-Tests
