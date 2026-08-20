@@ -507,9 +507,16 @@ three things had to hold, and all three were already true or cheap:
 
 - SHUTDOWN. in-flight requests are drained before the backend is torn
   down, so a running request cannot fail against a half-dead session and
-  report that as a tool error. the drain is BOUNDED (10s): an unbounded
-  wait would let one wedged tool keep the process alive after stdin
-  closed, which is a worse hang than the one it is tidying.
+  report that as a tool error. the drain is BOUNDED: an unbounded wait
+  would let one wedged tool keep the process alive after stdin closed,
+  which is a worse hang than the one it is tidying.
+
+  the bound is a CONFIGURED DEFAULT, not a constant, because no single
+  number is right for every workload -- linting a large theory is not a
+  repl step. `mcp_shutdown_drain` (mcp/etc/options, default 10.0
+  seconds), settable per invocation with
+  `isabelle mcp_server -o mcp_shutdown_drain=30` or once in
+  $ISABELLE_HOME_USER/etc/preferences. 0 means do not wait at all.
 
 NOT done here: bounding concurrency. one thread per in-flight request is
 right for a stdio server with one client; a pool would only matter under

@@ -44,9 +44,14 @@ record; entries here point at the section that carries the details.
 
 - shutdown drains in-flight requests before tearing the backend down, so
   a running request cannot fail against a half-dead session. The drain is
-  bounded at 10s: an unbounded wait would let one wedged tool keep the
-  process alive after stdin closed, which is a worse hang than the one it
-  tidies up.
+  bounded: an unbounded wait would let one wedged tool keep the process
+  alive after stdin closed, which is a worse hang than the one it tidies
+  up. The bound is a CONFIGURED DEFAULT rather than a constant, since no
+  one number suits both a repl step and a lint over a large theory:
+  `mcp_shutdown_drain` (mcp/etc/options, default 10.0s), settable with
+  `isabelle mcp_server -o mcp_shutdown_drain=30` or once in
+  $ISABELLE_HOME_USER/etc/preferences; 0 disables waiting. This is also
+  the component's first etc/options file, and mcp_server grew a -o flag.
 
 2026-08-09 (spec: every section carries a stable id)
 --------------------------------------------------------------------------
