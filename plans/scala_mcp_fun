@@ -241,8 +241,37 @@ A2  [bridge] the ONE mechanical check D1 leaves us: a single=true
     same reason as A1 for the layer: the flags come from the session
     base table, which is empty outside a live session.
 
-A3  MEASURED 2026-08-19, and the answer is yes: the prover thread is held
-    for the WHOLE scala call. `scala_mcp_fun napper = \<open>sleep\<close>`
+A3  MEASURED 2026-08-19, then RE-ATTRIBUTED 2026-08-20. The measurement
+    stands; the first diagnosis did not.
+
+    WRONG (as first recorded): "the prover thread is held for the whole
+    scala call, so async MCP.run_tool is a prerequisite". Both halves are
+    false. MCP.run_tool has been ASYNC since 2026-07-28 -- it forks via
+    Future.forks and posts the result on a dependent fork
+    (plans/ml_builtin_migration step 5, suite MCP_Run_Tool_Async_Tests) --
+    so the prover was never the thing being held.
+
+    RIGHT: MCP_Server.serve serializes. Its loop reads the NEXT line only
+    after the previous request has replied:
+
+        while (!finished) {
+          in.readLine() match {
+            case line => handler.handle_line(line).foreach(print_json)
+          }
+        }
+
+    Proven by control: racing the sleep against `list_sessions`, a SCALA
+    builtin that never reaches the prover, still answered at 3.09s. If the
+    prover had been the bottleneck that call would have returned at once.
+    Case 10d of mcp/test/repro_dynamic_call.py.
+
+    CONSEQUENCE: the fix is a concurrent serve loop, not anything in ML.
+    Replies are id-matched, so out-of-order responses are legal JSON-RPC;
+    `out.synchronized` already guards writing. The open question is
+    handler state -- tool_scope is per-connection and would need to be
+    thread-safe.
+
+    the original wording, kept because the measurement itself was sound: `scala_mcp_fun napper = \<open>sleep\<close>`
     with a 3.0s argument answered at 3.01s -- and a trivial ML tool fired
     immediately afterwards also answered at 3.01s, i.e. it could not be
     served until the sleep returned. Case 10 of

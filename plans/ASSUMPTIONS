@@ -207,7 +207,7 @@ scala_mcp_fun#D3          heap        (optional) params are FORBIDDEN on scala_m
 scala_mcp_fun#D2          unstated    the result is the Fun's single output string, passed through verbatim as the tool's text content. no parsing, no json interpretation: a Fun that wants
 scala_mcp_fun#A1          bridge      the target is checked at DECLARATION: a scala_mcp_fun naming a nonexistent function fails at registration with a position, not at call time. the negat
 scala_mcp_fun#A2          bridge      the ONE mechanical check D1 leaves us: a single=true target declared with TWO OR MORE params is rejected at REGISTRATION, naming the flag and the coun
-scala_mcp_fun#A3          bridge      MEASURED 2026-08-19, and the answer is yes: the prover thread is held for the WHOLE scala call. `scala_mcp_fun napper = \<open>sleep\<close>` with a 3
+scala_mcp_fun#A3          bridge      MEASURED 2026-08-19, then RE-ATTRIBUTED 2026-08-20. The measurement stands; the first diagnosis did not. WRONG (as first recorded): "the prover thread
 scala_mcp_fun#T1          bridge      the round trip end to end: a theory declares `scala_mcp_fun catalog = \<open>doc_names\<close>`, tools/list advertises the row, tools/call returns the
 scala_mcp_fun#T2          bridge      the three failure shapes (step 3) each surface as an mcp isError carrying the scala message: a Fun that raises, one that returns null, and one given a
 scala_mcp_fun#T3          bridge      a scala_mcp_fun row is an ORDINARY registry row: `declare [[mcp_tools del: catalog]]` removes it from tools/list, a bundle re-adds it, and tool_scope_
@@ -229,7 +229,7 @@ scala_mcp_tool#T4         bridge      error mapping end to end: a target that th
 scala_mcp_tool#Q1         unstated    PARTLY RESOLVED 2026-08-19 — the linter IS now installed here, so the integration case is available. corrections to what this plan first said: the rel
 scala_mcp_tool#Q2         unstated    OPEN: whether MCP.dynamic_call should cache resolved Method handles. reflection lookup per call is wasteful but the target set is tiny and correctness
 scala_mcp_tool#Q4         unstated    RESOLVED 2026-08-19, POSITIVE — parameter NAMES do survive into the bytecode, so D1's fill-by-name works as written. `javap -v` finds a MethodParamete
-scala_mcp_tool#Q3         unstated    OPEN, inherited from plans/scala_mcp_fun A3: the blocking cost is WORSE here than for tier 1, because a realistic target (linting a whole theory) runs
+scala_mcp_tool#Q3         unstated    RESOLVED 2026-08-20, and not the way it was posed. The premise was that a lint would hold the PROVER thread, making async MCP.run_tool a prerequisite.
 scope_add#T1              unstated    S1 (above).
 scope_add#T2              scala-unit  match counts in the reply are computed against the full known universe (image + filesystem via D1), tier included.
 scope_add#T3              scala-unit  idempotency: adding the same pattern twice -> same scope, no duplicate listing entries, second reply says already present (count still reported).

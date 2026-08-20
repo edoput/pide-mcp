@@ -384,7 +384,16 @@ Q4  RESOLVED 2026-08-19, POSITIVE — parameter NAMES do survive into the
     tier 1's rule. so tier 2 = tier 1's ordering plus a verifier that
     degrades cleanly, and no jar can block it.
 
-Q3  OPEN, inherited from plans/scala_mcp_fun A3: the blocking cost is
+Q3  RESOLVED 2026-08-20, and not the way it was posed. The premise was
+    that a lint would hold the PROVER thread, making async MCP.run_tool a
+    prerequisite. MCP.run_tool is already async and the prover is not the
+    bottleneck: MCP_Server.serve reads the next request only after the
+    previous one replied, so a slow tool delays everything behind it
+    regardless of which layer it runs in. See plans/scala_mcp_fun A3 for
+    the control that attributes it. The work item is a concurrent serve
+    loop; nothing in ML needs to change.
+
+    the original, mis-posed question: the blocking cost is
     WORSE here than for tier 1, because a realistic target (linting a
     whole theory) runs for seconds rather than microseconds with the
     prover thread held. this may make async MCP.run_tool
