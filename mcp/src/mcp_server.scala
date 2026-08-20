@@ -1171,6 +1171,30 @@ object MCP_Server {
     private case class Scope(designation: String = "", bundles: List[String] = Nil)
     private val scope = Synchronized(Scope())
 
+    /* notifications/cancelled (plans/request_cancellation, spec "request
+       cancellation"): request id -> the internal MCP.run_tool id
+       ml_run's on_dispatch reported for it, so cancel() below can ask the
+       ML side to abandon that specific fork. Only tools/call requests
+       that reach ml_run ever get an entry; a request handled entirely in
+       scala (a builtin, tools/list, ...) has nothing here to cancel
+       ML-side, which is fine -- serve()'s own thread interrupt still
+       frees the scala side for those. */
+    private val cancel_targets = Synchronized(Map.empty[JSON.T, String])
+
+    /* best-effort: called from serve()'s dispatch loop when a
+       notifications/cancelled names this request id. A request this
+       Handler never routed through ml_run (or one whose ml_run call has
+       already returned, having removed itself below) has no entry here,
+       so this is silently a no-op -- exactly the "unknown or already
+       completed" case the spec says receivers MAY ignore. */
+    def cancel(request_id: JSON.T): Unit =
+      cancel_targets.value.get(request_id).foreach { ml_run_id =>
+        readiness() match {
+          case Ready(backend) => backend.cancel_run(ml_run_id)
+          case _ =>
+        }
+      }
+
     private val tool_scope_show_tool: Builtin_Tool =
       Builtin_Tool(
         name = "tool_scope_show",
@@ -1434,12 +1458,25 @@ object MCP_Server {
                           (builtins ++ tool_scope_builtins).map(_.name).toSet)
                       val internal =
                         exposed.collectFirst({ case (i, x) if x == name => i }).getOrElse(name)
-                      backend.ml_run(internal, json_args(arguments), sc.designation, sc.bundles) match {
-                        case MCP_Session.Ok(text) =>
-                          Some(RPC.response(id, text_result(text)))
-                        case MCP_Session.Error(message) =>
-                          Some(RPC.response(id, text_result(message, is_error = true)))
-                      }
+                      /* register the internal run id under THIS request's
+                         json-rpc id the moment ml_run mints it (on_dispatch
+                         fires before the call blocks), so a
+                         notifications/cancelled arriving anywhere in
+                         between has something to find; deregister once
+                         ml_run returns by whatever means (result, error,
+                         or an interrupt unwinding through here) so a late
+                         or duplicate cancel for this id is a no-op
+                         afterwards. */
+                      try
+                        backend.ml_run(internal, json_args(arguments), sc.designation, sc.bundles,
+                          on_dispatch = ml_run_id => cancel_targets.change(_ + (id -> ml_run_id))
+                        ) match {
+                          case MCP_Session.Ok(text) =>
+                            Some(RPC.response(id, text_result(text)))
+                          case MCP_Session.Error(message) =>
+                            Some(RPC.response(id, text_result(message, is_error = true)))
+                        }
+                      finally cancel_targets.change(_ - id)
                   }
               }
           }
@@ -1565,19 +1602,127 @@ object MCP_Server {
        and what every test here does. */
     val in_flight = Synchronized(0)
 
-    def dispatch(line: String): Unit = {
-      in_flight.change(_ + 1)
-      Isabelle_Thread.fork(name = "mcp_request") {
-        try handler.handle_line(line).foreach(print_json)
-        catch {
-          case exn: Throwable if !Exn.is_interrupt(exn) =>
-            /* a handler that throws must not take the server down with
-               it, and must not leave the client waiting forever either */
-            progress.echo_error_message("mcp_server: request failed: " + Exn.message(exn))
+    /* notifications/cancelled (plans/request_cancellation, spec "request
+       cancellation"): per json-rpc request id, either the thread running
+       it (Active) or, if a cancel notification raced in before the
+       thread had a chance to register itself, Cancel_Pending -- so the
+       thread finds out not to run the handler at all rather than the
+       notification being silently lost to the registration race.
+
+       The reader (this thread, in the while loop below) is single and
+       sequential: it only moves on to the NEXT line after dispatch(line)
+       has returned, and dispatch() itself only returns after
+       Isabelle_Thread.fork has been called -- so a cancel notification
+       for id X can only be READ after the request for id X has already
+       been forked. It can still be PROCESSED (this map consulted) before
+       that forked thread gets scheduled, which is exactly the race
+       Cancel_Pending exists for. */
+    sealed abstract class Cancel_State
+    case class Active(thread: Isabelle_Thread) extends Cancel_State
+    case object Cancel_Pending extends Cancel_State
+    val cancellable = Synchronized(Map.empty[JSON.T, Cancel_State])
+
+    /* MUST NOT send a response for a cancelled request (spec): the
+       thread's own catch below swallows the interrupt silently rather
+       than replying or logging it as a failure. MAY ignore an unknown,
+       already-completed, or duplicate cancel (spec): looked up by id,
+       a request this server never saw in flight -- or has already
+       finished -- has no Active entry, so this only ever inserts a
+       Cancel_Pending marker (a no-op from the caller's point of view;
+       harmless beyond holding one map entry for the rest of the
+       connection, since ids are not expected to repeat within one
+       connection's lifetime -- see spec/plan for the tradeoff this
+       accepts rather than tracking every id ever dispatched to
+       distinguish "early" from "unknown"). ML-side cancellation is
+       requested BEFORE the scala thread is interrupted: cancel_run
+       reads Handler's cancel_targets, which is only removed by the
+       ml_run call's own (thread-local) finally -- asking first, while
+       the target thread is certainly still blocked waiting on it,
+       avoids a race against that removal. */
+    def cancel(request_id: JSON.T): Unit =
+      cancellable.change_result { m =>
+        m.get(request_id) match {
+          case Some(Active(thread)) =>
+            handler.cancel(request_id)
+            thread.interrupt()
+            ((), m)
+          case Some(Cancel_Pending) => ((), m)
+          case None => ((), m + (request_id -> Cancel_Pending))
         }
-        finally in_flight.change(_ - 1)
       }
-      ()
+
+    /* One thread per request. The loop used to handle a line to
+       COMPLETION before reading the next one, so a slow tool delayed
+       everything behind it -- measured: a 3s tool pushed an unrelated,
+       prover-free builtin out to the same 3s. Note the prover was never
+       the bottleneck; MCP.run_tool already forks on the ML side.
+
+       This is legal JSON-RPC: responses carry the request id, so a client
+       matches them without relying on order. print_json is already
+       line-atomic under the `out` lock, and the handler's only mutable
+       state (the tool scope) is a Synchronized cell.
+
+       Requests are NOT ordered against each other any more. A client that
+       needs `load_theory` to land before a tool call that reads it must
+       await the first reply -- which is what an MCP client does anyway,
+       and what every test here does. */
+
+    def dispatch(line: String): Unit = {
+      val parsed = JSON.Format.unapply(line)
+      val method = parsed.flatMap(JSON.string(_, "method"))
+      if (method == Some("notifications/cancelled")) {
+        /* handled synchronously, on this reader thread, not forked: a
+           notification is fire-and-forget by definition (spec), there is
+           nothing to reply with, and staying on the reader thread is
+           what keeps it strictly ordered after the request it names (see
+           the race analysis above) -- forking it too would let it
+           overtake or trail its own target's registration
+           unpredictably. */
+        for {
+          json <- parsed
+          params <- JSON.value(json, "params")
+          request_id <- JSON.value(params, "requestId")
+        } cancel(request_id)
+      }
+      else {
+        val id_opt = parsed.flatMap(JSON.value(_, "id"))
+        in_flight.change(_ + 1)
+        Isabelle_Thread.fork(name = "mcp_request") {
+          /* register-or-abort, atomically: if a cancel already marked
+             this id Cancel_Pending (it raced in before this thread got
+             scheduled), skip the handler entirely rather than run
+             work nobody wants the result of any more. */
+          val proceed =
+            id_opt match {
+              case None => true
+              case Some(id) =>
+                cancellable.change_result { m =>
+                  m.get(id) match {
+                    case Some(Cancel_Pending) => (false, m - id)
+                    case _ => (true, m + (id -> Active(Isabelle_Thread.self)))
+                  }
+                }
+            }
+          if (proceed) {
+            try handler.handle_line(line).foreach(print_json)
+            catch {
+              case exn: Throwable if Exn.is_interrupt(exn) =>
+                () /* cancelled: not an error, no response, no log */
+              case exn: Throwable =>
+                /* a handler that throws must not take the server down
+                   with it, and must not leave the client waiting
+                   forever either */
+                progress.echo_error_message("mcp_server: request failed: " + Exn.message(exn))
+            }
+            finally {
+              id_opt.foreach(id => cancellable.change(_ - id))
+              in_flight.change(_ - 1)
+            }
+          }
+          else in_flight.change(_ - 1)
+        }
+        ()
+      }
     }
 
     try {

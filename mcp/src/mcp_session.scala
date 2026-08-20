@@ -26,8 +26,19 @@ trait MCP_Backend {
      (client-visible) names are computed scala-side (MCP_Server.exposure)
      and params expand into JSON schemas at tools/list time. */
   def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply
+  /* on_dispatch (plans/request_cancellation): called with the internal
+     run id the moment it is minted, BEFORE the call blocks -- the only
+     hook the JSON-RPC layer needs to later ask the ML side to abandon
+     this particular run (cancel_run below). A no-op default so every
+     caller/backend that does not care about cancellation (tests,
+     Fake_Backend) is unaffected. */
   def ml_run(name: String, args: List[(String, String)],
-    designation: String = "", bundles: List[String] = Nil): MCP_Session.Result
+    designation: String = "", bundles: List[String] = Nil,
+    on_dispatch: String => Unit = _ => ()): MCP_Session.Result
+  /* best-effort ML-side cancellation of a run_tool identified by the id
+     on_dispatch reported (plans/request_cancellation): a no-op default,
+     since not every backend forks anything ML-side to cancel. */
+  def cancel_run(id: String): Unit = ()
   /* validate a candidate designation without committing to it
      (tool_scope_set/tool_scope_include, plans/tool_scope) */
   def check_designation(designation: String, bundles: List[String] = Nil): MCP_Session.Result
@@ -613,15 +624,30 @@ class MCP_Session private(
   }
 
   def ml_run(name: String, args: List[(String, String)],
-      designation: String = "", bundles: List[String] = Nil): MCP_Session.Result = {
+      designation: String = "", bundles: List[String] = Nil,
+      on_dispatch: String => Unit = _ => ()): MCP_Session.Result = {
     val id = UUID.random().toString
     val promise = Future.promise[MCP_Session.Result]
     run_promises.change(_ + (id -> promise))
+    on_dispatch(id)
     session.protocol_command_raw("MCP.run_tool",
       List(Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles)), Bytes(name),
         Bytes(MCP_Session.encode_args(args))))
     promise.join
   }
+
+  /* MCP.cancel_tool (plans/request_cancellation): tells the ML side to
+     abandon the run_tool fork tagged `id`, mirroring how ML's own
+     Scala.function asks Scala to abandon an invoke_scala (cancel_scala in
+     Pure/System/scala.ML/scala.scala) -- the side that gives up waiting
+     sends an explicit message naming what to abandon, rather than relying
+     on interrupting its OWN thread to reach across the bridge. Fire-and-
+     forget: run_promises still gets fulfilled (harmlessly, by whichever
+     of the eventual MCP.run_tool_result or nothing arrives first) and
+     cleaned up the usual way, whether or not this actually lands before
+     the tool finishes on its own. */
+  override def cancel_run(id: String): Unit =
+    session.protocol_command_raw("MCP.cancel_tool", List(Bytes(id)))
 
   /* tool_scope_set/tool_scope_include (plans/tool_scope): validate a
      candidate repl/bundle designation against the prover BEFORE the

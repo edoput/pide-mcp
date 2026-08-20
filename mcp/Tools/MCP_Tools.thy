@@ -1720,6 +1720,28 @@ takes the first match found, MCP_Tools.thy above). Plain print mode
 throughout, unlike \<open>MCP.ir\<close>'s PIDE mode -- \<open>run_tool_result\<close> on the Scala
 side does not strip yxml markup.\<close>
 
+text \<open>MCP.cancel_tool (plans/request_cancellation, spec "request
+cancellation"): mirrors how ML's OWN Scala.function asks Scala to abandon an
+invoke_scala it gave up waiting on (cancel_scala, Pure/System/scala.ML +
+scala.scala) -- the side that gives up sends an explicit message naming what
+to abandon, keyed by an id both sides already agree on, rather than relying
+on interrupting a thread on the OTHER side of the bridge (scala interrupting
+its own \<^verbatim>\<open>ml_run\<close>-blocked thread only frees scala; it reaches nothing here).
+
+\<^verbatim>\<open>run_tool_cancellers\<close> maps a run's id (the SAME id MCP.run_tool_result
+already posts by) to a thunk that cancels that run's worker future. Entered
+right after the worker is forked, so a cancel arriving any time after that
+point finds it; removed from BOTH ends whichever fires first -- MCP.cancel_tool
+itself (so a second cancel for the same id is a no-op) and the result-posting
+fork (so a run that is NEVER cancelled does not leak an entry) -- Symtab.delete_safe
+makes the second removal harmless. An id MCP.cancel_tool does not find (already
+finished, or never existed) is a no-op, matching the spec's "MAY ignore".\<close>
+
+ML \<open>
+val run_tool_cancellers : (unit -> unit) Symtab.table Synchronized.var =
+  Synchronized.var "MCP.run_tool_cancellers" Symtab.empty;
+\<close>
+
 ML \<open>
 val _ =
   Protocol_Command.define "MCP.run_tool"
@@ -1738,11 +1760,15 @@ val _ =
                   if Exn.is_interrupt exn then Exn.reraise exn
                   else ("error", Runtime.exn_message exn));
         val _ =
+          Synchronized.change run_tool_cancellers
+            (Symtab.update (id, fn () => Future.cancel result));
+        val _ =
           (singleton o Future.forks)
             {name = "MCP.run_tool_result", group = NONE,
              deps = [Future.task_of result], pri = ~1, interrupts = false}
             (fn () =>
               let
+                val _ = Synchronized.change run_tool_cancellers (Symtab.delete_safe id);
                 val (status, output) =
                   (case Future.join_result result of
                     Exn.Res res => res
@@ -1753,6 +1779,14 @@ val _ =
                   [[XML.Text output]]
               end);
       in () end);
+
+val _ =
+  Protocol_Command.define "MCP.cancel_tool"
+    (fn [id] =>
+      case Synchronized.change_result run_tool_cancellers
+             (fn tab => (Symtab.lookup tab id, Symtab.delete_safe id tab)) of
+        SOME cancel => cancel ()
+      | NONE => ());
 \<close>
 
 text \<open>tool_scope_set/tool_scope_include (plans/tool_scope) validate a

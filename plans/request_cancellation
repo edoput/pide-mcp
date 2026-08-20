@@ -1,0 +1,185 @@
+request cancellation (notifications/cancelled) -- implementation plan
+=======================================================================
+
+status: done (2026-08-20)
+spec: "request cancellation" (D-2026-08-20-request-cancellation), depends
+on the fork-per-request dispatch loop from spec "the serve loop is
+concurrent" (D-2026-08-20-concurrent-serve-loop; no separate plans/ file
+exists for that change). test:
+mcp/test/repro_request_cancel.py.
+
+the protocol surface
+---------------------
+
+client sends, at any time after a request it issued is still believed
+in-progress:
+
+    {"jsonrpc": "2.0", "method": "notifications/cancelled",
+     "params": {"requestId": <the request's own id>, "reason": "..."}}
+
+a notification (no id of its own, no reply possible or expected).
+server behavior per the mcp spec (2025-06-18, "basic/utilities/
+cancellation"):
+- MUST NOT send a response for the cancelled request
+- MAY ignore it if the id is unknown, already completed, or the request
+  cannot be cancelled -- never an error
+- the client MUST NOT cancel its own `initialize`; nothing enforces this
+  server-side (a client-side obligation, not ours to police)
+
+why two halves, not one
+-------------------------
+
+a tools/call that resolves to an ML tool goes through
+MCP_Backend.ml_run -> MCP.run_tool: the scala thread sends the protocol
+command and BLOCKS (Promise.join) while the ML side runs the tool on its
+own Future.forks task (interrupts = true, since 2026-07-28). the scala
+thread and the ml fork are two SEPARATE things that happen to be
+connected by a promise -- interrupting the scala thread only ever
+touches the scala side of that connection.
+
+confirmed by direct measurement (mcp/test/repro_request_cancel.py, a
+tool that sleeps 6s then writes a completion marker file), cancelling
+1s in:
+- scala half only (ML side's cancel_run call disabled for the
+  measurement): client gets no response, its connection frees up in
+  ~0.1s -- but the marker still appears at t=6.06s. the ml fork ran the
+  full sleep regardless of the cancel.
+- both halves wired up (shipped): the marker never appears. the prover's
+  own sleep is genuinely interrupted, not merely abandoned.
+
+design
+------
+
+SCALA HALF (mcp/src/mcp_server.scala, serve()):
+- `cancellable: Synchronized[Map[JSON.T, Cancel_State]]`, keyed by the
+  json-rpc request id. `Cancel_State` is `Active(thread: Isabelle_Thread)`
+  once the forked thread has registered itself, or `Cancel_Pending` if a
+  cancel notification named this id before that registration happened.
+- dispatch() intercepts `notifications/cancelled` BEFORE forking: parses
+  `params.requestId`, looks it up. Active -> ask the ML side to cancel
+  (handler.cancel(id), see below) THEN interrupt the thread (in that
+  order -- see races below). Cancel_Pending already there -> no-op.
+  Absent -> insert Cancel_Pending (covers both "arrived early" and
+  "unknown/already completed": indistinguishable at this lookup, see
+  tradeoff below).
+- an ordinary dispatched request registers itself ATOMICALLY as the
+  very first thing its forked thread does: check-or-set against the
+  same map. finding Cancel_Pending there means skip the handler
+  entirely (nobody wants the result); otherwise proceed and register
+  Active(self). Removed (whichever the outcome) in the thread's own
+  finally, alongside the existing in_flight decrement -- unchanged
+  accounting, so the shutdown drain still works.
+- a genuine interrupt propagating out of handler.handle_line is caught
+  and swallowed quietly (no reply, no error log) -- distinguished from
+  every other exception, which still gets logged as a request failure
+  as before.
+
+ML HALF (mcp/src/mcp_session.scala + mcp/Tools/MCP_Tools.thy):
+- `MCP_Backend.ml_run` grows an `on_dispatch: String => Unit = _ => ()`
+  callback, called with the internal MCP.run_tool id the moment it is
+  minted, before the call blocks. Default no-op so every existing
+  caller/backend (Fake_Backend, tests) is unaffected without touching
+  their own signatures beyond adding (and ignoring) the parameter.
+- `Handler` (mcp_server.scala) holds `cancel_targets: Synchronized[Map[
+  JSON.T, String]]` (json-rpc id -> internal ml_run id), set by
+  on_dispatch around the ml_run call in the tools/call case, removed in
+  a finally once ml_run returns by any means. `handler.cancel(id)` reads
+  it and calls `backend.cancel_run(internal_id)` if present.
+- `MCP_Backend.cancel_run(id: String): Unit = ()` (default no-op).
+  `MCP_Session.cancel_run` sends the new protocol command
+  `MCP.cancel_tool` with that id.
+- ML side (MCP_Tools.thy): `run_tool_cancellers: (unit -> unit)
+  Symtab.table Synchronized.var`, entered right after MCP.run_tool forks
+  its worker (`fn () => Future.cancel result`), removed from BOTH ends
+  whichever fires first -- MCP.cancel_tool itself, and the existing
+  result-posting fork (Symtab.delete_safe makes the second removal
+  harmless either way). `MCP.cancel_tool [id]` looks the id up and calls
+  the thunk if present, else no-op. mirrors Scala.function's OWN
+  cancel_scala (Pure/System/scala.ML, Pure/System/scala.scala): the side
+  giving up on a wait tells the side doing the work to stop, by id,
+  rather than relying on an interrupt reaching across the bridge on its
+  own -- same pattern, opposite direction (there: ML waits on scala;
+  here: scala waits on ML).
+- the existing two-future shape in MCP.run_tool (worker fork + a
+  dependent, non-interruptible posting fork) is exactly what keeps this
+  safe: Future.cancel assigns the worker's future an interrupt result
+  (it does not leave it unfinished), so the posting fork's
+  Future.join_result returns immediately with `Exn.Exn`, maps to
+  `("error", ...)`, and still posts MCP.run_tool_result -- the comment
+  already on that code ("if the worker were interrupted, posting from
+  within it would never run") describes exactly the hang this avoids;
+  cancellation does not introduce a new instance of it, confirmed by
+  reading Future.cancel/cancel_group/assign_result in Pure/Concurrent/
+  future.ML.
+
+races (all covered by repro_request_cancel.py)
+------------------------------------------------
+
+- cancel before the request's thread has registered: Cancel_Pending,
+  above.
+- cancel after completion, or for an id never seen: same lookup miss as
+  "before registration" -- both become a Cancel_Pending insert, which is
+  a no-op from the caller's point of view. ACCEPTED TRADEOFF: this holds
+  one map entry per such cancel for the rest of the connection, rather
+  than tracking every id ever dispatched just to tell "early" apart from
+  "unknown". bounded by legitimate traffic (ids are not expected to
+  repeat within one connection), not by an attacker-controlled input
+  independent of request volume.
+- two cancels for one id: second is either a redundant (harmless)
+  interrupt of an already-interrupted thread, or lands on an id already
+  removed and becomes the Cancel_Pending no-op above.
+- notifications/cancelled itself is handled SYNCHRONOUSLY on the reader
+  thread, never forked -- forking it would let it race its own target's
+  registration in either direction; staying on the single sequential
+  reader is what makes the "before registration" case analyzable at
+  all. it does not increment in_flight -- nothing to drain, it is fully
+  processed by the time dispatch() returns.
+- ML-side cancel is requested BEFORE the scala thread is interrupted
+  (cancel() in serve(), calls handler.cancel(id) then thread.interrupt()):
+  cancel_targets is only removed by the ml_run call's OWN thread-local
+  finally once ml_run returns, so asking first -- while the target
+  thread is certainly still blocked on the prover -- avoids racing that
+  removal.
+
+testing
+-------
+
+[scala]: signature-only changes to MCP_Backend/MCP_Session/Fake_Backend/
+Throwing_Backend (on_dispatch, cancel_run) -- no new unit tests needed
+beyond the existing bridge suite continuing green (`bridge: ml_run round
+trip` etc., mcp_test/src/mcp_bridge_tests.scala), since none of those
+exercise cancellation itself.
+
+[e2e]: mcp/test/repro_request_cancel.py, modeled on
+repro_concurrent_serve.py -- registers a slow (`napper`) ML tool via
+repl_step that sleeps then marks completion, fires tools/call without
+waiting, cancels ~1s in, and checks: no response arrives for the
+cancelled id; a request sent right after gets its reply promptly (the
+connection is not stuck behind the cancelled one); the completion
+marker's timing (the prover-side measurement above); cancel for an
+unknown id and a duplicate cancel for an already-finished id are both
+silent no-ops that leave the connection healthy.
+
+regressions checked green: mcp/test/test_mcp.py (103 PASS, exit 0),
+mcp/test/repro_concurrent_serve.py, `isabelle mcp_test -b`.
+
+found live during implementation (not this change's bug, not fixed
+here): `serve replies per line, skips blanks, stops the backend on EOF`
+(mcp_test/src/mcp_handler_tests.scala) flakes under heavy concurrent
+load (roughly 1 in 2-3 `mcp_test -b` runs) -- reproduced identically
+against a clean build of the code exactly as it stood before this plan
+(commit 85c6afd, no cancellation changes at all), so it predates this
+work and is not chased here, same policy as the pre-existing `T1:
+Isar_Ref toc` 30s-timeout flake already documented.
+
+open questions / not done
+---------------------------
+
+- no TTL or cap on the Cancel_Pending bookkeeping (see races above) --
+  not asked for, and the bound in practice is legitimate request
+  volume, not an independent attacker knob.
+- cancelling a request that is still in the SCALA-only portion of
+  tools/call (name resolution, scope read, before ml_run is reached) is
+  covered by the scala half (thread interrupt) but has nothing for
+  cancel_run to reach -- correct and intentional: there is no ML-side
+  work yet to cancel at that point.
