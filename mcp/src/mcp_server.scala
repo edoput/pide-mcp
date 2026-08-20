@@ -1161,9 +1161,15 @@ object MCP_Server {
 
     /* the AGENT CONTEXT (spec): "" = default (the -T theory); a bare
        canonical theory long name; "repl:ID". Connection state, like the
-       phase-2 resource scope -- reset per connection, not persisted. */
-    private var scope_designation: String = ""
-    private var scope_bundles: List[String] = Nil
+       phase-2 resource scope -- reset per connection, not persisted.
+
+       ONE cell rather than two independent vars, because serve() now
+       handles requests CONCURRENTLY. Every reader below uses designation
+       and bundles TOGETHER, and two vars would let a reader observe a new
+       designation carrying the previous designation's bundles -- a scope
+       that never existed. */
+    private case class Scope(designation: String = "", bundles: List[String] = Nil)
+    private val scope = Synchronized(Scope())
 
     private val tool_scope_show_tool: Builtin_Tool =
       Builtin_Tool(
@@ -1180,24 +1186,25 @@ object MCP_Server {
         input_schema = JSON.Object("type" -> "object"),
         annotations = read_only_annotations,
         handler_fn = Some((backend, _) => {
+          val sc = scope.value
           val bundles_text =
-            if (scope_bundles.isEmpty) "none" else scope_bundles.mkString(", ")
+            if (sc.bundles.isEmpty) "none" else sc.bundles.mkString(", ")
           /* a designation valid at tool_scope_set time can go stale
              later (e.g. its repl was removed): ml_tools degrades a bad
              designation to an empty list (MCP.tools' crash-safety
              floor), indistinguishable from a merely-empty scope unless
              checked separately -- so check first and say so, rather
              than silently reporting "0 active tools". */
-          backend.check_designation(scope_designation, scope_bundles) match {
+          backend.check_designation(sc.designation, sc.bundles) match {
             case MCP_Session.Error(msg) =>
               MCP_Session.Ok(
-                "Tool scope: " + format_designation(scope_designation) + " (BROKEN: " + msg +
+                "Tool scope: " + format_designation(sc.designation) + " (BROKEN: " + msg +
                   ") -- use tool_scope_set to point it at a valid theory or repl\n" +
                 "Included bundles: " + bundles_text)
             case MCP_Session.Ok(_) =>
-              val rows = backend.ml_tools(scope_designation, scope_bundles).rows
+              val rows = backend.ml_tools(sc.designation, sc.bundles).rows
               MCP_Session.Ok(
-                "Tool scope: " + format_designation(scope_designation) + "\n" +
+                "Tool scope: " + format_designation(sc.designation) + "\n" +
                 "Included bundles: " + bundles_text + "\n" +
                 "Active tools (" + rows.length + "): " +
                 (if (rows.isEmpty) "none" else rows.map(_.name).mkString(", ")))
@@ -1237,8 +1244,7 @@ object MCP_Server {
             case (Some(t), None) =>
               backend.resolve_context_theory(t) match {
                 case Right(canonical) =>
-                  scope_designation = canonical
-                  scope_bundles = Nil
+                  scope.change(_ => Scope(canonical, Nil))
                   MCP_Session.Ok("Tool scope set to theory " + quote(canonical))
                 case Left(msg) => MCP_Session.Error(msg)
               }
@@ -1246,8 +1252,7 @@ object MCP_Server {
               val candidate = "repl:" + r
               backend.check_designation(candidate) match {
                 case MCP_Session.Ok(_) =>
-                  scope_designation = candidate
-                  scope_bundles = Nil
+                  scope.change(_ => Scope(candidate, Nil))
                   MCP_Session.Ok("Tool scope set to repl " + quote(r))
                 case error @ MCP_Session.Error(_) => error
               }
@@ -1273,11 +1278,26 @@ object MCP_Server {
         annotations = mutating_annotations,
         handler_fn = Some((backend, args) => {
           val bundles = args.collect({ case ("bundles", v) => v })
-          val candidate = scope_bundles ++ bundles
-          backend.check_designation(scope_designation, candidate) match {
+          val sc = scope.value
+          val candidate = sc.bundles ++ bundles
+          backend.check_designation(sc.designation, candidate) match {
             case MCP_Session.Ok(_) =>
-              scope_bundles = candidate
-              MCP_Session.Ok("Included bundle(s): " + bundles.mkString(", "))
+              /* COMPARE-AND-SET, because check_designation above is a
+                 backend round trip and the lock must not be held across
+                 it: under the concurrent serve loop another request may
+                 have moved the scope meanwhile. Apply only if it is still
+                 the scope we validated -- otherwise say so, rather than
+                 silently grafting these bundles onto a designation nobody
+                 checked them against. */
+              val applied =
+                scope.change_result(cur =>
+                  if (cur == sc) (true, Scope(sc.designation, candidate))
+                  else (false, cur))
+              if (applied) MCP_Session.Ok("Included bundle(s): " + bundles.mkString(", "))
+              else
+                MCP_Session.Error(
+                  "tool_scope_include: the tool scope changed while this call was " +
+                  "validating; re-issue it against the new scope")
             case error @ MCP_Session.Error(_) => error
           }
         }))
@@ -1339,7 +1359,8 @@ object MCP_Server {
                  grab the bare name while builtin dispatch precedence
                  (tools/call below) still shadows it into being uncallable. */
               val builtin_names = all_builtins.map(_.name).toSet
-              val reply = backend.ml_tools(scope_designation, scope_bundles)
+              val sc = scope.value
+              val reply = backend.ml_tools(sc.designation, sc.bundles)
               val rows = reply.rows
               /* hide iff explicitly (name, false): an empty/missing section
                  (no mirror registered -- broken -T theory, no MCP_Tools
@@ -1403,12 +1424,17 @@ object MCP_Server {
                          names pass through for the ML side's error. Arguments
                          go over as named pairs; missing/ill-typed values are
                          the ML validator's job (typed errors name the arg). */
+                      /* read the scope ONCE: the name resolution below and
+                         the run itself must agree on which scope they are
+                         talking about, and under the concurrent serve loop
+                         a tool_scope_set could otherwise land between them. */
+                      val sc = scope.value
                       val exposed =
-                        exposure(backend.ml_tools(scope_designation, scope_bundles).rows.map(_.name),
+                        exposure(backend.ml_tools(sc.designation, sc.bundles).rows.map(_.name),
                           (builtins ++ tool_scope_builtins).map(_.name).toSet)
                       val internal =
                         exposed.collectFirst({ case (i, x) if x == name => i }).getOrElse(name)
-                      backend.ml_run(internal, json_args(arguments), scope_designation, scope_bundles) match {
+                      backend.ml_run(internal, json_args(arguments), sc.designation, sc.bundles) match {
                         case MCP_Session.Ok(text) =>
                           Some(RPC.response(id, text_result(text)))
                         case MCP_Session.Error(message) =>
@@ -1496,7 +1522,8 @@ object MCP_Server {
     session_dirs: List[Path],
     theory: String,
     install_changed_sender: (String => Unit) => Unit,
-    on_shutdown: () => Unit
+    on_shutdown: () => Unit,
+    shutdown_drain: Time
   ): Unit = {
     val handler = new Handler(readiness, session_name, session_dirs, theory)
 
@@ -1521,17 +1548,66 @@ object MCP_Server {
       print_json(JSON.Object(
         "jsonrpc" -> "2.0", "method" -> ("notifications/" + what + "/list_changed"))))
 
+    /* One thread per request. The loop used to handle a line to
+       COMPLETION before reading the next one, so a slow tool delayed
+       everything behind it -- measured: a 3s tool pushed an unrelated,
+       prover-free builtin out to the same 3s. Note the prover was never
+       the bottleneck; MCP.run_tool already forks on the ML side.
+
+       This is legal JSON-RPC: responses carry the request id, so a client
+       matches them without relying on order. print_json is already
+       line-atomic under the `out` lock, and the handler's only mutable
+       state (the tool scope) is a Synchronized cell.
+
+       Requests are NOT ordered against each other any more. A client that
+       needs `load_theory` to land before a tool call that reads it must
+       await the first reply -- which is what an MCP client does anyway,
+       and what every test here does. */
+    val in_flight = Synchronized(0)
+
+    def dispatch(line: String): Unit = {
+      in_flight.change(_ + 1)
+      Isabelle_Thread.fork(name = "mcp_request") {
+        try handler.handle_line(line).foreach(print_json)
+        catch {
+          case exn: Throwable if !Exn.is_interrupt(exn) =>
+            /* a handler that throws must not take the server down with
+               it, and must not leave the client waiting forever either */
+            progress.echo_error_message("mcp_server: request failed: " + Exn.message(exn))
+        }
+        finally in_flight.change(_ - 1)
+      }
+      ()
+    }
+
     try {
       var finished = false
       while (!finished) {
         in.readLine() match {
           case null => finished = true
           case line if line.isBlank =>
-          case line => handler.handle_line(line).foreach(print_json)
+          case line => dispatch(line)
         }
       }
     }
     finally {
+      /* drain before shutting the backend down: a request still running
+         would otherwise fail against a half-torn-down session and report
+         that as a tool error.
+
+         BOUNDED, because an unbounded wait would let one wedged tool keep
+         the process alive after stdin closed -- the drain must not be a
+         worse hang than the one it is tidying up. */
+      val drained =
+        if (shutdown_drain <= Time.zero) in_flight.value == 0
+        else
+          in_flight.timed_access(
+            _ => Some(Time.now() + shutdown_drain),
+            (n: Int) => if (n == 0) Some(((), n)) else None).isDefined
+      if (!drained)
+        progress.echo_warning(
+          "mcp_server: shutting down with requests still in flight " +
+          "(waited " + shutdown_drain.message + "; raise mcp_shutdown_drain to wait longer)")
       progress.echo("Shutting down ...")
       on_shutdown()
     }
@@ -1541,12 +1617,14 @@ object MCP_Server {
     backend: MCP_Backend,
     in: BufferedReader,
     out: PrintStream,
-    progress: Progress = new Progress
+    progress: Progress = new Progress,
+    shutdown_drain: Time = Time.seconds(10)
   ): Unit =
     serve(() => Ready(backend), in, out, progress,
       session_name = "", session_dirs = Nil, theory = "",
       install_changed_sender = backend.set_changed_handler,
-      on_shutdown = () => backend.stop())
+      on_shutdown = () => backend.stop(),
+      shutdown_drain = shutdown_drain)
 
 
   /* stdio server on a headless PIDE session (plans/readiness, spec
@@ -1642,6 +1720,7 @@ object MCP_Server {
             }
           }
         to_stop.foreach(_.stop())
-      })
+      },
+      shutdown_drain = Time.seconds(options.real("mcp_shutdown_drain")))
   }
 }

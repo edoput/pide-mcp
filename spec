@@ -427,6 +427,102 @@ id: S-sessions-file-layout
 - server default stays -s MCP-Tools for now; agentic runs use
   `isabelle mcp_server -s MCP-HOL`. flip the default when phase 2 lands.
 
+the serve loop is concurrent (decided 2026-08-20)
+---------------------------------------------------
+id: D-2026-08-20-concurrent-serve-loop
+
+decided and implemented 2026-08-20 (CHANGELOG same date). test:
+mcp/test/repro_concurrent_serve.py.
+
+why
+---
+id: S-concurrent-serve-why
+
+the json-rpc loop used to handle one line to COMPLETION before reading
+the next, so a slow tool delayed everything behind it -- including
+requests that never touch the prover at all:
+
+    while (!finished) {
+      in.readLine() match {
+        case line => handler.handle_line(line).foreach(print_json)
+      }
+    }
+
+MEASURED before the change: a 3s tool pushed `list_sessions`, a scala
+builtin that never reaches the prover, out to the same 3s.
+
+the obvious suspect was wrong and is worth recording so it is not
+re-suspected. MCP.run_tool has been ASYNC since 2026-07-28 -- it forks
+via Future.forks and posts the result on a dependent fork -- so the
+prover was never the thing being held. the control that settles it: a
+prover-FREE builtin raced against the same sleep waited just as long. the
+serializer was the loop, not the engine under it.
+
+this matters more now that a tool can be backed by an arbitrary scala
+method: linting a real theory runs for seconds, and a client that cannot
+ask anything else meanwhile is unusable for interactive work.
+
+what
+----
+id: S-concurrent-serve-what
+
+read a line, dispatch it to its own thread, keep reading. after:
+list_sessions answers in 0.09s beside a 3s tool, and a second ML tool in
+0.01s.
+
+TWO CONSEQUENCES, both intended, both client-visible:
+
+- replies may arrive OUT OF ORDER. this is legal json-rpc -- a response
+  carries the request id and a client matches on that, not on arrival --
+  and it is exactly what makes the change worth having: the fast reply
+  overtakes the slow one rather than queueing behind it.
+
+- requests are NO LONGER ORDERED against each other. a client that needs
+  load_theory to land before a tool call that reads that theory must
+  await the first reply. that is what an MCP client does anyway, and what
+  every test here already did, but it is now a REQUIREMENT rather than an
+  accident of the loop.
+
+how
+---
+id: S-concurrent-serve-how
+
+three things had to hold, and all three were already true or cheap:
+
+- OUTPUT. print_json was already line-atomic under the `out` lock, so
+  interleaved writes cannot corrupt each other.
+
+- HANDLER STATE. the only mutable state is the tool scope, which was two
+  independent vars (designation, bundles). every reader uses them
+  TOGETHER, so two vars would let a reader observe a new designation
+  carrying the previous designation's bundles -- a scope that never
+  existed. they are now ONE Synchronized cell, read once per request.
+
+  tool_scope_include is the one read-modify-write: it validates a
+  candidate through a backend round trip, which must not be done holding
+  a lock. it is a COMPARE-AND-SET -- apply only if the scope is still the
+  one that was validated, otherwise report that it moved, rather than
+  silently grafting bundles onto a designation nobody checked them
+  against.
+
+- SHUTDOWN. in-flight requests are drained before the backend is torn
+  down, so a running request cannot fail against a half-dead session and
+  report that as a tool error. the drain is BOUNDED: an unbounded wait
+  would let one wedged tool keep the process alive after stdin closed,
+  which is a worse hang than the one it is tidying.
+
+  the bound is a CONFIGURED DEFAULT, not a constant, because no single
+  number is right for every workload -- linting a large theory is not a
+  repl step. `mcp_shutdown_drain` (mcp/etc/options, default 10.0
+  seconds), settable per invocation with
+  `isabelle mcp_server -o mcp_shutdown_drain=30` or once in
+  $ISABELLE_HOME_USER/etc/preferences. 0 means do not wait at all.
+
+NOT done here: bounding concurrency. one thread per in-flight request is
+right for a stdio server with one client; a pool would only matter under
+a flood, and Isabelle's own Future pool is the wrong instrument because a
+few slow lints would saturate it and reintroduce exactly this problem.
+
 server startup and readiness (decided 2026-07-21)
 --------------------------------------------------
 id: D-2026-07-21-server-startup-readiness
