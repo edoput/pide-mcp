@@ -77,6 +77,15 @@ When you need to work with proofs read `references/proofs.md` for:
 - equational reasoning through conversions and the simplifier
 - structured proofs machinery
 
+When you need to reason about simplification rules — why one loops, why the
+AC rules do not, what `[simp]` actually checks — read `references/simplifier.md` for:
+
+- how a declared theorem becomes rewrite rules, and the `rrule` record
+- permutative rules, `term_ord`, and ordered rewriting
+- which admission checks `[simp]` skips, and what bounds a simp run
+- instrumenting the simplifier through the `trace_ops` hook to catch loops
+- static screens and dynamic pre-flight for judging a candidate rule
+
 When you need to use Isar as a framework to develop commands, consult `references/isar.md` for:
 
 - using Isar to introduce methods and attributes

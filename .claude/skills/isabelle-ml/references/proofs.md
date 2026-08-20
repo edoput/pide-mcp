@@ -10,6 +10,9 @@ real-world tactic code.
 ### Equational reasoning: conversions and the simplifier
 Manual: `src/Doc/Implementation/Eq.thy` — equality rules, conversions
 (`conv` type), rewriting.
+For the simplifier specifically — rule admission, permutative/AC rules,
+loop detection and instrumentation — see `simplifier.md` in this directory.
+
 Sources: `src/Pure/conv.ML`, `src/Pure/raw_simplifier.ML`,
 `src/Pure/simplifier.ML`; simprocs: see `Simplifier.define_simproc` and
 the example simproc in `src/Pure/ex/Def.thy`.
