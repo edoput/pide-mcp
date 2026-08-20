@@ -57,7 +57,8 @@ class Fake_Backend extends MCP_Backend {
       extra_ml_tools,
       builtin_activation)
   def ml_run(name: String, args: List[(String, String)],
-      designation: String, bundles: List[String]): MCP_Session.Result =
+      designation: String, bundles: List[String],
+      on_dispatch: String => Unit): MCP_Session.Result =
     if (name == "MCP_Tools.shout") {
       args.collectFirst({ case ("input", v) => v }) match {
         case Some(input) => MCP_Session.Ok(input.toUpperCase)
@@ -389,7 +390,8 @@ class Throwing_Backend extends MCP_Backend {
   private def boom: Nothing = throw new RuntimeException("backend touched unexpectedly")
   def ml_tools(designation: String, bundles: List[String]): MCP_Session.Tools_Reply = boom
   def ml_run(name: String, args: List[(String, String)],
-      designation: String, bundles: List[String]): MCP_Session.Result = boom
+      designation: String, bundles: List[String],
+      on_dispatch: String => Unit): MCP_Session.Result = boom
   def check_designation(designation: String, bundles: List[String]): MCP_Session.Result = boom
   def ir(fname: String, args: List[(String, String)]): MCP_Session.Result = boom
   def resolve_context_theory(name: String): Either[String, String] = boom

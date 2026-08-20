@@ -1051,7 +1051,8 @@ class MCP_Tools_Tests extends MCP_Suite {
     class Recording_Backend extends Fake_Backend {
       var seen: Option[(String, List[(String, String)])] = None
       override def ml_run(name: String, args: List[(String, String)],
-          designation: String, bundles: List[String]): MCP_Session.Result = {
+          designation: String, bundles: List[String],
+          on_dispatch: String => Unit): MCP_Session.Result = {
         seen = Some((name, args))
         MCP_Session.Ok("ok")
       }
