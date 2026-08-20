@@ -523,6 +523,123 @@ right for a stdio server with one client; a pool would only matter under
 a flood, and Isabelle's own Future pool is the wrong instrument because a
 few slow lints would saturate it and reintroduce exactly this problem.
 
+request cancellation (decided 2026-08-20)
+------------------------------------------
+id: D-2026-08-20-request-cancellation
+
+decided and implemented 2026-08-20 (CHANGELOG same date). test:
+mcp/test/repro_request_cancel.py.
+
+why
+---
+id: S-request-cancellation-why
+
+the concurrent serve loop (previous section) forks one scala thread per
+request, but a client that abandons an in-flight tools/call has no way to
+say so -- the server just runs the request to completion regardless,
+wasting both the scala thread and, worse, the prover's time. MCP's
+`notifications/cancelled` (spec:
+https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/cancellation)
+is the client's half of that conversation; this section is the server's.
+
+what
+----
+id: S-request-cancellation-what
+
+a `notifications/cancelled` notification carries `requestId` (the
+cancelled request's json-rpc id) and an optional `reason`. per the mcp
+spec: no response may be sent for the cancelled request; an unknown,
+already-completed, or duplicate cancel is silently ignored (never an
+error, since notifications never get one anyway); the client itself
+SHOULD ignore any response that arrives after the fact, which the
+server does not need to do anything about.
+
+cancellation is TWO HALVES, because a tools/call that reaches ml_run
+(MCP.run_tool) hands the actual work to a Future.forks task on the ML
+side while the scala thread just blocks waiting for the result --
+interrupting the scala thread alone frees the CLIENT's connection but
+does not stop the PROVER:
+
+- SCALA HALF: serve()'s dispatch loop tracks each in-flight json-rpc
+  request id against the Isabelle_Thread running it. A cancel notified
+  for that id interrupts the thread, which unblocks whatever it was
+  waiting on (a scala Promise's guarded wait raises the interrupt
+  straight out of the wait) without sending a reply -- the request's own
+  catch swallows the interrupt silently rather than treating it as a
+  tool failure.
+
+- ML HALF: cancel_run(id) additionally sends a new protocol command,
+  MCP.cancel_tool, naming the SAME id MCP.run_tool_result posts its
+  answer by. The ML side keeps a table of id -> "cancel this run's
+  worker future" thunks (run_tool_cancellers, mcp/Tools/MCP_Tools.thy);
+  MCP.cancel_tool looks the id up and calls Future.cancel on it, which
+  cancels that run's task GROUP and interrupts it if it is currently
+  running. This is the SAME pattern Isabelle/ML already uses in the
+  OTHER direction: Scala.function (Pure/System/scala.ML) sends
+  cancel_scala when ITS OWN wait is interrupted, so the side giving up
+  tells the side doing the work to stop, rather than hoping an
+  interrupt on its own thread somehow reaches across the bridge.
+
+  ML-side cancellation is requested BEFORE the scala thread is
+  interrupted, not after: cancel_run reads a registration that the
+  ml_run call's own (thread-local) cleanup removes once ml_run returns,
+  so asking first, while the target thread is certainly still blocked
+  waiting on the prover, avoids a race against that removal.
+
+MEASURED (mcp/test/repro_request_cancel.py, a tool that sleeps 6s then
+writes a completion marker): cancelling 1s in --
+
+- with ONLY the scala half wired up: the client gets no response and its
+  connection frees up immediately, but the marker still appears at
+  t=6.06s -- the ml fork ran to completion regardless. scala-side
+  cancellation frees the CLIENT, not the prover.
+- with BOTH halves wired up (as shipped): the marker never appears --
+  the prover's own sleep is genuinely interrupted, not merely abandoned.
+
+how
+---
+id: S-request-cancellation-how
+
+races, all exercised by repro_request_cancel.py and the scala unit
+suite:
+
+- CANCEL ARRIVING BEFORE DISPATCH HAS REGISTERED THE ID. the reader
+  thread is single and sequential -- it only reads the NEXT line after
+  dispatch(line) has returned, and dispatch() only returns after
+  Isabelle_Thread.fork has been called, so a cancel for id X can only be
+  READ after request X has already been forked. it can still be
+  PROCESSED before that forked thread gets scheduled, though -- a
+  Cancel_Pending marker (in a Synchronized[Map[json-rpc id, Active
+  thread | Cancel_Pending]]) records this, and the forked thread's own
+  first action is an atomic check-or-register against that same map: if
+  it finds Cancel_Pending, it skips the handler entirely instead of
+  running work nobody wants the result of any more.
+- CANCEL ARRIVING AFTER COMPLETION, or for an id this connection NEVER
+  saw in flight (unknown, or malformed params): both look identical to
+  the lookup (no Active entry), so both insert a Cancel_Pending marker
+  -- a no-op from the caller's point of view. this holds one map entry
+  for the rest of the connection per such cancel, accepted rather than
+  tracking every id ever dispatched just to tell "early" apart from
+  "unknown" (ids are not expected to repeat within one connection).
+- TWO CANCELS FOR ONE ID. the second either re-interrupts an
+  already-interrupted (harmless) thread, or lands on an id that has
+  already been removed and becomes another Cancel_Pending no-op above.
+- notifications/cancelled is handled SYNCHRONOUSLY on the reader thread,
+  not forked: forking it too would let it race its own target's
+  registration in either direction, which is exactly what staying on the
+  single sequential reader avoids. it does not count against in_flight
+  either -- there is nothing to drain, it is fully processed by the time
+  dispatch() returns.
+- in_flight accounting is unchanged by any of this: every path that
+  increments it (a dispatched line, cancellable or not) decrements it in
+  exactly one place, so the shutdown drain (previous section) still
+  works.
+
+NOT done here: cancelling `initialize` (the mcp spec says clients MUST
+NOT ask for that, so nothing enforces it server-side) or bounding the
+Cancel_Pending leak described above with a TTL or cap -- neither was
+asked for and the leak is bounded by legitimate traffic in practice.
+
 server startup and readiness (decided 2026-07-21)
 --------------------------------------------------
 id: D-2026-07-21-server-startup-readiness

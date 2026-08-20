@@ -4,6 +4,53 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-20 (request cancellation)
+--------------------------------------------------------------------------
+
+- added: `notifications/cancelled` (mcp spec: client sends requestId +
+  an optional reason). Server MUST NOT reply for the cancelled request;
+  an unknown, already-completed, or duplicate cancel is silently
+  ignored. spec "request cancellation" (D-2026-08-20-request-cancellation);
+  test mcp/test/repro_request_cancel.py.
+
+- TWO HALVES, because a tools/call that reaches MCP.run_tool hands the
+  work to an ML Future.forks task while the scala thread just blocks on
+  the result -- interrupting the scala thread alone frees the CLIENT but
+  not the PROVER. Scala half: serve()'s dispatch loop tracks each
+  in-flight json-rpc id against the Isabelle_Thread running it and
+  interrupts it on cancel. ML half: a new protocol command,
+  MCP.cancel_tool, looks a run's id up in a new table
+  (run_tool_cancellers, mcp/Tools/MCP_Tools.thy) and calls Future.cancel
+  on that run's worker future -- the SAME pattern Isabelle/ML already
+  uses in the other direction (Scala.function's cancel_scala,
+  Pure/System/scala.ML): the side giving up tells the side doing the
+  work to stop, rather than hoping an interrupt on its own thread
+  reaches across the bridge on its own.
+
+- MEASURED both ways with a tool that sleeps 6s then writes a completion
+  marker, cancelled 1s in: scala-half-only, the client gets no response
+  and its connection frees up immediately, but the marker still appears
+  at t=6.06s -- the prover ran the sleep to completion regardless. With
+  both halves wired up (as shipped), the marker never appears -- the
+  prover's own sleep is genuinely interrupted.
+
+- races handled, all covered by the test: a cancel arriving before
+  dispatch has registered the request's thread (a Cancel_Pending marker,
+  checked atomically by the thread's own first action); a cancel for an
+  unknown or already-completed id (silently ignored, same code path as
+  the above -- indistinguishable at the lookup site, and disclosed as
+  the accepted tradeoff rather than tracking every id ever dispatched);
+  two cancels for one id (idempotent). in_flight accounting is
+  unchanged, so the shutdown drain from the previous entry still works.
+
+- found and recorded live during implementation, not caused by this
+  change: `serve replies per line, skips blanks, stops the backend on
+  EOF` (mcp_test/src/mcp_handler_tests.scala) is flaky under heavy
+  concurrent load (~1 in 2-3 runs of `isabelle mcp_test -b`) --
+  reproduced identically against a clean build of the PRE-cancellation
+  concurrent-serve-loop code, so it predates this work. Not chased here,
+  same as the pre-existing `T1: Isar_Ref toc` 30s-timeout flake.
+
 2026-08-20 (the serve loop is concurrent)
 --------------------------------------------------------------------------
 
