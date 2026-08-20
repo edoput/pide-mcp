@@ -336,11 +336,37 @@ def main():
     slow_t, fast_t = seen.get(id_slow), seen.get(id_fast)
     blocked = fast_t is not None and fast_t >= NAP * 0.8
     T.verdict(
-        "10c MEASURED: the prover thread IS held for the whole scala call",
+        "10c MEASURED: a slow tool delays everything behind it",
         blocked,
         "sleep(%.1fs) answered at %.2fs; the trivial ML tool answered at "
         "%.2fs -- %s" % (NAP, slow_t or -1, fast_t or -1,
                          "BLOCKED" if blocked else "not blocked"))
+
+    # 10d ATTRIBUTION, and it is not what it looks like. MCP.run_tool is
+    #     already async -- it forks via Future.forks (landed 2026-07-28,
+    #     plans/ml_builtin_migration step 5) -- so the prover is NOT the
+    #     thing being held. Race the sleep against list_sessions, a SCALA
+    #     builtin that never reaches the prover at all: if that waits too,
+    #     the serializer is MCP_Server.serve, whose loop reads the next
+    #     line only after the previous request has replied.
+    t0 = time.monotonic()
+    id_slow = client.send("tools/call",
+        {"name": "napper", "arguments": {"secs": str(NAP)}})
+    id_scala = client.send("tools/call", {"name": "list_sessions", "arguments": {}})
+    seen = {}
+    while len(seen) < 2:
+        msg = client.recv(timeout=120)
+        if "id" in msg:
+            seen[msg["id"]] = time.monotonic() - t0
+    scala_t = seen.get(id_scala)
+    serve_serializes = scala_t is not None and scala_t >= NAP * 0.8
+    T.verdict(
+        "10d ATTRIBUTED: MCP_Server.serve serializes, not the prover",
+        serve_serializes,
+        "a prover-FREE scala builtin answered at %.2fs -- %s" % (
+            scala_t or -1,
+            "the serve loop is the serializer" if serve_serializes
+            else "it answered early, so the prover was the thing held"))
 
     return 1 if T.failures else 0
 
