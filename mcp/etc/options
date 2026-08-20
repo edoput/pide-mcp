@@ -1,0 +1,4 @@
+section "MCP server"
+
+public option mcp_shutdown_drain : real = 10.0
+  -- "seconds to wait for in-flight requests when stdin closes (0 = do not wait)"

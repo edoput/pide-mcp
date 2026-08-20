@@ -1522,7 +1522,8 @@ object MCP_Server {
     session_dirs: List[Path],
     theory: String,
     install_changed_sender: (String => Unit) => Unit,
-    on_shutdown: () => Unit
+    on_shutdown: () => Unit,
+    shutdown_drain: Time
   ): Unit = {
     val handler = new Handler(readiness, session_name, session_dirs, theory)
 
@@ -1598,12 +1599,15 @@ object MCP_Server {
          the process alive after stdin closed -- the drain must not be a
          worse hang than the one it is tidying up. */
       val drained =
-        in_flight.timed_access(
-          _ => Some(Time.now() + Time.seconds(10)),
-          (n: Int) => if (n == 0) Some(((), n)) else None)
-      if (drained.isEmpty)
+        if (shutdown_drain <= Time.zero) in_flight.value == 0
+        else
+          in_flight.timed_access(
+            _ => Some(Time.now() + shutdown_drain),
+            (n: Int) => if (n == 0) Some(((), n)) else None).isDefined
+      if (!drained)
         progress.echo_warning(
-          "mcp_server: shutting down with requests still in flight")
+          "mcp_server: shutting down with requests still in flight " +
+          "(waited " + shutdown_drain.message + "; raise mcp_shutdown_drain to wait longer)")
       progress.echo("Shutting down ...")
       on_shutdown()
     }
@@ -1613,12 +1617,14 @@ object MCP_Server {
     backend: MCP_Backend,
     in: BufferedReader,
     out: PrintStream,
-    progress: Progress = new Progress
+    progress: Progress = new Progress,
+    shutdown_drain: Time = Time.seconds(10)
   ): Unit =
     serve(() => Ready(backend), in, out, progress,
       session_name = "", session_dirs = Nil, theory = "",
       install_changed_sender = backend.set_changed_handler,
-      on_shutdown = () => backend.stop())
+      on_shutdown = () => backend.stop(),
+      shutdown_drain = shutdown_drain)
 
 
   /* stdio server on a headless PIDE session (plans/readiness, spec
@@ -1714,6 +1720,7 @@ object MCP_Server {
             }
           }
         to_stop.foreach(_.stop())
-      })
+      },
+      shutdown_drain = Time.seconds(options.real("mcp_shutdown_drain")))
   }
 }
