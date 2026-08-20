@@ -4,6 +4,50 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-20 (the serve loop is concurrent)
+--------------------------------------------------------------------------
+
+- decided and implemented: the json-rpc loop dispatches each request to
+  its own thread instead of handling one line to completion before
+  reading the next. spec "the serve loop is concurrent"
+  (D-2026-08-20-concurrent-serve-loop); test
+  mcp/test/repro_concurrent_serve.py.
+
+- MEASURED before: a 3s tool pushed `list_sessions` -- a scala builtin
+  that never reaches the prover -- out to the same 3s. After:
+  list_sessions answers in 0.09s beside the same 3s tool, and a second ML
+  tool in 0.01s.
+
+- the obvious suspect was WRONG, recorded so it is not re-suspected:
+  MCP.run_tool has been async since 2026-07-28 (it forks via
+  Future.forks), so the prover was never the thing being held. The
+  control that settles it: a prover-FREE builtin raced against the same
+  sleep waited just as long, which puts the serialization in the loop
+  rather than in the engine under it.
+
+- TWO client-visible consequences, both intended. Replies may arrive OUT
+  OF ORDER -- legal json-rpc, since a response carries the request id,
+  and precisely what makes the change worth having. And requests are no
+  longer ordered against each other: a client needing load_theory to land
+  before a tool call that reads it must await the first reply. Every test
+  here already did that, but it is now a requirement rather than an
+  accident of the loop.
+
+- three things had to hold. Output was already line-atomic under the
+  `out` lock. Handler state was two independent vars (scope designation,
+  scope bundles) that every reader uses TOGETHER -- now ONE Synchronized
+  cell, so no reader can see a new designation carrying the previous
+  designation's bundles. tool_scope_include validates through a backend
+  round trip and so cannot hold the lock; it is a compare-and-set that
+  reports a moved scope rather than grafting bundles onto a designation
+  nobody checked them against.
+
+- shutdown drains in-flight requests before tearing the backend down, so
+  a running request cannot fail against a half-dead session. The drain is
+  bounded at 10s: an unbounded wait would let one wedged tool keep the
+  process alive after stdin closed, which is a worse hang than the one it
+  tidies up.
+
 2026-08-09 (spec: every section carries a stable id)
 --------------------------------------------------------------------------
 
