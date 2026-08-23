@@ -17,6 +17,7 @@ object MCP_Test {
   val unit_suites: List[Class[? <: munit.Suite]] =
     List(
       classOf[MCP_Spec_Metadata_Tests],
+      classOf[MCP_Theory_Metadata_Tests],
       classOf[MCP_Protocol_Tests],
       classOf[MCP_Readiness_Tests],
       classOf[MCP_Tools_Tests],
@@ -117,4 +118,6 @@ Usage: isabelle mcp_test [OPTIONS]
     })
 }
 
-class Test_Tools extends Isabelle_Scala_Tools(MCP_Test.isabelle_tool)
+class Test_Tools extends Isabelle_Scala_Tools(
+  MCP_Test.isabelle_tool,
+  MCP_Theory_Metadata.isabelle_tool)

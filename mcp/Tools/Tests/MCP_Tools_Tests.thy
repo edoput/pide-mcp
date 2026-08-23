@@ -1,5 +1,7 @@
 theory MCP_Tools_Tests
-  imports MCP_Fixture_B MCP_Fixture_C MCP_Fixture_Sibling
+  imports
+    "MCP-Assumption.MCP_Assumption"
+    MCP_Fixture_B MCP_Fixture_C MCP_Fixture_Sibling
 begin
 
 text \<open>Unit tests: the theory fails to load iff a test fails, so
@@ -645,6 +647,9 @@ ML \<open>
 \<close>
 
 section \<open>The mcp_tool command: capture form (plans/ml_builtin_migration A1/A2)\<close>
+
+spec_test \<open>capture-form tools return output and total declared arguments\<close>
+  verifies \<open>ml_builtin_migration#A1\<close> and \<open>ml_builtin_migration#A2\<close>
 
 mcp_tool capture_ok = capture \<open>fn _ => fn args =>
   writeln ("got:" ^ MCP_Combinators.arg args "x")\<close>

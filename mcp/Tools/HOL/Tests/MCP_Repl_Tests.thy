@@ -1,5 +1,5 @@
 theory MCP_Repl_Tests
-  imports "MCP-HOL.MCP_Repl"
+  imports "MCP-HOL.MCP_Repl" "MCP-Assumption.MCP_Assumption"
 begin
 
 text \<open>Unit tests for the MCP.ir dispatcher (\<^ML_structure>\<open>MCP_Repl\<close>) over
@@ -33,6 +33,9 @@ fun count_substring pat s =
 
 section \<open>T2: fresh state, before any repl exists\<close>
 
+spec_test \<open>repl_list: fresh state before any repl exists\<close>
+  discharges \<open>repl_list#T2\<close>
+
 ML \<open>
 let val (status, output) = MCP_Repl.run "repls" [] in
   \<^assert> (status = "ok");
@@ -41,6 +44,9 @@ end;
 \<close>
 
 section \<open>I2: named-args error paths on a zero-arg fname\<close>
+
+spec_test \<open>repl_list: named-argument errors on a zero-argument function\<close>
+  verifies \<open>repl_list#I2\<close>
 
 ML \<open>
 (*empty args: accepted*)
@@ -53,6 +59,9 @@ end;
 \<close>
 
 section \<open>T1/T3: repls reflects the live table, no caching\<close>
+
+spec_test \<open>repl_list: dispatcher and live-table behavior\<close>
+  discharges \<open>repl_list#T1\<close> and \<open>repl_list#T3\<close>
 
 ML \<open>
 val (s_init, o_init) = MCP_Repl.run "init" [("repl", "T"), ("theories", main)];
@@ -80,6 +89,9 @@ val _ = \<^assert> (not (String.isSubstring "T (" (plain o3)));
 
 section \<open>T4: read-only -- repeating repls changes nothing, the repl still steps\<close>
 
+spec_test \<open>repl_list: read-only behavior\<close>
+  discharges \<open>repl_list#T4\<close>
+
 ML \<open>
 val (s_init, _) = MCP_Repl.run "init" [("repl", "T4"), ("theories", main)];
 val _ = \<^assert> (s_init = "ok");
@@ -97,6 +109,10 @@ val _ = \<^assert> (s_rm = "ok");
 \<close>
 
 section \<open>repl_init (plans/repl_init): T1..T6\<close>
+
+spec_test \<open>repl_init: engine initialization behavior\<close>
+  discharges \<open>repl_init#T1\<close> and \<open>repl_init#T2\<close> and
+    \<open>repl_init#T3\<close> and \<open>repl_init#T4\<close> and \<open>repl_init#T5\<close>
 
 text \<open>T1: repeated "theories" keys preserve array order; independent
 theories succeed regardless of merge order.\<close>
@@ -188,6 +204,9 @@ val _ = \<^assert> (String.isSubstring "No REPL" (plain o_pin));
 \<close>
 
 section \<open>repl_fork (plans/repl_fork): T2..T4\<close>
+
+spec_test \<open>repl_fork: index, duplicate, and independence behavior\<close>
+  discharges \<open>repl_fork#T2\<close> and \<open>repl_fork#T3\<close> and \<open>repl_fork#T4\<close>
 
 text \<open>T2: index semantics match repl_state's -- 0 is the base state, N
 is the state after step N-1, -1 is the latest (equal to fork at the
@@ -291,6 +310,10 @@ both plans -- no separate assertion is duplicated here.\<close>
 
 section \<open>repl_remove (plans/repl_remove): T1..T3\<close>
 
+spec_test \<open>repl_remove: unknown, recursive, and pin-dependent behavior\<close>
+  discharges \<open>repl_remove#T1\<close> and \<open>repl_remove#T2\<close> and
+    \<open>repl_remove#T3\<close>
+
 text \<open>T1: removing an unknown repl is a status error naming it, not ok;
 the tool is not idempotent -- a second removal of the same id errors too.\<close>
 ML \<open>
@@ -347,6 +370,10 @@ val _ = \<^assert> (s_rm_a = "ok");
 \<close>
 
 section \<open>repl_step (plans/repl_step): T1..T4\<close>
+
+spec_test \<open>repl_step: fidelity, atomicity, timeout, and proof-state output\<close>
+  discharges \<open>repl_step#T1\<close> and \<open>repl_step#T2\<close> and
+    \<open>repl_step#T3\<close> and \<open>repl_step#T4\<close>
 
 text \<open>T1: isar text survives the trip byte-clean, including Isabelle
 symbols and a multi-line statement.\<close>
@@ -435,6 +462,9 @@ val _ = \<^assert> (s_rm = "ok");
 
 section \<open>repl_state (plans/repl_state): T1..T2\<close>
 
+spec_test \<open>repl_state: index and read-only behavior\<close>
+  discharges \<open>repl_state#T1\<close> and \<open>repl_state#T2\<close>
+
 text \<open>T1: index arithmetic -- on a repl with 2 steps, -1 equals index 2
 (the latest state); 0 is the base state; indices past either end error
 "out of range".\<close>
@@ -486,6 +516,9 @@ val _ = \<^assert> (s_rm = "ok");
 \<close>
 
 section \<open>repl_show (plans/repl_show): T1..T2\<close>
+
+spec_test \<open>repl_show: content and read-only behavior\<close>
+  discharges \<open>repl_show#T1\<close> and \<open>repl_show#T2\<close>
 
 text \<open>T1: the output carries origin, step count, and indices starting
 at 0. The plan's stale-mark half of T1 ("edit step 0 with auto_replay
@@ -539,6 +572,9 @@ val _ = \<^assert> (s_rm = "ok");
 
 section \<open>repl_text (plans/repl_text): T1..T2\<close>
 
+spec_test \<open>repl_text: fidelity and empty-history behavior\<close>
+  discharges \<open>repl_text#T1\<close> and \<open>repl_text#T2\<close>
+
 text \<open>T1: byte fidelity end to end -- an Isabelle symbol, an inner
 string with doubled spaces, and an embedded newline survive the round
 trip verbatim.\<close>
@@ -572,6 +608,10 @@ val _ = \<^assert> (s_rm = "ok");
 \<close>
 
 section \<open>repl_edit (plans/repl_edit): T1..T4\<close>
+
+spec_test \<open>repl_edit: index, atomicity, staleness, and pin behavior\<close>
+  discharges \<open>repl_edit#T1\<close> and \<open>repl_edit#T2\<close> and
+    \<open>repl_edit#T3\<close> and \<open>repl_edit#T4\<close>
 
 text \<open>T1: idx is a plain 0-based index, negatives are not supported --
 out of range at both ends, 0 is valid.\<close>
@@ -681,6 +721,10 @@ val _ = \<^assert> (s_rm = "ok");
 \<close>
 
 section \<open>repl_replay (plans/repl_replay): T1..T4\<close>
+
+spec_test \<open>repl_replay: no-op, suffix, failure, and timeout behavior\<close>
+  discharges \<open>repl_replay#T1\<close> and \<open>repl_replay#T2\<close> and
+    \<open>repl_replay#T3\<close> and \<open>repl_replay#T4\<close>
 
 text \<open>Genuinely stale steps (as opposed to repl_edit's tail, which
 this server always auto-replays immediately -- see plans/repl_edit T3)
@@ -853,6 +897,10 @@ val _ = \<^assert> (s_rm_a = "ok");
 
 section \<open>repl_truncate (plans/repl_truncate): T1..T3, T5\<close>
 
+spec_test \<open>repl_truncate: index, prefix, orphan, and pin behavior\<close>
+  discharges \<open>repl_truncate#T1\<close> and \<open>repl_truncate#T2\<close> and
+    \<open>repl_truncate#T3\<close> and \<open>repl_truncate#T5\<close>
+
 text \<open>T1: truncate's negative-index mapping (n+idx-1) differs from
 state/fork's (n+1+idx) -- truncate -1 KEEPS n-1 steps (drops one), not
 n as state's -1 would suggest.\<close>
@@ -975,6 +1023,9 @@ error "unknown function". repl_back is declared as a capture-form
 mcp_tool below; see its params/annotations block.)\<close>
 
 section \<open>repl_merge (plans/repl_merge): T1..T3\<close>
+
+spec_test \<open>repl_merge: shapes and failure atomicity\<close>
+  discharges \<open>repl_merge#T1\<close> and \<open>repl_merge#T2\<close> and \<open>repl_merge#T3\<close>
 
 text \<open>T1(a): fork at the tip -- merge appends the child's concatenated
 text as one new step.\<close>
@@ -1104,6 +1155,10 @@ val _ = \<^assert> (s_rm = "ok");
 
 section \<open>repl_timeout (plans/repl_timeout): T1..T3\<close>
 
+spec_test \<open>repl_timeout: bounds, negatives, and display\<close>
+  discharges \<open>repl_timeout#T1\<close> and \<open>repl_timeout#T2\<close> and
+    \<open>repl_timeout#T3\<close>
+
 text \<open>T1: the set value actually bounds steps -- secs=1 makes a
 sleeping step fail, secs=0 makes the same step run to completion
 (shared fixture shape with plans/repl_step T3).\<close>
@@ -1178,6 +1233,10 @@ val _ = \<^assert> (s_rm = "ok");
 \<close>
 
 section \<open>repl_pin (plans/repl_pin): T1..T4\<close>
+
+spec_test \<open>repl_pin: proof, round-trip, staleness, and version behavior\<close>
+  discharges \<open>repl_pin#T1\<close> and \<open>repl_pin#T2\<close> and
+    \<open>repl_pin#T3\<close> and \<open>repl_pin#T4\<close>
 
 text \<open>T1: pinning mid-proof is refused with the engine's message;
 finishing the proof first makes it pin cleanly.\<close>
@@ -1285,6 +1344,9 @@ val _ = \<^assert> (s_rm = "ok");
 
 section \<open>repl_unpin (plans/repl_unpin): T1..T2\<close>
 
+spec_test \<open>repl_unpin: missing-pin and dependent behavior\<close>
+  discharges \<open>repl_unpin#T1\<close> and \<open>repl_unpin#T2\<close>
+
 text \<open>T1: unpinning without a pin errors naming the repl.\<close>
 ML \<open>
 val (s_init, _) = MCP_Repl.run "init" [("repl", "Tup1"), ("theories", main)];
@@ -1332,6 +1394,10 @@ val _ = \<^assert> (s_rm_a = "ok");
 \<close>
 
 section \<open>repl_rebase (plans/repl_rebase): T1..T4\<close>
+
+spec_test \<open>repl_rebase: success, stale, origin, and replay separation\<close>
+  discharges \<open>repl_rebase#T1\<close> and \<open>repl_rebase#T2\<close> and
+    \<open>repl_rebase#T3\<close> and \<open>repl_rebase#T4\<close>
 
 text \<open>T1: the whole point, end to end -- A gains a definition and
 re-pins; rebase B marks its steps stale; replay lets a NEW step in B
@@ -1461,6 +1527,9 @@ val _ = \<^assert> (s_rm_a = "ok");
 
 section \<open>sledgehammer (plans/sledgehammer): T2\<close>
 
+spec_test \<open>sledgehammer: theory-level state errors cleanly\<close>
+  discharges \<open>sledgehammer#T2\<close>
+
 text \<open>T2: sledgehammer requires the REPL to be mid-proof
 (Toplevel.proof_of raises on a theory-level state). A fresh REPL with no
 steps is at theory level, so sledgehammer must fail cleanly with a status
@@ -1476,6 +1545,10 @@ val _ = \<^assert> (s_rm = "ok");
 \<close>
 
 section \<open>find_theorems (plans/find_theorems): T2..T4\<close>
+
+spec_test \<open>find_theorems: query, bounds, and goal criteria\<close>
+  discharges \<open>find_theorems#T2\<close> and \<open>find_theorems#T3\<close> and
+    \<open>find_theorems#T4\<close>
 
 text \<open>T2: a malformed query (unbalanced quotes) is a status error from
 Find_Theorems.read_query, not a crash.\<close>
@@ -1551,6 +1624,9 @@ val _ = \<^assert> (s_rm4 = "ok");
 section \<open>find_theorems context promotion (plans/find_theorems, "context
 promotion"): T7..T10\<close>
 
+spec_test \<open>find_theorems: promoted theory and default contexts\<close>
+  discharges \<open>find_theorems#T7\<close> and \<open>find_theorems#T10\<close>
+
 text \<open>T7: theory-context search works from the global context -- both
 the base-name spelling "Main" and its own long form resolve to the same
 theory, and results match a fresh-repl search on the same query.\<close>
@@ -1596,6 +1672,11 @@ val _ = \<^assert> (String.isSubstring "repl mid-proof" (plain o_ft10b));
 \<close>
 
 section \<open>find_definition (plans/find_definition): T1..T5\<close>
+
+spec_test \<open>find_definition: kinds, probing, contexts, and source fallback\<close>
+  discharges \<open>find_definition#T1\<close> and \<open>find_definition#T2\<close> and
+    \<open>find_definition#T3\<close> and \<open>find_definition#T4\<close> and
+    \<open>find_definition#T5\<close>
 
 text \<open>T1: kind coverage -- one hit each for a const, a type introduced by
 datatype, a class, a fact, a locale, a method, an attribute.\<close>
@@ -1705,6 +1786,9 @@ val _ = \<^assert> (s_rm_fd5 = "ok");
 
 section \<open>Output routing (the Private_Output wrappers; spec phase-2 boxes)\<close>
 
+spec_test \<open>request output routing stays isolated and complete\<close>
+  verifies \<open>repl_list#I5\<close>
+
 ML \<open>
 (*writeln inside a registered group's future lands only in that
   request's buffer: two concurrent requests don't mix*)
@@ -1756,6 +1840,9 @@ ML \<open>MCP_Repl.reset ()\<close>
 
 section \<open>Wave 1 (plans/ml_builtin_migration): repl_show/repl_text/repl_back
 as capture-form mcp_tools\<close>
+
+spec_test \<open>wave-1 capture tools preserve interfaces and strip markup\<close>
+  verifies \<open>ml_builtin_migration#A3\<close> and \<open>ml_builtin_migration#A9\<close>
 
 text \<open>A9 interface preservation, structural half: each tool has exactly
 the deleted Builtin_Tool row's single \<open>repl :: string\<close> required param

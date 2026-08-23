@@ -54,9 +54,13 @@ Installation
    `mcp_test/lib/munit-spec.json`; execution filters never filter this file.
    `isabelle mcp_test -M FILE` writes it to an explicit destination without
    running test bodies. Pass the resulting file to
-   `tools/spec_gate.py --test-manifest FILE`. Test-layer roles and their
-   machine-readable names are configured in `mcp_test/etc/test_layers.json`;
-   the runner, exporter, and gate all load that registry.
+   `isabelle mcp_theory_metadata` reads every `spec_test` export from the built
+   MCP-Tools-Tests and MCP-HOL-Tests sessions and writes
+   `mcp_test/lib/isabelle-spec.json`. Pass both files to
+   `tools/spec_gate.py --test-manifest MUNIT-FILE --theory-manifest ISABELLE-FILE`.
+   Test-layer roles and their machine-readable names are configured in
+   `mcp_test/etc/test_layers.json`; both exporters and the gate load that
+   registry.
 
 Running the server
 ------------------
