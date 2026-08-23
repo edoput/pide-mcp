@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""PostToolUse(EnterWorktree) / PreToolUse(ExitWorktree) hook.
+
+Keeps a worktree's scratch Isabelle heaps in sync with the worktree's
+own lifecycle, instead of running tools/wt_isabelle_build.py's `setup`
+and `teardown` by hand -- imports them directly rather than shelling
+out to that script.
+
+The worktree name comes from `tool_input.name`/`tool_input.path` when
+EnterWorktree was called with one, falling back to `cwd` otherwise --
+EnterWorktree omits both when it auto-generates a name, and
+ExitWorktree never carries a name or path at all, only `cwd`. By the
+time either hook fires, `cwd` is still (Exit, PreToolUse) or already
+(Enter, PostToolUse) inside the worktree, so it always resolves.
+
+Never fails loudly: PreToolUse can block the tool call on a non-zero
+exit, and a broken Isabelle scratch dir must not trap a session inside
+(or out of) a worktree.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+REPO = Path("/home/edoput/repo/isabelle-mcp")
+WORKTREES = REPO / ".claude" / "worktrees"
+
+sys.path.insert(0, str(REPO / "tools"))
+import wt_isabelle_build as wib
+
+
+def name_from_path(path):
+    if not path:
+        return None
+    try:
+        rel = Path(path).resolve().relative_to(WORKTREES)
+    except ValueError:
+        return None
+    return rel.parts[0] if rel.parts else None
+
+
+def resolve_name(payload):
+    tool_input = payload.get("tool_input") or {}
+    name = tool_input.get("name") or name_from_path(tool_input.get("path"))
+    return name or name_from_path(payload.get("cwd"))
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return 0
+
+    name = resolve_name(payload)
+    if not name:
+        return 0
+
+    tool = payload.get("tool_name")
+    try:
+        if tool == "EnterWorktree":
+            wib.setup(name)
+        elif tool == "ExitWorktree":
+            if payload.get("tool_input", {}).get("action") == "remove":
+                wib.teardown(name)
+    except OSError:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

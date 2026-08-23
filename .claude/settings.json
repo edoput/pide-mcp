@@ -11,6 +11,28 @@
             "statusMessage": "git add (tracked files only)"
           }
         ]
+      },
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/edoput/repo/isabelle-mcp/.claude/hooks/isabelle-worktree",
+            "statusMessage": "isabelle worktree: setup scratch heaps"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "ExitWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/edoput/repo/isabelle-mcp/.claude/hooks/isabelle-worktree",
+            "statusMessage": "isabelle worktree: teardown scratch heaps"
+          }
+        ]
       }
     ]
   }
