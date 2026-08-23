@@ -4,6 +4,38 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-23 (the refinement queue is drained: 12 open -> 3)
+--------------------------------------------------------------------------
+
+- The parameter spec language gains the three format-clause corrections
+  implementation found and step 7 never folded: an enum value substitutes
+  VERBATIM (enum items name command keywords — "find_definition kind:
+  const" breaks if quoted — and membership validation makes the splice
+  safe); a `list of <scalar>` joins with a SINGLE SPACE, the specced
+  "optional join spec" having had no declared user and never been built;
+  and an absent optional substitutes the EMPTY STRING, because "omitted
+  optionals erase their segment" presupposed segment machinery that does
+  not exist. A `list of <scalar>` param also takes no `= default`, and the
+  isar `(annotations ...)` clause takes one of the five bucket names.
+
+- Two entries in that queue were never spec matters and lose their marker:
+  `validate`'s constraint-list argument and the ML-side `exactly_one`
+  sentence are internal shapes the spec is silent on, and silence is a gap
+  a plan may fill on its own authority.
+
+- `plans/repl_list` and `plans/repl_remove` are marked folded as of
+  2026-07-09. Their corrections reached the spec's annotations bullet the
+  day they were written; only the markers were never flipped.
+
+- `plans/session_structure` returns to `partial`. Its loaded-tier
+  assumption is not implemented — a loaded theory's /commands still
+  answers "documented template but not backed yet" — so its
+  resource-templates refinement cannot be folded without writing a false
+  statement into the spec. Marking it done claimed completion over both.
+
+- The queue reads 3 open, 7 folded. The three remaining belong to plans
+  that are `partial` or `planned`, where an open refinement is honest.
+
 2026-08-23 (a spec refinement is an interrupt, not a queue entry)
 --------------------------------------------------------------------------
 
