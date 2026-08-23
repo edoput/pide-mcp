@@ -55,6 +55,16 @@ TEST_MANIFEST = args.test_manifest
 notes: list[str] = []
 
 ID_RE = re.compile(r"^(?:D-(?:\d{4}-\d{2}-\d{2}|undated)|S)-[a-z0-9-]+$")
+
+# An assumption id is <plan>#<LABEL>. The plan part is a plans/ filename, so
+# the charset must match what gen_assumptions.py will emit for one -- keep
+# REG_ROW (reading the registry) and CITE (finding citations in sources) in
+# step, or a plan whose name uses a character only one of them accepts gets
+# ids that can be registered but never cited, and reports 0% forever.
+PLAN = r"[\w-]+"
+LABEL = r"[AITDQ]\d+"
+REG_ROW = re.compile(rf"^({PLAN}#{LABEL})\s+(\S+)\s")
+CITE = re.compile(rf"\b({PLAN}#{LABEL})\b")
 META = re.compile(r"^(id|supersedes|superseded_by|status):\s*(.*)$")
 RULE = re.compile(r"^[-=]{3,}\s*$")
 PLAN_LINK_RE = re.compile(r"^[A-Za-z0-9_.-]+#[AITDQ]\d+$")
@@ -398,7 +408,6 @@ for layer in sorted(by_layer):
 if STRICT_TESTS:
     check("every test obligation is linked to a test", not missing_tests,
           f"{len(missing_tests)} unlinked: {missing_tests[:5]}")
-
 
 # ---- verdict ---------------------------------------------------------------
 print()

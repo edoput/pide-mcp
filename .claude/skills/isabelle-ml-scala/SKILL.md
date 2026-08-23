@@ -45,13 +45,6 @@ The flatpak is also where the **sources** live:
 (`current/active` is a stable symlink — no build hash needed.) Every
 `src/...` path below and in the reference files resolves under `$S`.
 
-**The in-repo `Isabelle2025-2_linux/Isabelle2025-2` tree is empty** —
-verified 2026-08-14: nothing usable under `src/`, no `doc/`, no `bin/`.
-It is gitignored and was never part of the repo. Earlier revisions
-of this skill described it as "reference sources only"; that is now false
-in both halves — it is neither reference nor sources. Same version
-(**Isabelle2025-2**) either way, so `$S` is a drop-in replacement.
-
 ## References
 
 When developing isabelle components components, consult `references/components.md` for:

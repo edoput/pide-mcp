@@ -1553,7 +1553,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
   /* T1: fresh state -> only the implicit working set (Fake_Backend's
      "Loaded" theory, no patterns, no repls, the fixed "greeting" named
      resource). */
-  test("T1: fresh state names only the implicit members") {
+  test("scope_show#T1: fresh state names only the implicit members") {
     val backend = new Fake_Backend
     val text = result_text(call_tool("scope_show", JSON.Object(), backend))
     assert(text.contains("patterns: (none)"), "no patterns yet: " + text)
@@ -1566,7 +1566,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
 
   /* T2 (patterns): scope_add's pattern shows up with its match count;
      scope_remove makes it disappear again. */
-  test("T2: a scope_add pattern appears in scope_show; scope_remove removes it") {
+  test("scope_show#T2: a scope_add pattern appears in scope_show; scope_remove removes it") {
     val backend = new Fake_Backend
     call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
     val added = result_text(call_tool("scope_show", JSON.Object(), backend))
@@ -1580,7 +1580,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
   /* T2 (repls): Fake_Backend.active_repls is the settable stand-in for
      the real backend's ir("repls")-derived list -- a created/removed
      repl shows up/disappears the same way a loaded theory does. */
-  test("T2: an active repl appears in scope_show; its removal makes it disappear") {
+  test("scope_show#T2: an active repl appears in scope_show; its removal makes it disappear") {
     val backend = new Fake_Backend
     backend.active_repls = List("R")
     val present = result_text(call_tool("scope_show", JSON.Object(), backend))
@@ -1592,7 +1592,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
 
   /* T2 (load_theory): the implicit working set tracked via
      load_theory/check_theory shows up the same way. */
-  test("T2: load_theory's implicit member appears in scope_show; unload_theory removes it") {
+  test("scope_show#T2: load_theory's implicit member appears in scope_show; unload_theory removes it") {
     val backend = new Fake_Backend
     call_tool("load_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
     val loaded = result_text(call_tool("scope_show", JSON.Object(), backend))
@@ -1607,7 +1607,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
      names is also listed by resources/list (as a uri), and vice versa
      (restricting resources/list to the theory/repl uris it shares with
      scope_show's vocabulary). */
-  test("T3: scope_show's theories and repls agree with resources/list") {
+  test("scope_show#T3: scope_show's theories and repls agree with resources/list") {
     val backend = new Fake_Backend
     backend.active_repls = List("R")
     call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
@@ -1858,27 +1858,27 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
      case + hyphen, and a name collision with the theory Main (the join
      is over doc SESSIONS only, so "main" unambiguously means the Main
      manual, not the HOL theory). */
-  test("T1: isar-ref joins to session Isar_Ref") {
+  test("doc_list#T1: isar-ref joins to session Isar_Ref") {
     assertEquals(entry("isar-ref").source, "Isar_Ref")
   }
 
-  test("T1: logics-ZF joins to session Logics_ZF") {
+  test("doc_list#T1: logics-ZF joins to session Logics_ZF") {
     assertEquals(entry("logics-ZF").source, "Logics_ZF")
   }
 
-  test("T1: main joins to session Main") {
+  test("doc_list#T1: main joins to session Main") {
     assertEquals(entry("main").source, "Main")
   }
 
   /* T2 (revised, see plans/doc_list): Doc_Catalog.join is the pure fold
      doing the mapping -- test it directly over synthetic
      (session, variant-names) pairs, no Sessions.Structure involved. */
-  test("T2: join maps every variant name to the session") {
+  test("doc_list#T2: join maps every variant name to the session") {
     val m = Doc_Catalog.join(Map.empty, "My_Doc", List("a", "b"))
     assertEquals(m, Map("a" -> "My_Doc", "b" -> "My_Doc"))
   }
 
-  test("T2: join across sessions accumulates into one map") {
+  test("doc_list#T2: join across sessions accumulates into one map") {
     val m0 = Doc_Catalog.join(Map.empty, "Sess_A", List("x"))
     val m1 = Doc_Catalog.join(m0, "Sess_B", List("y", "z"))
     assertEquals(m1, Map("x" -> "Sess_A", "y" -> "Sess_B", "z" -> "Sess_B"))
@@ -1886,26 +1886,26 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
 
   /* T3: plain entries (release notes) -- NEWS is readable directly, not
      via a doc session. */
-  test("T3: NEWS is a plain entry, not joined to a session") {
+  test("doc_list#T3: NEWS is a plain entry, not joined to a session") {
     assertEquals(entry("NEWS").source, "plain")
   }
 
   /* T4: filtering is probe-safe -- a real pattern narrows the listing,
      an unmatched one is an EMPTY listing, not an error. */
-  test("T4: pattern isar* returns exactly the isar-ref entry") {
+  test("doc_list#T4: pattern isar* returns exactly the isar-ref entry") {
     val text = Doc_Catalog.render(catalog, "isar*")
     assert(text.contains("isar-ref"), "isar-ref should be listed")
     assert(!text.contains("logics-ZF"), "logics-ZF should be filtered out")
     assert(!text.contains("NEWS"), "NEWS should be filtered out")
   }
 
-  test("T4: an unmatched pattern is an empty listing, not an error") {
+  test("doc_list#T4: an unmatched pattern is an empty listing, not an error") {
     val text = Doc_Catalog.render(catalog, "zzz_no_such_entry_zzz*")
     assert(text.contains("no matching documentation entries"),
       "unmatched pattern should report an empty listing")
   }
 
-  test("T4: empty pattern lists everything") {
+  test("doc_list#T4: empty pattern lists everything") {
     val all = Doc_Catalog.render(catalog, "")
     assert(all.contains("isar-ref") && all.contains("NEWS"),
       "empty pattern should list both manuals and plain entries")
@@ -1936,14 +1936,14 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
 
   /* T1: toc claim -- headings from ALL chapter files, both chapter and
      section levels present, every row carrying file + line. */
-  test("T1: Isar_Ref toc has more than 40 rows spanning multiple files") {
+  test("doc_read#T1: Isar_Ref toc has more than 40 rows spanning multiple files") {
     assert(isar_ref_toc.length > 40,
       "expected > 40 headings in Isar_Ref, got " + isar_ref_toc.length)
     assert(isar_ref_toc.map(_.file).distinct.length > 1,
       "expected headings from more than one chapter file")
   }
 
-  test("T1: toc includes both chapter and section levels, all with a line") {
+  test("doc_read#T1: toc includes both chapter and section levels, all with a line") {
     assert(isar_ref_toc.exists(_.level == 0), "expected at least one chapter heading")
     assert(isar_ref_toc.exists(_.level == 1), "expected at least one section heading")
     assert(isar_ref_toc.forall(_.line > 0), "every heading should carry a positive line")
@@ -1953,7 +1953,7 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      thy}", spanning up to the next section "Local theory targets") --
      text contains a phrase from its body and stops before the next
      section's title. */
-  test("T2: section extraction stops at the next same-level heading") {
+  test("doc_read#T2: section extraction stops at the next same-level heading") {
     Doc_Catalog.find_section(isar_ref_toc, "Defining theories") match {
       case Doc_Catalog.Unique(heading) =>
         val in_file = isar_ref_toc.filter(_.file == heading.file)
@@ -1968,14 +1968,14 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
 
   /* T3: it is a search, not a compile -- ambiguous/unknown queries never
      guess. "proof" matches many section titles across Isar_Ref. */
-  test("T3: an ambiguous section query returns candidates, not text") {
+  test("doc_read#T3: an ambiguous section query returns candidates, not text") {
     Doc_Catalog.find_section(isar_ref_toc, "proof") match {
       case Doc_Catalog.Ambiguous(candidates) => assert(candidates.length > 1)
       case other => fail("expected Ambiguous for \"proof\", got " + other)
     }
   }
 
-  test("T3: an unknown section query is No_Match, not an error") {
+  test("doc_read#T3: an unknown section query is No_Match, not an error") {
     assertEquals(
       Doc_Catalog.find_section(isar_ref_toc, "zzz_no_such_section_zzz"), Doc_Catalog.No_Match)
   }
@@ -1984,19 +1984,19 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      error surfaced by MCP_Session.doc_read (Fake_Backend has no real
      plain file, so this exercises Doc_Catalog.plain_read directly against
      NEWS). */
-  test("T4: plain_read with an explicit lines window returns exactly that window") {
+  test("doc_read#T4: plain_read with an explicit lines window returns exactly that window") {
     val Right(text) = Doc_Catalog.plain_read(news_path, "1-5"): @unchecked
     assertEquals(split_lines(text).length, 5)
   }
 
-  test("T4: plain_read rejects a malformed lines range") {
+  test("doc_read#T4: plain_read rejects a malformed lines range") {
     assert(Doc_Catalog.plain_read(news_path, "not-a-range").isLeft)
   }
 
   /* T5: truncation -- a chapter-level section (the toplevel chapter
      heading itself, spanning the whole file) truncates at the window with
      the "narrow" note. */
-  test("T5: a chapter-sized section read truncates with a narrow-the-section note") {
+  test("doc_read#T5: a chapter-sized section read truncates with a narrow-the-section note") {
     val chapter = isar_ref_toc.find(_.level == 0).getOrElse(fail("no chapter heading found"))
     val in_file = isar_ref_toc.filter(_.file == chapter.file)
     val text = Doc_Catalog.section_text(in_file, chapter)
@@ -2010,7 +2010,7 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      physical lines, which the scanner would silently miss. The reference
      count is a plain line-start check, independent of the scanner's own
      cartouche-matching regex. */
-  test("T6: scanner heading count matches a raw line-start count") {
+  test("doc_read#T6: scanner heading count matches a raw line-start count") {
     val command = """^(chapter|section|subsection|subsubsection)\b""".r
     val raw_count =
       isar_ref_files.map(f => split_lines(File.read(f)).count(l => command.findFirstIn(l).isDefined)).sum
@@ -2026,9 +2026,17 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
    the load_structure fold that throws (T1), Position carries file+line
    per entry (exercised throughout via Site.location), and a -d root
    colliding with an already-registered component is distinguishable
-   from a -d-vs--d collision (T4, using "HOL" -- always present in the
-   baseline, unlike an AFP session name, so the test does not depend on
-   AFP being registered in the environment it runs in). */
+   from a -d-vs--d collision (the plan's T3, using "HOL" -- always
+   present in the baseline, unlike an AFP session name, so the test does
+   not depend on AFP being registered in the environment it runs in). */
+
+/* Only two cases below cite a plan id. The suite grew its own local T
+   numbering, which drifted from plans/session_dirs_errors: the plan's T2
+   is "Position carries file+line", not the clean-set case, and the
+   Root_Error case is the plan's T3b -- a label gen_assumptions.py cannot
+   register (its LABEL regex wants whitespace after the digits, so the "b"
+   rejects the line). Citing them would name assumptions they do not check,
+   so they stay unlabelled until the plan and the suite are reconciled. */
 
 class MCP_Config_Tests extends MCP_Suite {
   private def root(dir: Path, sessions: (String, String)*): Unit = {
@@ -2055,7 +2063,7 @@ class MCP_Config_Tests extends MCP_Suite {
   /* T1 / A1: two colliding -d roots. check() must not throw (unlike
      Sessions.load_structure over the same dirs) and must report exactly
      one Collision naming "Scratch", both ROOT paths, and both lines. */
-  test("T1: two colliding -d roots produce a Collision, and check() does not throw") {
+  test("session_dirs_errors#A1/session_dirs_errors#T1: two colliding -d roots produce a Collision, and check() does not throw") {
     with_two_projects { (_, alpha, beta) =>
       val issues = MCP_Config.check(List(alpha, beta))
       val collisions = issues.collect { case c: MCP_Config.Collision => c }
@@ -2071,8 +2079,8 @@ class MCP_Config_Tests extends MCP_Suite {
     }
   }
 
-  /* T2: a clean -d set (no collisions, no bad dirs) reports nothing. */
-  test("T2: a clean -d set produces an empty issue list") {
+  /* a clean -d set (no collisions, no bad dirs) reports nothing. */
+  test("a clean -d set produces an empty issue list") {
     Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
       val alpha = base + Path.basic("proj_alpha")
       Isabelle_System.make_directory(alpha)
@@ -2081,11 +2089,11 @@ class MCP_Config_Tests extends MCP_Suite {
     }
   }
 
-  /* T3: a nonexistent -d dir is a Bad_Dir; two bad dirs produce two
+  /* a nonexistent -d dir is a Bad_Dir; two bad dirs produce two
      issues (the report-everything requirement -- check_session_dir
      itself throws on the first, so this is specifically what the
      pre-flight buys). */
-  test("T3: a nonexistent -d dir produces a Bad_Dir") {
+  test("a nonexistent -d dir produces a Bad_Dir") {
     Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
       val missing = base + Path.basic("does_not_exist")
       val issues = MCP_Config.check(List(missing))
@@ -2106,7 +2114,7 @@ class MCP_Config_Tests extends MCP_Suite {
      Root_File.entries, not Sessions.load_root_files itself -- and the
      Bad_Dir/Root_Error detail path through MCP_Server.decode_message the
      Exn.message-decode prerequisite exists for. */
-  test("T3: a ROOT file with a syntax error produces a Root_Error") {
+  test("a ROOT file with a syntax error produces a Root_Error") {
     Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
       val bad = base + Path.basic("proj_bad")
       Isabelle_System.make_directory(bad)
@@ -2122,7 +2130,7 @@ class MCP_Config_Tests extends MCP_Suite {
     }
   }
 
-  test("T3: two bad -d dirs produce two issues, not just the first") {
+  test("two bad -d dirs produce two issues, not just the first") {
     Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
       val missing1 = base + Path.basic("does_not_exist_1")
       val missing2 = base + Path.basic("does_not_exist_2")
@@ -2136,7 +2144,7 @@ class MCP_Config_Tests extends MCP_Suite {
      session ("HOL", always in the baseline -- see the class comment) is
      classified From_Components, not From_Dir, and render() tells the
      user to rename THEIRS, never mentioning dropping the component. */
-  test("T4: a -d session colliding with a component is classified From_Components") {
+  test("session_dirs_errors#A3/session_dirs_errors#T3: a -d session colliding with a component is classified From_Components") {
     Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
       val mine = base + Path.basic("myproj")
       Isabelle_System.make_directory(mine)
@@ -2163,7 +2171,7 @@ class MCP_Config_Tests extends MCP_Suite {
   /* T5: render() output is non-empty, multi-line, and names both the
      session and both colliding file paths -- the "actionable" bar the
      plan sets. */
-  test("T5: render() is non-empty, multi-line, and names the session and both paths") {
+  test("render() is non-empty, multi-line, and names the session and both paths") {
     with_two_projects { (_, alpha, beta) =>
       val issues = MCP_Config.check(List(alpha, beta))
       val text = MCP_Config.render(issues)
