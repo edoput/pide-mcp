@@ -74,8 +74,50 @@ batch related assertions into one ml() call.
 
 plans refine the spec where per-tool honesty demands it (e.g. the
 spec's coarse "repl_* is mutating" annotation blanket vs the actually
-read-only repl_list); every such refinement is flagged with
-"spec refinement [OPEN]:" so it can be folded back into the spec.
+read-only repl_list). since 2026-08-23 a refinement is an INTERRUPT,
+not a queue entry: when implementation finds the spec wrong, stop,
+ask, resolve, continue.
+
+the line (decided 2026-08-23). stop when the spec states something
+FALSE, or CONTRADICTS what the implementation must do — repl_list
+annotated mutating when it is read-only, not_yet_backed_uri promised
+where the tier resolver must answer. record and continue when the
+spec is merely SILENT: silence is a gap the plan may fill on its own
+authority, not a conflict.
+
+the loop, when the line is crossed:
+
+  1. write the marker as "spec refinement [BLOCKING]: ..." and STOP
+     implementing that thread;
+  2. surface the conflict to the user and let them decide;
+  3. commit the correction to spec + CHANGELOG on its own;
+  4. amend the plan, moving the marker to [FOLDED <date>];
+  5. continue implementing.
+
+leaving the implementation dirty in the working tree across steps 3
+and 4 is the intended use of the pathspec commit form, not a
+workaround — see .claude/rules/commits.md.
+
+the three states:
+
+  [BLOCKING]                   raised, implementation stopped, waiting
+                               on the user. it should not outlive the
+                               session; tools/spec_gate.py fails on any
+                               occurrence.
+  [FOLDED <date>]              the correction is written into the spec.
+  [DEFERRED <date>: <reason>]  the user consciously chose "not now".
+                               the reason is required so the debt is
+                               readable. rare by design.
+
+[OPEN] is the LEGACY state from the deferred-write era, when a marker
+meant "someone will fold this eventually" and nobody ever did: 12 of
+them accumulated and none was ever folded. it is still parsed and
+counted, but nothing new is written in it, and no plan may be marked
+done while owning one. the 12 are triaged in their own unit.
+
+a plan marked done may not own a BLOCKING, DEFERRED or OPEN
+refinement — that would be claiming completion over a spec correction
+the plan itself wrote down. the gate enforces this.
 
 each plan has a parallel agent evaluation under evals/ (same name:
 evals/repl_step for plans/repl_step). plans verify the mechanism;
