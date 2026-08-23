@@ -63,3 +63,9 @@ writes a `DEFERRED`; never assume one on their behalf.
   means the loop was started and never finished.
 - Do **not** mark a plan `done` while it owns a `BLOCKING`, `DEFERRED`
   or `OPEN` refinement. The gate fails on that too.
+
+To write *about* a marker inside a plan rather than raise one, put it in
+**double quotes** — `tools/spec_gate.py` skips a quoted marker as prose.
+Backticks and single quotes do not work, and the gate will report a
+malformed state. (This file is not scanned, so the backticks above are
+safe here.)
