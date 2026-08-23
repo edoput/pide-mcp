@@ -1,7 +1,13 @@
 session_structure — wave 3 shared infrastructure (implementation plan)
 ========================================================================
 
-status: done (2026-07-12)
+status: partial (2026-07-12; reopened 2026-08-23) — steps 1-3 landed,
+  but the loaded-tier assumption below (the one about the tier
+  following the live document) is NOT implemented, and this plan's
+  resource-templates refinement cannot be folded until it is: a loaded
+  theory's /commands still answers "documented template but not backed
+  yet" (mcp/src/mcp_session.scala, the theory_commands_uri fallback).
+  marking this plan done claimed completion over both.
 
 wave 3: library discovery. this is an UMBRELLA plan in the style of
 mcp_tool_registry/tool_scope — it owns the shared session-structure

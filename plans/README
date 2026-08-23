@@ -172,10 +172,11 @@ wave 2 — theory management (headless use_theories, scala side):
   - [x] check_theory           plans/check_theory
 
 wave 3 — library discovery (session-structure index, scala side):
-  - [x] session_structure      plans/session_structure (umbrella:
+  - [ ] session_structure      plans/session_structure (umbrella:
         startup structure/deps + resolve_theory infra, filesystem-tier
         resource widening, load_theory session-qualified resolution;
-        the tools below build on it)
+        the tools below build on it) — reopened 2026-08-23: A8 (loaded
+        tier follows the document) is unimplemented
   - [x] list_sessions          plans/list_sessions
   - [x] list_theories          plans/list_theories
   - [x] search_sources         plans/search_sources
