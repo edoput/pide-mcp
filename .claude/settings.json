@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/spec-refinement-guard",
+            "command": "python3 tools/spec_refinement_guard.py",
             "statusMessage": "spec-refinement guard"
           }
         ]
