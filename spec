@@ -3236,19 +3236,37 @@ not code).
   run context) before the command runs — the agent gets "undefined
   fact foo" as a typed error instead of a command parse failure.
 - modifiers: `= default` marks optional-with-default; `(optional)`
-  optional-without-default (omitted = absent from the format);
-  everything else required. each param carries a mandatory cartouche
-  description — it becomes the json-schema property description, the
-  text the model actually reads.
+  optional-without-default (omitted substitutes the empty string —
+  refined 2026-08-23, see the format clause below); everything else
+  required. a `list of <scalar>` param takes NO `= default`: a
+  list-literal default syntax is not specced, so it is rejected at
+  registration (refined 2026-08-23, plans/param_schema_v2). each param
+  carries a mandatory cartouche description — it becomes the
+  json-schema property description, the text the model actually reads.
 - the format clause assembles the isar text: $name substitutes the
   value with TYPE-DIRECTED QUOTING (string -> quoted/escaped inner
   string, term/typ -> cartouche-wrapped, nat/int/bool -> literal,
-  list -> space- or comma-joined per an optional join spec);
-  `$flag?text` emits text iff a bool is true (for option-flag
-  syntax); omitted optionals erase their segment. no format clause
-  defaults to `<command> $input` with a single required string param
-  named input — i.e. today's diag_wrap is the degenerate case and
-  stays source-compatible.
+  enum -> VERBATIM, list -> joined with a SINGLE SPACE after
+  per-element type-directed quoting); `$flag?text` emits text iff a
+  bool is true (for option-flag syntax); an omitted optional
+  substitutes the EMPTY STRING. no format clause defaults to
+  `<command> $input` with a single required string param named input
+  — i.e. today's diag_wrap is the degenerate case and stays
+  source-compatible.
+  refined 2026-08-23 (plans/param_schema_v2), three corrections found
+  during implementation: (a) enum splices VERBATIM, like args and
+  unlike string, because enum items name command keywords —
+  "find_definition kind: const" breaks if quoted — and membership
+  validation against the declaration-time set makes the splice safe
+  where a free string would not be, which is why param also checks the
+  items are token-safe; (b) the "optional join spec" for lists had no
+  declared user and was not built, so one join rule ships; (c)
+  "omitted optionals erase their segment" presupposed segment
+  machinery that does not exist — $flag?text is specced and still
+  unimplemented, scan_format knows only $name — so segment erasure is
+  OUT OF SCOPE and an absent optional substitutes the empty string
+  instead. check_format already tolerates an unused non-required
+  param, so nothing else moves.
 - registration-time checks: the command exists
   (Outer_Syntax.check_command) and is diagnostic (Keyword.is_diag);
   every $name resolves to a declared param; every required param is
@@ -3282,6 +3300,13 @@ not code).
   read_only_non_idempotent, mutating, idempotent_mutating,
   destructive) survive as NAMED ML CONSTANTS over that record, so a
   genuinely new combination needs no spec edit.
+  refined 2026-08-23 (plans/param_schema_v2): the isar
+  \<open>(annotations ...)\<close> clause takes ONE of those five bucket
+  names. Arbitrary combinations of the four hints stay reachable from
+  ML only (the combinators take the annotations record) — "a genuinely
+  new combination needs no spec edit" is a statement about the ML
+  constants, and giving isar a per-hint syntax before a user needs it
+  would be a second surface.
   Resolution when an \<open>(annotations ...)\<close> clause is absent: the form
   tag supplies the hints where the form PROVES them — diag_wrap ->
   readOnly+idempotent, since a diagnostic command discards its
