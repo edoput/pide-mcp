@@ -2,12 +2,9 @@
 """PostToolUse(EnterWorktree) / PreToolUse(ExitWorktree) hook.
 
 Keeps a worktree's scratch Isabelle heaps in sync with the worktree's
-own lifecycle, instead of running tools/wt-isabelle-build.sh's `setup`
-and `teardown` by hand. Reimplements those two steps directly (see
-.claude/rules/theories-rebuild.md, "Why the script is shaped that
-way") rather than shelling out to that script, so the hook has no
-dependency on it -- `build`/`clean` still need it, but those stay
-manual and are unrelated to this hook.
+own lifecycle, instead of running tools/wt_isabelle_build.py's `setup`
+and `teardown` by hand -- imports them directly rather than shelling
+out to that script.
 
 The worktree name comes from `tool_input.name`/`tool_input.path` when
 EnterWorktree was called with one, falling back to `cwd` otherwise --
@@ -22,18 +19,14 @@ exit, and a broken Isabelle scratch dir must not trap a session inside
 """
 
 import json
-import re
-import shutil
 import sys
 from pathlib import Path
 
 REPO = Path("/home/edoput/repo/isabelle-mcp")
 WORKTREES = REPO / ".claude" / "worktrees"
-ISABELLE_HOME = Path.home() / ".isabelle"
-REF_HEAPS = ISABELLE_HOME / "Isabelle2025-2" / "heaps" / "polyml-5.9.2_x86_64_32-linux"
-COMPONENTS = ISABELLE_HOME / "Isabelle2025-2" / "etc" / "components"
-ROOTS = ISABELLE_HOME / "Isabelle2025-2" / "ROOTS"
-OWN_COMPONENT = re.compile(r"/isabelle-mcp/mcp(_test)?$")
+
+sys.path.insert(0, str(REPO / "tools"))
+import wt_isabelle_build as wib
 
 
 def name_from_path(path):
@@ -52,29 +45,6 @@ def resolve_name(payload):
     return name or name_from_path(payload.get("cwd"))
 
 
-def setup(name):
-    scratch = ISABELLE_HOME / f"wt-{name}"
-    heaps = scratch / "heaps" / "polyml-5.9.2_x86_64_32-linux"
-    if (heaps / "HOL").exists():
-        return  # idempotent: already set up
-    if not (WORKTREES / name).is_dir():
-        return  # worktree not actually there yet; nothing to do
-    (scratch / "etc").mkdir(parents=True, exist_ok=True)
-    (heaps / "log").mkdir(parents=True, exist_ok=True)
-    (heaps / "HOL").symlink_to(REF_HEAPS / "HOL")
-    (heaps / "Pure").symlink_to(REF_HEAPS / "Pure")
-    shutil.copy(REF_HEAPS / "log" / "HOL.db", heaps / "log" / "HOL.db")
-    shutil.copy(REF_HEAPS / "log" / "Pure.db", heaps / "log" / "Pure.db")
-    kept = [line for line in COMPONENTS.read_text().splitlines(keepends=True)
-            if not OWN_COMPONENT.search(line.rstrip("\n"))]
-    (scratch / "etc" / "components").write_text("".join(kept))
-    shutil.copy(ROOTS, scratch / "ROOTS")
-
-
-def teardown(name):
-    shutil.rmtree(ISABELLE_HOME / f"wt-{name}", ignore_errors=True)
-
-
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -88,10 +58,10 @@ def main():
     tool = payload.get("tool_name")
     try:
         if tool == "EnterWorktree":
-            setup(name)
+            wib.setup(name)
         elif tool == "ExitWorktree":
             if payload.get("tool_input", {}).get("action") == "remove":
-                teardown(name)
+                wib.teardown(name)
     except OSError:
         pass
     return 0

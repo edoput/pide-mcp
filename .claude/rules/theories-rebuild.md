@@ -3,7 +3,7 @@ paths:
   - "mcp/Tools/**/*.thy"
   - "mcp/Tools/ROOT"
   - "ir/*.ML"
-  - "tools/wt-isabelle-build.sh"
+  - "tools/wt_isabelle_build.py"
 ---
 
 # Rebuild after theory/ML changes
@@ -52,23 +52,24 @@ anything:
     (line 1 of "/home/edoput/repo/isabelle-mcp/mcp/Tools/ROOT")
 ```
 
-Use `tools/wt-isabelle-build.sh <name> [setup|build|clean|teardown]`,
+Use `python3 tools/wt_isabelle_build.py <name> [setup|build|clean|teardown]`,
 run from the main checkout. `<name>` is the worktree's name, matching
-`.claude/worktrees/<name>`.
+`.claude/worktrees/<name>`. Its `setup`/`teardown` are also imported
+directly (not shelled out to) by `.claude/hooks/isabelle-worktree`.
 
-`setup` and `teardown` run automatically: `.claude/hooks/isabelle-worktree`
-is wired into `.claude/settings.json` as a `PostToolUse` hook on
-`EnterWorktree` (runs `setup`) and a `PreToolUse` hook on `ExitWorktree`
-(runs `teardown`, only when `action` is `"remove"` — `"keep"` leaves the
+`setup` and `teardown` run automatically: that hook is wired into
+`.claude/settings.json` as a `PostToolUse` hook on `EnterWorktree`
+(runs `setup`) and a `PreToolUse` hook on `ExitWorktree` (runs
+`teardown`, only when `action` is `"remove"` — `"keep"` leaves the
 scratch heaps in place for next time). `build` and `clean` stay manual;
 a hook that ran a real `isabelle build` would block worktree creation on
 every failure. You only need the commands below by hand for `build`,
 `clean`, or to re-run `setup`/`teardown` outside the hook.
 
 ```
-tools/wt-isabelle-build.sh <name> build       # setup (idempotent) + build
-tools/wt-isabelle-build.sh <name> clean       # force-rebuild MCP-HOL-Tests
-tools/wt-isabelle-build.sh <name> teardown    # rm -rf the scratch user dir
+python3 tools/wt_isabelle_build.py <name> build       # setup (idempotent) + build
+python3 tools/wt_isabelle_build.py <name> clean       # force-rebuild MCP-HOL-Tests
+python3 tools/wt_isabelle_build.py <name> teardown    # rm -rf the scratch user dir
 ```
 
 `build` runs `setup` first if the scratch Isabelle user directory
@@ -77,7 +78,7 @@ tools/wt-isabelle-build.sh <name> teardown    # rm -rf the scratch user dir
 `.claude/worktrees/<name>/mcp/Tools`. Run it from the main checkout
 (or with an absolute path) — the script hardcodes the worktree root, so
 a stray `cd` inside the worktree itself doesn't matter, but it must
-still be invoked with `bash`/`sh` finding it via the repo path, not a
+still be invoked with `python3` finding it via the repo path, not a
 copy.
 
 ### Confirming it built the worktree, not the main checkout
@@ -85,7 +86,7 @@ copy.
 Check the theory list in the output against the worktree's `ROOT`:
 
 ```
-tools/wt-isabelle-build.sh <name> build | grep "MCP-HOL-Tests: theory"
+python3 tools/wt_isabelle_build.py <name> build | grep "MCP-HOL-Tests: theory"
 ```
 
 Every theory named in the worktree's `ROOT` must appear, and any theory
@@ -102,7 +103,7 @@ its output again), use the `clean` action — it runs `isabelle build -c`.
 ### When finished with the worktree
 
 ```
-tools/wt-isabelle-build.sh <name> teardown
+python3 tools/wt_isabelle_build.py <name> teardown
 ```
 
 That is all, **provided the scratch dir kept the `MCP-*` heaps
