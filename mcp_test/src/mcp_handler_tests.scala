@@ -2077,7 +2077,8 @@ class MCP_Config_Tests extends MCP_Suite {
   /* T1 / A1: two colliding -d roots. check() must not throw (unlike
      Sessions.load_structure over the same dirs) and must report exactly
      one Collision naming "Scratch", both ROOT paths, and both lines. */
-  test("session_dirs_errors#A1/session_dirs_errors#T1: two colliding -d roots produce a Collision, and check() does not throw") {
+  spec_test("two colliding -d roots produce a Collision, and check() does not throw",
+      verifies = List("session_dirs_errors#A1"), discharges = List("session_dirs_errors#T1")) {
     with_two_projects { (_, alpha, beta) =>
       val issues = MCP_Config.check(List(alpha, beta))
       val collisions = issues.collect { case c: MCP_Config.Collision => c }
@@ -2158,7 +2159,8 @@ class MCP_Config_Tests extends MCP_Suite {
      session ("HOL", always in the baseline -- see the class comment) is
      classified From_Components, not From_Dir, and render() tells the
      user to rename THEIRS, never mentioning dropping the component. */
-  test("session_dirs_errors#A3/session_dirs_errors#T3: a -d session colliding with a component is classified From_Components") {
+  spec_test("a -d session colliding with a component is classified From_Components",
+      verifies = List("session_dirs_errors#A3"), discharges = List("session_dirs_errors#T3")) {
     Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
       val mine = base + Path.basic("myproj")
       Isabelle_System.make_directory(mine)
