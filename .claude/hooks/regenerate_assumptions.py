@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 
 
@@ -43,6 +42,21 @@ def changed_plan(event: object, root: Path) -> Path | None:
     return relative
 
 
+def regenerate(root: Path) -> None:
+    tools_dir = root / "tools"
+    sys.path.insert(0, str(tools_dir))
+    try:
+        import gen_assumptions
+    finally:
+        sys.path.pop(0)
+
+    imported = Path(gen_assumptions.__file__).resolve()
+    expected = (tools_dir / "gen_assumptions.py").resolve()
+    if imported != expected:
+        raise ImportError(f"imported {imported}, expected {expected}")
+    gen_assumptions.main()
+
+
 def main() -> int:
     try:
         event = json.load(sys.stdin)
@@ -54,11 +68,7 @@ def main() -> int:
     if changed_plan(event, root) is None:
         return 0
 
-    subprocess.run(
-        [sys.executable, str(root / "tools" / "gen_assumptions.py")],
-        cwd=root,
-        check=True,
-    )
+    regenerate(root)
     return 0
 
 
