@@ -4,6 +4,38 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-23 (munit tagging opens beyond the readiness pilot)
+--------------------------------------------------------------------------
+
+- `plans/doc_list` T1..T4 and `plans/doc_read` T1..T6 are now discharged by
+  tags rather than by prose. 18 tests in `MCP_Doc_Catalog_Tests` and
+  `MCP_Doc_Read_Tests` already named their obligation inside the test-name
+  string; each became a `spec_test` with a `discharges` link and lost the ID
+  from its name. Coverage moved 12/239 -> 22/239, obligations 6/184 -> 16/184.
+
+- decided: the ID lives in the tag, never in both places. `MCP_Spec_Metadata.matches`
+  filters on name OR link, so `isabelle mcp_test -t doc_list#T1` still selects
+  those three tests with the prefix gone. Keeping the ID in the name would
+  reintroduce exactly the two-places-one-fact drift this gate exists to catch.
+
+- measured, not decided: 53 untagged tests across the suite name a valid
+  registry ID in prose. 8 of them would HARD-FAIL `spec_gate.py`'s
+  obligation-layer check -- all in bridge suites citing IDs the registry
+  declares `ml-unit`, `e2e`, or `scala-unit`. Bridge tagging is therefore
+  blocked on per-ID `LAYER` decisions, not merely unstarted. `verifies`
+  links are layer-free; only `discharges` is layer-bound, with `unstated`
+  as the wildcard.
+
+- `ml-unit` (68 obligations) is deferred: it uses the `\<^assumption>`
+  antiquotation, not munit tags, and `Ir_Tests.thy` / `MCP_Repl_Tests.thy`
+  carry near-identical section maps over the same plans, so citation
+  ownership must be settled before either cites anything.
+
+- `e2e` (26 obligations) is structurally unreachable: `MCP_Test.suite_definitions`
+  maps unit/heap/pide suites to `scala-unit`/`heap`/`bridge`, and nothing
+  produces `end_to_end_tests`. `--strict-tests` cannot pass until that layer
+  has a producer.
+
 2026-08-23 (munit plan/test metadata is structural)
 --------------------------------------------------------------------------
 
