@@ -11,6 +11,16 @@
             "statusMessage": "git add (tracked files only)"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/spec-refinement-guard",
+            "statusMessage": "spec-refinement guard"
+          }
+        ]
       }
     ]
   }
