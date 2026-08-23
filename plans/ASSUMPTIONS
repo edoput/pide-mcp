@@ -2,10 +2,10 @@ assumption registry (GENERATED -- do not edit)
 =============================================
 
 Regenerate:  python3 tools/gen_assumptions.py
-Check:       python3 tools/spec_gate.py
+Check:       python3 tools/spec_gate.py --test-manifest mcp_test/lib/munit-spec.json
 
 One row per assumption DECLARED in a plan file. The ID is the address a
-test cites: munit cases put it in the test name, Isabelle theories cite it
+test cites: munit cases attach structured tags, Isabelle theories cite it
 with the checked \<^assumption> antiquotation. An ID that no test cites is
 an unchecked assumption; the gate reports the count.
 

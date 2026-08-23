@@ -19,14 +19,18 @@ seemed like a good idea:
   4. refinement queue     `spec refinement:` had 14 occurrences and no close
                           operation, so the queue only ever grew. Each must now
                           carry OPEN or FOLDED <date>.
-  5. citation coverage    reported, not enforced: how many assumption ids are
-                          cited by at least one test. Demanding completeness
-                          would invite wrong-but-checked citations, which are
-                          worse than absent ones.
+  5. citation coverage    Munit citations come from its discovery manifest,
+                          not test-name text. Isabelle citations retain their
+                          checked antiquotation syntax. Coverage is reported;
+                          --strict-tests enforces declared T obligations.
 
-usage: tools/spec_gate.py [--quiet]
+usage: tools/spec_gate.py [--quiet] [--strict-tests]
+                          --test-manifest munit-spec.json
 """
 
+import argparse
+import hashlib
+import json
 import pathlib
 import re
 import subprocess
@@ -37,14 +41,31 @@ SPEC = ROOT / "spec"
 CHANGELOG = ROOT / "CHANGELOG"
 PLANS = ROOT / "plans"
 REGISTRY = PLANS / "ASSUMPTIONS"
+TEST_LAYERS_FILE = ROOT / "mcp_test/etc/test_layers.json"
 
-QUIET = "--quiet" in sys.argv
-failures: list[str] = []
+parser = argparse.ArgumentParser(description="check spec/plan/test linkage")
+parser.add_argument("--quiet", action="store_true")
+parser.add_argument("--strict-tests", action="store_true")
+parser.add_argument("--test-manifest", type=pathlib.Path, required=True)
+args = parser.parse_args()
+
+QUIET = args.quiet
+STRICT_TESTS = args.strict_tests
+TEST_MANIFEST = args.test_manifest
 notes: list[str] = []
 
 ID_RE = re.compile(r"^(?:D-(?:\d{4}-\d{2}-\d{2}|undated)|S)-[a-z0-9-]+$")
 META = re.compile(r"^(id|supersedes|superseded_by|status):\s*(.*)$")
 RULE = re.compile(r"^[-=]{3,}\s*$")
+PLAN_LINK_RE = re.compile(r"^[A-Za-z0-9_.-]+#[AITDQ]\d+$")
+LAYER_ROLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+LAYER_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+
+MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_PRODUCER = "isabelle-mcp/munit"
+MUNIT_FRAMEWORK = "munit"
+MUNIT_FRAMEWORK_VERSION = "1.1.1"
+LINK_RELATIONS = frozenset({"verifies", "discharges"})
 
 # The controlled vocabulary for a plan's status. "implemented" and "green" are
 # spellings the tree already uses for done; they are accepted rather than
@@ -66,8 +87,50 @@ def check(name, ok, detail=""):
     if ok:
         say(f"  PASS  {name}")
     else:
-        failures.append(f"{name}: {detail}")
-        say(f"  FAIL  {name}  {detail}")
+        print(f"  FAIL  {name}  {detail}")
+        print()
+        print("FAILED")
+        print(f"  - {name}: {detail}")
+        raise SystemExit(1)
+
+
+def manifest_require(condition, detail):
+    if not condition:
+        check("munit manifest is valid", False, detail)
+
+
+def layer_registry_require(condition, detail):
+    if not condition:
+        check("test-layer registry is valid", False, detail)
+
+
+def load_test_layers():
+    try:
+        raw = TEST_LAYERS_FILE.read_bytes()
+        registry = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as ex:
+        check("test-layer registry is readable JSON", False, str(ex))
+
+    layer_registry_require(isinstance(registry, dict), "document root is not an object")
+    layer_registry_require(type(registry.get("schema_version")) is int and
+                           registry["schema_version"] == 1,
+                           "schema_version must be 1")
+    roles = registry.get("layers")
+    layer_registry_require(isinstance(roles, dict) and bool(roles),
+                           "layers must be a non-empty object")
+    for role, name in roles.items():
+        layer_registry_require(bool(LAYER_ROLE_RE.fullmatch(role)),
+                               f"malformed role {role!r}")
+        layer_registry_require(isinstance(name, str) and
+                               bool(LAYER_NAME_RE.fullmatch(name)),
+                               f"malformed layer name for role {role!r}")
+    names = list(roles.values())
+    layer_registry_require(len(names) == len(set(names)),
+                           "a layer name is assigned to several roles")
+    return frozenset(names), "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+TEST_LAYERS, TEST_LAYERS_SHA256 = load_test_layers()
 
 
 # ---- 1. registry freshness -------------------------------------------------
@@ -81,11 +144,13 @@ else:
     check("tools/gen_assumptions.py present", False, "missing")
 
 known_ids = set()
+id_layer: dict[str, str] = {}
 if REGISTRY.exists():
     for line in REGISTRY.read_text().splitlines():
-        m = re.match(r"^(\S+#[AITDQ]\d+)\s", line)
+        m = re.match(r"^(\S+#[AITDQ]\d+)\s+(\S+)\s", line)
         if m:
             known_ids.add(m.group(1))
+            id_layer[m.group(1)] = m.group(2)
 
 
 # ---- 2. one status per plan ------------------------------------------------
@@ -191,14 +256,123 @@ if states["OPEN"] or states["FOLDED"]:
     say(f"  note  refinement queue: {states['OPEN']} open, {states['FOLDED']} folded")
 
 
-# ---- 5. citation coverage (reported, never enforced) -----------------------
+# ---- 5. citation coverage ---------------------------------------------------
 say("\ncitation coverage")
+
+# Isabelle citations are syntax checked by MCP_Assumption.thy when their
+# theories build. Munit tests are dynamically registered values, so source
+# regexes cannot reliably identify their metadata: consume the manifest emitted
+# by `isabelle mcp_test -M FILE` instead.
 cited_ids = set()
-for pat in ("mcp/Tools/**/*.thy", "mcp_test/src/*.scala"):
-    for f in ROOT.glob(pat):
-        if f.name in CITATION_SKIP:
-            continue
-        cited_ids |= set(re.findall(r"\b(\w+#[AITDQ]\d+)\b", f.read_text()))
+for f in ROOT.glob("mcp/Tools/**/*.thy"):
+    if f.name in CITATION_SKIP:
+        continue
+    cited_ids |= set(re.findall(r"\b(\w+#[AITDQ]\d+)\b", f.read_text()))
+
+say("\nmunit manifest")
+try:
+    manifest = json.loads(TEST_MANIFEST.read_text())
+except (OSError, json.JSONDecodeError) as ex:
+    check("munit manifest is readable JSON", False, str(ex))
+
+manifest_require(isinstance(manifest, dict), "document root is not an object")
+manifest_require(type(manifest.get("schema_version")) is int and
+                 manifest["schema_version"] == MANIFEST_SCHEMA_VERSION,
+                 f"schema_version must be {MANIFEST_SCHEMA_VERSION}")
+manifest_require(manifest.get("producer") == MANIFEST_PRODUCER,
+                 f"producer must be {MANIFEST_PRODUCER!r}")
+manifest_require(manifest.get("framework") == MUNIT_FRAMEWORK,
+                 f"framework must be {MUNIT_FRAMEWORK!r}")
+manifest_require(manifest.get("framework_version") == MUNIT_FRAMEWORK_VERSION,
+                 f"framework_version must be {MUNIT_FRAMEWORK_VERSION!r}")
+manifest_layers_digest = manifest.get("test_layers_sha256")
+manifest_require(isinstance(manifest_layers_digest, str),
+                 "test_layers_sha256 is not a string")
+check("manifest identifies the current test-layer registry",
+      manifest_layers_digest == TEST_LAYERS_SHA256,
+      f"manifest {manifest_layers_digest!r}, registry {TEST_LAYERS_SHA256!r}")
+
+tests = manifest.get("tests")
+manifest_require(isinstance(tests, list), "tests is not an array")
+manifest_require(bool(tests), "tests is empty; the full suite was not exported")
+
+test_jar = ROOT / "mcp_test/lib/mcp_test.jar"
+try:
+    actual_jar_digest = "sha256:" + hashlib.sha256(test_jar.read_bytes()).hexdigest()
+except OSError as ex:
+    check("compiled test jar is readable", False, str(ex))
+manifest_jar_digest = manifest.get("test_jar_sha256")
+manifest_require(isinstance(manifest_jar_digest, str),
+                 "test_jar_sha256 is not a string")
+check("manifest identifies the current compiled test jar",
+      manifest_jar_digest == actual_jar_digest,
+      f"manifest {manifest_jar_digest!r}, current jar {actual_jar_digest!r}")
+
+manifest_ids = set()
+identities = set()
+for index, test in enumerate(tests):
+    where = f"tests[{index}]"
+    manifest_require(isinstance(test, dict), f"{where} is not an object")
+
+    suite, name, layer = test.get("suite"), test.get("name"), test.get("layer")
+    manifest_require(isinstance(suite, str) and bool(suite.strip()),
+                     f"{where}.suite is not a non-empty string")
+    manifest_require(isinstance(name, str) and bool(name.strip()),
+                     f"{where}.name is not a non-empty string")
+    manifest_require(isinstance(layer, str) and layer in TEST_LAYERS,
+                     f"{where}.layer is not one of {sorted(TEST_LAYERS)}")
+
+    identity = (suite, name)
+    manifest_require(identity not in identities,
+                     f"{where} duplicates test identity {suite}::{name}")
+    identities.add(identity)
+
+    location = test.get("location")
+    manifest_require(isinstance(location, dict), f"{where}.location is not an object")
+    source_path = location.get("path")
+    source_line = location.get("line")
+    valid_source_path = (
+        isinstance(source_path, str) and bool(source_path) and
+        not pathlib.PurePosixPath(source_path).is_absolute() and
+        ".." not in pathlib.PurePosixPath(source_path).parts and
+        "\\" not in source_path
+    )
+    manifest_require(valid_source_path, f"{where}.location.path is not canonical and relative")
+    manifest_require(type(source_line) is int and source_line > 0,
+                     f"{where}.location.line is not a positive integer")
+
+    links = test.get("links")
+    manifest_require(isinstance(links, list), f"{where}.links is not an array")
+    seen_links = set()
+    for link_index, link in enumerate(links):
+        link_where = f"{where}.links[{link_index}]"
+        manifest_require(isinstance(link, dict), f"{link_where} is not an object")
+        relation, ident = link.get("relation"), link.get("id")
+        manifest_require(relation in LINK_RELATIONS,
+                         f"{link_where}.relation is not one of {sorted(LINK_RELATIONS)}")
+        manifest_require(isinstance(ident, str) and bool(PLAN_LINK_RE.fullmatch(ident)),
+                         f"{link_where}.id is not a qualified plan label")
+
+        key = (relation, ident)
+        manifest_require(key not in seen_links,
+                         f"{link_where} duplicates {relation}:{ident}")
+        seen_links.add(key)
+        manifest_ids.add(ident)
+
+        is_test_obligation = bool(re.fullmatch(r"T\d+", ident.rsplit("#", 1)[-1]))
+        manifest_require((relation == "discharges") == is_test_obligation,
+                         f"{suite}::{name}: {relation} cannot target {ident}")
+        manifest_require(ident in known_ids,
+                         f"{suite}::{name} cites unknown plan id {ident}")
+        if relation == "discharges":
+            expected = id_layer.get(ident, "unstated")
+            manifest_require(expected == "unstated" or expected == layer,
+                             f"{suite}::{name}: {ident} declares layer {expected}, "
+                             f"manifest says {layer}")
+
+check("munit manifest is structurally and semantically valid", True)
+cited_ids |= manifest_ids
+
 covered = cited_ids & known_ids
 stray = sorted(cited_ids - known_ids)
 if known_ids:
@@ -207,13 +381,27 @@ if known_ids:
 check("no test cites an unknown assumption id", not stray, f"{stray[:5]}")
 
 
+# ---- 6. declared test obligations ------------------------------------------
+say("\ntest obligations")
+test_ids = {ident for ident in known_ids if re.match(r"^\S+#T\d+$", ident)}
+missing_tests = sorted(test_ids - cited_ids)
+if test_ids:
+    cited = len(test_ids) - len(missing_tests)
+    pct = 100 * cited // len(test_ids)
+    say(f"  note  {cited}/{len(test_ids)} test obligations are linked ({pct}%)")
+by_layer: dict[str, list[str]] = {}
+for ident in missing_tests:
+    by_layer.setdefault(id_layer.get(ident, "?"), []).append(ident)
+for layer in sorted(by_layer):
+    ids = by_layer[layer]
+    say(f"  note  {layer:<11} {len(ids):>3} unlinked, e.g. {', '.join(ids[:3])}")
+if STRICT_TESTS:
+    check("every test obligation is linked to a test", not missing_tests,
+          f"{len(missing_tests)} unlinked: {missing_tests[:5]}")
+
+
 # ---- verdict ---------------------------------------------------------------
 print()
 for n in notes:
     print(f"note: {n}")
-if failures:
-    print(f"FAILED ({len(failures)})")
-    for f in failures:
-        print(f"  - {f}")
-    sys.exit(1)
 print("spec gate: all checks pass")

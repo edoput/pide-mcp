@@ -414,7 +414,7 @@ class Throwing_Backend extends MCP_Backend {
 
 /* base suite: json access and jsonrpc/handler helpers over Fake_Backend */
 
-abstract class MCP_Suite extends munit.FunSuite {
+abstract class MCP_Suite extends munit.FunSuite with MCP_Spec_Tests {
   /* json access */
 
   def get(json: JSON.T, path: String*)(implicit loc: munit.Location): JSON.T =
@@ -622,7 +622,7 @@ abstract class MCP_Session_Suite(session_name: String, theory: String) extends M
    related assertions into one ml() call rather than one process per
    micro-check. */
 
-abstract class MCP_Heap_Suite(logic: String) extends munit.FunSuite {
+abstract class MCP_Heap_Suite(logic: String) extends munit.FunSuite with MCP_Spec_Tests {
   override def munitTimeout: Duration = 10.minutes
 
   /* one-shot evaluation: result.ok iff source evaluates without
@@ -663,13 +663,18 @@ object MCP_Test_Runner {
       progress: Progress): Int = {
     /* drop suites with no matching test up front: filtering a runner
        down to zero tests is a JUnit error, not an empty run */
+    var selected_test_keys = Set.empty[(String, String)]
     val selected =
       name_filter match {
         case None => suites
         case Some(pattern) =>
-          suites.filter(cls =>
-            cls.getDeclaredConstructor().newInstance().munitTests()
-              .exists(t => t.name.contains(pattern)))
+          suites.filter { cls =>
+            val matches =
+              cls.getDeclaredConstructor().newInstance().munitTests()
+                .filter(MCP_Spec_Metadata.matches(_, pattern))
+            selected_test_keys ++= matches.map(test => (cls.getName, test.name))
+            matches.nonEmpty
+          }
       }
     if (selected.isEmpty) { progress.echo("no tests match"); return 0 }
 
@@ -689,9 +694,9 @@ object MCP_Test_Runner {
     for (pattern <- name_filter) {
       req = req.filterWith(new Filter {
         override def shouldRun(desc: Description): Boolean =
-          (desc.isTest && desc.getDisplayName.contains(pattern)) ||
+          (desc.isTest && selected_test_keys((desc.getClassName, test_name(desc)))) ||
             desc.getChildren.asScala.exists(shouldRun)
-        override def describe(): String = "name contains " + quote(pattern)
+        override def describe(): String = "name or plan link contains " + quote(pattern)
       })
     }
     core.run(req).getFailureCount

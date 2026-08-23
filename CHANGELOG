@@ -4,6 +4,33 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-23 (munit plan/test metadata is structural)
+--------------------------------------------------------------------------
+
+- munit test names are human prose again. Plan claims and test obligations
+  are attached with `spec_test` as typed `verifies` / `discharges` tags;
+  malformed IDs and relation/label mismatches fail during suite discovery.
+
+- Every `isabelle mcp_test` invocation discovers every registered scala-unit,
+  heap, and bridge suite before test selection and atomically writes
+  deterministic JSON to `mcp_test/lib/munit-spec.json`. `-M FILE` selects an
+  explicit destination and exits without evaluating test bodies. The manifest
+  carries suite, name, source location, layer, plan links, and the compiled
+  test jar's SHA-256. Layer names are parametric: suite registration, export,
+  and the gate share `mcp_test/etc/test_layers.json`, whose SHA-256 is also
+  bound into the manifest.
+
+- `tools/spec_gate.py --test-manifest FILE` requires and validates that
+  manifest against `plans/ASSUMPTIONS`. It stops at the first unknown ID,
+  duplicate identity, malformed record, relation-kind error, or
+  obligation-layer mismatch; Scala source scanning is not a compatibility
+  substitute for registered munit metadata.
+
+- `plans/readiness` A1..A6 / T1..T6 are the pilot migration. The adjacent
+  decode-message regressions deliberately carry no plan link: attaching an
+  unrelated label would make the coverage number greener and the evidence
+  less true.
+
 2026-08-20 (the serve loop is concurrent)
 --------------------------------------------------------------------------
 
