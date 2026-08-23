@@ -49,7 +49,14 @@ Installation
    and, if you also registered the `mcp_test/` component
    (`isabelle components -u /path/to/isabelle-mcp/mcp_test`), run the
    unit suites with `isabelle mcp_test` (add `-b` for the slower
-   bridge tests against a live session).
+   bridge tests against a live session). Every invocation first writes the
+   complete structured munit-to-plan metadata manifest to
+   `mcp_test/lib/munit-spec.json`; execution filters never filter this file.
+   `isabelle mcp_test -M FILE` writes it to an explicit destination without
+   running test bodies. Pass the resulting file to
+   `tools/spec_gate.py --test-manifest FILE`. Test-layer roles and their
+   machine-readable names are configured in `mcp_test/etc/test_layers.json`;
+   the runner, exporter, and gate all load that registry.
 
 Running the server
 ------------------

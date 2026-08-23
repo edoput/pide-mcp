@@ -91,7 +91,8 @@ class MCP_Protocol_Tests extends MCP_Suite {
    blocks on the prover build. A1-A6 below. */
 
 class MCP_Readiness_Tests extends MCP_Suite {
-  test("A1: initialize never touches the backend, in any readiness state") {
+  spec_test("initialize never touches the backend, in any readiness state",
+      verifies = List("readiness#A1"), discharges = List("readiness#T1")) {
     val throwing = new Throwing_Backend
     var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building MCP-HOL")
     val handler = new MCP_Server.Handler(() => state)
@@ -105,7 +106,8 @@ class MCP_Readiness_Tests extends MCP_Suite {
     get(rpc_on(handler, "initialize"), "result", "capabilities", "tools")
   }
 
-  test("A2: tools/list answers while not ready with exactly the static builtin table") {
+  spec_test("tools/list answers while not ready with exactly the static builtin table",
+      verifies = List("readiness#A2"), discharges = List("readiness#T2")) {
     val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
     val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
     assertEquals(tools.map(t => get_string(t, "name")).toSet,
@@ -115,7 +117,8 @@ class MCP_Readiness_Tests extends MCP_Suite {
        assertion, it is structurally impossible here. */
   }
 
-  test("A3: tools/call while not ready is isError (not a json-rpc error), naming the progress") {
+  spec_test("tools/call while not ready is isError (not a json-rpc error), naming the progress",
+      verifies = List("readiness#A3"), discharges = List("readiness#T3")) {
     val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
     val reply = call_tool_on(handler, "repl_list", JSON.Object())
     assert(JSON.value(reply, "id").isDefined, "reply must echo the request id")
@@ -124,14 +127,16 @@ class MCP_Readiness_Tests extends MCP_Suite {
       "expected the progress string in the not-ready text: " + text)
   }
 
-  test("A4: Failed is reported distinctly from Not_Ready, carrying the failure message") {
+  spec_test("Failed is reported distinctly from Not_Ready, carrying the failure message",
+      verifies = List("readiness#A4"), discharges = List("readiness#T4")) {
     val handler = new MCP_Server.Handler(() => MCP_Server.Failed("boom"))
     val text = assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
     assert(text.contains("failed"), "expected \"failed\" in the failed-state text: " + text)
     assert(text.contains("boom"), "expected the failure message: " + text)
   }
 
-  test("A5: Handler holds no cached backend -- a readiness transition is observed immediately") {
+  spec_test("Handler holds no cached backend -- a readiness transition is observed immediately",
+      verifies = List("readiness#A5"), discharges = List("readiness#T5")) {
     var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building")
     val handler = new MCP_Server.Handler(() => state)
     assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
@@ -139,7 +144,8 @@ class MCP_Readiness_Tests extends MCP_Suite {
     assert_no_error(call_tool_on(handler, "repl_list", JSON.Object()))
   }
 
-  test("A6: isabelle://session reports the readiness state, then the backend's text once ready") {
+  spec_test("isabelle://session reports the readiness state, then the backend's text once ready",
+      verifies = List("readiness#A6"), discharges = List("readiness#T6")) {
     var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building MCP-HOL")
     val handler =
       new MCP_Server.Handler(() => state,
@@ -179,14 +185,15 @@ class MCP_Readiness_Tests extends MCP_Suite {
     assert(message.contains("building MCP-HOL"), "expected the progress string: " + message)
   }
 
-  /* A7-A11: decode_message/plain_message -- Failed(message) is built from
-     raw exception/prover text (mcp_server.scala run()), which routinely
+  /* decode_message/plain_message -- no plan declares these, so they carry no
+     plan link. Failed(message) is built from raw exception/prover text
+     (mcp_server.scala run()), which routinely
      carries YXML position markup (literal 0x05/0x06 bytes wrapping "at
      line N of FILE" info). That markup must be stripped before the text
      is stored anywhere an MCP client reads it -- these test the pure
      decode helper directly, without a prover or background thread. */
 
-  test("A7: decode_message strips YXML position markup into readable text") {
+  test("decode_message strips YXML position markup into readable text") {
     val x = YXML.X_char
     val y = YXML.Y_char
     val raw =
@@ -201,12 +208,12 @@ class MCP_Readiness_Tests extends MCP_Suite {
       "decoded text must contain no control characters: " + decoded)
   }
 
-  test("A8: decode_message round-trips a plain string with no markup unchanged") {
+  test("decode_message round-trips a plain string with no markup unchanged") {
     val plain = "Duplicate session \"Scratch\" already in use for a different ROOT"
     assertEquals(MCP_Server.decode_message(plain), plain)
   }
 
-  test("A9: decode_message falls back to the raw string on malformed/partial YXML") {
+  test("decode_message falls back to the raw string on malformed/partial YXML") {
     val x = YXML.X_char
     val y = YXML.Y_char
     /* an unterminated element -- push() with no matching pop(): parse_body
@@ -217,7 +224,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
     assertEquals(decoded, broken, "a decode failure must fall back to the original text")
   }
 
-  test("A10: plain_message decodes an exception's YXML-bearing message") {
+  test("plain_message decodes an exception's YXML-bearing message") {
     val x = YXML.X_char
     val y = YXML.Y_char
     val raw =
@@ -227,7 +234,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
     assertEquals(MCP_Server.plain_message(exn), "Duplicate session \"Scratch\" (line 1)")
   }
 
-  test("A11: Failed built via plain_message carries decoded text, not raw YXML bytes") {
+  test("Failed built via plain_message carries decoded text, not raw YXML bytes") {
     val x = YXML.X_char
     val y = YXML.Y_char
     val raw =
@@ -2200,5 +2207,4 @@ class MCP_Config_Tests extends MCP_Suite {
     }
   }
 }
-
 

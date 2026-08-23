@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "layers": {
+    "scala_unit_suites": "scala-unit",
+    "heap_suites": "heap",
+    "pide_suites": "bridge",
+    "ml_unit_tests": "ml-unit",
+    "end_to_end_tests": "e2e"
+  }
+}
