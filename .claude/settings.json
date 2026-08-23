@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; case \"$f\" in plans/README|*/plans/README|plans/ASSUMPTIONS|*/plans/ASSUMPTIONS) ;; plans/*|*/plans/*) cd \"${CLAUDE_PROJECT_DIR:-.}\" && flatpak run --command=python3 de.tum.in.isabelle.Isabelle tools/gen_assumptions.py ;; esac; }",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/regenerate_assumptions.py\"",
             "statusMessage": "Regenerate plan assumption registry"
           }
         ]
