@@ -17,8 +17,13 @@ seemed like a good idea:
                           only way to address a section was its line number,
                           which changes whenever anyone inserts a paragraph.
   4. refinement queue     `spec refinement:` had 14 occurrences and no close
-                          operation, so the queue only ever grew. Each must now
-                          carry OPEN or FOLDED <date>.
+                          operation, so the queue only ever grew. States were
+                          added; the queue still only grew, because nothing made
+                          closing one a condition of anything. Since 2026-08-23
+                          a refinement is an INTERRUPT, not a queue entry:
+                          [BLOCKING] fails outright, [DEFERRED <date>: <reason>]
+                          needs a stated reason, and no `done` plan may own an
+                          unresolved one (including the legacy [OPEN]).
   5. citation coverage    Munit citations come from its discovery manifest,
                           not test-name text. Isabelle citations retain their
                           checked antiquotation syntax. Coverage is reported;
@@ -159,6 +164,8 @@ readme = (PLANS / "README").read_text() if (PLANS / "README").exists() else ""
 boxes = {n: (s == "x") for s, n in re.findall(r"- \[([ x])\]\s+(\S+)", readme)}
 
 multi, disagree, missing = [], [], []
+# name -> the plan's authoritative status word, reused by the refinement check
+plan_status: dict[str, str] = {}
 plan_files = [p for p in sorted(PLANS.iterdir())
               if p.is_file() and p.name not in ("README", "ASSUMPTIONS")]
 for p in plan_files:
@@ -170,6 +177,7 @@ for p in plan_files:
     if len(st) > 1:
         multi.append(f"{p.name}({len(st)})")
     word = re.sub(r"status:\s*", "", st[0][1], flags=re.I).split()[0].rstrip(".,").lower()
+    plan_status[p.name] = word
     if p.name in boxes:
         done_box = boxes[p.name]
         if done_box != (word in DONE_WORDS):
@@ -236,24 +244,83 @@ else:
 
 
 # ---- 4. refinement queue ---------------------------------------------------
+# A refinement is an INTERRUPT, not a queue entry (plans/README, decision
+# 2026-08-23). The three live states are:
+#
+#   [BLOCKING]                   raised; implementation is stopped, waiting on
+#                                the user. It should not outlive the session, so
+#                                any occurrence fails this gate.
+#   [FOLDED <date>]              the correction is written into the spec.
+#   [DEFERRED <date>: <reason>]  the user consciously chose to defer. The reason
+#                                is required, so the debt stays readable.
+#
+# [OPEN] is the LEGACY state from the deferred-write era. It is still parsed and
+# counted so the markers already in the tree stay visible, but nothing new
+# should be written in it, and a `done` plan may not own one (check 4b).
 say("\nrefinement queue")
-open_re = re.compile(r"spec refinement\s*\[(OPEN|FOLDED\s+\d{4}-\d{2}-\d{2})\]", re.I)
-bare_re = re.compile(r"spec refinement\s*:")
-bare, states = [], {"OPEN": 0, "FOLDED": 0}
+state_re = re.compile(
+    r"spec refinement\s*\["
+    r"(BLOCKING"
+    r"|OPEN"
+    r"|FOLDED\s+\d{4}-\d{2}-\d{2}"
+    r"|DEFERRED\s+\d{4}-\d{2}-\d{2}\s*:\s*[^\]]+)"
+    r"\]", re.I)
+# any marker at all, however written -- so a malformed state ([DEFERRED] with no
+# date, a bare `spec refinement:`) is reported rather than silently ignored.
+any_re = re.compile(r"spec refinement\s*[\[:]", re.I)
+# `"spec refinement [OPEN]:"` in double quotes is prose ABOUT the convention --
+# plans/README states the rule, plans/ml_builtin_migration cites it. A quoted
+# marker is a mention, never an occurrence.
+quoted_re = re.compile(r'"\s*spec refinement', re.I)
+
+
+def mention_only(text: str, start: int) -> bool:
+    return bool(quoted_re.search(text, max(0, start - 2), start + 16))
+
+
+UNRESOLVED = ("BLOCKING", "DEFERRED", "OPEN")
+malformed: list[str] = []
+states = {"BLOCKING": 0, "OPEN": 0, "FOLDED": 0, "DEFERRED": 0}
+blocking: list[str] = []
+owned: dict[str, set[str]] = {}   # plan name -> unresolved states it owns
 for f in plan_files + [SPEC, PLANS / "README"]:
     if not f.exists():
         continue
     text = f.read_text()
-    for m in open_re.finditer(text):
-        states["FOLDED" if m.group(1).upper().startswith("FOLDED") else "OPEN"] += 1
-    # a bare marker not immediately followed by a state
-    for m in bare_re.finditer(text):
-        if not open_re.match(text, m.start()):
-            bare.append(f.name)
-check("every 'spec refinement' carries OPEN or FOLDED <date>", not bare,
-      f"{len(bare)} bare in {sorted(set(bare))[:5]}")
-if states["OPEN"] or states["FOLDED"]:
-    say(f"  note  refinement queue: {states['OPEN']} open, {states['FOLDED']} folded")
+    for m in state_re.finditer(text):
+        if mention_only(text, m.start()):
+            continue
+        word = m.group(1).upper().split()[0]
+        states[word] += 1
+        if word == "BLOCKING":
+            blocking.append(f.name)
+        if word in UNRESOLVED:
+            owned.setdefault(f.name, set()).add(word)
+    for m in any_re.finditer(text):
+        if not state_re.match(text, m.start()) and not mention_only(text, m.start()):
+            malformed.append(f"{f.name}:{text.count(chr(10), 0, m.start()) + 1}")
+check("every 'spec refinement' carries BLOCKING, FOLDED <date> or DEFERRED <date>: <reason>",
+      not malformed, f"{len(malformed)} malformed at {sorted(set(malformed))[:5]}")
+say("  note  refinement queue: " +
+    (", ".join(f"{n} {k.lower()}" for k, n in states.items() if n) or "empty"))
+
+# A [BLOCKING] marker means implementation stopped for a spec conflict and the
+# loop was never finished: either the user was never asked, or the answer was
+# never written back. Both leave the tree mid-interrupt.
+check("no refinement is left [BLOCKING]", not blocking,
+      f"{len(blocking)} in {sorted(set(blocking))[:5]}")
+
+
+# ---- 4b. no done plan owns an unresolved refinement -------------------------
+# A plan marked done while owning a BLOCKING, DEFERRED or legacy OPEN refinement
+# claims completion over a spec correction it wrote down and never folded. This
+# is the check that turns the historical false-dones red.
+false_done = sorted(
+    f"{name} ({'/'.join(sorted(st)).lower()})"
+    for name, st in owned.items()
+    if plan_status.get(name, "") in DONE_WORDS)
+check("no 'done' plan owns an unresolved refinement", not false_done,
+      f"{len(false_done)}: {false_done}")
 
 
 # ---- 5. citation coverage ---------------------------------------------------

@@ -11,6 +11,16 @@
             "statusMessage": "git add (tracked files only)"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 tools/spec_refinement_guard.py",
+            "statusMessage": "spec-refinement guard"
+          }
+        ]
       }
     ]
   }

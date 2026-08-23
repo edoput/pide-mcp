@@ -3628,7 +3628,7 @@ id: S-implementation-order-phase-3
       repl/bundle designation before tool_scope_set/include commit it
       (the theory case validates for free via resolve_context_theory,
       which also supplies the "normalize before storing" spelling
-      rule). SPEC REFINEMENT: the wire designation stays a BARE
+      rule). the wire designation stays a BARE
       theory name (no "theory:" prefix) rather than growing one --
       the mcp_tool_registry wire contract already shipped bare names
       and tests against it, so only "repl:ID" is new, disambiguated

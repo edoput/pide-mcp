@@ -4,6 +4,42 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-23 (a spec refinement is an interrupt, not a queue entry)
+--------------------------------------------------------------------------
+
+- When implementation finds the spec wrong, it stops and the user decides,
+  instead of recording the divergence and continuing. The rule is the
+  spec being FALSE or CONTRADICTORY, not merely silent: silence is a gap
+  the plan may fill on its own authority. `plans/README` carries the loop
+  and the line; `.claude/rules/spec-refinement.md` carries it for the
+  agent loop.
+
+- The marker gains three states. `[BLOCKING]` means implementation is
+  stopped and the user has not answered yet; `[FOLDED <date>]` means the
+  correction is in the spec; `[DEFERRED <date>: <reason>]` means the user
+  consciously chose "not now" and the reason is theirs. `[OPEN]` becomes
+  a legacy state: still parsed and counted, never written again.
+
+- `tools/spec_gate.py` enforces it. Any surviving `[BLOCKING]` fails the
+  gate, because it means the loop was started and never finished. No plan
+  may be marked `done` while owning a `BLOCKING`, `DEFERRED` or legacy
+  `OPEN` refinement. The marker scan is now case-insensitive and reports
+  malformed states rather than skipping them, which surfaced an
+  uppercase, stateless `SPEC REFINEMENT:` in the spec itself that the old
+  check had never matched.
+
+- Turning that check on marks four plans as false-dones today:
+  `param_schema_v2`, `session_structure`, `repl_list` and `repl_remove`
+  are `done` while still owning open refinements. The gate is red on
+  purpose until those twelve markers are triaged in their own unit.
+
+- Commit discipline is corrected, not relaxed. Separation by kind was
+  always the point; the ordering was being read as a phase ordering over
+  a whole task, which is what made deferring a spec correction look
+  mandatory. Ordering applies within one logical change, and a conflict
+  found mid-implementation is its own change: stop, resolve, commit spec
+  + CHANGELOG, amend the plan, continue.
+
 2026-08-23 (munit plan/test metadata is structural)
 --------------------------------------------------------------------------
 
