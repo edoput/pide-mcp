@@ -975,7 +975,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   /* T4 (plans/scope_add / plans/unload_theory): load_theory auto-adds a
      filesystem-tier fixture to the resources/list working set, tagged
      loaded; unload_theory removes it again. */
-  test("scope_add#T4 bridge: load_theory auto-adds to resources/list; unload_theory removes it") {
+  spec_test("bridge: load_theory auto-adds to resources/list; unload_theory removes it",
+      discharges = List("scope_add#T4")) {
     with_fixture_dir("ScopeBridgeLoad" -> wave2_theory("ScopeBridgeLoad", wave2_good)) { dir =>
       val handler = new MCP_Server.Handler(session)
       expect_ok(session.load_theory("ScopeBridgeLoad", File.standard_path(dir)), "load")

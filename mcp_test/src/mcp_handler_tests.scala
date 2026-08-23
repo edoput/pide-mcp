@@ -1553,7 +1553,8 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
   /* T1: fresh state -> only the implicit working set (Fake_Backend's
      "Loaded" theory, no patterns, no repls, the fixed "greeting" named
      resource). */
-  test("scope_show#T1: fresh state names only the implicit members") {
+  spec_test("fresh state names only the implicit members",
+      discharges = List("scope_show#T1")) {
     val backend = new Fake_Backend
     val text = result_text(call_tool("scope_show", JSON.Object(), backend))
     assert(text.contains("patterns: (none)"), "no patterns yet: " + text)
@@ -1566,7 +1567,8 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
 
   /* T2 (patterns): scope_add's pattern shows up with its match count;
      scope_remove makes it disappear again. */
-  test("scope_show#T2: a scope_add pattern appears in scope_show; scope_remove removes it") {
+  spec_test("a scope_add pattern appears in scope_show; scope_remove removes it",
+      discharges = List("scope_show#T2")) {
     val backend = new Fake_Backend
     call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
     val added = result_text(call_tool("scope_show", JSON.Object(), backend))
@@ -1580,7 +1582,8 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
   /* T2 (repls): Fake_Backend.active_repls is the settable stand-in for
      the real backend's ir("repls")-derived list -- a created/removed
      repl shows up/disappears the same way a loaded theory does. */
-  test("scope_show#T2: an active repl appears in scope_show; its removal makes it disappear") {
+  spec_test("an active repl appears in scope_show; its removal makes it disappear",
+      discharges = List("scope_show#T2")) {
     val backend = new Fake_Backend
     backend.active_repls = List("R")
     val present = result_text(call_tool("scope_show", JSON.Object(), backend))
@@ -1592,7 +1595,8 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
 
   /* T2 (load_theory): the implicit working set tracked via
      load_theory/check_theory shows up the same way. */
-  test("scope_show#T2: load_theory's implicit member appears in scope_show; unload_theory removes it") {
+  spec_test("load_theory's implicit member appears in scope_show; unload_theory removes it",
+      discharges = List("scope_show#T2")) {
     val backend = new Fake_Backend
     call_tool("load_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
     val loaded = result_text(call_tool("scope_show", JSON.Object(), backend))
@@ -1607,7 +1611,8 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
      names is also listed by resources/list (as a uri), and vice versa
      (restricting resources/list to the theory/repl uris it shares with
      scope_show's vocabulary). */
-  test("scope_show#T3: scope_show's theories and repls agree with resources/list") {
+  spec_test("scope_show's theories and repls agree with resources/list",
+      discharges = List("scope_show#T3")) {
     val backend = new Fake_Backend
     backend.active_repls = List("R")
     call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
