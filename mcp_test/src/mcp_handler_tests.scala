@@ -1858,27 +1858,29 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
      case + hyphen, and a name collision with the theory Main (the join
      is over doc SESSIONS only, so "main" unambiguously means the Main
      manual, not the HOL theory). */
-  test("doc_list#T1: isar-ref joins to session Isar_Ref") {
+  spec_test("isar-ref joins to session Isar_Ref", discharges = List("doc_list#T1")) {
     assertEquals(entry("isar-ref").source, "Isar_Ref")
   }
 
-  test("doc_list#T1: logics-ZF joins to session Logics_ZF") {
+  spec_test("logics-ZF joins to session Logics_ZF", discharges = List("doc_list#T1")) {
     assertEquals(entry("logics-ZF").source, "Logics_ZF")
   }
 
-  test("doc_list#T1: main joins to session Main") {
+  spec_test("main joins to session Main", discharges = List("doc_list#T1")) {
     assertEquals(entry("main").source, "Main")
   }
 
   /* T2 (revised, see plans/doc_list): Doc_Catalog.join is the pure fold
      doing the mapping -- test it directly over synthetic
      (session, variant-names) pairs, no Sessions.Structure involved. */
-  test("doc_list#T2: join maps every variant name to the session") {
+  spec_test("join maps every variant name to the session",
+      discharges = List("doc_list#T2")) {
     val m = Doc_Catalog.join(Map.empty, "My_Doc", List("a", "b"))
     assertEquals(m, Map("a" -> "My_Doc", "b" -> "My_Doc"))
   }
 
-  test("doc_list#T2: join across sessions accumulates into one map") {
+  spec_test("join across sessions accumulates into one map",
+      discharges = List("doc_list#T2")) {
     val m0 = Doc_Catalog.join(Map.empty, "Sess_A", List("x"))
     val m1 = Doc_Catalog.join(m0, "Sess_B", List("y", "z"))
     assertEquals(m1, Map("x" -> "Sess_A", "y" -> "Sess_B", "z" -> "Sess_B"))
@@ -1886,26 +1888,29 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
 
   /* T3: plain entries (release notes) -- NEWS is readable directly, not
      via a doc session. */
-  test("doc_list#T3: NEWS is a plain entry, not joined to a session") {
+  spec_test("NEWS is a plain entry, not joined to a session",
+      discharges = List("doc_list#T3")) {
     assertEquals(entry("NEWS").source, "plain")
   }
 
   /* T4: filtering is probe-safe -- a real pattern narrows the listing,
      an unmatched one is an EMPTY listing, not an error. */
-  test("doc_list#T4: pattern isar* returns exactly the isar-ref entry") {
+  spec_test("pattern isar* returns exactly the isar-ref entry",
+      discharges = List("doc_list#T4")) {
     val text = Doc_Catalog.render(catalog, "isar*")
     assert(text.contains("isar-ref"), "isar-ref should be listed")
     assert(!text.contains("logics-ZF"), "logics-ZF should be filtered out")
     assert(!text.contains("NEWS"), "NEWS should be filtered out")
   }
 
-  test("doc_list#T4: an unmatched pattern is an empty listing, not an error") {
+  spec_test("an unmatched pattern is an empty listing, not an error",
+      discharges = List("doc_list#T4")) {
     val text = Doc_Catalog.render(catalog, "zzz_no_such_entry_zzz*")
     assert(text.contains("no matching documentation entries"),
       "unmatched pattern should report an empty listing")
   }
 
-  test("doc_list#T4: empty pattern lists everything") {
+  spec_test("empty pattern lists everything", discharges = List("doc_list#T4")) {
     val all = Doc_Catalog.render(catalog, "")
     assert(all.contains("isar-ref") && all.contains("NEWS"),
       "empty pattern should list both manuals and plain entries")
@@ -1936,14 +1941,16 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
 
   /* T1: toc claim -- headings from ALL chapter files, both chapter and
      section levels present, every row carrying file + line. */
-  test("doc_read#T1: Isar_Ref toc has more than 40 rows spanning multiple files") {
+  spec_test("Isar_Ref toc has more than 40 rows spanning multiple files",
+      discharges = List("doc_read#T1")) {
     assert(isar_ref_toc.length > 40,
       "expected > 40 headings in Isar_Ref, got " + isar_ref_toc.length)
     assert(isar_ref_toc.map(_.file).distinct.length > 1,
       "expected headings from more than one chapter file")
   }
 
-  test("doc_read#T1: toc includes both chapter and section levels, all with a line") {
+  spec_test("toc includes both chapter and section levels, all with a line",
+      discharges = List("doc_read#T1")) {
     assert(isar_ref_toc.exists(_.level == 0), "expected at least one chapter heading")
     assert(isar_ref_toc.exists(_.level == 1), "expected at least one section heading")
     assert(isar_ref_toc.forall(_.line > 0), "every heading should carry a positive line")
@@ -1953,7 +1960,8 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      thy}", spanning up to the next section "Local theory targets") --
      text contains a phrase from its body and stops before the next
      section's title. */
-  test("doc_read#T2: section extraction stops at the next same-level heading") {
+  spec_test("section extraction stops at the next same-level heading",
+      discharges = List("doc_read#T2")) {
     Doc_Catalog.find_section(isar_ref_toc, "Defining theories") match {
       case Doc_Catalog.Unique(heading) =>
         val in_file = isar_ref_toc.filter(_.file == heading.file)
@@ -1968,14 +1976,16 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
 
   /* T3: it is a search, not a compile -- ambiguous/unknown queries never
      guess. "proof" matches many section titles across Isar_Ref. */
-  test("doc_read#T3: an ambiguous section query returns candidates, not text") {
+  spec_test("an ambiguous section query returns candidates, not text",
+      discharges = List("doc_read#T3")) {
     Doc_Catalog.find_section(isar_ref_toc, "proof") match {
       case Doc_Catalog.Ambiguous(candidates) => assert(candidates.length > 1)
       case other => fail("expected Ambiguous for \"proof\", got " + other)
     }
   }
 
-  test("doc_read#T3: an unknown section query is No_Match, not an error") {
+  spec_test("an unknown section query is No_Match, not an error",
+      discharges = List("doc_read#T3")) {
     assertEquals(
       Doc_Catalog.find_section(isar_ref_toc, "zzz_no_such_section_zzz"), Doc_Catalog.No_Match)
   }
@@ -1984,19 +1994,22 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      error surfaced by MCP_Session.doc_read (Fake_Backend has no real
      plain file, so this exercises Doc_Catalog.plain_read directly against
      NEWS). */
-  test("doc_read#T4: plain_read with an explicit lines window returns exactly that window") {
+  spec_test("plain_read with an explicit lines window returns exactly that window",
+      discharges = List("doc_read#T4")) {
     val Right(text) = Doc_Catalog.plain_read(news_path, "1-5"): @unchecked
     assertEquals(split_lines(text).length, 5)
   }
 
-  test("doc_read#T4: plain_read rejects a malformed lines range") {
+  spec_test("plain_read rejects a malformed lines range",
+      discharges = List("doc_read#T4")) {
     assert(Doc_Catalog.plain_read(news_path, "not-a-range").isLeft)
   }
 
   /* T5: truncation -- a chapter-level section (the toplevel chapter
      heading itself, spanning the whole file) truncates at the window with
      the "narrow" note. */
-  test("doc_read#T5: a chapter-sized section read truncates with a narrow-the-section note") {
+  spec_test("a chapter-sized section read truncates with a narrow-the-section note",
+      discharges = List("doc_read#T5")) {
     val chapter = isar_ref_toc.find(_.level == 0).getOrElse(fail("no chapter heading found"))
     val in_file = isar_ref_toc.filter(_.file == chapter.file)
     val text = Doc_Catalog.section_text(in_file, chapter)
@@ -2010,7 +2023,8 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      physical lines, which the scanner would silently miss. The reference
      count is a plain line-start check, independent of the scanner's own
      cartouche-matching regex. */
-  test("doc_read#T6: scanner heading count matches a raw line-start count") {
+  spec_test("scanner heading count matches a raw line-start count",
+      discharges = List("doc_read#T6")) {
     val command = """^(chapter|section|subsection|subsubsection)\b""".r
     val raw_count =
       isar_ref_files.map(f => split_lines(File.read(f)).count(l => command.findFirstIn(l).isDefined)).sum
