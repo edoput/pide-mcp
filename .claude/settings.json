@@ -11,6 +11,16 @@
             "statusMessage": "git add (tracked files only)"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; case \"$f\" in plans/README|*/plans/README|plans/ASSUMPTIONS|*/plans/ASSUMPTIONS) ;; plans/*|*/plans/*) cd \"${CLAUDE_PROJECT_DIR:-.}\" && flatpak run --command=python3 de.tum.in.isabelle.Isabelle tools/gen_assumptions.py ;; esac; }",
+            "statusMessage": "Regenerate plan assumption registry"
+          }
+        ]
       }
     ]
   }
