@@ -109,6 +109,12 @@ the three states:
                                the reason is required so the debt is
                                readable. rare by design.
 
+to write ABOUT a marker rather than raise one, put it in DOUBLE QUOTES:
+tools/spec_gate.py treats a quoted marker as prose and skips it, which
+is how this paragraph and plans/ml_builtin_migration cite the
+convention without registering refinements. backticks and single quotes
+do NOT work.
+
 [OPEN] is the LEGACY state from the deferred-write era, when a marker
 meant "someone will fold this eventually" and nobody ever did: 12 of
 them accumulated and none was ever folded. it is still parsed and
