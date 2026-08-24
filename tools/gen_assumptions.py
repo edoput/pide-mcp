@@ -70,6 +70,20 @@ def layer_of(text: str) -> str:
     return "unstated"
 
 
+def is_plan_file(path: pathlib.Path) -> bool:
+    """A real plan: not a directory, an index, or an editor leftover.
+
+    An open Vim buffer drops a binary `.plan.swp` beside the plan. read_text()
+    then dies with UnicodeDecodeError and takes the whole spec gate down with
+    it, because check 1 regenerates the registry and byte-compares. Keep this
+    in step with the plan_files filter in tools/spec_gate.py.
+    """
+    return (path.is_file()
+            and path.name not in ("README", "ASSUMPTIONS")
+            and not path.name.startswith(".")
+            and not path.name.endswith(("~", ".bak", ".orig", ".rej")))
+
+
 def parse(path: pathlib.Path):
     """Yield (label, statement, layer) for every label DECLARED in this plan."""
     lines = path.read_text().splitlines()
@@ -101,12 +115,25 @@ def parse(path: pathlib.Path):
         # sorted(), because this file is regenerated and byte-compared by
         # spec_gate.py's freshness check: discovery order must not leak in.
         # The fallback keeps obligations that carry no tag at all working.
-        layer = ",".join(sorted(found)) if found else layer_of(body)
+        # `origin` records HOW the layer was decided, so the run can report how
+        # much of the registry is declared versus guessed:
+        #   "tag"   -- at least one bracketed [layer] tag; authoritative
+        #   "prose" -- no tag anywhere, so layer_of() substring-scanned the
+        #              whole statement and something matched. This is a GUESS:
+        #              the word "bridge" in ordinary prose reads the same as a
+        #              declaration, and repl_init_from_source T4/T5 were wrong
+        #              in exactly this way until 2026-08-24.
+        #   "none"  -- no tag and nothing matched; recorded as "unstated"
+        if found:
+            layer, origin = ",".join(sorted(found)), "tag"
+        else:
+            layer = layer_of(body)
+            origin = "none" if layer == "unstated" else "prose"
         stmt = re.split(r"\btest\s*\[", body)[0].strip()
         # `T1 [scala unit]: drive Handler ...` -- the layer tag is metadata,
         # already captured above, so it does not belong in the statement.
         stmt = INLINE_LAYER.sub("", stmt).lstrip(": ").strip()
-        out.append((c["label"], stmt or body, layer))
+        out.append((c["label"], stmt or body, layer, origin))
 
     for ln in lines:
         m = LABEL.match(ln)
@@ -128,17 +155,20 @@ def parse(path: pathlib.Path):
 
 
 def collect():
-    rows = []
+    """Registry rows, plus where each row's layer came from (see `origin`)."""
+    rows, origins = [], {}
     for path in sorted(PLANS.iterdir()):
-        if path.name in ("README", "ASSUMPTIONS") or path.is_dir():
+        if not is_plan_file(path):
             continue
         seen = set()
-        for label, stmt, layer in parse(path):
+        for label, stmt, layer, origin in parse(path):
             if label in seen:          # a plan restating its own label: keep first
                 continue
             seen.add(label)
-            rows.append((f"{path.name}#{label}", layer, stmt))
-    return rows
+            ident = f"{path.name}#{label}"
+            rows.append((ident, layer, stmt))
+            origins[ident] = origin
+    return rows, origins
 
 
 def render_registry(rows):
@@ -180,7 +210,7 @@ def render_ml(rows):
 
 
 def main():
-    rows = collect()
+    rows, origins = collect()
     reg, ml = render_registry(rows), render_ml(rows)
 
     if "--check" in sys.argv:
@@ -204,10 +234,25 @@ def main():
     print(f"wrote {REGISTRY.relative_to(ROOT)} and {ML_OUT.relative_to(ROOT)}")
     print(f"{len(rows)} assumptions across {len(per)} plans")
     empty = [p.name for p in sorted(PLANS.iterdir())
-             if p.name not in ("README", "ASSUMPTIONS") and not p.is_dir()
-             and p.name not in per]
+             if is_plan_file(p) and p.name not in per]
     if empty:
         print(f"plans declaring NO labelled assumption ({len(empty)}): {', '.join(empty)}")
+
+    # How much of the LAYER column is declared, and how much is inferred?
+    # A "prose" layer is a substring match over the statement, so it is a guess
+    # that reads exactly like a declaration in the registry. Those are the rows
+    # worth auditing: repl_init_from_source T4/T5 sat wrong this way.
+    by_origin = {}
+    for ident in origins:
+        by_origin.setdefault(origins[ident], []).append(ident)
+    tag = len(by_origin.get("tag", []))
+    guessed = sorted(by_origin.get("prose", []))
+    none = len(by_origin.get("none", []))
+    print(f"layer source: {tag} from an explicit [tag], "
+          f"{len(guessed)} inferred from prose, {none} unstated")
+    if guessed:
+        print("  layers INFERRED from prose (a guess -- give these an explicit "
+              f"[tag] to pin them):\n    {', '.join(guessed)}")
     return 0
 
 

@@ -171,8 +171,12 @@ readme = (PLANS / "README").read_text() if (PLANS / "README").exists() else ""
 boxes = {n: (s == "x") for s, n in re.findall(r"- \[([ x])\]\s+(\S+)", readme)}
 
 multi, disagree, missing = [], [], []
+# Must agree with is_plan_file() in tools/gen_assumptions.py: a stray editor
+# swap file beside a plan is not a plan, and reading one as text kills the gate.
 plan_files = [p for p in sorted(PLANS.iterdir())
-              if p.is_file() and p.name not in ("README", "ASSUMPTIONS")]
+              if p.is_file() and p.name not in ("README", "ASSUMPTIONS")
+              and not p.name.startswith(".")
+              and not p.name.endswith(("~", ".bak", ".orig", ".rej"))]
 for p in plan_files:
     lines = p.read_text().splitlines()
     st = [(i + 1, l) for i, l in enumerate(lines) if re.match(r"status:", l, re.I)]
