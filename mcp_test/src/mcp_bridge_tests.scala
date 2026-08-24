@@ -1023,7 +1023,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      (Fake_Backend.active_repls, a settable stand-in) can't cover:
      active_repl_ids() actually parsing session.ir("repls", Nil)'s real
      text output. Removal of both makes them disappear again. */
-  test("scope_show#T2 bridge: a real repl and a real load_theory both appear, and disappear on removal") {
+  spec_test("bridge: a real repl and a real load_theory both appear, and disappear on removal",
+      discharges = List("scope_show#T2")) {
     val handler = new MCP_Server.Handler(session)
     with_repl("ScopeShowRepl") {
       val with_repl_text = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
