@@ -4,6 +4,30 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-24 (how much of the LAYER column is declared vs guessed)
+--------------------------------------------------------------------------
+
+- `tools/gen_assumptions.py` now reports where each layer came from. Measured:
+  202 of 239 obligations declare a layer with an explicit [tag], 34 are
+  unstated, and 3 are INFERRED by substring-scanning the statement prose.
+  The run names those 3, because a guessed layer is indistinguishable from a
+  declared one once it is in the table.
+
+- one of the 3 is wrong, and shows why the report was worth adding:
+  session_dirs_errors#A6 is filed under layer `heap` because its text says
+  "comfortably cheap enough" -- and "cheap" contains "heap". A6 is a
+  startup-timing measurement with no connection to the heap suites.
+  find_definition#T6 is half-captured (it names a live probe AND scala-unit
+  tests, and only the second was picked up); repl_remove#T5 guessed correctly.
+  None is fixed here -- the report is the deliverable, the relabels are not.
+
+- fixed, separately: the generator walked every entry in plans/, so an open
+  Vim buffer's `.plan.swp` was read as a plan and killed the run with a
+  UnicodeDecodeError -- and with it the spec gate, whose first check
+  regenerates the registry and compares. A shared is_plan_file() predicate now
+  skips dotfiles and editor leftovers; tools/spec_gate.py filters to match.
+  This was hit in a real working tree, not hypothesised.
+
 2026-08-24 (repl_init_from_source T4/T5 are bridge obligations)
 --------------------------------------------------------------------------
 
