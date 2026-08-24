@@ -1,0 +1,155 @@
+---
+schema: isabelle-mcp.plan/bootstrap-v0
+id: verification_matrix
+title: Assemble static verification relationships across test producers
+status: planned
+depends_on:
+  - plan_format
+  - plan_label_schema
+allowed_modules:
+  - tools/planning_gate
+  - mcp_test
+  - mcp/Tools
+  - plans
+done_command:
+  - python3
+  - -m
+  - tools.planning_gate
+  - done
+---
+
+verification_matrix — implementation plan
+=========================================
+
+The current MUnit manifest is a useful static catalog, but it represents only
+Scala-owned suites and uses `discharges` for T links.  Isabelle theory citations
+and procedural Python end-to-end tests need the same discoverable relationship
+without pretending that discovery means execution.
+
+goal
+----
+
+Assemble one deterministic static verification matrix from independent test
+producers.  It answers which registered test verifies or covers each active
+plan record, at which layer, and where that test is defined.  It never claims
+that a test ran or passed.
+
+relations
+---------
+
+`verifies`
+  Links a registered test to an ACTIVE A or ACTIVE I record.
+
+`covers`
+  Links a registered test to a T requirement.  This replaces the MUnit API and
+  manifest relation named `discharges`.
+
+D and Q records cannot be test-link targets.  Their closure rules come from the
+label schema and planning gate.
+
+producer contract
+-----------------
+
+Every producer emits the same versioned JSON shape without executing test
+bodies:
+
+    schema_version, producer, producer_artifact, tests[]
+
+Each test carries a stable producer-local identity, human name, layer, source
+path and line, plus sorted `verifies` and `covers` ID lists.  Producer-specific
+artifact hashes may detect a stale discovery catalog but are not execution
+evidence.
+
+Initial producers are:
+
+- MUnit discovery: scala-unit, heap, and bridge;
+- Isabelle theory metadata: ml-unit;
+- planning-gate pytest discovery: tooling-unit; and
+- the procedural Python producer from `plans/python_e2e`: e2e.
+
+The shared layer registry gains `tooling-unit`.  Every declared layer must have
+exactly one registered runner owner, even if several discovery sources feed it.
+
+completion coverage
+-------------------
+
+- Every ACTIVE A/I record has at least one verifying test in every named layer.
+- Every T record has at least one distinct covering test in every named layer.
+- A test belongs to one layer; one identity cannot satisfy two required layers.
+- MOOT and SUPERSEDED A/I records require no test links.
+- Unknown, mistyped, duplicate, wrong-layer, and dangling relationships fail.
+- A missing producer never becomes an implicit waiver.
+
+legacy ratchet
+--------------
+
+Generate `plans/legacy_unlinked.csv` once after label normalization.  A row is
+`plan,id,relation,missing_layer,baseline_revision`.  It describes a missing
+verification relationship, including a separate row for each missing layer.
+
+The matrix gate permits only this reviewed legacy debt.  Rows are removed as
+coverage lands.  Adding a row is reported prominently and requires explicit
+human review; a plan newly transitioning to done may not retain a row.
+
+implementation sequence
+-----------------------
+
+1. Define typed producer and matrix records in `tools/planning_gate/matrix.py`.
+2. Rename the MUnit `discharges` API/schema relation to `covers`; reject old and
+   new relation names appearing together.
+3. Adapt checked Isabelle assumption citations into ml-unit matrix records with
+   exact source positions and stable theory/test identities.
+4. Add tooling-unit discovery for the planning package's pytest cases.
+5. Merge producer output deterministically and validate it against normalized
+   plan claims and the shared layer registry.
+6. Generate and check the legacy CSV.  Separate generated current coverage
+   reports from the reviewed debt file.
+7. Keep matrix discovery independently callable; the final `done` command will
+   compose discovery with execution.
+
+compatibility claims (canonical until v1 lands)
+------------------------------------------------
+
+A1 [tooling-unit]: The verification matrix is static coverage metadata, not
+    proof that any test executed or passed.
+
+A2 [tooling-unit]: Discovery does not start the theorem prover, spawn a server,
+    or evaluate test bodies.
+
+I1 [tooling-unit]: All producers use one versioned relation and test-record
+    contract, so the planning gate does not special-case claim semantics per
+    language.
+
+D1. `verifies` targets ACTIVE A/I records; `covers` targets T records.
+
+D2. Required layers use all-layer semantics: every named layer has a distinct
+    registered test identity.
+
+T1 [tooling-unit]: Unknown IDs, relation-kind mismatches, duplicate identities,
+    duplicate links, and wrong-layer links are rejected by isolated fixtures.
+
+T2 [tooling-unit]: An ACTIVE A/I record missing one required verifying layer is
+    reported as uncovered.
+
+T3 [tooling-unit]: A T record naming two required fixture layers is rejected
+    when only one layer has a covering test and accepted when distinct tests
+    cover both.
+
+T4 [tooling-unit]: Matrix output is byte-stable under producer and discovery
+    reordering.
+
+T5 [tooling-unit]: A missing producer and an unknown layer fail instead of
+    reducing the required layer set.
+
+T6 [tooling-unit]: Legacy debt fixtures reject new rows, allow reviewed existing
+    rows, and remove a row once its relationship is present.
+
+T7 [scala-unit]: MUnit discovery emits `covers`, preserves every migrated link,
+    and rejects the removed `discharges` relation.
+
+non-goals
+---------
+
+- Recording test outcomes or durations.
+- Judging the semantic adequacy of a test-to-claim link.
+- Treating coverage percentages as completion.

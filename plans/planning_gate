@@ -1,0 +1,181 @@
+---
+schema: isabelle-mcp.plan/bootstrap-v0
+id: planning_gate
+title: Enforce plan evidence and provide one done command
+status: planned
+depends_on:
+  - plan_format
+  - plan_label_schema
+  - verification_matrix
+  - python_e2e
+allowed_modules:
+  - tools/planning_gate
+  - tools/spec_gate.py
+  - plans
+  - mcp_test
+  - mcp/Tools
+  - mcp/test
+done_command:
+  - python3
+  - -m
+  - tools.planning_gate
+  - done
+---
+
+planning_gate — implementation plan
+===================================
+
+The project has useful prose drift checks and static MUnit links, but no single
+command establishes plan closure.  The current manifest is written before tests
+run and can be generated without running them, so it is a verification matrix
+input rather than execution evidence.
+
+goal
+----
+
+Provide one host-side command:
+
+    python3 -m tools.planning_gate done
+
+A plan may be accepted as done only when its normalized static relationships
+are complete, no closure blocker remains, and every required build and test
+layer succeeds during that command invocation.
+
+package
+-------
+
+Complete `tools/planning_gate/` as importable modules with one subcommand CLI:
+
+    document.py     YAML frontmatter loading and schema validation
+    labels.py       A/I/D/Q/T lifecycle and reference rules
+    registry.py     generated registries and freshness
+    matrix.py       producer merge and static coverage
+    legacy.py       reviewed unlinked-debt ratchet
+    refinements.py  OPEN/FOLDED checks
+    commands.py     reusable build/test steps
+    done.py         ordered completion composition
+    __main__.py     plan, matrix, test-layer, theories, e2e, and done commands
+
+Keep `tools/spec_gate.py` as a thin compatibility wrapper until callers move to
+the package.  No package module parses arguments or exits during import.
+
+static closure
+--------------
+
+For a plan to be done:
+
+- every ACTIVE A/I is verified in every named layer;
+- every T is covered by a distinct registered test in every named layer;
+- every D dependency resolves;
+- no Q is OPEN;
+- no plan-owned spec refinement is OPEN;
+- no missing relationship exists outside reviewed legacy debt;
+- the plan has no remaining legacy-debt row when newly moving to done; and
+- its ID, dependencies, modules, paths, and done command validate.
+
+Static matrix/catalog generation never satisfies execution requirements.
+
+execution closure
+-----------------
+
+`done` runs one fixed sequence against the same working tree:
+
+1. Print the exact starting HEAD and all dirty paths.  Dirty state is a prominent
+   warning for local human review, not an unconditional local failure.
+2. Validate plan documents, labels, dependencies, refinements, and generated
+   registry freshness.
+3. Compile the production and test artifacts needed by registered producers.
+4. Discover every producer and assemble/validate the verification matrix.
+5. Run tooling-unit tests.
+6. Run the complete Scala unit, heap, and bridge suites.
+7. Build every registered ml-unit test theory/session.
+8. Run the complete procedural Python e2e suite.
+9. Confirm HEAD and tracked file content did not change during the run, then
+   print one summarized verdict and exit nonzero if any step failed.
+
+Every step is also an independently callable subcommand.  The done command does
+not accept test filters or a reduced layer set.  It aggregates enough failure
+information to identify the broken layer while preserving a nonzero result.
+
+Functional correctness and performance budgets are reported as separate test
+classes.  A required performance budget may still block done, but a timing
+failure cannot be reported as if the functional assertion failed.
+
+There is no custom persistent verification-result database in this plan.  The
+human reviews the PR and the current command output.  CI integration is deferred
+until the project decides how Isabelle, components, heaps, and caches run there.
+Until then, the merge policy is human-enforced: do not merge or mark a plan done
+unless the complete command is green.
+
+implementation sequence
+-----------------------
+
+1. Refactor the existing `spec_gate.py` checks behind importable package APIs
+   that accept explicit roots and inputs; preserve its current CLI behavior.
+2. Add plan-format, label, matrix, legacy, and refinement checks from the
+   prerequisite plans.
+3. Inventory the exact authoritative build and execution command for every
+   layer.  Reject a declared layer with no runner instead of silently skipping
+   it.
+4. Implement reusable subprocess steps with explicit argv, cwd, timeout,
+   captured exit status, and interrupt propagation.  Do not evaluate plan-owned
+   shell strings.
+5. Implement `done` as composition of those steps and prohibit filters.
+6. Add permanent, minimal synthetic-repository fixtures for static failure
+   cases and fake-command fixtures for build/test failure propagation.  They
+   are test data, not temporary live plans or additions to legacy debt.
+7. Run the command against the real Flatpak Isabelle environment.  Keep the
+   shutdown-drain regression in the required Scala suite; its current failure
+   must make done red until WP1 fixes it.
+8. Split the documentation TOC functional assertion from its performance budget
+   before treating either result as a stable completion signal.
+
+compatibility claims (canonical until v1 lands)
+------------------------------------------------
+
+A1 [tooling-unit]: One invocation is the only project command that may establish
+    done; static metadata generation alone cannot.
+
+A2 [tooling-unit]: A dirty working tree is reported with exact paths and left to
+    explicit human review locally.
+
+I1 [tooling-unit]: Each build, discovery, static-check, and test-layer step
+    remains callable independently for diagnosis and agent iteration.
+
+D1. CI integration is deferred; the host command is designed for later reuse
+    without making CI a condition of this plan.
+
+T1 [tooling-unit]: Static fixtures reject missing A/I verification, missing T
+    coverage in any layer, open Q/refinement state, dangling D dependencies,
+    unknown IDs, and unreviewed legacy debt.
+
+T2 [tooling-unit]: Generating every discovery manifest without executing tests
+    cannot make `done` succeed.
+
+T3 [tooling-unit]: Each registered command-step failure makes `done` exit
+    nonzero and identifies its failed step.
+
+T4 [tooling-unit]: A filtered or reduced-layer invocation is rejected by the
+    completion command while remaining available through diagnostic subcommands.
+
+T5 [tooling-unit]: Dirty paths are printed; a changed HEAD or tracked content
+    during execution invalidates the run.
+
+T6 [scala-unit]: The existing shutdown-drain regression is selected by the full
+    Scala suite and its failure propagates to `done`.
+
+T7 [tooling-unit]: Documentation TOC classification fixtures distinguish
+    functional and performance checks; test [scala-unit]: the checks produce
+    distinct verdicts which the completion summary preserves.
+
+T8 [tooling-unit]: An orchestration fixture requires every registered layer;
+    test [scala-unit], [ml-unit], [heap], [bridge], and [e2e]: distinct cases
+    execute in a real full run, which succeeds only when every layer is green.
+
+non-goals
+---------
+
+- Installing or configuring Isabelle in CI.
+- Persisting a signed or revision-pinned verification-result database.
+- Using coverage percentages as evidence of completion.
+- Automatically deciding whether a test semantically proves its linked claim.

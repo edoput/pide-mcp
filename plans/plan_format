@@ -1,0 +1,142 @@
+---
+schema: isabelle-mcp.plan/bootstrap-v0
+id: plan_format
+title: Machine-readable implementation plans
+status: planned
+depends_on: []
+allowed_modules:
+  - plans
+  - tools/planning_gate
+  - tools/gen_assumptions.py
+  - tools/spec_gate.py
+done_command:
+  - python3
+  - -m
+  - tools.planning_gate
+  - done
+---
+
+plan_format — implementation plan
+=================================
+
+This is the bootstrap plan for replacing convention-only prose plans with one
+machine-readable record that remains comfortable to review as Markdown.  Its
+own YAML header is deliberately `bootstrap-v0`: current tooling can read the
+header's `status:` but still discovers A/I/D/Q/T labels from the compatibility
+section below.  Landing this plan migrates those labels into the header and
+removes the split representation atomically.
+
+goal
+----
+
+Every new or changed plan has one YAML frontmatter document containing its
+identity, lifecycle, dependencies, affected modules and invariants, labelled
+claims, refinement state, and completion command.  Markdown following the
+frontmatter explains context, alternatives, implementation sequence, and
+consequences without redefining those fields.
+
+bootstrap completion
+--------------------
+
+These five delivery plans form one bootstrap train.  Implement them in the
+declared dependency order while their statuses remain planned; do not claim an
+individual plan done merely because its module-level tests pass.  The
+`planning_gate` plan completes the shared command, after which that command
+must pass before any of the five transitions to done.  This is the only
+temporary exception to requiring an already-complete dependency before work on
+its dependent begins.
+
+format decision
+---------------
+
+The canonical file remains an extensionless Markdown plan under `plans/`.
+Frontmatter is delimited by `---`, parsed with `yaml.safe_load`, and validated
+against a versioned JSON Schema.  The planning tool installs a duplicate-key
+rejecting loader because ordinary YAML "last key wins" behavior would make a
+reviewed value differ from the value consumed by the gate.
+
+The host-side planning tool owns Python dependencies.  It may invoke Flatpak
+Isabelle commands, but Isabelle's Python runtime does not need PyYAML,
+jsonschema, or pytest.
+
+The v1 header contains, at minimum:
+
+    schema: isabelle-mcp.plan/v1
+    id: planning_gate
+    title: Enforce plan evidence and completion
+    status: planned
+    depends_on: [plan_label_schema, verification_matrix, python_e2e]
+    allowed_modules: [tools/planning_gate]
+    claims: [...]                 # canonical A/I/D/Q/T records
+    spec_refinements: []
+    done_command: [python3, -m, tools.planning_gate, done]
+
+Commands are argument arrays, never shell strings.  IDs are stable addresses;
+renaming a file or ID requires an explicit migration rather than silently
+minting a new address.
+
+implementation sequence
+-----------------------
+
+1. Establish `tools/planning_gate/` as a Python package and add a plan-document
+   loader whose entry point accepts an explicit repository root.  No module
+   parses CLI arguments at import time.
+2. Add `plans/schema/plan-v1.schema.json`, pinned to one supported JSON Schema
+   dialect, plus semantic validation for cross-file facts that JSON Schema
+   cannot decide: unique plan IDs, dependency resolution, and allowed paths.
+3. Teach the loader to reject missing/duplicate frontmatter, duplicate YAML
+   keys, unknown schema versions, unsafe YAML values, malformed IDs, absolute
+   paths, shell-string commands, and unknown top-level keys.
+4. Support current prose plans as a read-only legacy input during migration.
+   New files must be v1.  A modified legacy plan must either migrate or carry a
+   review-visible compatibility exception.
+5. Migrate this plan and the four dependent delivery plans first.  Generate the
+   legacy `plans/ASSUMPTIONS` and Isabelle ID table from v1 claims so existing
+   test citations remain valid.
+6. Move remaining plans when changed; do not perform an unreviewed mechanical
+   rewrite of every historical plan in this change.
+7. Document which fields are normative.  A gate rejects a labelled claim that
+   is redefined by a second legacy-style declaration in the Markdown body.
+
+compatibility claims (canonical until v1 lands)
+------------------------------------------------
+
+A1 [tooling-unit]: A plan has one canonical machine-readable value for every
+    field used by a gate.  Markdown may explain a field but cannot override it.
+
+A2 [tooling-unit]: YAML is parsed safely and duplicate keys are rejected before
+    schema or semantic validation.
+
+A3 [tooling-unit]: A plan remains readable without custom rendering: the
+    frontmatter is short structured data and the body is ordinary Markdown.
+
+I1 [tooling-unit]: Existing qualified plan IDs and test citations survive
+    migration byte for byte; format migration does not change ownership.
+
+D1. YAML frontmatter plus JSON Schema is the selected interchange format.
+    PyYAML, jsonschema, and pytest are host-side development dependencies.
+
+D2. Architecture decisions may be referenced from plans as ADR IDs, executable
+    examples may be referenced as Gherkin or test IDs, and concurrency models
+    may be referenced as PlusCal/TLA+ paths.  None replaces the plan record.
+
+T1 [tooling-unit]: A valid v1 fixture parses to the expected typed plan object.
+
+T2 [tooling-unit]: Missing frontmatter, duplicate keys, unknown fields, unsafe
+    YAML values, malformed IDs, and shell-string commands are each rejected by
+    an isolated fixture.
+
+T3 [tooling-unit]: Unknown dependencies and paths outside the repository are
+    rejected with the plan path and field name.
+
+T4 [tooling-unit]: A v1 plan cannot repeat an A/I/D/Q/T declaration in its
+    Markdown body.
+
+T5 [tooling-unit]: Migrating a fixture from legacy prose to v1 preserves every
+    qualified claim ID and produces byte-stable generated registries.
+
+non-goals
+---------
+
+- Rewriting the narrative body of historical plans.
+- Adding a general YAML templating or code-execution facility.

@@ -90,6 +90,19 @@ status key: [ ] planned only, [x] implemented and green.
 index (wave order from the spec's implementation plan)
 ------------------------------------------------------
 
+delivery and verification infrastructure (independent of feature waves):
+  - [ ] plan_format            plans/plan_format (YAML frontmatter + schema;
+        bootstrap migration from convention-only prose plans)
+  - [ ] plan_label_schema      plans/plan_label_schema (typed A/I/D/Q/T
+        lifecycle and bounded historical normalization; depends on plan_format)
+  - [ ] verification_matrix   plans/verification_matrix (static verifies/covers
+        relationships across MUnit, Isabelle theory, tooling, and Python e2e
+        producers; depends on plan_label_schema)
+  - [ ] python_e2e             plans/python_e2e (registered deterministic
+        real-process Python client tests; depends on verification_matrix)
+  - [ ] planning_gate         plans/planning_gate (importable gate package and
+        the single project done command; depends on all four plans above)
+
 wave 0 — shared infrastructure (prerequisites, not tools):
   MCP_Session.ir promise-by-id bridge; named-args yxml encoding on
   both sides; builtin tool table + tools/list merge + tools/call

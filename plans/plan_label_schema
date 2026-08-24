@@ -1,0 +1,125 @@
+---
+schema: isabelle-mcp.plan/bootstrap-v0
+id: plan_label_schema
+title: Normalize plan label semantics and lifecycle
+status: planned
+depends_on:
+  - plan_format
+allowed_modules:
+  - plans
+  - tools/planning_gate
+  - tools/gen_assumptions.py
+done_command:
+  - python3
+  - -m
+  - tools.planning_gate
+  - done
+---
+
+plan_label_schema — implementation plan
+=======================================
+
+The current A/I/D/Q/T addresses are valuable, but their meaning and lifecycle
+are partly conventional.  A strict evidence gate would otherwise encourage a
+test to be attached to a dead assumption, treat an old design note like an
+acceptance promise, or leave a resolved question looking open forever.
+
+goal
+----
+
+Give every labelled plan record a typed meaning and explicit state before the
+planning gate enforces evidence completeness.  Preserve stable qualified IDs
+and make historical ambiguity visible rather than guessing it away.
+
+label schema
+------------
+
+`A` — assumption or acceptance claim
+  An observable behavior the implementation relies on or promises.  ACTIVE A
+  records require registered verification.  MOOT or SUPERSEDED records retain
+  their IDs and require a dated rationale or a resolving ID, but no fabricated
+  test.
+
+`I` — shared infrastructure assumption
+  Declared and verified once by its owning plan.  Later plans reference the
+  qualified ID and do not duplicate its evidence.  Its lifecycle states match
+  A.
+
+`D` — design, detail, or dependency record
+  Every D is classified as DESIGN, DETAIL, or DEPENDENCY.  A dependency carries
+  a resolvable target.  Observable behavior discovered in a historical D moves
+  to A; a concrete verification requirement moves to T.  D does not acquire a
+  test merely to improve coverage.
+
+`Q` — design question or implementation choice
+  Explicitly OPEN or RESOLVED.  A resolved Q has a date and resolution text or
+  a target A/D/T/ADR.  An OPEN Q prevents its plan from becoming done.
+
+`T` — concrete test requirement
+  States the behavior to verify and names every required test layer.  Every
+  layer is required and will need a distinct covering test case.
+
+New ACTIVE A, ACTIVE I, and T records must name their layers explicitly.
+`unstated` remains a legacy condition to inventory, not a valid new value.
+
+migration
+---------
+
+1. Extend the v1 claim schema with `kind`, `state`, `statement`, `layers`, and
+   kind-specific fields such as `target`, `resolution`, and `resolved_on`.
+2. Inventory the current registry by label kind and state.  Emit a review file
+   containing only semantic decisions: prose-marked MOOT/SUPERSEDED A records,
+   all historical D records, Q records, and ACTIVE A/I/T records with inferred
+   or unstated layers.
+3. Human-review that bounded decision file.  Automated migration may move
+   syntax but may not decide whether behavior is moot, observable, or required.
+4. Migrate accepted decisions into v1 frontmatter while preserving plan name,
+   label, statement, and qualified ID.
+5. Generate a richer registry containing kind, state, layer set, and owner.
+   Keep the existing text and Isabelle ID outputs for compatibility.
+6. Make references resolve to the owning qualified ID.  Reject duplicate
+   owners, dangling supersession/dependency/resolution targets, and cycles in
+   supersession.
+
+compatibility claims (canonical until v1 lands)
+------------------------------------------------
+
+A1 [tooling-unit]: Every ACTIVE A record represents behavior that must be
+    verified before its owner plan is done.
+
+A2 [tooling-unit]: A MOOT or SUPERSEDED A record keeps its stable ID and an
+    auditable reason; it does not receive a false verification link.
+
+I1 [tooling-unit]: An ACTIVE I record is verified by its owner exactly once and
+    can be reused through qualified references without duplicate declarations.
+
+D1. A D record is structurally checked, but test completeness is not inferred
+    from the historically ambiguous D prefix.
+
+D2. A behavioral historical D becomes A and a concrete verification
+    requirement becomes T; the migration records the old qualified ID as an
+    alias or superseded record so references do not silently break.
+
+T1 [tooling-unit]: ACTIVE, MOOT, and SUPERSEDED A/I fixture records validate
+    only with their required rationale or target fields.
+
+T2 [tooling-unit]: A dependency D with an unknown target is rejected; DESIGN
+    and DETAIL D records do not require test metadata.
+
+T3 [tooling-unit]: An OPEN Q prevents done; a RESOLVED Q without a date and
+    resolution is rejected.
+
+T4 [tooling-unit]: A new ACTIVE A/I/T record with no explicit layer is rejected.
+
+T5 [tooling-unit]: Downstream references to an I record resolve to one owner and
+    duplicate declarations are rejected.
+
+T6 [tooling-unit]: Migration fixtures preserve qualified IDs and reject an
+    unreviewed semantic conversion between A, D, and T.
+
+non-goals
+---------
+
+- Proving a test genuinely establishes an assumption; that remains review work.
+- Requiring tests for pure design/detail records.
+- Deleting historical IDs merely because their claims became moot.
