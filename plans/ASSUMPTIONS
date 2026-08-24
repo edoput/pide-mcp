@@ -137,8 +137,8 @@ repl_init#T7              bridge,e2e,scala-unit     the full chain: tools/call r
 repl_init_from_source#T1  unstated                  (exactly-one-locator) and T2 (pure resolver coverage, both
 repl_init_from_source#T2  scala-unit                the pure resolver picks the documented command: offset -> containing command, pattern -> first occurrence, index -> nth.
 repl_init_from_source#T3  bridge                    Ir.init_from_document requires the command to be executed and finished; an unexecuted command is a status error, not a hang.
-repl_init_from_source#T4  ml-unit                   the segment fallback works for image theories with recorded segments (record_theories sessions, e.g. MCP-HOL's own theories), where no PIDE document e
-repl_init_from_source#T5  e2e                       the created repl behaves like any other: visible in repl_list with origin "document ... cmd N" (or "Thy:idx"), steppable, removable.
+repl_init_from_source#T4  bridge                    the segment fallback works for image theories with recorded segments (record_theories sessions, e.g. MCP-HOL's own theories), where no PIDE document e
+repl_init_from_source#T5  bridge                    the created repl behaves like any other: visible in repl_list with origin "document ... cmd N" (or "Thy:idx"), steppable, removable.
 repl_list#I1              bridge,scala-unit         MCP_Session.ir exists and resolves the promise by id on MCP.ir_result, off the ML protocol loop (async).
 repl_list#I2              ml-unit,scala-unit        the argument encoding is the named yxml pair list on both sides, and the empty argument object encodes to something the dispatcher accepts for a zero-
 repl_list#I3              scala-unit                the builtin table is merged into tools/list and tools/call routes to the handler, with builtins keeping the bare name on collision.

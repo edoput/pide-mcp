@@ -169,12 +169,12 @@ T3  Ir.init_from_document requires the command to be executed and
 T4  the segment fallback works for image theories with recorded
     segments (record_theories sessions, e.g. MCP-HOL's own theories),
     where no PIDE document exists.
-    test [ml unit]: dispatch "init" with a "Thy:idx" spec against a
+    test [bridge]: dispatch "init" with a "Thy:idx" spec against a
     recorded theory -> ok (shared with plans/repl_init T6).
 T5  the created repl behaves like any other: visible in repl_list
     with origin "document ... cmd N" (or "Thy:idx"), steppable,
     removable.
-    test [e2e]: load_theory a small fixture, repl_init_from_source at
+    test [bridge]: load_theory a small fixture, repl_init_from_source at
     a lemma by pattern, repl_step "by simp" variant, repl_text,
     repl_remove.
 
