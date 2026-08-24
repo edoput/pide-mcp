@@ -11,6 +11,16 @@
             "statusMessage": "git add (tracked files only)"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/regenerate_assumptions.py\"",
+            "statusMessage": "Regenerate plan assumption registry"
+          }
+        ]
       }
     ]
   }
