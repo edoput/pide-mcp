@@ -1,5 +1,7 @@
 *.swp
 .*.swp
+__pycache__/
+*.py[cod]
 Isabelle2025-2_linux/
 afp-2025-06-04/
 isabelle-pide-mcp/

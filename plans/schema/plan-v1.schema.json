@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://isabelle-mcp.local/schema/plan-v1.schema.json",
+  "title": "Isabelle MCP implementation plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "title",
+    "status",
+    "depends_on",
+    "allowed_modules",
+    "invariants",
+    "claims",
+    "spec_refinements",
+    "done_command"
+  ],
+  "properties": {
+    "schema": {"const": "isabelle-mcp.plan/v1"},
+    "id": {"$ref": "#/$defs/plan_id"},
+    "title": {"type": "string", "minLength": 1},
+    "status": {
+      "enum": ["planned", "in_progress", "blocked", "done"]
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/plan_id"},
+      "uniqueItems": true
+    },
+    "allowed_modules": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "invariants": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/invariant"}
+    },
+    "claims": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/claim"}
+    },
+    "spec_refinements": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/spec_refinement"}
+    },
+    "done_command": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "plan_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "claim_id": {
+      "type": "string",
+      "pattern": "^[AITDQ][0-9]+$"
+    },
+    "layer": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "invariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^INV[0-9]+$"},
+        "statement": {"type": "string", "minLength": 1}
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "statement"],
+      "properties": {
+        "id": {"$ref": "#/$defs/claim_id"},
+        "kind": {
+          "enum": ["assumption", "infrastructure", "design", "question", "test"]
+        },
+        "statement": {"type": "string", "minLength": 1},
+        "state": {
+          "enum": ["active", "moot", "superseded", "open", "resolved"]
+        },
+        "layers": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/layer"},
+          "uniqueItems": true
+        },
+        "category": {"enum": ["design", "detail", "dependency"]},
+        "target": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "resolution": {"type": "string", "minLength": 1},
+        "resolved_on": {"type": "string", "format": "date"},
+        "aliases": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "spec_refinement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "statement", "spec_ids"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^R[0-9]+$"},
+        "state": {"enum": ["open", "folded"]},
+        "statement": {"type": "string", "minLength": 1},
+        "spec_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^(D-(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|undated)|S)-[a-z0-9-]+$"
+          },
+          "uniqueItems": true
+        },
+        "folded_on": {"type": "string", "format": "date"}
+      }
+    }
+  }
+}
