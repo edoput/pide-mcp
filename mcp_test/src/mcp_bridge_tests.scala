@@ -267,7 +267,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     }
   }
 
-  test("ir bridge: repl_text#T1 -- byte fidelity survives the scala-side yxml stripping (symbols, doubled spaces, embedded newline)") {
+  spec_test("ir bridge: byte fidelity survives the scala-side yxml stripping (symbols, doubled spaces, embedded newline)",
+      discharges = List("repl_text#T1")) {
     with_repl("Texted") {
       val step_text = "lemma \"x \\<longrightarrow> x\"\n  by  simp"
       expect_ok(session.ir("step", List("repl" -> "Texted", "isar_text" -> step_text)),
@@ -277,7 +278,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     }
   }
 
-  test("ir bridge: repl_show#T2 -- show on a busy REPL errors \"is busy\", not a stale read") {
+  spec_test("ir bridge: show on a busy REPL errors \"is busy\", not a stale read",
+      discharges = List("repl_show#T2")) {
     with_repl("Shown") {
       val slow = slow_step("Shown")
       eventually("show on Shown never errored \"busy\" while the step was in flight") {
