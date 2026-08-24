@@ -1099,7 +1099,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      test above). offset 0 always lands in segment 0 regardless of its
      exact text, so it needs no fragile byte-offset arithmetic; pattern
      targets a command known to appear exactly once. */
-  test("repl_init_from_source#T4: image-tier segment fallback resolves offset/pattern/index against recorded segments") {
+  spec_test("image-tier segment fallback resolves offset/pattern/index against recorded segments",
+      discharges = List("repl_init_from_source#T4")) {
     val by_pattern =
       expect_ok(
         session.init_from_source("SegPat", "MCP_Repl", None, Some("Ir.set_self_theory"), None),
@@ -1128,7 +1129,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      state right after that command, before its own on-disk "by"), step
      the SAME closing tactic through the fresh REPL, and confirm it is
      listed, steppable, its text readable, and removable. */
-  test("repl_init_from_source#T5: e2e attach-by-pattern on a loaded theory, step, text, remove") {
+  spec_test("e2e attach-by-pattern on a loaded theory, step, text, remove",
+      discharges = List("repl_init_from_source#T5")) {
     with_fixture_dir(
       "InitFromSrcT5" ->
         wave2_theory("InitFromSrcT5",
