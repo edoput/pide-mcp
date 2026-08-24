@@ -36,6 +36,10 @@ PLANS = ROOT / "plans"
 REGISTRY = PLANS / "ASSUMPTIONS"
 ML_OUT = ROOT / "mcp/Tools/assumption_ids.ML"
 
+# widest LAYER value: a three-layer obligation like repl_init#T7
+# renders "bridge,e2e,scala-unit"
+LAYER_W = 24
+
 # `I1  text`, `A1. text`, `T1 [scala unit]: text`, `D2: text`.
 #
 # The separator is one-or-more spaces, NOT two: labels are padded to a fixed
@@ -48,8 +52,10 @@ ML_OUT = ROOT / "mcp/Tools/assumption_ids.ML"
 # "T7..T10", so a summary line beginning with a range declares nothing.
 LABEL = re.compile(r"^ {0,4}([AITDQ]\d+)(?:[.:])?\s+(\S.*)$")
 RULE = re.compile(r"^[-=]{3,}\s*$")
-TEST_CLAUSE = re.compile(r"^\s*test\s*\[([^\]]*)\]", re.I)
 INLINE_LAYER = re.compile(r"^\[([^\]]*)\]")
+# Every bracketed tag, anywhere on a line -- an obligation may carry a second
+# layer mid-line, which an anchored `^test [...]` pattern cannot see.
+ANY_TAG = re.compile(r"\[([^\]]*)\]")
 
 LAYERS = [("ml unit", "ml-unit"), ("ml-unit", "ml-unit"),
           ("scala unit", "scala-unit"), ("scala-unit", "scala-unit"),
@@ -73,15 +79,29 @@ def parse(path: pathlib.Path):
         if not c:
             return
         body = " ".join(c["lines"]).strip()
-        # layer comes from a `test [...]` clause, or from `T1 [scala unit]:`
-        layer = "unstated"
+        # An obligation may name MORE THAN ONE layer, and 19 of them do:
+        # plans/scope_show T2 is "test [scala unit] for patterns; [bridge] for
+        # repl + load_theory", and ml_builtin_migration A5 carries its second
+        # tag mid-line on a continuation. Reading only the first tag dropped the
+        # rest silently, and because spec_gate.py layer-binds `discharges`, the
+        # dropped layer's test became uncitable -- a real bridge test could not
+        # be linked to the obligation it discharges.
+        #
+        # So: collect every tag that resolves to a layer, not just the first.
+        # layer_of() stays substring-based on purpose. A stricter classifier was
+        # tried and rejected: readiness#T9's tag is `[bridge or test_mcp.py]`,
+        # which an exact-match rule rejects, falling through to the body scan
+        # below -- where "cleaned heap" matches first and flips it to `heap`.
+        found = []
         for ln in c["lines"]:
-            m = TEST_CLAUSE.match(ln) or INLINE_LAYER.match(ln.strip())
-            if m:
-                layer = layer_of(m.group(1))
-                break
-        if layer == "unstated":
-            layer = layer_of(body)
+            for tag in ANY_TAG.findall(ln):
+                name = layer_of(tag)
+                if name != "unstated" and name not in found:
+                    found.append(name)
+        # sorted(), because this file is regenerated and byte-compared by
+        # spec_gate.py's freshness check: discovery order must not leak in.
+        # The fallback keeps obligations that carry no tag at all working.
+        layer = ",".join(sorted(found)) if found else layer_of(body)
         stmt = re.split(r"\btest\s*\[", body)[0].strip()
         # `T1 [scala unit]: drive Handler ...` -- the layer tag is metadata,
         # already captured above, so it does not belong in the statement.
@@ -135,11 +155,11 @@ def render_registry(rows):
         "with the checked \\<^assumption> antiquotation. An ID that no test cites is",
         "an unchecked assumption; the gate reports the count.",
         "",
-        f"{'ID'.ljust(w)}  LAYER       STATEMENT",
-        f"{'-' * w}  ----------  ---------",
+        f"{'ID'.ljust(w)}  {'LAYER'.ljust(LAYER_W)}  STATEMENT",
+        f"{'-' * w}  {'-' * LAYER_W}  ---------",
     ]
     for ident, layer, stmt in rows:
-        body.append(f"{ident.ljust(w)}  {layer.ljust(10)}  {stmt[:150]}")
+        body.append(f"{ident.ljust(w)}  {layer.ljust(LAYER_W)}  {stmt[:150]}")
     return "\n".join(body) + "\n"
 
 

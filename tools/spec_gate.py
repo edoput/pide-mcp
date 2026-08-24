@@ -63,6 +63,8 @@ ID_RE = re.compile(r"^(?:D-(?:\d{4}-\d{2}-\d{2}|undated)|S)-[a-z0-9-]+$")
 # ids that can be registered but never cited, and reports 0% forever.
 PLAN = r"[\w-]+"
 LABEL = r"[AITDQ]\d+"
+# The LAYER column is one comma-joined field (`bridge,scala-unit`) for an
+# obligation discharged at more than one layer, so it stays a single \S+ token.
 REG_ROW = re.compile(rf"^({PLAN}#{LABEL})\s+(\S+)\s")
 CITE = re.compile(rf"\b({PLAN}#{LABEL})\b")
 META = re.compile(r"^(id|supersedes|superseded_by|status):\s*(.*)$")
@@ -375,8 +377,15 @@ for index, test in enumerate(tests):
         manifest_require(ident in known_ids,
                          f"{suite}::{name} cites unknown plan id {ident}")
         if relation == "discharges":
+            # An obligation may declare SEVERAL layers -- plans/scope_show T2 is
+            # discharged partly by a scala-unit test and partly by a bridge one.
+            # The registry records them comma-joined, so the binding is
+            # membership, not equality. This still refuses a link that claims a
+            # layer the plan never named; what it does NOT check is that every
+            # declared layer actually has a test (see CHANGELOG).
             expected = id_layer.get(ident, "unstated")
-            manifest_require(expected == "unstated" or expected == layer,
+            declared = set(expected.split(","))
+            manifest_require("unstated" in declared or layer in declared,
                              f"{suite}::{name}: {ident} declares layer {expected}, "
                              f"manifest says {layer}")
 
