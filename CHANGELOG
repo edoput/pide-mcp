@@ -4,6 +4,27 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-24 (repl_init_from_source T4/T5 are bridge obligations)
+--------------------------------------------------------------------------
+
+- decided: plans/repl_init_from_source T4 and T5 declare `[bridge]`. They
+  previously declared `[ml unit]` and `[e2e]`, which contradicted the same
+  plan's own prose ("T3..T5 are bridge tests in mcp_bridge_tests.scala's
+  MCP_Ir_Bridge_Tests") and contradicted the tests that were actually written
+  -- both live in MCP_Ir_Bridge_Tests. The narrative and the code agreed with
+  each other; the two tags were the outliers, so the tags were corrected.
+
+- this was a genuine relabel, not the truncation bug fixed earlier the same
+  day: both obligations carried one explicit tag and the registry recorded it
+  faithfully. No parser change would have found this -- only reading the plan
+  against the suite the test lives in.
+
+- T5's tag moving off `e2e` also stops it waiting on a layer that has no
+  producer: nothing in MCP_Test.suite_definitions maps to end_to_end_tests, so
+  an obligation declared e2e can never be discharged from the munit manifest.
+
+- coverage 53/239 -> 55/239, obligations 43/184 -> 45/184.
+
 2026-08-24 (an obligation may be discharged at more than one layer)
 --------------------------------------------------------------------------
 
