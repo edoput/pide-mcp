@@ -4,6 +4,37 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-24 (an obligation may be discharged at more than one layer)
+--------------------------------------------------------------------------
+
+- measured: `tools/gen_assumptions.py` recorded only the FIRST bracketed layer
+  tag of an obligation and stopped. 19 obligations name two or more layers, so
+  19 registry rows silently lost one. In every one of the 19 the recorded layer
+  was among those named -- none was mislabelled, all were truncated -- so the
+  correction is purely additive.
+
+- the cost was not cosmetic. `spec_gate.py` layer-binds `discharges`, so a
+  dropped layer made a real, already-written test uncitable. `plans/scope_show`
+  T2 says "test [scala unit] for patterns; [bridge] for repl + load_theory",
+  and its bridge test existed and passed, but could not be linked to the
+  obligation it discharges. It now is: scope_show#T2 is cited by three
+  scala-unit tests and one bridge test, which is what the plan always asked for.
+
+- decided: the LAYER column holds a comma-joined, sorted set. It stays one
+  `\S+` token, so the registry format and REG_ROW are unchanged. `discharges`
+  binding becomes membership -- a link may claim any layer the plan named, and
+  still cannot claim one it did not.
+
+- `layer_of` stays substring-based on purpose. A stricter tag classifier was
+  tried and rejected: readiness#T9's tag reads `[bridge or test_mcp.py]`, which
+  an exact-match rule refuses, falling through to the whole-body scan where
+  "cleaned heap" matches first and flips the row to `heap`.
+
+- NOT done, and the reason the ratchet question is still open: nothing requires
+  a multi-layer obligation to have a test at EACH declared layer. repl_init#T7
+  declares three and one test satisfies it. Enforcing per-layer coverage is a
+  separate strengthening.
+
 2026-08-23 (munit tagging opens beyond the readiness pilot)
 --------------------------------------------------------------------------
 
