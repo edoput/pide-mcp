@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -217,27 +219,138 @@ def test_sentinel():
     assert first.tests[0].links[0].id == "example#T1"
 
 
-@spec_test(verifies=("verification_matrix#A2", "verification_matrix#I1"))
-def test_theory_discovery_uses_checked_citations_without_loading_theory(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "repository"
-    theory = root / "mcp/Tools/HOL/Tests/Fixture.thy"
-    theory.parent.mkdir(parents=True)
-    theory.write_text(
-        r"""theory Fixture imports Main begin
+def write_theory_manifest(root: Path) -> tuple[Path, dict, tuple[Path, ...]]:
+    layers_path = root / "mcp_test/etc/test_layers.json"
+    layers_path.parent.mkdir(parents=True)
+    layers_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "layers": {"ml_unit_tests": "ml-unit"},
+                "producers": {"ml-unit": "isabelle-mcp/isabelle-theory"},
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
-section \<open>\<^assumption>\<open>example#T1\<close> registered case\<close>
-ML \<open>raise Fail \"discovery must not load this theory\"\<close>
+    sources = (
+        root / "mcp/Tools/Tests/Tool_Test.thy",
+        root / "mcp/Tools/HOL/Tests/HOL_Test.thy",
+    )
+    for source in sources:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(
+            "theory Fixture imports Main\nbegin\nML \\<open>val _ = ()\\<close>\nend\n",
+            encoding="utf-8",
+        )
 
+    omitted = root / "mcp/Tools/HOL/Tests/Omitted_Test.thy"
+    omitted.write_text(
+        r"""theory Omitted_Test imports Main begin
+section \<open>\<^assumption>\<open>example#T9\<close> citation only\<close>
+spec_test \<open>omitted by aggregate import\<close> covers \<open>example#T9\<close>
 end
 """,
         encoding="utf-8",
     )
 
-    producer = theory_producer(root)
+    sessions = ("MCP-Tools-Tests", "MCP-HOL-Tests")
+    theories = ("MCP-Tools-Tests.Tool_Test", "MCP-HOL-Tests.HOL_Test")
+    theory_records = []
+    test_records = []
+    for index, (session, theory, source) in enumerate(zip(sessions, theories, sources)):
+        relative = source.relative_to(root).as_posix()
+        digest = "sha1:" + hashlib.sha1(source.read_bytes()).hexdigest()
+        theory_records.append(
+            {
+                "session": session,
+                "theory": theory,
+                "source": {"path": relative, "sha1": digest},
+            }
+        )
+        test_records.append(
+            {
+                "session": session,
+                "theory": theory,
+                "name": f"registered {index}",
+                "location": {"path": relative, "line": 3},
+                "layer": "ml-unit",
+                "links": [
+                    {
+                        "relation": "verifies" if index == 0 else "covers",
+                        "id": "example#A1" if index == 0 else "example#T1",
+                    }
+                ],
+            }
+        )
+    value = {
+        "schema_version": 1,
+        "producer": "isabelle-mcp/isabelle",
+        "framework": "isabelle",
+        "export_name": "mcp/spec-tests",
+        "test_layers_sha256": "sha256:" + hashlib.sha256(layers_path.read_bytes()).hexdigest(),
+        "sessions": list(sessions),
+        "theories": theory_records,
+        "tests": test_records,
+    }
+    manifest_path = root / "mcp_test/lib/isabelle-spec.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps(value), encoding="utf-8")
+    return manifest_path, value, sources
 
-    assert producer.tests[0].source == "mcp/Tools/HOL/Tests/Fixture.thy"
-    assert producer.tests[0].line == 3
-    assert producer.tests[0].links[0].relation == "covers"
-    assert producer.tests[0].links[0].id == "example#T1"
+
+@spec_test(
+    verifies=("verification_matrix#A2", "verification_matrix#I1"),
+    covers=("verification_matrix#T8",),
+)
+def test_theory_discovery_consumes_only_structured_manifest_records(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    manifest_path, _, _ = write_theory_manifest(root)
+
+    producer = theory_producer(root, manifest_path)
+
+    assert [test.identity for test in producer.tests] == [
+        "MCP-HOL-Tests::MCP-HOL-Tests.HOL_Test::registered 1",
+        "MCP-Tools-Tests::MCP-Tools-Tests.Tool_Test::registered 0",
+    ]
+    assert {test.links[0].relation for test in producer.tests} == {"covers", "verifies"}
+    assert not any("Omitted_Test" in test.source for test in producer.tests)
+    assert "Omitted_Test" not in producer.artifact["theory_sources"]
+
+
+@spec_test(covers=("verification_matrix#T8",))
+def test_theory_manifest_rejects_incomplete_stale_and_mistyped_records(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    manifest_path, original, sources = write_theory_manifest(root)
+
+    missing_session = copy.deepcopy(original)
+    missing_session["sessions"] = ["MCP-Tools-Tests"]
+    manifest_path.write_text(json.dumps(missing_session), encoding="utf-8")
+    with pytest.raises(MatrixError, match="configured sessions"):
+        theory_producer(root, manifest_path)
+
+    duplicate = copy.deepcopy(original)
+    duplicate["tests"].append(copy.deepcopy(duplicate["tests"][0]))
+    manifest_path.write_text(json.dumps(duplicate), encoding="utf-8")
+    with pytest.raises(MatrixError, match="duplicates test identity"):
+        theory_producer(root, manifest_path)
+
+    mistyped = copy.deepcopy(original)
+    mistyped["tests"][0]["links"][0] = {
+        "relation": "verifies",
+        "id": "example#D1",
+    }
+    manifest_path.write_text(json.dumps(mistyped), encoding="utf-8")
+    with pytest.raises(MatrixError, match="verifies cannot target"):
+        theory_producer(root, manifest_path)
+
+    manifest_path.write_text(json.dumps(original), encoding="utf-8")
+    sources[0].write_text("theory Changed imports Main begin end\n", encoding="utf-8")
+    with pytest.raises(MatrixError, match="changed after its Isabelle export"):
+        theory_producer(root, manifest_path)

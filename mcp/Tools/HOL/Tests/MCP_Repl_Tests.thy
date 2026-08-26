@@ -1841,8 +1841,8 @@ ML \<open>MCP_Repl.reset ()\<close>
 section \<open>Wave 1 (plans/ml_builtin_migration): repl_show/repl_text/repl_back
 as capture-form mcp_tools\<close>
 
-spec_test \<open>wave-1 capture tools preserve interfaces and strip markup\<close>
-  verifies \<open>ml_builtin_migration#A3\<close> and \<open>ml_builtin_migration#A9\<close>
+spec_test \<open>wave-1 capture tools preserve declared interfaces\<close>
+  verifies \<open>ml_builtin_migration#A9\<close>
 
 text \<open>A9 interface preservation, structural half: each tool has exactly
 the deleted Builtin_Tool row's single \<open>repl :: string\<close> required param

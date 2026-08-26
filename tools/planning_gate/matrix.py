@@ -17,8 +17,13 @@ SCHEMA = "isabelle-mcp.verification-producer/v1"
 MATRIX_SCHEMA = "isabelle-mcp.verification-matrix/v1"
 PLAN_LINK_RE = re.compile(r"^[a-z][a-z0-9_]*#[AITDQ][0-9]+$")
 PRODUCER_RE = re.compile(r"^[a-z0-9][a-z0-9./_-]*$")
-THEORY_LINK_RE = re.compile(r"\\<\^assumption>\\<open>([a-z][a-z0-9_]*#[AITDQ][0-9]+)\\<close>")
 LIFECYCLE_MARKER_RE = re.compile(r"\b(MOOT|SUPERSEDED)\b", re.IGNORECASE)
+THEORY_MANIFEST_PRODUCER = "isabelle-mcp/isabelle"
+THEORY_MATRIX_PRODUCER = "isabelle-mcp/isabelle-theory"
+THEORY_FRAMEWORK = "isabelle"
+THEORY_EXPORT_NAME = "mcp/spec-tests"
+THEORY_SESSIONS = ("MCP-Tools-Tests", "MCP-HOL-Tests")
+THEORY_SHA1_RE = re.compile(r"^sha1:[0-9a-f]{40}$")
 
 
 class MatrixError(ValueError):
@@ -349,35 +354,196 @@ def tooling_producer(root: Path) -> ProducerManifest:
     )
 
 
-def theory_producer(root: Path) -> ProducerManifest:
+def theory_producer(root: Path, path: Path | None = None) -> ProducerManifest:
+    """Adapt PR 17's structured Isabelle export without scanning theory source."""
+    path = path or root / "mcp_test/lib/isabelle-spec.json"
+    try:
+        raw_manifest = path.read_bytes()
+        value = json.loads(raw_manifest)
+    except (OSError, json.JSONDecodeError) as ex:
+        raise MatrixError(f"cannot load Isabelle manifest {path}: {ex}") from ex
+    expected_fields = {
+        "schema_version",
+        "producer",
+        "framework",
+        "export_name",
+        "test_layers_sha256",
+        "sessions",
+        "theories",
+        "tests",
+    }
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        raise MatrixError("Isabelle manifest has unknown or missing fields")
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise MatrixError("Isabelle manifest schema_version must be 1")
+    if value["producer"] != THEORY_MANIFEST_PRODUCER:
+        raise MatrixError(f"Isabelle manifest producer must be {THEORY_MANIFEST_PRODUCER!r}")
+    if value["framework"] != THEORY_FRAMEWORK:
+        raise MatrixError(f"Isabelle manifest framework must be {THEORY_FRAMEWORK!r}")
+    if value["export_name"] != THEORY_EXPORT_NAME:
+        raise MatrixError(f"Isabelle manifest export_name must be {THEORY_EXPORT_NAME!r}")
+
+    layer_digest = load_layers(root).sha256
+    if value["test_layers_sha256"] != layer_digest:
+        raise MatrixError(
+            "Isabelle manifest test-layer registry is stale: "
+            f"{value['test_layers_sha256']!r} != {layer_digest!r}"
+        )
+    sessions = value["sessions"]
+    if not isinstance(sessions, list) or tuple(sessions) != THEORY_SESSIONS:
+        raise MatrixError(
+            "Isabelle manifest must declare configured sessions in order: "
+            + ", ".join(THEORY_SESSIONS)
+        )
+
+    raw_theories = value["theories"]
+    if not isinstance(raw_theories, list) or not raw_theories:
+        raise MatrixError("Isabelle manifest theories must be a non-empty array")
+    theory_sources: dict[tuple[str, str], tuple[str, int, str]] = {}
+    for index, raw in enumerate(raw_theories):
+        where = f"Isabelle manifest theories[{index}]"
+        if not isinstance(raw, dict) or set(raw) != {"session", "theory", "source"}:
+            raise MatrixError(f"{where}: unknown or missing fields")
+        session, theory, source = raw["session"], raw["theory"], raw["source"]
+        if session not in THEORY_SESSIONS:
+            raise MatrixError(f"{where}.session is not configured")
+        if not isinstance(theory, str) or not theory.strip():
+            raise MatrixError(f"{where}.theory must be a non-empty string")
+        if not isinstance(source, dict) or set(source) != {"path", "sha1"}:
+            raise MatrixError(f"{where}.source requires path and sha1")
+        source_path = _path(source["path"], f"{where}.source.path")
+        if not source_path.startswith("mcp/Tools/") or not source_path.endswith(".thy"):
+            raise MatrixError(f"{where}.source.path is not an Isabelle theory source")
+        source_sha1 = source["sha1"]
+        if not isinstance(source_sha1, str) or not THEORY_SHA1_RE.fullmatch(source_sha1):
+            raise MatrixError(f"{where}.source.sha1 is malformed")
+        identity = (session, theory)
+        if identity in theory_sources:
+            raise MatrixError(f"{where} duplicates theory identity {session}::{theory}")
+        source_file = root / source_path
+        try:
+            source_bytes = source_file.read_bytes()
+        except OSError as ex:
+            raise MatrixError(f"{where}.source is unreadable: {ex}") from ex
+        actual_sha1 = "sha1:" + hashlib.sha1(source_bytes).hexdigest()
+        if actual_sha1 != source_sha1:
+            raise MatrixError(f"{source_path} changed after its Isabelle export was built")
+        theory_sources[identity] = (
+            source_path,
+            len(source_bytes.splitlines()),
+            source_sha1,
+        )
+
+    raw_tests = value["tests"]
+    if not isinstance(raw_tests, list) or not raw_tests:
+        raise MatrixError("Isabelle manifest tests must be a non-empty array")
     tests: list[dict[str, Any]] = []
-    artifacts: list[str] = []
-    paths = sorted((root / "mcp/Tools").glob("**/Tests/*.thy"))
-    for path in paths:
-        relative = path.relative_to(root).as_posix()
-        artifacts.append(f"{relative}={_sha256(path)}")
-        for line, text in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            for occurrence, ident in enumerate(THEORY_LINK_RE.findall(text), 1):
-                label = ident.rsplit("#", 1)[1]
-                relation = "covers" if label.startswith("T") else "verifies"
-                tests.append(
-                    {
-                        "identity": f"{relative}:{line}:{occurrence}",
-                        "name": f"{path.stem} line {line}",
-                        "layer": "ml-unit",
-                        "location": {"path": relative, "line": line},
-                        "verifies": [ident] if relation == "verifies" else [],
-                        "covers": [ident] if relation == "covers" else [],
-                    }
-                )
+    identities: set[tuple[str, str, str]] = set()
+    test_theories: set[tuple[str, str]] = set()
+    test_sessions: set[str] = set()
+    for index, raw in enumerate(raw_tests):
+        where = f"Isabelle manifest tests[{index}]"
+        if not isinstance(raw, dict) or set(raw) != {
+            "session",
+            "theory",
+            "name",
+            "location",
+            "layer",
+            "links",
+        }:
+            raise MatrixError(f"{where}: unknown or missing fields")
+        session, theory, name = raw["session"], raw["theory"], raw["name"]
+        if not isinstance(session, str) or session not in THEORY_SESSIONS:
+            raise MatrixError(f"{where}.session is not configured")
+        if not isinstance(theory, str) or not theory.strip():
+            raise MatrixError(f"{where}.theory must be a non-empty string")
+        source = theory_sources.get((session, theory))
+        if source is None:
+            raise MatrixError(f"{where} has no matching theory source")
+        if not isinstance(name, str) or not name.strip():
+            raise MatrixError(f"{where}.name must be a non-empty string")
+        identity = (session, theory, name)
+        if identity in identities:
+            raise MatrixError(f"{where} duplicates test identity {'::'.join(identity)}")
+        identities.add(identity)
+        test_theories.add((session, theory))
+        test_sessions.add(session)
+        if raw["layer"] != "ml-unit":
+            raise MatrixError(f"{where}.layer must be 'ml-unit'")
+        location = raw["location"]
+        if not isinstance(location, dict) or set(location) != {"path", "line"}:
+            raise MatrixError(f"{where}.location requires path and line")
+        source_path, source_lines, _ = source
+        if location["path"] != source_path:
+            raise MatrixError(f"{where}.location.path differs from its theory source")
+        if (
+            type(location["line"]) is not int
+            or location["line"] <= 0
+            or location["line"] > source_lines
+        ):
+            raise MatrixError(f"{where}.location.line is outside its theory source")
+
+        links = raw["links"]
+        if not isinstance(links, list) or not links:
+            raise MatrixError(f"{where}.links must be a non-empty array")
+        verifies: list[str] = []
+        covers: list[str] = []
+        seen_links: set[tuple[str, str]] = set()
+        for link_index, link in enumerate(links):
+            link_where = f"{where}.links[{link_index}]"
+            if not isinstance(link, dict) or set(link) != {"relation", "id"}:
+                raise MatrixError(f"{link_where}: requires relation and id")
+            relation, ident = link["relation"], link["id"]
+            if not isinstance(relation, str) or relation not in {"verifies", "covers"}:
+                raise MatrixError(f"{link_where}.relation is unknown or removed")
+            if not isinstance(ident, str) or not PLAN_LINK_RE.fullmatch(ident):
+                raise MatrixError(f"{link_where}.id is not a qualified plan label")
+            label = ident.rsplit("#", 1)[1]
+            if relation == "verifies" and label[0] not in "AI":
+                raise MatrixError(f"{link_where}: verifies cannot target {ident}")
+            if relation == "covers" and label[0] != "T":
+                raise MatrixError(f"{link_where}: covers cannot target {ident}")
+            key = (relation, ident)
+            if key in seen_links:
+                raise MatrixError(f"{link_where} duplicates {relation}:{ident}")
+            seen_links.add(key)
+            (verifies if relation == "verifies" else covers).append(ident)
+        tests.append(
+            {
+                "identity": "::".join(identity),
+                "name": name,
+                "layer": "ml-unit",
+                "location": {"path": source_path, "line": location["line"]},
+                "verifies": verifies,
+                "covers": covers,
+            }
+        )
+
+    if test_sessions != set(THEORY_SESSIONS):
+        raise MatrixError("not every configured Isabelle session contributes a spec_test")
+    if test_theories != set(theory_sources):
+        raise MatrixError("every declared Isabelle theory must contribute a spec_test")
+    try:
+        manifest_path = path.relative_to(root).as_posix()
+    except ValueError as ex:
+        raise MatrixError("Isabelle manifest path must be inside the repository") from ex
+    source_artifact = ";".join(
+        f"{source_path}={source_sha1}"
+        for source_path, _, source_sha1 in sorted(theory_sources.values())
+    )
     return manifest_from_json(
         {
             "schema": SCHEMA,
-            "producer": "isabelle-mcp/isabelle-theory",
-            "artifact": {"sources": ";".join(artifacts)},
+            "producer": THEORY_MATRIX_PRODUCER,
+            "artifact": {
+                "manifest": manifest_path,
+                "manifest_sha256": "sha256:" + hashlib.sha256(raw_manifest).hexdigest(),
+                "test_layers_sha256": layer_digest,
+                "theory_sources": source_artifact,
+            },
             "tests": tests,
         },
-        "Isabelle theory discovery",
+        str(path),
     )
 
 
@@ -476,11 +642,13 @@ def discover(
     """Discover the currently implemented producers without executing tests."""
     from mcp.test.e2e.registry import producer as e2e_producer
 
+    theory_manifest = root / "mcp_test/lib/isabelle-spec.json"
     manifests = [
         munit_producer(root),
-        theory_producer(root),
         tooling_producer(root),
         e2e_producer(root),
         *additional,
     ]
+    if theory_manifest.is_file():
+        manifests.append(theory_producer(root, theory_manifest))
     return assemble(load_repository(root), load_layers(root), manifests)
