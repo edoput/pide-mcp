@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import sys
-import tempfile
 
 from .document import DocumentError, PlanFormat, load_plan, load_repository
+from .files import write_atomic_text
+from .labels import audit_is_fresh, generate_audit, validate_labels
 from .registry import format_report, generate, stale_outputs
 
 
@@ -35,24 +35,18 @@ def _parser() -> argparse.ArgumentParser:
     registry_commands = registry.add_subparsers(dest="registry_command", required=True)
     registry_commands.add_parser("generate", help="regenerate compatibility registries")
     registry_commands.add_parser("check", help="check compatibility registry freshness")
+
+    labels = commands.add_parser("labels", help="validate claim semantics and migration")
+    label_commands = labels.add_subparsers(dest="label_command", required=True)
+    label_check = label_commands.add_parser("check", help="validate canonical claim semantics")
+    label_check.add_argument(
+        "--completion", action="store_true", help="reject every completion blocker"
+    )
+    audit = label_commands.add_parser("audit", help="manage the legacy migration audit")
+    audit_commands = audit.add_subparsers(dest="audit_command", required=True)
+    audit_commands.add_parser("generate", help="regenerate the migration audit")
+    audit_commands.add_parser("check", help="check migration-audit freshness")
     return parser
-
-
-def _write_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), mode)
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -71,6 +65,30 @@ def _main(argv: list[str] | None = None) -> int:
                 print(f"registry check: FAIL: stale outputs: {names}", file=sys.stderr)
                 return 1
             print(f"registry check: PASS ({len(report.rows)} claims)")
+            return 0
+
+        if args.command == "labels":
+            documents = load_repository(root)
+            if args.label_command == "check":
+                report = validate_labels(documents, require_completion=args.completion)
+                print(
+                    "labels check: PASS "
+                    f"({report.claims} canonical claims in {report.v1_plans} v1 plans; "
+                    f"{report.legacy_plans} legacy plans; {len(report.blockers)} blockers)"
+                )
+                return 0
+            if args.audit_command == "generate":
+                count = generate_audit(documents, root)
+                print(f"wrote plans/migration/label-audit.json ({count} records)")
+                return 0
+            fresh, count = audit_is_fresh(documents, root)
+            if not fresh:
+                print(
+                    "labels audit: FAIL: stale plans/migration/label-audit.json",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"labels audit: PASS ({count} records)")
             return 0
 
         if args.plan_command == "check":
@@ -98,7 +116,7 @@ def _main(argv: list[str] | None = None) -> int:
         rendered = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
         if args.output:
             output = args.output if args.output.is_absolute() else root / args.output
-            _write_atomic(output, rendered)
+            write_atomic_text(output, rendered)
         else:
             sys.stdout.write(rendered)
         return 0

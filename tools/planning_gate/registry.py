@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from pathlib import Path
-import tempfile
 from typing import Iterable
 
 from .document import PlanDocument, load_repository
+from .files import write_atomic_text
 
 
 LAYER_WIDTH = 24
@@ -95,23 +94,6 @@ def render_ml(rows: Iterable[RegistryRow]) -> str:
     )
 
 
-def _write_atomic(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), mode)
-            stream.write(value)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
 def expected_outputs(root: Path) -> tuple[RegistryReport, dict[Path, str]]:
     report = collect(root)
     outputs = {
@@ -133,7 +115,7 @@ def stale_outputs(root: Path) -> tuple[RegistryReport, tuple[Path, ...]]:
 def generate(root: Path) -> RegistryReport:
     report, outputs = expected_outputs(root)
     for path, value in outputs.items():
-        _write_atomic(path, value)
+        write_atomic_text(path, value)
     return report
 
 

@@ -12,6 +12,8 @@ tools/planning-gate plan check
 tools/planning-gate plan dump plans/plan_format
 tools/planning-gate registry check
 tools/planning-gate registry generate
+tools/planning-gate labels check
+tools/planning-gate labels audit check
 .venv/bin/python -m pytest -q tools/planning_gate/tests
 ```
 
@@ -35,6 +37,11 @@ Validation is deliberately split:
 Isabelle/ML ID registries from those same loaded documents.  The historical
 `tools/gen_assumptions.py` command remains only as a launcher-forwarding
 wrapper; it has no second plan parser.
+
+`labels check` enforces kind-specific lifecycle rules only on canonical v1
+claims.  Legacy plans are not silently assigned states.  Instead, `labels audit
+generate` writes `plans/migration/label-audit.json`, containing only claims
+which need a human semantic decision before migration.
 
 The final public command is `tools/planning-gate done`.  The checked-in launcher
 resolves the repository root, selects `.venv/bin/python`, checks its required

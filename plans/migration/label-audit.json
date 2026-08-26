@@ -1,0 +1,474 @@
+{
+  "purpose": "bounded semantic decisions required before migrating legacy claims",
+  "records": [
+    {
+      "decisions": [
+        "classify-design-detail-or-dependency"
+      ],
+      "id": "doc_list#D1",
+      "kind": "design",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 77,
+      "source": "plans/doc_list",
+      "statement": "document_variants parsing: the option value is a \":\"-separated variant list, each variant \"name\" or \"name=tags\" (see Document_Build in Pure). the doc sessions all use a single bare name, but parse properly: split on \":\", take the part before \"=\" of each, map EVERY variant name to the session (harmless for singletons, correct for multi-variant sessions)."
+    },
+    {
+      "decisions": [
+        "record-open-or-resolved-question"
+      ],
+      "id": "doc_list#Q1",
+      "kind": "question",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 83,
+      "source": "plans/doc_list",
+      "statement": "where the catalog struct lives: mcp_session.scala already owns the startup structure/deps; a small Doc_Catalog object in mcp/src (own file or inside mcp_session.scala) keeping {sections, entry -> source resolution} — decide when writing, doc_read consumes the same object (its plan assumes it)."
+    },
+    {
+      "decisions": [
+        "classify-design-detail-or-dependency"
+      ],
+      "id": "doc_list#D2",
+      "kind": "design",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 88,
+      "source": "plans/doc_list",
+      "statement": "Doc.contents needs ML_Settings (the examples section expands $ML_SOURCES): ML_Settings.init() at startup, once. if init proves awkward in the server context, degrade to release_notes() ++ main_contents() and drop examples — pin which in the implementation notes."
+    },
+    {
+      "decisions": [
+        "classify-design-detail-or-dependency"
+      ],
+      "id": "doc_read#D1",
+      "kind": "design",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 91,
+      "source": "plans/doc_read",
+      "statement": "heading extraction mechanism. two candidates: (a) line-anchored scan: a heading command at the start of a line (^chapter/^section/... followed by whitespace or an opening delimiter) with the title read from the following cartouche ‹...› or quoted string. the doc sources are hand-formatted prose theories; headings there are line-initial in practice. (b) token-based: outer-syntax token stream (isabelle.Token / Thy_Header + the session base's overall_syntax from deps), taking command tokens named chapter/section/... — immune to formatting, and the same machinery the plans/session_structure filesystem-/commands spike needs. decision rule: if that spike has landed its scala-side outer-syntax spans by the time this is implemented, REUSE it (b); otherwise ship (a) with the line-initial caveat pinned in a test (T6 guards against silent breakage across distribution upgrades). do not build (b) from scratch just for this tool."
+    },
+    {
+      "decisions": [
+        "classify-design-detail-or-dependency"
+      ],
+      "id": "doc_read#D2",
+      "kind": "design",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 108,
+      "source": "plans/doc_read",
+      "statement": "heading commands with markers/attributes (chapter \\<open>..\\<close>, section \\<^marker>...): the doc sources use plain forms today; (a) must at least skip an optional target/marker before the title or tolerate extraction failure per-heading (drop the row, never crash the toc)."
+    },
+    {
+      "decisions": [
+        "classify-design-detail-or-dependency"
+      ],
+      "id": "doc_read#D3",
+      "kind": "design",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 113,
+      "source": "plans/doc_read",
+      "statement": "cap sizes (revised 2026-07-14 during implementation): there was nothing to reuse — no ?lines= parser and no window constant exist anywhere in the codebase yet (isabelle://theory/{name} reads the whole file via start=0/stop=-1). doc_read is the FIRST tool to implement the spec's oversized-read rule, so it establishes Doc_Catalog.window_lines = 200 as the cap, applied to manual section reads and parameterless plain-entry reads alike; a chapter-sized section is EXPECTED to truncate — the note says how to narrow (a more specific section, or an explicit lines= for plain entries)."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "find_definition#T6",
+      "kind": "test",
+      "layer_origin": "prose",
+      "layers": [
+        "scala-unit"
+      ],
+      "line": 31,
+      "source": "plans/find_definition",
+      "statement": "(full chain) is the same live probe, plus scala-unit dispatch/"
+    },
+    {
+      "decisions": [
+        "classify-design-detail-or-dependency",
+        "remove-test-layers-or-convert-to-A-or-T"
+      ],
+      "id": "list_sessions#D1",
+      "kind": "design",
+      "layer_origin": "tag",
+      "layers": [
+        "scala-unit"
+      ],
+      "line": 15,
+      "source": "plans/list_sessions",
+      "statement": "the session structure computed once at server startup (from the same -d dirs) enumerates every session with chapter, description, theories and source paths, and Store lookup answers heap_present."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "list_sessions#T1",
+      "kind": "test",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 72,
+      "source": "plans/list_sessions",
+      "statement": "D1 (above)."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness#A1",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 196,
+      "source": "plans/readiness",
+      "statement": "initialize does not depend on the backend."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness#A2",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 204,
+      "source": "plans/readiness",
+      "statement": "tools/list answers while not ready, with the builtin table."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness#A3",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 209,
+      "source": "plans/readiness",
+      "statement": "a prover-backed tools/call while not ready is an isError result, not a json-rpc error, and names the state."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness#A4",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 215,
+      "source": "plans/readiness",
+      "statement": "Failed is reported distinctly from Not_Ready."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness#A5",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 219,
+      "source": "plans/readiness",
+      "statement": "the transition is observable without restarting the handler."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness#A6",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 225,
+      "source": "plans/readiness",
+      "statement": "isabelle://session reads in both states."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness#A7",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 229,
+      "source": "plans/readiness",
+      "statement": "the real server serves stdin before its session is up."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness#A8",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 242,
+      "source": "plans/readiness",
+      "statement": "list_changed survives the reorder."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness#A9",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 250,
+      "source": "plans/readiness",
+      "statement": "closing stdin during the build exits cleanly."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness_catalog#A1",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 155,
+      "source": "plans/readiness_catalog",
+      "statement": "the extraction is behaviour-preserving."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness_catalog#T1",
+      "kind": "test",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 156,
+      "source": "plans/readiness_catalog",
+      "statement": "the EXISTING suites, unchanged, after step 1. If any test needed editing, the move was not a move. This is the whole verification of step 1 and it is worth naming as such. Note what"
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness_catalog#A2",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 164,
+      "source": "plans/readiness_catalog",
+      "statement": "Ready no longer waits on the catalog."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness_catalog#A3",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 174,
+      "source": "plans/readiness_catalog",
+      "statement": "a catalog-backed tool called before the catalog resolves waits and then answers — it does not error."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness_catalog#A4",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 180,
+      "source": "plans/readiness_catalog",
+      "statement": "a catalog-backed tool answers while the prover is still Not_Ready."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness_catalog#A5",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 185,
+      "source": "plans/readiness_catalog",
+      "statement": "the scope tools stay prover-gated."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness_catalog#A6",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 191,
+      "source": "plans/readiness_catalog",
+      "statement": "shutdown while the catalog future is in flight exits cleanly."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "readiness_catalog#T6",
+      "kind": "test",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 192,
+      "source": "plans/readiness_catalog",
+      "statement": "the sibling of plans/readiness' T9/A9 (still uncovered there). Closing stdin now has TWO background futures to outlive, not one. Same mechanism (Command_Line.tool force-exits on return) is expected to cover it; assert no orphaned process, and if T9 gets a real test this should share it."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "repl_init_from_source#T1",
+      "kind": "test",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 34,
+      "source": "plans/repl_init_from_source",
+      "statement": "(exactly-one-locator) and T2 (pure resolver coverage, both"
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "repl_pin#T4",
+      "kind": "test",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 68,
+      "source": "plans/repl_pin",
+      "statement": "version bump feeds rebase: after re-pin, dependent B's specs resolve to the new version (asserted via plans/repl_rebase T1; here just: pin twice -> ok both times)."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "repl_remove#T5",
+      "kind": "test",
+      "layer_origin": "prose",
+      "layers": [
+        "e2e"
+      ],
+      "line": 68,
+      "source": "plans/repl_remove",
+      "statement": "full chain: the e2e create/step/remove loop (shared with plans/repl_init T7)."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "scope_add#T1",
+      "kind": "test",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 97,
+      "source": "plans/scope_add",
+      "statement": "S1 (above)."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "session_dirs_errors#A1",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 343,
+      "source": "plans/session_dirs_errors",
+      "statement": "VERIFIED 2026-08-07. load_root_files + forcing Root_File.entries never enters the fold that throws on duplicates — the pre-scan can see a colliding set that load_structure refuses. Measured, same process, same dirs: forcing entries on the colliding set .../alpha/ROOT -> Alpha, Scratch .../beta/ROOT  -> Beta, Scratch      (no throw) load_structure over those same dirs throws: Duplicate session \"Scratch\" ... This is the plan's foundation and it is now fact, not inference."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "session_dirs_errors#A2",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 359,
+      "source": "plans/session_dirs_errors",
+      "statement": "VERIFIED 2026-08-07. Position.T on Session_Entry carries file + line, so the message can cite \"…/ROOT line 5\": Scratch line=5 file=.../alpha/ROOT Scratch line=5 file=.../beta/ROOT Note Position.File.get returns String (not Option) — the message renderer must handle the empty-string case, not a None case."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "session_dirs_errors#A3",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 370,
+      "source": "plans/session_dirs_errors",
+      "statement": "VERIFIED 2026-08-07. Provenance is knowable by subtracting the Nil baseline from a per-dir load, by Root_File.key: baseline roots (dirs = Nil): 933      (AFP registered) with one -d                : 934 delta by key               : 1 -> .../alpha/ROOT Exactly the contributed root, correctly isolated. See the COST TRAP under the mechanism for what those 933 mean for the loop."
+    },
+    {
+      "decisions": [
+        "record-moot-or-superseded-lifecycle",
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "session_dirs_errors#A4",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 396,
+      "source": "plans/session_dirs_errors",
+      "statement": "MOOT (2026-08-07 policy decision) — was \"dropping the later -d yields a structure that loads\". check() no longer drops anything; it only diagnoses, and the process exits instead of ever calling Structure.make over a filtered root list. No replacement test."
+    },
+    {
+      "decisions": [
+        "record-moot-or-superseded-lifecycle",
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "session_dirs_errors#A5",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 401,
+      "source": "plans/session_dirs_errors",
+      "statement": "MOOT (2026-08-07 policy decision) — was \"a degraded server is fully functional for the surviving roots\". There is no degraded server. Replaced by the exit-path claims below."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "session_dirs_errors#A6",
+      "kind": "assumption",
+      "layer_origin": "prose",
+      "layers": [
+        "heap"
+      ],
+      "line": 440,
+      "source": "plans/session_dirs_errors",
+      "statement": "VERIFIED 2026-08-07 — the pre-scan does not materially slow startup. It forces a ROOT parse of the component baseline (933 roots with AFP registered) once per launch that passes at least one -d; the default no--d launch skips it entirely (deviation, see above). T6 [measurement]: check() over one real -d ($ISABELLE_MCP_HOME/Tools) measured at 1100ms end to end (via `isabelle scala`, so this includes JVM/class-loading overhead on top of the check() body — an over-estimate, not an under-estimate). Budget: << the ~20s catalog (spec:469) and << the ~39s full startup the plan's own earlier measurements record; comfortably cheap enough that the originally-planned fallback (skip forcing the baseline, let component collisions fall through uncaught) was never needed."
+    },
+    {
+      "decisions": [
+        "record-moot-or-superseded-lifecycle",
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "session_dirs_errors#A7",
+      "kind": "assumption",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 454,
+      "source": "plans/session_dirs_errors",
+      "statement": "MOOT (2026-08-07 policy decision) — was \"fatal cases still produce a readable Failed\" for the -s-names-a-dropped-session and Structure.make-still-throws-after-filtering cases. Neither case exists once nothing is dropped: -s naming a colliding session surfaces as an ordinary Collision like any other, caught by the same check() before Structure.make is ever called."
+    },
+    {
+      "decisions": [
+        "declare-required-layers-or-non-active-lifecycle"
+      ],
+      "id": "unload_theory#T4",
+      "kind": "test",
+      "layer_origin": "none",
+      "layers": [],
+      "line": 72,
+      "source": "plans/unload_theory",
+      "statement": "scope drop (deferred to plans/scope_add, like load_theory T5)."
+    }
+  ],
+  "schema": "isabelle-mcp.label-migration-audit/v1"
+}
