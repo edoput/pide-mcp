@@ -80,7 +80,7 @@ claims:
   - id: T8
     kind: test
     state: active
-    statement: Isabelle manifest fixtures preserve session, theory, test identity, source freshness, layer, and spec_test links while proving that a citation without spec_test metadata creates no coverage.
+    statement: Isabelle manifest fixtures preserve session, theory, test identity, source freshness, layer, and spec_test links while proving that a citation or an omitted aggregate import creates no test record and therefore no coverage.
     layers: [tooling-unit]
 spec_refinements: []
 done_command:
@@ -155,8 +155,8 @@ never create matrix coverage.
 
 The planning gate consumes the generated Isabelle JSON manifest and adapts its
 records to the common producer contract.  It validates the manifest producer
-and schema, participation by every configured test session and every exported
-`spec_test`-bearing theory, stable test identities, source paths and freshness
+and schema, the configured session declarations, and the integrity of every
+record that is present: stable test identities, source paths and freshness
 digests, layer-registry digest, unique links, and relation/claim compatibility.
 A missing or stale manifest is a missing producer; discovery must fail closed
 instead of falling back to source scanning.
@@ -166,8 +166,11 @@ YXML-to-JSON transport with direct JSON exports.  That is an exporter refactor
 behind this boundary: it must preserve the same semantic fields and
 completeness/freshness properties, and must not require a change to matrix
 assembly.  In particular, each session aggregate must import every theory that
-declares `spec_test`; omission is an error, not an empty result.  The Scala
-MUnit runner remains independent of that transport change.
+declares `spec_test`.  An omitted import cannot identify itself as an error: its
+tests are simply absent from the export and are not discovered.  The import
+topology therefore needs a separate structural review and a fixture proving the
+resulting absence of test records and coverage.  The Scala MUnit runner remains
+independent of that transport change.
 
 Before integration, PR 17's external relation name `discharges` must be renamed
 to `covers` so the Isabelle and MUnit manifests share the terminology defined
@@ -208,8 +211,9 @@ implementation sequence
    sessions, theory/test identities, exact source positions and freshness
    digests.  Never inspect theory source to manufacture registrations.
 5. Add isolated manifest fixtures for missing sessions, stale sources, duplicate
-   identities and links, wrong relations/layers, and a citation-only theory that
-   contributes no coverage.
+   identities and links, wrong relations/layers, a citation-only theory, and an
+   aggregate that omits an imported test theory.  The latter two contribute no
+   records or coverage; they are not exporter errors.
 6. Add tooling-unit discovery for the planning package's pytest cases.
 7. Merge producer output deterministically and validate it against normalized
    plan claims and the shared layer registry.
