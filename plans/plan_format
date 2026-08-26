@@ -6,13 +6,12 @@ status: planned
 depends_on: []
 allowed_modules:
   - plans
+  - tools/planning-gate
   - tools/planning_gate
   - tools/gen_assumptions.py
   - tools/spec_gate.py
 done_command:
-  - python3
-  - -m
-  - tools.planning_gate
+  - tools/planning-gate
   - done
 ---
 
@@ -69,7 +68,7 @@ The v1 header contains, at minimum:
     allowed_modules: [tools/planning_gate]
     claims: [...]                 # canonical A/I/D/Q/T records
     spec_refinements: []
-    done_command: [python3, -m, tools.planning_gate, done]
+    done_command: [tools/planning-gate, done]
 
 Commands are argument arrays, never shell strings.  IDs are stable addresses;
 renaming a file or ID requires an explicit migration rather than silently

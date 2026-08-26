@@ -9,9 +9,7 @@ allowed_modules:
   - mcp/test
   - tools/planning_gate
 done_command:
-  - python3
-  - -m
-  - tools.planning_gate
+  - tools/planning-gate
   - done
 ---
 

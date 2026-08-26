@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 
@@ -30,7 +31,7 @@ def valid_plan(ident: str = "example", **replacements: str) -> str:
         "id": ident,
         "depends_on": "[]",
         "allowed_modules": "[tools/planning_gate]",
-        "done_command": "[python3, -m, tools.planning_gate, done]",
+        "done_command": "[tools/planning-gate, done]",
         "extra": "",
         "body": "Narrative body without canonical claim declarations.\n",
     }
@@ -213,3 +214,16 @@ def test_current_bootstrap_repository_loads_without_side_effects() -> None:
 
     assert formats["plan_format"] is PlanFormat.BOOTSTRAP
     assert formats["planning_gate"] is PlanFormat.BOOTSTRAP
+
+
+def test_launcher_resolves_repository_outside_working_directory(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [str(REPOSITORY_ROOT / "tools/planning-gate"), "plan", "check"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("plan check: PASS")

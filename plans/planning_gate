@@ -16,9 +16,7 @@ allowed_modules:
   - mcp/Tools
   - mcp/test
 done_command:
-  - python3
-  - -m
-  - tools.planning_gate
+  - tools/planning-gate
   - done
 ---
 
@@ -35,7 +33,7 @@ goal
 
 Provide one host-side command:
 
-    python3 -m tools.planning_gate done
+    tools/planning-gate done
 
 A plan may be accepted as done only when its normalized static relationships
 are complete, no closure blocker remains, and every required build and test

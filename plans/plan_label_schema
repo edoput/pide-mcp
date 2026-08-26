@@ -10,9 +10,7 @@ allowed_modules:
   - tools/planning_gate
   - tools/gen_assumptions.py
 done_command:
-  - python3
-  - -m
-  - tools.planning_gate
+  - tools/planning-gate
   - done
 ---
 

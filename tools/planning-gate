@@ -1,0 +1,27 @@
+#!/bin/sh
+
+set -eu
+
+launcher_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(dirname -- "$launcher_dir")
+planning_python="$repository_root/.venv/bin/python"
+requirements="$repository_root/tools/planning_gate/requirements.txt"
+
+if [ ! -x "$planning_python" ]; then
+  printf '%s\n' \
+    "planning gate: missing executable $planning_python" \
+    "Create the repository virtual environment and install:" \
+    "  $planning_python -m pip install -r $requirements" >&2
+  exit 2
+fi
+
+if ! "$planning_python" -c 'import jsonschema, yaml' >/dev/null 2>&1; then
+  printf '%s\n' \
+    "planning gate: required Python packages are missing from $planning_python" \
+    "Install them with:" \
+    "  $planning_python -m pip install -r $requirements" >&2
+  exit 2
+fi
+
+cd "$repository_root"
+exec "$planning_python" -m tools.planning_gate --root "$repository_root" "$@"

@@ -12,9 +12,7 @@ allowed_modules:
   - mcp/Tools
   - plans
 done_command:
-  - python3
-  - -m
-  - tools.planning_gate
+  - tools/planning-gate
   - done
 ---
 

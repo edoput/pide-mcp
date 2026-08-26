@@ -13,7 +13,7 @@ from .document import DocumentError, PlanFormat, load_plan, load_repository
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python3 -m tools.planning_gate")
+    parser = argparse.ArgumentParser(prog="tools/planning-gate")
     parser.add_argument(
         "--root", type=Path, default=Path.cwd(), help="repository root (default: cwd)"
     )

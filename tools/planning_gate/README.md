@@ -8,8 +8,8 @@ process exit behavior.
 Current checkpoint commands:
 
 ```console
-.venv/bin/python -m tools.planning_gate plan check
-.venv/bin/python -m tools.planning_gate plan dump plans/plan_format
+tools/planning-gate plan check
+tools/planning-gate plan dump plans/plan_format
 .venv/bin/python -m pytest -q tools/planning_gate/tests
 ```
 
@@ -29,8 +29,8 @@ Validation is deliberately split:
   filename/ID drift, and paths which escape the repository; and
 - repository validation resolves dependencies and rejects cycles.
 
-The final public command remains `python3 -m tools.planning_gate done`.  During
-bootstrap the required Python packages are available only in `.venv`, so the
-checkpoint commands name that interpreter explicitly.  Interpreter selection
-must be resolved before enabling the final command; it is not hidden inside
-the document loader.
+The final public command is `tools/planning-gate done`.  The checked-in launcher
+resolves the repository root, selects `.venv/bin/python`, checks its required
+imports, and then invokes the importable module.  It does not depend on the
+caller's working directory or an activated environment, and it never installs
+packages automatically.
