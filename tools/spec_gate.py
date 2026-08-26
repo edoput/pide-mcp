@@ -147,13 +147,14 @@ TEST_LAYERS, TEST_LAYERS_SHA256 = load_test_layers()
 
 # ---- 1. registry freshness -------------------------------------------------
 say("\nregistry")
-gen = ROOT / "tools/gen_assumptions.py"
-if gen.exists():
-    r = subprocess.run([sys.executable, str(gen), "--check"],
+launcher = ROOT / "tools/planning-gate"
+if launcher.exists():
+    r = subprocess.run([str(launcher), "registry", "check"],
                        cwd=ROOT, capture_output=True, text=True)
-    check("plans/ASSUMPTIONS matches plans/", r.returncode == 0, r.stdout.strip())
+    detail = (r.stdout + r.stderr).strip()
+    check("plans/ASSUMPTIONS matches plans/", r.returncode == 0, detail)
 else:
-    check("tools/gen_assumptions.py present", False, "missing")
+    check("tools/planning-gate present", False, "missing")
 
 known_ids = set()
 id_layer: dict[str, str] = {}
@@ -171,7 +172,7 @@ readme = (PLANS / "README").read_text() if (PLANS / "README").exists() else ""
 boxes = {n: (s == "x") for s, n in re.findall(r"- \[([ x])\]\s+(\S+)", readme)}
 
 multi, disagree, missing = [], [], []
-# Must agree with is_plan_file() in tools/gen_assumptions.py: a stray editor
+# Must agree with the document loader: a stray editor
 # swap file beside a plan is not a plan, and reading one as text kills the gate.
 plan_files = [p for p in sorted(PLANS.iterdir())
               if p.is_file() and p.name not in ("README", "ASSUMPTIONS")

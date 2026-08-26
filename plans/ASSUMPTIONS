@@ -1,8 +1,8 @@
 assumption registry (GENERATED -- do not edit)
 =============================================
 
-Regenerate:  python3 tools/gen_assumptions.py
-Check:       python3 tools/spec_gate.py --test-manifest mcp_test/lib/munit-spec.json
+Regenerate:  tools/planning-gate registry generate
+Check:       tools/planning-gate registry check
 
 One row per assumption DECLARED in a plan file. The ID is the address a
 test cites: munit cases attach structured tags, Isabelle theories cite it
@@ -83,50 +83,50 @@ ml_builtin_migration#A10  bridge                    the DRIFT GATE stays green m
 ml_builtin_migration#A11  bridge,e2e                a moved tool is del'able AND uncallable (the SCOPED block: asymmetric callability dissolves for a tool whose logic is ML).
 ml_builtin_migration#A12  ml-unit                   error TEXT change is client-visible and precise: a missing/unknown/ ill-typed argument names the parameter.
 ml_builtin_migration#A13  heap                      OUTPUT ROUTING SURVIVES A FRESH PROCESS AGAINST THE SAVED HEAP. MCP_Output installs its Private_Output wrappers lazily and records \<open>wrapped\<clo
-plan_format#A1            unstated                  A plan has one canonical machine-readable value for every field used by a gate.  Markdown may explain a field but cannot override it.
-plan_format#A2            unstated                  YAML is parsed safely and duplicate keys are rejected before schema or semantic validation.
-plan_format#A3            unstated                  A plan remains readable without custom rendering: the frontmatter is short structured data and the body is ordinary Markdown.
-plan_format#I1            unstated                  Existing qualified plan IDs and test citations survive migration byte for byte; format migration does not change ownership.
+plan_format#A1            tooling-unit              A plan has one canonical machine-readable value for every field used by a gate.  Markdown may explain a field but cannot override it.
+plan_format#A2            tooling-unit              YAML is parsed safely and duplicate keys are rejected before schema or semantic validation.
+plan_format#A3            tooling-unit              A plan remains readable without custom rendering: the frontmatter is short structured data and the body is ordinary Markdown.
+plan_format#I1            tooling-unit              Existing qualified plan IDs and test citations survive migration byte for byte; format migration does not change ownership.
 plan_format#D1            unstated                  YAML frontmatter plus JSON Schema is the selected interchange format. PyYAML, jsonschema, and pytest are host-side development dependencies.
 plan_format#D2            unstated                  Architecture decisions may be referenced from plans as ADR IDs, executable examples may be referenced as Gherkin or test IDs, and concurrency models m
-plan_format#T1            unstated                  A valid v1 fixture parses to the expected typed plan object.
-plan_format#T2            unstated                  Missing frontmatter, duplicate keys, unknown fields, unsafe YAML values, malformed IDs, and shell-string commands are each rejected by an isolated fix
-plan_format#T3            unstated                  Unknown dependencies and paths outside the repository are rejected with the plan path and field name.
-plan_format#T4            unstated                  A v1 plan cannot repeat an A/I/D/Q/T declaration in its Markdown body.
-plan_format#T5            unstated                  Migrating a fixture from legacy prose to v1 preserves every qualified claim ID and produces byte-stable generated registries.
-plan_label_schema#A1      unstated                  Every ACTIVE A record represents behavior that must be verified before its owner plan is done.
-plan_label_schema#A2      unstated                  A MOOT or SUPERSEDED A record keeps its stable ID and an auditable reason; it does not receive a false verification link.
-plan_label_schema#I1      unstated                  An ACTIVE I record is verified by its owner exactly once and can be reused through qualified references without duplicate declarations.
+plan_format#T1            tooling-unit              A valid v1 fixture parses to the expected typed plan object.
+plan_format#T2            tooling-unit              Missing frontmatter, duplicate keys, unknown fields, unsafe YAML values, malformed IDs, and shell-string commands are each rejected by an isolated fix
+plan_format#T3            tooling-unit              Unknown dependencies and paths outside the repository are rejected with the plan path and field name.
+plan_format#T4            tooling-unit              A v1 plan cannot repeat an A/I/D/Q/T declaration in its Markdown body.
+plan_format#T5            tooling-unit              Migrating a fixture from legacy prose to v1 preserves every qualified claim ID and produces byte-stable generated registries.
+plan_label_schema#A1      tooling-unit              Every ACTIVE A record represents behavior that must be verified before its owner plan is done.
+plan_label_schema#A2      tooling-unit              A MOOT or SUPERSEDED A record keeps its stable ID and an auditable reason; it does not receive a false verification link.
+plan_label_schema#I1      tooling-unit              An ACTIVE I record is verified by its owner exactly once and can be reused through qualified references without duplicate declarations.
 plan_label_schema#D1      unstated                  A D record is structurally checked, but test completeness is not inferred from the historically ambiguous D prefix.
 plan_label_schema#D2      unstated                  A behavioral historical D becomes A and a concrete verification requirement becomes T; the migration records the old qualified ID as an alias or super
-plan_label_schema#T1      unstated                  ACTIVE, MOOT, and SUPERSEDED A/I fixture records validate only with their required rationale or target fields.
-plan_label_schema#T2      unstated                  A dependency D with an unknown target is rejected; DESIGN and DETAIL D records do not require test metadata.
-plan_label_schema#T3      unstated                  An OPEN Q prevents done; a RESOLVED Q without a date and resolution is rejected.
-plan_label_schema#T4      unstated                  A new ACTIVE A/I/T record with no explicit layer is rejected.
-plan_label_schema#T5      unstated                  Downstream references to an I record resolve to one owner and duplicate declarations are rejected.
-plan_label_schema#T6      unstated                  Migration fixtures preserve qualified IDs and reject an unreviewed semantic conversion between A, D, and T.
-planning_gate#A1          unstated                  One invocation is the only project command that may establish done; static metadata generation alone cannot.
-planning_gate#A2          unstated                  A dirty working tree is reported with exact paths and left to explicit human review locally.
-planning_gate#I1          unstated                  Each build, discovery, static-check, and test-layer step remains callable independently for diagnosis and agent iteration.
+plan_label_schema#T1      tooling-unit              ACTIVE, MOOT, and SUPERSEDED A/I fixture records validate only with their required rationale or target fields.
+plan_label_schema#T2      tooling-unit              A dependency D with an unknown target is rejected; DESIGN and DETAIL D records do not require test metadata.
+plan_label_schema#T3      tooling-unit              An OPEN Q prevents done; a RESOLVED Q without a date and resolution is rejected.
+plan_label_schema#T4      tooling-unit              A new ACTIVE A/I/T record with no explicit layer is rejected.
+plan_label_schema#T5      tooling-unit              Downstream references to an I record resolve to one owner and duplicate declarations are rejected.
+plan_label_schema#T6      tooling-unit              Migration fixtures preserve qualified IDs and reject an unreviewed semantic conversion between A, D, and T.
+planning_gate#A1          tooling-unit              One invocation is the only project command that may establish done; static metadata generation alone cannot.
+planning_gate#A2          tooling-unit              A dirty working tree is reported with exact paths and left to explicit human review locally.
+planning_gate#I1          tooling-unit              Each build, discovery, static-check, and test-layer step remains callable independently for diagnosis and agent iteration.
 planning_gate#D1          unstated                  CI integration is deferred; the host command is designed for later reuse without making CI a condition of this plan.
-planning_gate#T1          unstated                  Static fixtures reject missing A/I verification, missing T coverage in any layer, open Q/refinement state, dangling D dependencies, unknown IDs, and u
-planning_gate#T2          unstated                  Generating every discovery manifest without executing tests cannot make `done` succeed.
-planning_gate#T3          unstated                  Each registered command-step failure makes `done` exit nonzero and identifies its failed step.
-planning_gate#T4          unstated                  A filtered or reduced-layer invocation is rejected by the completion command while remaining available through diagnostic subcommands.
-planning_gate#T5          unstated                  Dirty paths are printed; a changed HEAD or tracked content during execution invalidates the run.
+planning_gate#T1          tooling-unit              Static fixtures reject missing A/I verification, missing T coverage in any layer, open Q/refinement state, dangling D dependencies, unknown IDs, and u
+planning_gate#T2          tooling-unit              Generating every discovery manifest without executing tests cannot make `done` succeed.
+planning_gate#T3          tooling-unit              Each registered command-step failure makes `done` exit nonzero and identifies its failed step.
+planning_gate#T4          tooling-unit              A filtered or reduced-layer invocation is rejected by the completion command while remaining available through diagnostic subcommands.
+planning_gate#T5          tooling-unit              Dirty paths are printed; a changed HEAD or tracked content during execution invalidates the run.
 planning_gate#T6          scala-unit                The existing shutdown-drain regression is selected by the full Scala suite and its failure propagates to `done`.
-planning_gate#T7          scala-unit                Documentation TOC classification fixtures distinguish functional and performance checks;
-planning_gate#T8          bridge,e2e,heap,ml-unit,scala-unit  An orchestration fixture requires every registered layer;
+planning_gate#T7          scala-unit,tooling-unit   Documentation TOC classification fixtures distinguish functional and performance checks;
+planning_gate#T8          bridge,e2e,heap,ml-unit,scala-unit,tooling-unit  An orchestration fixture requires every registered layer;
 python_e2e#A1             e2e                       A procedural process test exercises the shipped process and public protocol, not an in-process fake or an LLM agent.
-python_e2e#A2             unstated                  Metadata discovery is deterministic and has no process, network, prover, or test-body side effects.
-python_e2e#I1             unstated                  All cases share one client, timeout, teardown, metadata, and result-reporting implementation instead of copying process code between scripts.
+python_e2e#A2             tooling-unit              Metadata discovery is deterministic and has no process, network, prover, or test-body side effects.
+python_e2e#I1             tooling-unit              All cases share one client, timeout, teardown, metadata, and result-reporting implementation instead of copying process code between scripts.
 python_e2e#D1             unstated                  Agent usability is a separate evaluation concern; process-test links certify only deterministic procedural behavior.
-python_e2e#T1             unstated                  Registry fixtures reject malformed IDs, duplicate cases, duplicate links, unexpected layers, and executable files omitted from the registry.
-python_e2e#T2             unstated                  Manifest discovery is byte-stable and a sentinel proves that no test body or Isabelle process ran.
-python_e2e#T3             unstated                  The runner propagates assertion failure, timeout, interrupt, and fixture failure to a nonzero exit and always reaps its child process.
+python_e2e#T1             tooling-unit              Registry fixtures reject malformed IDs, duplicate cases, duplicate links, unexpected layers, and executable files omitted from the registry.
+python_e2e#T2             tooling-unit              Manifest discovery is byte-stable and a sentinel proves that no test body or Isabelle process ran.
+python_e2e#T3             tooling-unit              The runner propagates assertion failure, timeout, interrupt, and fixture failure to a nonzero exit and always reaps its child process.
 python_e2e#T4             e2e                       The migrated `test_mcp.py` workflows pass through the registry against the real Flatpak Isabelle server.
 python_e2e#T5             e2e                       The maintained concurrency, duplicate-session, and Scala-bridge reproductions run as registered focused cases selectable by name or plan ID.
-python_e2e#T6             e2e                       A fixture proves that filtered runs remain diagnostic only;
+python_e2e#T6             e2e,tooling-unit          A fixture proves that filtered runs remain diagnostic only;
 readiness#A1              unstated                  initialize does not depend on the backend.
 readiness#T1              scala-unit                drive Handler with a readiness thunk fixed at Not_Ready("building"); assert initialize returns the normal capabilities reply, and that the thunk's bac
 readiness#A2              unstated                  tools/list answers while not ready, with the builtin table.
@@ -294,15 +294,15 @@ unload_theory#T2          scala-unit                unloading a never-loaded or 
 unload_theory#T3          bridge                    repls initialized from the theory's document survive the unload with their captured states (Toplevel.state values are self-contained) — OR break; PIN 
 unload_theory#T4          unstated                  scope drop (deferred to plans/scope_add, like load_theory T5).
 unload_theory#T5          e2e                       full chain.
-verification_matrix#A1    unstated                  The verification matrix is static coverage metadata, not proof that any test executed or passed.
-verification_matrix#A2    unstated                  Discovery does not start the theorem prover, spawn a server, or evaluate test bodies.
-verification_matrix#I1    unstated                  All producers use one versioned relation and test-record contract, so the planning gate does not special-case claim semantics per language.
+verification_matrix#A1    tooling-unit              The verification matrix is static coverage metadata, not proof that any test executed or passed.
+verification_matrix#A2    tooling-unit              Discovery does not start the theorem prover, spawn a server, or evaluate test bodies.
+verification_matrix#I1    tooling-unit              All producers use one versioned relation and test-record contract, so the planning gate does not special-case claim semantics per language.
 verification_matrix#D1    unstated                  `verifies` targets ACTIVE A/I records; `covers` targets T records.
 verification_matrix#D2    unstated                  Required layers use all-layer semantics: every named layer has a distinct registered test identity.
-verification_matrix#T1    unstated                  Unknown IDs, relation-kind mismatches, duplicate identities, duplicate links, and wrong-layer links are rejected by isolated fixtures.
-verification_matrix#T2    unstated                  An ACTIVE A/I record missing one required verifying layer is reported as uncovered.
-verification_matrix#T3    unstated                  A T record naming two required fixture layers is rejected when only one layer has a covering test and accepted when distinct tests cover both.
-verification_matrix#T4    unstated                  Matrix output is byte-stable under producer and discovery reordering.
-verification_matrix#T5    unstated                  A missing producer and an unknown layer fail instead of reducing the required layer set.
-verification_matrix#T6    unstated                  Legacy debt fixtures reject new rows, allow reviewed existing rows, and remove a row once its relationship is present.
+verification_matrix#T1    tooling-unit              Unknown IDs, relation-kind mismatches, duplicate identities, duplicate links, and wrong-layer links are rejected by isolated fixtures.
+verification_matrix#T2    tooling-unit              An ACTIVE A/I record missing one required verifying layer is reported as uncovered.
+verification_matrix#T3    tooling-unit              A T record naming two required fixture layers is rejected when only one layer has a covering test and accepted when distinct tests cover both.
+verification_matrix#T4    tooling-unit              Matrix output is byte-stable under producer and discovery reordering.
+verification_matrix#T5    tooling-unit              A missing producer and an unknown layer fail instead of reducing the required layer set.
+verification_matrix#T6    tooling-unit              Legacy debt fixtures reject new rows, allow reviewed existing rows, and remove a row once its relationship is present.
 verification_matrix#T7    scala-unit                MUnit discovery emits `covers`, preserves every migrated link, and rejects the removed `discharges` relation.

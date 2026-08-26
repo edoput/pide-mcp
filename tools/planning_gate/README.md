@@ -10,6 +10,8 @@ Current checkpoint commands:
 ```console
 tools/planning-gate plan check
 tools/planning-gate plan dump plans/plan_format
+tools/planning-gate registry check
+tools/planning-gate registry generate
 .venv/bin/python -m pytest -q tools/planning_gate/tests
 ```
 
@@ -28,6 +30,11 @@ Validation is deliberately split:
 - `document.py` rejects duplicate YAML keys, YAML-only values, unsafe tags,
   filename/ID drift, and paths which escape the repository; and
 - repository validation resolves dependencies and rejects cycles.
+
+`registry check` and `registry generate` derive the compatibility text and
+Isabelle/ML ID registries from those same loaded documents.  The historical
+`tools/gen_assumptions.py` command remains only as a launcher-forwarding
+wrapper; it has no second plan parser.
 
 The final public command is `tools/planning-gate done`.  The checked-in launcher
 resolves the repository root, selects `.venv/bin/python`, checks its required

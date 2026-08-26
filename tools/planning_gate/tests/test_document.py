@@ -208,12 +208,22 @@ def test_dump_payload_uses_relative_source_and_json_values(tmp_path: Path) -> No
     assert str(root) not in encoded
 
 
-def test_current_bootstrap_repository_loads_without_side_effects() -> None:
+def test_current_delivery_plans_load_without_side_effects() -> None:
     documents = load_repository(REPOSITORY_ROOT)
     formats = {document.id: document.format for document in documents}
 
-    assert formats["plan_format"] is PlanFormat.BOOTSTRAP
-    assert formats["planning_gate"] is PlanFormat.BOOTSTRAP
+    delivery_formats = {
+        formats[name]
+        for name in (
+            "plan_format",
+            "plan_label_schema",
+            "verification_matrix",
+            "python_e2e",
+            "planning_gate",
+        )
+    }
+    assert len(delivery_formats) == 1
+    assert delivery_formats <= {PlanFormat.BOOTSTRAP, PlanFormat.V1}
 
 
 def test_launcher_resolves_repository_outside_working_directory(tmp_path: Path) -> None:

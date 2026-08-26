@@ -73,6 +73,7 @@ class Claim:
     resolution: str | None = None
     resolved_on: str | None = None
     aliases: tuple[str, ...] = ()
+    layer_origin: str = "none"
 
 
 @dataclass(frozen=True)
@@ -266,6 +267,7 @@ def _claim_from_v1(path: Path, raw: Mapping[str, Any], index: int) -> Claim:
         resolution=raw.get("resolution"),
         resolved_on=raw.get("resolved_on"),
         aliases=tuple(raw.get("aliases", ())),
+        layer_origin="tag" if raw.get("layers") else "none",
     )
 
 
@@ -297,6 +299,15 @@ def _legacy_claims(body: str) -> tuple[Claim, ...]:
                     layer = _legacy_layer(tag)
                     if layer and layer not in layers:
                         layers.append(layer)
+            if layers:
+                layer_origin = "tag"
+            else:
+                inferred = _legacy_layer(body_text)
+                if inferred:
+                    layers.append(inferred)
+                    layer_origin = "prose"
+                else:
+                    layer_origin = "none"
             statement = re.split(r"\btest\s*\[", body_text)[0].strip()
             statement = INLINE_TAG_RE.sub("", statement).strip()
             claims.append(
@@ -305,6 +316,7 @@ def _legacy_claims(body: str) -> tuple[Claim, ...]:
                     kind=KIND_BY_PREFIX[ident[0]],
                     statement=statement or body_text,
                     layers=tuple(sorted(layers)),
+                    layer_origin=layer_origin,
                 )
             )
             seen.add(ident)

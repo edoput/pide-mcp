@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 from .document import DocumentError, PlanFormat, load_plan, load_repository
+from .registry import format_report, generate, stale_outputs
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -29,15 +30,22 @@ def _parser() -> argparse.ArgumentParser:
     dump = plan_commands.add_parser("dump", help="emit canonical plan metadata as JSON")
     dump.add_argument("paths", type=Path, nargs="*", help="plans to dump; default: all")
     dump.add_argument("--output", type=Path, help="write JSON atomically to this path")
+
+    registry = commands.add_parser("registry", help="manage generated claim registries")
+    registry_commands = registry.add_subparsers(dest="registry_command", required=True)
+    registry_commands.add_parser("generate", help="regenerate compatibility registries")
+    registry_commands.add_parser("check", help="check compatibility registry freshness")
     return parser
 
 
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
     descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), mode)
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
@@ -51,6 +59,20 @@ def _main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = args.root.resolve()
     try:
+        if args.command == "registry":
+            if args.registry_command == "generate":
+                report = generate(root)
+                print("wrote plans/ASSUMPTIONS and mcp/Tools/assumption_ids.ML")
+                print(format_report(report))
+                return 0
+            report, stale = stale_outputs(root)
+            if stale:
+                names = ", ".join(path.relative_to(root).as_posix() for path in stale)
+                print(f"registry check: FAIL: stale outputs: {names}", file=sys.stderr)
+                return 1
+            print(f"registry check: PASS ({len(report.rows)} claims)")
+            return 0
+
         if args.plan_command == "check":
             documents = load_repository(root, allow_legacy=not args.require_v1)
             counts = {value: 0 for value in PlanFormat}
