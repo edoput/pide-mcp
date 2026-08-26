@@ -1,5 +1,5 @@
 ---
-schema: isabelle-mcp.plan/bootstrap-v0
+schema: isabelle-mcp.plan/v1
 id: python_e2e
 title: Register deterministic procedural end-to-end tests
 status: planned
@@ -8,6 +8,62 @@ depends_on:
 allowed_modules:
   - mcp/test
   - tools/planning_gate
+invariants:
+  - id: INV1
+    statement: End-to-end discovery executes no test body and starts no Isabelle or MCP process.
+  - id: INV2
+    statement: Every registered end-to-end process is reaped on success, failure, timeout, or interruption.
+claims:
+  - id: A1
+    kind: assumption
+    state: active
+    statement: A procedural process test exercises the shipped process and public protocol, not an in-process fake or an LLM agent.
+    layers: [e2e]
+  - id: A2
+    kind: assumption
+    state: active
+    statement: Metadata discovery is deterministic and has no process, network, prover, or test-body side effects.
+    layers: [tooling-unit]
+  - id: I1
+    kind: infrastructure
+    state: active
+    statement: All cases share one client, timeout, teardown, metadata, and result-reporting implementation instead of copying process code between scripts.
+    layers: [tooling-unit]
+  - id: D1
+    kind: design
+    statement: Agent usability is a separate evaluation concern; process-test links certify only deterministic procedural behavior.
+    category: design
+  - id: T1
+    kind: test
+    state: active
+    statement: Registry fixtures reject malformed IDs, duplicate cases, duplicate links, unexpected layers, and executable files omitted from the registry.
+    layers: [tooling-unit]
+  - id: T2
+    kind: test
+    state: active
+    statement: Manifest discovery is byte-stable and a sentinel proves that no test body or Isabelle process ran.
+    layers: [tooling-unit]
+  - id: T3
+    kind: test
+    state: active
+    statement: The runner propagates assertion failure, timeout, interrupt, and fixture failure to a nonzero exit and always reaps its child process.
+    layers: [tooling-unit]
+  - id: T4
+    kind: test
+    state: active
+    statement: The migrated `test_mcp.py` workflows pass through the registry against the real Flatpak Isabelle server.
+    layers: [e2e]
+  - id: T5
+    kind: test
+    state: active
+    statement: The maintained concurrency, duplicate-session, and Scala-bridge reproductions run as registered focused cases selectable by name or plan ID.
+    layers: [e2e]
+  - id: T6
+    kind: test
+    state: active
+    statement: A fixture proves that filtered runs remain diagnostic only;
+    layers: [tooling-unit, e2e]
+spec_refinements: []
 done_command:
   - tools/planning-gate
   - done
@@ -82,43 +138,6 @@ implementation sequence
    `evals/` rather than receiving a false e2e link.
 7. Make the runner inventory authoritative: an executable e2e file that is not
    registered fails tooling-unit discovery.
-
-compatibility claims (canonical until v1 lands)
-------------------------------------------------
-
-A1 [e2e]: A procedural process test exercises the shipped process and public
-    protocol, not an in-process fake or an LLM agent.
-
-A2 [tooling-unit]: Metadata discovery is deterministic and has no process,
-    network, prover, or test-body side effects.
-
-I1 [tooling-unit]: All cases share one client, timeout, teardown, metadata, and
-    result-reporting implementation instead of copying process code between
-    scripts.
-
-D1. Agent usability is a separate evaluation concern; process-test links
-    certify only deterministic procedural behavior.
-
-T1 [tooling-unit]: Registry fixtures reject malformed IDs, duplicate cases,
-    duplicate links, unexpected layers, and executable files omitted from the
-    registry.
-
-T2 [tooling-unit]: Manifest discovery is byte-stable and a sentinel proves that
-    no test body or Isabelle process ran.
-
-T3 [tooling-unit]: The runner propagates assertion failure, timeout, interrupt,
-    and fixture failure to a nonzero exit and always reaps its child process.
-
-T4 [e2e]: The migrated `test_mcp.py` workflows pass through the registry against
-    the real Flatpak Isabelle server.
-
-T5 [e2e]: The maintained concurrency, duplicate-session, and Scala-bridge
-    reproductions run as registered focused cases selectable by name or plan
-    ID.
-
-T6 [tooling-unit]: A fixture proves that filtered runs remain diagnostic only;
-    test [e2e]: the completion interface runs the full registered process-test
-    layer and refuses a filter.
 
 non-goals
 ---------

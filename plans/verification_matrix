@@ -1,5 +1,5 @@
 ---
-schema: isabelle-mcp.plan/bootstrap-v0
+schema: isabelle-mcp.plan/v1
 id: verification_matrix
 title: Assemble static verification relationships across test producers
 status: planned
@@ -11,6 +11,71 @@ allowed_modules:
   - mcp_test
   - mcp/Tools
   - plans
+invariants:
+  - id: INV1
+    statement: Verification-matrix discovery is deterministic static metadata collection and never constitutes execution evidence.
+  - id: INV2
+    statement: Every required layer is satisfied by a distinct registered test identity owned by exactly one runner.
+claims:
+  - id: A1
+    kind: assumption
+    state: active
+    statement: The verification matrix is static coverage metadata, not proof that any test executed or passed.
+    layers: [tooling-unit]
+  - id: A2
+    kind: assumption
+    state: active
+    statement: Discovery does not start the theorem prover, spawn a server, or evaluate test bodies.
+    layers: [tooling-unit]
+  - id: I1
+    kind: infrastructure
+    state: active
+    statement: All producers use one versioned relation and test-record contract, so the planning gate does not special-case claim semantics per language.
+    layers: [tooling-unit]
+  - id: D1
+    kind: design
+    statement: '`verifies` targets ACTIVE A/I records; `covers` targets T records.'
+    category: design
+  - id: D2
+    kind: design
+    statement: 'Required layers use all-layer semantics: every named layer has a distinct registered test identity.'
+    category: design
+  - id: T1
+    kind: test
+    state: active
+    statement: Unknown IDs, relation-kind mismatches, duplicate identities, duplicate links, and wrong-layer links are rejected by isolated fixtures.
+    layers: [tooling-unit]
+  - id: T2
+    kind: test
+    state: active
+    statement: An ACTIVE A/I record missing one required verifying layer is reported as uncovered.
+    layers: [tooling-unit]
+  - id: T3
+    kind: test
+    state: active
+    statement: A T record naming two required fixture layers is rejected when only one layer has a covering test and accepted when distinct tests cover both.
+    layers: [tooling-unit]
+  - id: T4
+    kind: test
+    state: active
+    statement: Matrix output is byte-stable under producer and discovery reordering.
+    layers: [tooling-unit]
+  - id: T5
+    kind: test
+    state: active
+    statement: A missing producer and an unknown layer fail instead of reducing the required layer set.
+    layers: [tooling-unit]
+  - id: T6
+    kind: test
+    state: active
+    statement: Legacy debt fixtures reject new rows, allow reviewed existing rows, and remove a row once its relationship is present.
+    layers: [tooling-unit]
+  - id: T7
+    kind: test
+    state: active
+    statement: MUnit discovery emits `covers`, preserves every migrated link, and rejects the removed `discharges` relation.
+    layers: [scala-unit]
+spec_refinements: []
 done_command:
   - tools/planning-gate
   - done
@@ -104,46 +169,6 @@ implementation sequence
    reports from the reviewed debt file.
 7. Keep matrix discovery independently callable; the final `done` command will
    compose discovery with execution.
-
-compatibility claims (canonical until v1 lands)
-------------------------------------------------
-
-A1 [tooling-unit]: The verification matrix is static coverage metadata, not
-    proof that any test executed or passed.
-
-A2 [tooling-unit]: Discovery does not start the theorem prover, spawn a server,
-    or evaluate test bodies.
-
-I1 [tooling-unit]: All producers use one versioned relation and test-record
-    contract, so the planning gate does not special-case claim semantics per
-    language.
-
-D1. `verifies` targets ACTIVE A/I records; `covers` targets T records.
-
-D2. Required layers use all-layer semantics: every named layer has a distinct
-    registered test identity.
-
-T1 [tooling-unit]: Unknown IDs, relation-kind mismatches, duplicate identities,
-    duplicate links, and wrong-layer links are rejected by isolated fixtures.
-
-T2 [tooling-unit]: An ACTIVE A/I record missing one required verifying layer is
-    reported as uncovered.
-
-T3 [tooling-unit]: A T record naming two required fixture layers is rejected
-    when only one layer has a covering test and accepted when distinct tests
-    cover both.
-
-T4 [tooling-unit]: Matrix output is byte-stable under producer and discovery
-    reordering.
-
-T5 [tooling-unit]: A missing producer and an unknown layer fail instead of
-    reducing the required layer set.
-
-T6 [tooling-unit]: Legacy debt fixtures reject new rows, allow reviewed existing
-    rows, and remove a row once its relationship is present.
-
-T7 [scala-unit]: MUnit discovery emits `covers`, preserves every migrated link,
-    and rejects the removed `discharges` relation.
 
 non-goals
 ---------

@@ -1,5 +1,5 @@
 ---
-schema: isabelle-mcp.plan/bootstrap-v0
+schema: isabelle-mcp.plan/v1
 id: planning_gate
 title: Enforce plan evidence and provide one done command
 status: planned
@@ -15,6 +15,74 @@ allowed_modules:
   - mcp_test
   - mcp/Tools
   - mcp/test
+invariants:
+  - id: INV1
+    statement: Static discovery alone can never establish plan completion.
+  - id: INV2
+    statement: The completion command executes every registered blocking layer without filters and propagates every failure.
+  - id: INV3
+    statement: Completion is invalidated if HEAD or tracked content changes during its invocation.
+claims:
+  - id: A1
+    kind: assumption
+    state: active
+    statement: One invocation is the only project command that may establish done; static metadata generation alone cannot.
+    layers: [tooling-unit]
+  - id: A2
+    kind: assumption
+    state: active
+    statement: A dirty working tree is reported with exact paths and left to explicit human review locally.
+    layers: [tooling-unit]
+  - id: I1
+    kind: infrastructure
+    state: active
+    statement: Each build, discovery, static-check, and test-layer step remains callable independently for diagnosis and agent iteration.
+    layers: [tooling-unit]
+  - id: D1
+    kind: design
+    statement: CI integration is deferred; the host command is designed for later reuse without making CI a condition of this plan.
+    category: design
+  - id: T1
+    kind: test
+    state: active
+    statement: Static fixtures reject missing A/I verification, missing T coverage in any layer, open Q/refinement state, dangling D dependencies, unknown IDs, and unreviewed legacy debt.
+    layers: [tooling-unit]
+  - id: T2
+    kind: test
+    state: active
+    statement: Generating every discovery manifest without executing tests cannot make `done` succeed.
+    layers: [tooling-unit]
+  - id: T3
+    kind: test
+    state: active
+    statement: Each registered command-step failure makes `done` exit nonzero and identifies its failed step.
+    layers: [tooling-unit]
+  - id: T4
+    kind: test
+    state: active
+    statement: A filtered or reduced-layer invocation is rejected by the completion command while remaining available through diagnostic subcommands.
+    layers: [tooling-unit]
+  - id: T5
+    kind: test
+    state: active
+    statement: Dirty paths are printed; a changed HEAD or tracked content during execution invalidates the run.
+    layers: [tooling-unit]
+  - id: T6
+    kind: test
+    state: active
+    statement: The existing shutdown-drain regression is selected by the full Scala suite and its failure propagates to `done`.
+    layers: [scala-unit]
+  - id: T7
+    kind: test
+    state: active
+    statement: Documentation TOC classification fixtures distinguish functional and performance checks;
+    layers: [tooling-unit, scala-unit]
+  - id: T8
+    kind: test
+    state: active
+    statement: An orchestration fixture requires every registered layer;
+    layers: [tooling-unit, scala-unit, ml-unit, heap, bridge, e2e]
+spec_refinements: []
 done_command:
   - tools/planning-gate
   - done
@@ -127,48 +195,6 @@ implementation sequence
    must make done red until WP1 fixes it.
 8. Split the documentation TOC functional assertion from its performance budget
    before treating either result as a stable completion signal.
-
-compatibility claims (canonical until v1 lands)
-------------------------------------------------
-
-A1 [tooling-unit]: One invocation is the only project command that may establish
-    done; static metadata generation alone cannot.
-
-A2 [tooling-unit]: A dirty working tree is reported with exact paths and left to
-    explicit human review locally.
-
-I1 [tooling-unit]: Each build, discovery, static-check, and test-layer step
-    remains callable independently for diagnosis and agent iteration.
-
-D1. CI integration is deferred; the host command is designed for later reuse
-    without making CI a condition of this plan.
-
-T1 [tooling-unit]: Static fixtures reject missing A/I verification, missing T
-    coverage in any layer, open Q/refinement state, dangling D dependencies,
-    unknown IDs, and unreviewed legacy debt.
-
-T2 [tooling-unit]: Generating every discovery manifest without executing tests
-    cannot make `done` succeed.
-
-T3 [tooling-unit]: Each registered command-step failure makes `done` exit
-    nonzero and identifies its failed step.
-
-T4 [tooling-unit]: A filtered or reduced-layer invocation is rejected by the
-    completion command while remaining available through diagnostic subcommands.
-
-T5 [tooling-unit]: Dirty paths are printed; a changed HEAD or tracked content
-    during execution invalidates the run.
-
-T6 [scala-unit]: The existing shutdown-drain regression is selected by the full
-    Scala suite and its failure propagates to `done`.
-
-T7 [tooling-unit]: Documentation TOC classification fixtures distinguish
-    functional and performance checks; test [scala-unit]: the checks produce
-    distinct verdicts which the completion summary preserves.
-
-T8 [tooling-unit]: An orchestration fixture requires every registered layer;
-    test [scala-unit], [ml-unit], [heap], [bridge], and [e2e]: distinct cases
-    execute in a real full run, which succeeds only when every layer is green.
 
 non-goals
 ---------

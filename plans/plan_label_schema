@@ -1,5 +1,5 @@
 ---
-schema: isabelle-mcp.plan/bootstrap-v0
+schema: isabelle-mcp.plan/v1
 id: plan_label_schema
 title: Normalize plan label semantics and lifecycle
 status: planned
@@ -9,6 +9,66 @@ allowed_modules:
   - plans
   - tools/planning_gate
   - tools/gen_assumptions.py
+invariants:
+  - id: INV1
+    statement: Every qualified plan claim has one owner, one kind, and an explicit lifecycle state where its kind requires one.
+  - id: INV2
+    statement: Historical normalization preserves stable qualified IDs and records every semantic change for review.
+claims:
+  - id: A1
+    kind: assumption
+    state: active
+    statement: Every ACTIVE A record represents behavior that must be verified before its owner plan is done.
+    layers: [tooling-unit]
+  - id: A2
+    kind: assumption
+    state: active
+    statement: A MOOT or SUPERSEDED A record keeps its stable ID and an auditable reason; it does not receive a false verification link.
+    layers: [tooling-unit]
+  - id: I1
+    kind: infrastructure
+    state: active
+    statement: An ACTIVE I record is verified by its owner exactly once and can be reused through qualified references without duplicate declarations.
+    layers: [tooling-unit]
+  - id: D1
+    kind: design
+    statement: A D record is structurally checked, but test completeness is not inferred from the historically ambiguous D prefix.
+    category: design
+  - id: D2
+    kind: design
+    statement: A behavioral historical D becomes A and a concrete verification requirement becomes T; the migration records the old qualified ID as an alias or superseded record so references do not silently break.
+    category: design
+  - id: T1
+    kind: test
+    state: active
+    statement: ACTIVE, MOOT, and SUPERSEDED A/I fixture records validate only with their required rationale or target fields.
+    layers: [tooling-unit]
+  - id: T2
+    kind: test
+    state: active
+    statement: A dependency D with an unknown target is rejected; DESIGN and DETAIL D records do not require test metadata.
+    layers: [tooling-unit]
+  - id: T3
+    kind: test
+    state: active
+    statement: An OPEN Q prevents done; a RESOLVED Q without a date and resolution is rejected.
+    layers: [tooling-unit]
+  - id: T4
+    kind: test
+    state: active
+    statement: A new ACTIVE A/I/T record with no explicit layer is rejected.
+    layers: [tooling-unit]
+  - id: T5
+    kind: test
+    state: active
+    statement: Downstream references to an I record resolve to one owner and duplicate declarations are rejected.
+    layers: [tooling-unit]
+  - id: T6
+    kind: test
+    state: active
+    statement: Migration fixtures preserve qualified IDs and reject an unreviewed semantic conversion between A, D, and T.
+    layers: [tooling-unit]
+spec_refinements: []
 done_command:
   - tools/planning-gate
   - done
@@ -78,42 +138,6 @@ migration
 6. Make references resolve to the owning qualified ID.  Reject duplicate
    owners, dangling supersession/dependency/resolution targets, and cycles in
    supersession.
-
-compatibility claims (canonical until v1 lands)
-------------------------------------------------
-
-A1 [tooling-unit]: Every ACTIVE A record represents behavior that must be
-    verified before its owner plan is done.
-
-A2 [tooling-unit]: A MOOT or SUPERSEDED A record keeps its stable ID and an
-    auditable reason; it does not receive a false verification link.
-
-I1 [tooling-unit]: An ACTIVE I record is verified by its owner exactly once and
-    can be reused through qualified references without duplicate declarations.
-
-D1. A D record is structurally checked, but test completeness is not inferred
-    from the historically ambiguous D prefix.
-
-D2. A behavioral historical D becomes A and a concrete verification
-    requirement becomes T; the migration records the old qualified ID as an
-    alias or superseded record so references do not silently break.
-
-T1 [tooling-unit]: ACTIVE, MOOT, and SUPERSEDED A/I fixture records validate
-    only with their required rationale or target fields.
-
-T2 [tooling-unit]: A dependency D with an unknown target is rejected; DESIGN
-    and DETAIL D records do not require test metadata.
-
-T3 [tooling-unit]: An OPEN Q prevents done; a RESOLVED Q without a date and
-    resolution is rejected.
-
-T4 [tooling-unit]: A new ACTIVE A/I/T record with no explicit layer is rejected.
-
-T5 [tooling-unit]: Downstream references to an I record resolve to one owner and
-    duplicate declarations are rejected.
-
-T6 [tooling-unit]: Migration fixtures preserve qualified IDs and reject an
-    unreviewed semantic conversion between A, D, and T.
 
 non-goals
 ---------

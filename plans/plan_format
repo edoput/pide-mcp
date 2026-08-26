@@ -1,5 +1,5 @@
 ---
-schema: isabelle-mcp.plan/bootstrap-v0
+schema: isabelle-mcp.plan/v1
 id: plan_format
 title: Machine-readable implementation plans
 status: planned
@@ -10,6 +10,66 @@ allowed_modules:
   - tools/planning_gate
   - tools/gen_assumptions.py
   - tools/spec_gate.py
+invariants:
+  - id: INV1
+    statement: Every gate-consumed plan value has exactly one canonical representation.
+  - id: INV2
+    statement: Loading or dumping plan metadata does not execute plan-owned code or commands.
+claims:
+  - id: A1
+    kind: assumption
+    state: active
+    statement: 'A plan has one canonical machine-readable value for every field used by a gate.  Markdown may explain a field but cannot override it.'
+    layers: [tooling-unit]
+  - id: A2
+    kind: assumption
+    state: active
+    statement: YAML is parsed safely and duplicate keys are rejected before schema or semantic validation.
+    layers: [tooling-unit]
+  - id: A3
+    kind: assumption
+    state: active
+    statement: 'A plan remains readable without custom rendering: the frontmatter is short structured data and the body is ordinary Markdown.'
+    layers: [tooling-unit]
+  - id: I1
+    kind: infrastructure
+    state: active
+    statement: Existing qualified plan IDs and test citations survive migration byte for byte; format migration does not change ownership.
+    layers: [tooling-unit]
+  - id: D1
+    kind: design
+    statement: YAML frontmatter plus JSON Schema is the selected interchange format. PyYAML, jsonschema, and pytest are host-side development dependencies.
+    category: design
+  - id: D2
+    kind: design
+    statement: 'Architecture decisions may be referenced from plans as ADR IDs, executable examples may be referenced as Gherkin or test IDs, and concurrency models may be referenced as PlusCal/TLA+ paths.  None replaces the plan record.'
+    category: design
+  - id: T1
+    kind: test
+    state: active
+    statement: A valid v1 fixture parses to the expected typed plan object.
+    layers: [tooling-unit]
+  - id: T2
+    kind: test
+    state: active
+    statement: Missing frontmatter, duplicate keys, unknown fields, unsafe YAML values, malformed IDs, and shell-string commands are each rejected by an isolated fixture.
+    layers: [tooling-unit]
+  - id: T3
+    kind: test
+    state: active
+    statement: Unknown dependencies and paths outside the repository are rejected with the plan path and field name.
+    layers: [tooling-unit]
+  - id: T4
+    kind: test
+    state: active
+    statement: A v1 plan cannot repeat an A/I/D/Q/T declaration in its Markdown body.
+    layers: [tooling-unit]
+  - id: T5
+    kind: test
+    state: active
+    statement: Migrating a fixture from legacy prose to v1 preserves every qualified claim ID and produces byte-stable generated registries.
+    layers: [tooling-unit]
+spec_refinements: []
 done_command:
   - tools/planning-gate
   - done
@@ -20,10 +80,8 @@ plan_format — implementation plan
 
 This is the bootstrap plan for replacing convention-only prose plans with one
 machine-readable record that remains comfortable to review as Markdown.  Its
-own YAML header is deliberately `bootstrap-v0`: current tooling can read the
-header's `status:` but still discovers A/I/D/Q/T labels from the compatibility
-section below.  Landing this plan migrates those labels into the header and
-removes the split representation atomically.
+claims now live only in the v1 header; the body explains their context without
+redeclaring them.
 
 goal
 ----
@@ -96,43 +154,6 @@ implementation sequence
    rewrite of every historical plan in this change.
 7. Document which fields are normative.  A gate rejects a labelled claim that
    is redefined by a second legacy-style declaration in the Markdown body.
-
-compatibility claims (canonical until v1 lands)
-------------------------------------------------
-
-A1 [tooling-unit]: A plan has one canonical machine-readable value for every
-    field used by a gate.  Markdown may explain a field but cannot override it.
-
-A2 [tooling-unit]: YAML is parsed safely and duplicate keys are rejected before
-    schema or semantic validation.
-
-A3 [tooling-unit]: A plan remains readable without custom rendering: the
-    frontmatter is short structured data and the body is ordinary Markdown.
-
-I1 [tooling-unit]: Existing qualified plan IDs and test citations survive
-    migration byte for byte; format migration does not change ownership.
-
-D1. YAML frontmatter plus JSON Schema is the selected interchange format.
-    PyYAML, jsonschema, and pytest are host-side development dependencies.
-
-D2. Architecture decisions may be referenced from plans as ADR IDs, executable
-    examples may be referenced as Gherkin or test IDs, and concurrency models
-    may be referenced as PlusCal/TLA+ paths.  None replaces the plan record.
-
-T1 [tooling-unit]: A valid v1 fixture parses to the expected typed plan object.
-
-T2 [tooling-unit]: Missing frontmatter, duplicate keys, unknown fields, unsafe
-    YAML values, malformed IDs, and shell-string commands are each rejected by
-    an isolated fixture.
-
-T3 [tooling-unit]: Unknown dependencies and paths outside the repository are
-    rejected with the plan path and field name.
-
-T4 [tooling-unit]: A v1 plan cannot repeat an A/I/D/Q/T declaration in its
-    Markdown body.
-
-T5 [tooling-unit]: Migrating a fixture from legacy prose to v1 preserves every
-    qualified claim ID and produces byte-stable generated registries.
 
 non-goals
 ---------
