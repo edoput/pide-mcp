@@ -16,6 +16,8 @@ invariants:
     statement: Verification-matrix discovery is deterministic static metadata collection and never constitutes execution evidence.
   - id: INV2
     statement: Every required layer is satisfied by a distinct registered test identity owned by exactly one runner.
+  - id: INV3
+    statement: Isabelle theory coverage comes only from structured spec_test exports; source text, comments, sections, and assumption citations are never test registrations.
 claims:
   - id: A1
     kind: assumption
@@ -75,6 +77,11 @@ claims:
     state: active
     statement: MUnit discovery emits `covers`, preserves every migrated link, and rejects the removed `discharges` relation.
     layers: [scala-unit]
+  - id: T8
+    kind: test
+    state: active
+    statement: Isabelle manifest fixtures preserve session, theory, test identity, source freshness, layer, and spec_test links while proving that a citation without spec_test metadata creates no coverage.
+    layers: [tooling-unit]
 spec_refinements: []
 done_command:
   - tools/planning-gate
@@ -84,10 +91,13 @@ done_command:
 verification_matrix — implementation plan
 =========================================
 
-The current MUnit manifest is a useful static catalog, but it represents only
-Scala-owned suites and uses `discharges` for T links.  Isabelle theory citations
-and procedural Python end-to-end tests need the same discoverable relationship
-without pretending that discovery means execution.
+The MUnit manifest is a useful static catalog, but it represents only
+Scala-owned suites.  This plan standardizes its T relationship as `covers`.
+PR 17 already defines the corresponding Isabelle mechanism: named `spec_test`
+declarations are accumulated in `Theory_Data` and exported as structured
+theory-test metadata.  The matrix must consume that metadata, not infer tests
+from theory source text.  Procedural Python end-to-end tests need the same
+discoverable relationship without pretending that discovery means execution.
 
 goal
 ----
@@ -133,6 +143,37 @@ Initial producers are:
 The shared layer registry gains `tooling-unit`.  Every declared layer must have
 exactly one registered runner owner, even if several discovery sources feed it.
 
+Isabelle producer boundary
+--------------------------
+
+PR 17 (https://github.com/edoput/pide-mcp/pull/17) is the authoritative
+implementation of Isabelle theory-test registration.  A registered theory test
+is a named `spec_test` record carrying its session, theory, source location and
+digest, layer, and `verifies`/`covers` links.  `\<^assumption>` citations,
+section headings, comments, and bare ML assertions are not registrations and
+never create matrix coverage.
+
+The planning gate consumes the generated Isabelle JSON manifest and adapts its
+records to the common producer contract.  It validates the manifest producer
+and schema, participation by every configured test session and every exported
+`spec_test`-bearing theory, stable test identities, source paths and freshness
+digests, layer-registry digest, unique links, and relation/claim compatibility.
+A missing or stale manifest is a missing producer; discovery must fail closed
+instead of falling back to source scanning.
+
+Issue 20 (https://github.com/edoput/pide-mcp/issues/20) may replace PR 17's
+YXML-to-JSON transport with direct JSON exports.  That is an exporter refactor
+behind this boundary: it must preserve the same semantic fields and
+completeness/freshness properties, and must not require a change to matrix
+assembly.  In particular, each session aggregate must import every theory that
+declares `spec_test`; omission is an error, not an empty result.  The Scala
+MUnit runner remains independent of that transport change.
+
+Before integration, PR 17's external relation name `discharges` must be renamed
+to `covers` so the Isabelle and MUnit manifests share the terminology defined
+by this plan.  The matrix does not retain a permanent compatibility alias for
+the removed relation.
+
 completion coverage
 -------------------
 
@@ -160,15 +201,23 @@ implementation sequence
 1. Define typed producer and matrix records in `tools/planning_gate/matrix.py`.
 2. Rename the MUnit `discharges` API/schema relation to `covers`; reject old and
    new relation names appearing together.
-3. Adapt checked Isabelle assumption citations into ml-unit matrix records with
-   exact source positions and stable theory/test identities.
-4. Add tooling-unit discovery for the planning package's pytest cases.
-5. Merge producer output deterministically and validate it against normalized
+3. Land or integrate PR 17's `spec_test` exporter with its relation renamed to
+   `covers`; Issue 20 may change its serialization without weakening the output
+   contract.
+4. Adapt the generated Isabelle manifest into ml-unit matrix records, preserving
+   sessions, theory/test identities, exact source positions and freshness
+   digests.  Never inspect theory source to manufacture registrations.
+5. Add isolated manifest fixtures for missing sessions, stale sources, duplicate
+   identities and links, wrong relations/layers, and a citation-only theory that
+   contributes no coverage.
+6. Add tooling-unit discovery for the planning package's pytest cases.
+7. Merge producer output deterministically and validate it against normalized
    plan claims and the shared layer registry.
-6. Generate and check the legacy CSV.  Separate generated current coverage
+8. Generate and check the legacy CSV.  Separate generated current coverage
    reports from the reviewed debt file.
-7. Keep matrix discovery independently callable; the final `done` command will
-   compose discovery with execution.
+9. Keep matrix discovery independently callable.  The final `done` command
+   builds both Isabelle test sessions and materializes their current manifest
+   before composing discovery with execution.
 
 non-goals
 ---------
@@ -176,3 +225,5 @@ non-goals
 - Recording test outcomes or durations.
 - Judging the semantic adequacy of a test-to-claim link.
 - Treating coverage percentages as completion.
+- Reimplementing Isabelle theory-test registration or parsing `.thy` source as
+  a substitute for PR 17's structured exports.

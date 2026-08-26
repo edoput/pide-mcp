@@ -61,8 +61,8 @@ claims:
   - id: T6
     kind: test
     state: active
-    statement: A fixture proves that filtered runs remain diagnostic only;
-    layers: [tooling-unit, e2e]
+    statement: A fixture proves that filtered runs remain diagnostic only and cannot become completion evidence.
+    layers: [tooling-unit]
 spec_refinements: []
 done_command:
   - tools/planning-gate

@@ -304,7 +304,8 @@ val ids =
   "verification_matrix#T4",
   "verification_matrix#T5",
   "verification_matrix#T6",
-  "verification_matrix#T7"
+  "verification_matrix#T7",
+  "verification_matrix#T8"
  ];
 
 end;
