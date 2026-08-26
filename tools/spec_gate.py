@@ -6,9 +6,8 @@ be wired into CI or run beside `isabelle mcp_test`. Every check here exists
 because the corresponding drift was MEASURED in this repository, not because it
 seemed like a good idea:
 
-  1. registry freshness   plans/ASSUMPTIONS and assumption_ids.ML must match
-                          plans/. Otherwise a renamed assumption leaves stale
-                          citations that still build.
+  1. registry freshness   plans/ASSUMPTIONS must match plans/. Otherwise a
+                          renamed assumption leaves stale exported references.
   2. one status per plan  status was recorded in up to three places (README
                           checkbox, header line, a later in-file line) and 21
                           of 45 plans disagreed, the header being the stale one.
@@ -19,13 +18,14 @@ seemed like a good idea:
   4. refinement queue     `spec refinement:` had 14 occurrences and no close
                           operation, so the queue only ever grew. Each must now
                           carry OPEN or FOLDED <date>.
-  5. citation coverage    Munit citations come from its discovery manifest,
-                          not test-name text. Isabelle citations retain their
-                          checked antiquotation syntax. Coverage is reported;
-                          --strict-tests enforces declared T obligations.
+  5. citation coverage    Munit and Isabelle citations come from their full
+                          structured manifests, never source-text matching.
+                          Coverage is reported; --strict-tests enforces
+                          declared T obligations.
 
 usage: tools/spec_gate.py [--quiet] [--strict-tests]
                           --test-manifest munit-spec.json
+                          --theory-manifest isabelle-spec.json
 """
 
 import argparse
@@ -47,11 +47,13 @@ parser = argparse.ArgumentParser(description="check spec/plan/test linkage")
 parser.add_argument("--quiet", action="store_true")
 parser.add_argument("--strict-tests", action="store_true")
 parser.add_argument("--test-manifest", type=pathlib.Path, required=True)
+parser.add_argument("--theory-manifest", type=pathlib.Path, required=True)
 args = parser.parse_args()
 
 QUIET = args.quiet
 STRICT_TESTS = args.strict_tests
 TEST_MANIFEST = args.test_manifest
+THEORY_MANIFEST = args.theory_manifest
 notes: list[str] = []
 
 ID_RE = re.compile(r"^(?:D-(?:\d{4}-\d{2}-\d{2}|undated)|S)-[a-z0-9-]+$")
@@ -75,20 +77,17 @@ LAYER_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_PRODUCER = "isabelle-mcp/munit"
+THEORY_MANIFEST_PRODUCER = "isabelle-mcp/isabelle"
 MUNIT_FRAMEWORK = "munit"
 MUNIT_FRAMEWORK_VERSION = "1.1.1"
+ISABELLE_FRAMEWORK = "isabelle"
+ISABELLE_EXPORT_NAME = "mcp/spec-tests"
 LINK_RELATIONS = frozenset({"verifies", "covers"})
 
 # The controlled vocabulary for a plan's status. "implemented" and "green" are
 # spellings the tree already uses for done; they are accepted rather than
 # churned, since the point is one AUTHORITATIVE field, not one wording.
 DONE_WORDS = {"done", "implemented", "green", "shipped"}
-
-# MCP_Assumption.thy is the mechanism, not a test: its self-check deliberately
-# names a nonexistent id to prove that unknown ids are rejected. Scanning it for
-# citations would report that probe as drift.
-CITATION_SKIP = {"MCP_Assumption.thy"}
-
 
 def say(msg):
     if not QUIET:
@@ -109,6 +108,11 @@ def check(name, ok, detail=""):
 def manifest_require(condition, detail):
     if not condition:
         check("munit manifest is valid", False, detail)
+
+
+def theory_manifest_require(condition, detail):
+    if not condition:
+        check("Isabelle manifest is valid", False, detail)
 
 
 def layer_registry_require(condition, detail):
@@ -277,15 +281,160 @@ if states["OPEN"] or states["FOLDED"]:
 # ---- 5. citation coverage ---------------------------------------------------
 say("\ncitation coverage")
 
-# Isabelle citations are syntax checked by MCP_Assumption.thy when their
-# theories build. Munit tests are dynamically registered values, so source
-# regexes cannot reliably identify their metadata: consume the manifest emitted
-# by `isabelle mcp_test -M FILE` instead.
 cited_ids = set()
-for f in ROOT.glob("mcp/Tools/**/*.thy"):
-    if f.name in CITATION_SKIP:
-        continue
-    cited_ids |= set(re.findall(r"\b(\w+#[AITDQ]\d+)\b", f.read_text()))
+
+say("\nIsabelle manifest")
+try:
+    theory_manifest = json.loads(THEORY_MANIFEST.read_text())
+except (OSError, json.JSONDecodeError) as ex:
+    check("Isabelle manifest is readable JSON", False, str(ex))
+
+theory_manifest_require(isinstance(theory_manifest, dict),
+                        "document root is not an object")
+theory_manifest_require(type(theory_manifest.get("schema_version")) is int and
+                        theory_manifest["schema_version"] == MANIFEST_SCHEMA_VERSION,
+                        f"schema_version must be {MANIFEST_SCHEMA_VERSION}")
+theory_manifest_require(theory_manifest.get("producer") == THEORY_MANIFEST_PRODUCER,
+                        f"producer must be {THEORY_MANIFEST_PRODUCER!r}")
+theory_manifest_require(theory_manifest.get("framework") == ISABELLE_FRAMEWORK,
+                        f"framework must be {ISABELLE_FRAMEWORK!r}")
+theory_manifest_require(theory_manifest.get("export_name") == ISABELLE_EXPORT_NAME,
+                        f"export_name must be {ISABELLE_EXPORT_NAME!r}")
+theory_layers_digest = theory_manifest.get("test_layers_sha256")
+theory_manifest_require(isinstance(theory_layers_digest, str),
+                        "test_layers_sha256 is not a string")
+theory_manifest_require(theory_layers_digest == TEST_LAYERS_SHA256,
+                        f"manifest layer digest {theory_layers_digest!r}, "
+                        f"registry {TEST_LAYERS_SHA256!r}")
+
+theory_sessions = theory_manifest.get("sessions")
+theory_manifest_require(isinstance(theory_sessions, list) and bool(theory_sessions),
+                        "sessions is not a non-empty array")
+theory_manifest_require(all(isinstance(session, str) and bool(session.strip())
+                            for session in theory_sessions),
+                        "sessions contains a non-string or empty name")
+theory_manifest_require(len(theory_sessions) == len(set(theory_sessions)),
+                        "sessions contains duplicate names")
+theory_session_set = set(theory_sessions)
+
+theories = theory_manifest.get("theories")
+theory_manifest_require(isinstance(theories, list) and bool(theories),
+                        "theories is not a non-empty array")
+theory_sources = {}
+for index, theory_record in enumerate(theories):
+    where = f"theories[{index}]"
+    theory_manifest_require(isinstance(theory_record, dict), f"{where} is not an object")
+    session, theory = theory_record.get("session"), theory_record.get("theory")
+    theory_manifest_require(isinstance(session, str) and session in theory_session_set,
+                            f"{where}.session is not declared by sessions")
+    theory_manifest_require(isinstance(theory, str) and bool(theory.strip()),
+                            f"{where}.theory is not a non-empty string")
+    identity = (session, theory)
+    theory_manifest_require(identity not in theory_sources,
+                            f"{where} duplicates {session}::{theory}")
+
+    source = theory_record.get("source")
+    theory_manifest_require(isinstance(source, dict), f"{where}.source is not an object")
+    source_path, source_sha1 = source.get("path"), source.get("sha1")
+    valid_source_path = (
+        isinstance(source_path, str) and bool(source_path) and
+        source_path.startswith("mcp/Tools/") and source_path.endswith(".thy") and
+        not pathlib.PurePosixPath(source_path).is_absolute() and
+        ".." not in pathlib.PurePosixPath(source_path).parts and
+        "\\" not in source_path
+    )
+    theory_manifest_require(valid_source_path,
+                            f"{where}.source.path is not a canonical theory path")
+    theory_manifest_require(isinstance(source_sha1, str) and
+                            bool(re.fullmatch(r"sha1:[0-9a-f]{40}", source_sha1)),
+                            f"{where}.source.sha1 is malformed")
+    source_file = ROOT / source_path
+    try:
+        source_bytes = source_file.read_bytes()
+    except OSError as ex:
+        check("Isabelle manifest theory source is readable", False,
+              f"{source_path}: {ex}")
+    actual_source_sha1 = "sha1:" + hashlib.sha1(source_bytes).hexdigest()
+    theory_manifest_require(actual_source_sha1 == source_sha1,
+                            f"{source_path} changed after its Isabelle export was built")
+    theory_sources[identity] = (source_path, len(source_bytes.splitlines()))
+
+theory_tests = theory_manifest.get("tests")
+theory_manifest_require(isinstance(theory_tests, list) and bool(theory_tests),
+                        "tests is not a non-empty array")
+theory_ids = set()
+theory_identities = set()
+test_sessions = set()
+for index, test in enumerate(theory_tests):
+    where = f"tests[{index}]"
+    theory_manifest_require(isinstance(test, dict), f"{where} is not an object")
+    session, theory = test.get("session"), test.get("theory")
+    name, layer = test.get("name"), test.get("layer")
+    theory_manifest_require(isinstance(session, str) and session in theory_session_set,
+                            f"{where}.session is not declared by sessions")
+    theory_manifest_require(isinstance(theory, str) and bool(theory.strip()),
+                            f"{where}.theory is not a non-empty string")
+    theory_manifest_require((session, theory) in theory_sources,
+                            f"{where} has no matching theories entry")
+    theory_manifest_require(isinstance(name, str) and bool(name.strip()),
+                            f"{where}.name is not a non-empty string")
+    theory_manifest_require(isinstance(layer, str) and layer in TEST_LAYERS,
+                            f"{where}.layer is not one of {sorted(TEST_LAYERS)}")
+    identity = (session, theory, name)
+    theory_manifest_require(identity not in theory_identities,
+                            f"{where} duplicates {session}::{theory}::{name}")
+    theory_identities.add(identity)
+    test_sessions.add(session)
+
+    location = test.get("location")
+    theory_manifest_require(isinstance(location, dict), f"{where}.location is not an object")
+    source_path, source_line = location.get("path"), location.get("line")
+    expected_path, source_lines = theory_sources[(session, theory)]
+    theory_manifest_require(source_path == expected_path,
+                            f"{where}.location.path differs from its theory source")
+    theory_manifest_require(type(source_line) is int and 0 < source_line <= source_lines,
+                            f"{where}.location.line is outside its theory source")
+
+    links = test.get("links")
+    theory_manifest_require(isinstance(links, list) and bool(links),
+                            f"{where}.links is not a non-empty array")
+    seen_links = set()
+    for link_index, link in enumerate(links):
+        link_where = f"{where}.links[{link_index}]"
+        theory_manifest_require(isinstance(link, dict), f"{link_where} is not an object")
+        relation, ident = link.get("relation"), link.get("id")
+        theory_manifest_require(relation in LINK_RELATIONS,
+                                f"{link_where}.relation is not one of {sorted(LINK_RELATIONS)}")
+        theory_manifest_require(isinstance(ident, str) and
+                                bool(PLAN_LINK_RE.fullmatch(ident)),
+                                f"{link_where}.id is not a qualified plan label")
+        key = (relation, ident)
+        theory_manifest_require(key not in seen_links,
+                                f"{link_where} duplicates {relation}:{ident}")
+        seen_links.add(key)
+        theory_ids.add(ident)
+
+        label = ident.rsplit("#", 1)[-1]
+        relation_matches = (
+            relation == "covers" and bool(re.fullmatch(r"T\d+", label))
+        ) or (
+            relation == "verifies" and bool(re.fullmatch(r"[AI]\d+", label))
+        )
+        theory_manifest_require(relation_matches,
+                                f"{theory}::{name}: {relation} cannot target {ident}")
+        theory_manifest_require(ident in known_ids,
+                                f"{theory}::{name} cites unknown plan id {ident}")
+        if relation == "covers":
+            expected = id_layer.get(ident, "unstated")
+            declared = set(expected.split(","))
+            theory_manifest_require("unstated" in declared or layer in declared,
+                                    f"{theory}::{name}: {ident} declares layer {expected}, "
+                                    f"manifest says {layer}")
+
+theory_manifest_require(test_sessions == theory_session_set,
+                        "not every declared session contributes a spec_test")
+check("Isabelle manifest is current, complete, and semantically valid", True)
+cited_ids |= theory_ids
 
 say("\nmunit manifest")
 try:

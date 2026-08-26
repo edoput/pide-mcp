@@ -35,10 +35,11 @@ Validation is deliberately split:
   filename/ID drift, and paths which escape the repository; and
 - repository validation resolves dependencies and rejects cycles.
 
-`registry check` and `registry generate` derive the compatibility text and
-Isabelle/ML ID registries from those same loaded documents.  The historical
-`tools/gen_assumptions.py` command remains only as a launcher-forwarding
-wrapper; it has no second plan parser.
+`registry check` and `registry generate` derive the compatibility text registry
+from those same loaded documents.  Isabelle theory links are checked through
+their structured `spec_test` export rather than a generated ML ID mirror.  The
+historical `tools/gen_assumptions.py` command remains only as a
+launcher-forwarding wrapper; it has no second plan parser.
 
 `labels check` enforces kind-specific lifecycle rules only on canonical v1
 claims.  Legacy plans are not silently assigned states.  Instead, `labels audit

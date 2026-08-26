@@ -10,3 +10,4 @@ ir
 mcp/lib/mcp.jar
 mcp_test/lib/mcp_test.jar
 mcp_test/lib/munit-spec.json
+mcp_test/lib/isabelle-spec.json

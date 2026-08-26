@@ -4,12 +4,14 @@ session "MCP-Tools" = Pure +
     MCP_Tools
 
 session "MCP-Assumption" in "Assumption" = Pure +
-  description "Checked citation of plan assumptions from theories (test infrastructure)"
+  description "Structured links from Isabelle theory tests to plans"
   theories
     MCP_Assumption
 
 session "MCP-Tools-Tests" in "Tests" = "MCP-Tools" +
   description "Unit tests for the MCP tool registry and protocol payloads"
+  sessions
+    "MCP-Assumption"
   theories
     MCP_Tools_Tests
 
@@ -25,6 +27,8 @@ session "MCP-HOL" in "HOL" = HOL +
 session "MCP-HOL-Tests" in "HOL/Tests" = "MCP-HOL" +
   description "Unit tests for the MCP.ir dispatcher (MCP_Repl) over the I/R engine"
   options [record_theories]
+  sessions
+    "MCP-Assumption"
   theories
     MCP_Fixture_Nav
     MCP_Repl_Tests

@@ -166,6 +166,9 @@ val _ = \<^assert> (s_rm = "ok");
 
 section \<open>Table basics -- MCP_Repl_Tests.thy "T1/T3" and "T4"\<close>
 
+spec_test \<open>Ir table basics and read-only listing\<close>
+  covers \<open>repl_list#T1\<close> and \<open>repl_list#T3\<close> and \<open>repl_list#T4\<close>
+
 text \<open>NOTE on repl ids throughout this theory: every id below is
 prefixed \<open>Ir\<close> (\<open>IrT\<close>, \<open>IrTi1\<close>, \<open>IrTfk2\<close>, ...), distinct from
 MCP_Repl_Tests.thy's bare ids (\<open>T\<close>, \<open>Ti1\<close>, \<open>Tfk2\<close>, ...) even though
@@ -236,6 +239,10 @@ val _ = \<^assert> (s_rm4 = "ok");
 \<close>
 
 section \<open>repl_init (plans/repl_init): T1..T6\<close>
+
+spec_test \<open>Ir initialization behavior\<close>
+  covers \<open>repl_init#T1\<close> and \<open>repl_init#T2\<close> and
+    \<open>repl_init#T3\<close> and \<open>repl_init#T4\<close> and \<open>repl_init#T5\<close>
 
 text \<open>T1: theory specs succeed regardless of merge order. \<^ML>\<open>Ir.init\<close>
 takes the theory list directly -- no repeated-key wire encoding to
@@ -321,6 +328,9 @@ val _ = \<^assert> (String.isSubstring "No REPL" o_pin);
 \<close>
 
 section \<open>repl_fork (plans/repl_fork): T2..T4, plus the bridge suite's T6\<close>
+
+spec_test \<open>Ir fork index, duplicate, and independence behavior\<close>
+  covers \<open>repl_fork#T2\<close> and \<open>repl_fork#T3\<close> and \<open>repl_fork#T4\<close>
 
 text \<open>T2: index semantics -- 0 is the base state, N is the state after
 step N-1, -1 is the latest. Faithfulness of "-1 equals fork at 2" is
@@ -440,6 +450,10 @@ val _ = \<^assert> (s_rm6p = "ok");
 
 section \<open>repl_remove (plans/repl_remove): T1..T3, plus the bridge suite's T4\<close>
 
+spec_test \<open>Ir remove unknown, recursive, and dependent behavior\<close>
+  covers \<open>repl_remove#T1\<close> and \<open>repl_remove#T2\<close> and
+    \<open>repl_remove#T3\<close>
+
 text \<open>T1: removing an unknown repl is a status error naming it, not ok;
 the tool is not idempotent -- a second removal of the same id errors too.\<close>
 ML \<open>
@@ -528,6 +542,10 @@ val _ = \<^assert> (not (String.isSubstring "IrChild4" o_after4));
 \<close>
 
 section \<open>repl_step (plans/repl_step): T1..T4, plus the bridge suite's T5\<close>
+
+spec_test \<open>Ir step fidelity, atomicity, timeout, and proof-state output\<close>
+  covers \<open>repl_step#T1\<close> and \<open>repl_step#T2\<close> and
+    \<open>repl_step#T3\<close> and \<open>repl_step#T4\<close>
 
 text \<open>T1: isar text survives the trip byte-clean, including Isabelle
 symbols and a multi-line statement.\<close>
@@ -650,6 +668,9 @@ val _ = \<^assert> (s_rm_b5s = "ok");
 
 section \<open>repl_state (plans/repl_state): T1..T2\<close>
 
+spec_test \<open>Ir state index and read-only behavior\<close>
+  covers \<open>repl_state#T1\<close> and \<open>repl_state#T2\<close>
+
 text \<open>T1: index arithmetic -- on a repl with 2 steps, -1 equals index 2;
 0 is the base state; indices past either end error "out of range".\<close>
 ML \<open>
@@ -700,6 +721,9 @@ val _ = \<^assert> (s_rm2 = "ok");
 \<close>
 
 section \<open>repl_show (plans/repl_show): T1..T2, plus the bridge suite's T2\<close>
+
+spec_test \<open>Ir show content and read-only behavior\<close>
+  covers \<open>repl_show#T1\<close> and \<open>repl_show#T2\<close>
 
 text \<open>T1: the output carries origin, step count, and indices starting
 at 0.\<close>
@@ -770,6 +794,9 @@ val _ = \<^assert> (s_rm_bt2 = "ok");
 
 section \<open>repl_text (plans/repl_text): T1..T2\<close>
 
+spec_test \<open>Ir text fidelity and empty-history behavior\<close>
+  covers \<open>repl_text#T1\<close> and \<open>repl_text#T2\<close>
+
 text \<open>T1: byte fidelity end to end -- an Isabelle symbol, an inner
 string with doubled spaces, and an embedded newline survive the round
 trip verbatim.\<close>
@@ -803,6 +830,10 @@ val _ = \<^assert> (s_rm2 = "ok");
 \<close>
 
 section \<open>repl_edit (plans/repl_edit): T1..T4\<close>
+
+spec_test \<open>Ir edit index, atomicity, staleness, and pin behavior\<close>
+  covers \<open>repl_edit#T1\<close> and \<open>repl_edit#T2\<close> and
+    \<open>repl_edit#T3\<close> and \<open>repl_edit#T4\<close>
 
 text \<open>T1: idx is a plain 0-based index, negatives are not supported --
 out of range at both ends, 0 is valid.\<close>
@@ -908,6 +939,10 @@ val _ = \<^assert> (s_rm4 = "ok");
 \<close>
 
 section \<open>repl_replay (plans/repl_replay): T1..T4\<close>
+
+spec_test \<open>Ir replay no-op, suffix, failure, and timeout behavior\<close>
+  covers \<open>repl_replay#T1\<close> and \<open>repl_replay#T2\<close> and
+    \<open>repl_replay#T3\<close> and \<open>repl_replay#T4\<close>
 
 text \<open>Genuinely stale steps are produced via repl_rebase: \<^ML>\<open>Ir.pin\<close>
 bumps the pin's version on every call, so re-pinning a REPL that
@@ -1060,6 +1095,10 @@ val _ = \<^assert> (s_rm_a4 = "ok");
 
 section \<open>repl_truncate (plans/repl_truncate): T1..T3,T5, plus the bridge suite's T4\<close>
 
+spec_test \<open>Ir truncate index, prefix, orphan, and pin behavior\<close>
+  covers \<open>repl_truncate#T1\<close> and \<open>repl_truncate#T2\<close> and
+    \<open>repl_truncate#T3\<close> and \<open>repl_truncate#T5\<close>
+
 text \<open>T1: truncate's negative-index mapping (n+idx-1) differs from
 state/fork's (n+1+idx) -- truncate -1 KEEPS n-1 steps, not n.\<close>
 ML \<open>
@@ -1210,6 +1249,9 @@ val _ = \<^assert> (s_rm_bt4 = "ok");
 
 section \<open>repl_back (plans/repl_back): T1..T2\<close>
 
+spec_test \<open>Ir back edge and recovery behavior\<close>
+  covers \<open>repl_back#T1\<close> and \<open>repl_back#T2\<close>
+
 text \<open>T1: back is truncate -1's sugar -- equivalent behavior including
 the out-of-range edge on a 0-step repl.\<close>
 ML \<open>
@@ -1258,6 +1300,9 @@ val _ = \<^assert> (s_rm2 = "ok");
 \<close>
 
 section \<open>repl_merge (plans/repl_merge): T1..T3, plus the bridge suite's T4\<close>
+
+spec_test \<open>Ir merge shapes and failure atomicity\<close>
+  covers \<open>repl_merge#T1\<close> and \<open>repl_merge#T2\<close> and \<open>repl_merge#T3\<close>
 
 text \<open>T1(a): fork at the tip -- merge appends the child's concatenated
 text as one new step.\<close>
@@ -1416,6 +1461,10 @@ val _ = \<^assert> (s_rm_bt4 = "ok");
 
 section \<open>repl_timeout (plans/repl_timeout): T1..T3\<close>
 
+spec_test \<open>Ir timeout bounds, negatives, and display\<close>
+  covers \<open>repl_timeout#T1\<close> and \<open>repl_timeout#T2\<close> and
+    \<open>repl_timeout#T3\<close>
+
 text \<open>NOTE: the bridge suite's "repl_timeout T4 -- the full chain sets
 and reports a per-REPL timeout" (mcp_bridge_tests.scala:374-381) checks
 the set-then-show round trip at \<open>secs=5\<close>. That claim is a strict subset
@@ -1489,6 +1538,10 @@ val _ = \<^assert> (s_rm3 = "ok");
 \<close>
 
 section \<open>repl_pin (plans/repl_pin): T1..T4\<close>
+
+spec_test \<open>Ir pin proof, round-trip, staleness, and version behavior\<close>
+  covers \<open>repl_pin#T1\<close> and \<open>repl_pin#T2\<close> and
+    \<open>repl_pin#T3\<close> and \<open>repl_pin#T4\<close>
 
 text \<open>T1: pinning mid-proof is refused with the engine's message;
 finishing the proof first makes it pin cleanly.\<close>
@@ -1592,6 +1645,9 @@ val _ = \<^assert> (s_rm4 = "ok");
 
 section \<open>repl_unpin (plans/repl_unpin): T1..T2\<close>
 
+spec_test \<open>Ir unpin missing-pin and dependent behavior\<close>
+  covers \<open>repl_unpin#T1\<close> and \<open>repl_unpin#T2\<close>
+
 text \<open>NOTE: the bridge suite's "repl_unpin T3 -- the pin/unpin round
 trip" (mcp_bridge_tests.scala:476-484) is a bare pin/show/unpin/show
 sequence, strictly subsumed by T2 below (which additionally covers the
@@ -1642,6 +1698,10 @@ val _ = \<^assert> (s_rm_a = "ok");
 \<close>
 
 section \<open>repl_rebase (plans/repl_rebase): T1..T4\<close>
+
+spec_test \<open>Ir rebase success, stale, origin, and replay separation\<close>
+  covers \<open>repl_rebase#T1\<close> and \<open>repl_rebase#T2\<close> and
+    \<open>repl_rebase#T3\<close> and \<open>repl_rebase#T4\<close>
 
 text \<open>T1: the whole point, end to end -- A gains a definition and
 re-pins; rebase B marks its steps stale; replay lets a NEW step in B
@@ -1769,6 +1829,9 @@ val _ = \<^assert> (s_rm_a4 = "ok");
 
 section \<open>sledgehammer (plans/sledgehammer): T2, plus the bridge suite's T3/T4\<close>
 
+spec_test \<open>Ir sledgehammer rejects theory-level state\<close>
+  covers \<open>sledgehammer#T2\<close>
+
 text \<open>T2: sledgehammer requires the REPL to be mid-proof
 (\<^ML>\<open>Toplevel.proof_of\<close> raises on a theory-level state).\<close>
 ML \<open>
@@ -1866,6 +1929,10 @@ val _ = \<^assert> (s_rm_b4 = "ok");
 \<close>
 
 section \<open>find_theorems (plans/find_theorems): T2..T4 ONLY\<close>
+
+spec_test \<open>Ir find_theorems query, bounds, and goal criteria\<close>
+  covers \<open>find_theorems#T2\<close> and \<open>find_theorems#T3\<close> and
+    \<open>find_theorems#T4\<close>
 
 text \<open>SCOPE, checked against MCP_Repl.thy:382-395 rather than assumed:
 the dispatcher's "find_theorems" case has THREE branches keyed on which

@@ -46,10 +46,16 @@ mcp_test` invocation discovers every registered
 suite before execution filtering and writes the canonical full JSON manifest
 to `mcp_test/lib/munit-spec.json`. `isabelle mcp_test -M FILE` writes to an
 explicit destination without evaluating test bodies.
-`python3 tools/spec_gate.py --test-manifest FILE` requires the manifest and
-checks the links against plans/ASSUMPTIONS, including each covered
-obligation's pyramid layer.
-layer names and stable suite roles live in `mcp_test/etc/test_layers.json`;
+Isabelle theory tests use the symmetric declaration
+`spec_test \<open>name\<close> verifies \<open>plan#A1\<close> covers
+\<open>plan#T1\<close>`. Building MCP-Tools-Tests and MCP-HOL-Tests stores one
+structured export per declaring theory; `isabelle mcp_theory_metadata` merges
+all of them into `mcp_test/lib/isabelle-spec.json` without source scanning.
+`python3 tools/spec_gate.py --test-manifest MUNIT-FILE --theory-manifest
+ISABELLE-FILE` requires both full manifests and checks their links against
+plans/ASSUMPTIONS, including each covered requirement's pyramid layer and
+the Isabelle source digests.
+Layer names and stable suite roles live in `mcp_test/etc/test_layers.json`;
 the runner, exporter, and gate all load that file, and the manifest records its
 SHA-256 so changing the registry invalidates older manifests.
 generate the manifest from the freshly built test jar; a checked-in copy

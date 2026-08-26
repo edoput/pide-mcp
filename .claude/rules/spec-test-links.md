@@ -67,4 +67,5 @@ After adding or changing links:
 2. Run the relevant tests. `isabelle mcp_test -t 'example_feature#'` selects by
    metadata ID; its emitted manifest still contains every registered suite.
 3. Run `python3 tools/spec_gate.py --test-manifest
-   mcp_test/lib/munit-spec.json`.
+   mcp_test/lib/munit-spec.json --theory-manifest
+   mcp_test/lib/isabelle-spec.json`.

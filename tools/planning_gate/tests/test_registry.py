@@ -15,7 +15,6 @@ def test_generate_is_deterministic_and_freshness_detects_statement_drift(
     _, initially_stale = stale_outputs(root)
     assert {value.relative_to(root).as_posix() for value in initially_stale} == {
         "plans/ASSUMPTIONS",
-        "mcp/Tools/assumption_ids.ML",
     }
 
     first = generate(root)

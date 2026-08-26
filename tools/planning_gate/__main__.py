@@ -120,7 +120,7 @@ def _main(argv: list[str] | None = None) -> int:
         if args.command == "registry":
             if args.registry_command == "generate":
                 report = generate(root)
-                print("wrote plans/ASSUMPTIONS and mcp/Tools/assumption_ids.ML")
+                print("wrote plans/ASSUMPTIONS")
                 print(format_report(report))
                 return 0
             report, stale = stale_outputs(root)

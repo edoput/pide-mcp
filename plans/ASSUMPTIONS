@@ -5,8 +5,8 @@ Regenerate:  tools/planning-gate registry generate
 Check:       tools/planning-gate registry check
 
 One row per assumption DECLARED in a plan file. The ID is the address a
-test cites: munit cases attach structured tags, Isabelle theories cite it
-with the checked \<^assumption> antiquotation. An ID that no test cites is
+test cites: MUnit cases attach structured tags, and Isabelle theories
+declare spec_test metadata. An ID that no test cites is
 an unchecked assumption; the gate reports the count.
 
 ID                        LAYER                     STATEMENT
