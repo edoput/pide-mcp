@@ -43,12 +43,13 @@ class DebtRow:
 
 @dataclass(frozen=True)
 class RatchetResult:
+    current_work: tuple[DebtKey, ...]
     unexpected: tuple[DebtKey, ...]
     resolved: tuple[DebtKey, ...]
 
     @property
     def accepted(self) -> bool:
-        return not self.unexpected and not self.resolved
+        return not self.current_work and not self.unexpected and not self.resolved
 
 
 def _validate_key(key: DebtKey, where: str) -> None:
@@ -124,24 +125,37 @@ def generate_baseline(path: Path, matrix: MatrixResult, revision: str) -> int:
     if matrix.missing_producers:
         names = ", ".join(matrix.missing_producers)
         raise LegacyDebtError(f"cannot baseline while producers are missing: {names}")
-    rendered = render_baseline(matrix.missing_coverage, revision)
+    legacy_missing = tuple(value for value in matrix.missing_coverage if value.legacy)
+    rendered = render_baseline(legacy_missing, revision)
     write_atomic_text(path, rendered)
-    return len(matrix.missing_coverage)
+    return len(legacy_missing)
 
 
 def compare(matrix: MatrixResult, baseline: Iterable[DebtRow]) -> RatchetResult:
     if matrix.missing_producers:
         names = ", ".join(matrix.missing_producers)
         raise LegacyDebtError(f"cannot check debt while producers are missing: {names}")
-    current = {DebtKey.from_missing(value) for value in matrix.missing_coverage}
+    current_work = {
+        DebtKey.from_missing(value) for value in matrix.missing_coverage if not value.legacy
+    }
+    current_legacy = {
+        DebtKey.from_missing(value) for value in matrix.missing_coverage if value.legacy
+    }
     reviewed = {row.key for row in baseline}
     return RatchetResult(
-        unexpected=tuple(sorted(current - reviewed)),
-        resolved=tuple(sorted(reviewed - current)),
+        current_work=tuple(sorted(current_work)),
+        unexpected=tuple(sorted(current_legacy - reviewed)),
+        resolved=tuple(sorted(reviewed - current_legacy)),
     )
 
 
 def require_accepted(result: RatchetResult) -> None:
+    if result.current_work:
+        values = ", ".join(
+            f"{row.plan}#{row.id}:{row.relation}:{row.missing_layer}"
+            for row in result.current_work
+        )
+        raise LegacyDebtError(f"current-plan coverage is missing: {values}")
     if result.unexpected:
         values = ", ".join(
             f"{row.plan}#{row.id}:{row.relation}:{row.missing_layer}"

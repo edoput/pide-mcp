@@ -64,7 +64,7 @@ def test_current_catalog_keeps_prose_inference_explicit() -> None:
     root = Path(__file__).resolve().parents[3]
     report = collect(root)
 
-    assert len(report.rows) == 295
+    assert len(report.rows) == 296
     assert report.inferred_ids == (
         "find_definition#T6",
         "repl_remove#T5",

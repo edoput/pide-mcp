@@ -58,16 +58,15 @@ Environment:
              concluding anything, or set REPRO_TIMEOUT=600 up front.
 """
 
-import json
 import os
-import queue
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
+
+from mcp.test.e2e.client import Client as JsonRpcClient
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -120,35 +119,11 @@ class Client:
         # per-label log file: CONTROL and REPRO share `base`, and "w+" would
         # otherwise truncate one case's log out from under the other
         self.stderr = open(os.path.join(base, "stderr-%s.log" % label), "w+")
-        self.proc = subprocess.Popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=self.stderr, text=True, bufsize=1)
-        self.replies = queue.Queue()
-        self.next_id = 0
-        threading.Thread(target=self._read, daemon=True).start()
-
-    def _read(self):
-        for line in self.proc.stdout:
-            line = line.strip()
-            if line:
-                self.replies.put(line)
+        self.rpc = JsonRpcClient(argv, stderr=self.stderr.fileno())
+        self.proc = self.rpc.proc
 
     def call(self, method, params=None, timeout=60):
-        self.next_id += 1
-        msg = {"jsonrpc": "2.0", "method": method, "id": self.next_id}
-        if params is not None:
-            msg["params"] = params
-        self.proc.stdin.write(json.dumps(msg) + "\n")
-        self.proc.stdin.flush()
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                reply = json.loads(self.replies.get(timeout=deadline - time.time()))
-            except (queue.Empty, ValueError):
-                continue
-            if reply.get("id") == msg["id"]:
-                return reply
-        raise RuntimeError("no reply to %s within %ss" % (method, timeout))
+        return self.rpc.request(method, params, timeout=timeout)
 
     def session_status(self):
         """Readiness per isabelle://session: 'not ready ...' / 'failed ...' / 'ready'.
@@ -179,16 +154,11 @@ class Client:
         return status
 
     def close(self):
-        try:
-            self.proc.stdin.close()
-        except Exception:
-            pass
-        try:
-            self.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
+        self.rpc.close()
         self.stderr.seek(0)
-        return self.stderr.read()
+        contents = self.stderr.read()
+        self.stderr.close()
+        return contents
 
 
 # ---------------------------------------------------------------- cases

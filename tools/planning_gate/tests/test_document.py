@@ -171,6 +171,19 @@ def test_repository_rejects_dependency_cycle(tmp_path: Path) -> None:
         load_repository(root, allow_legacy=False)
 
 
+@spec_test(covers=("plan_format#T3",))
+def test_repository_excludes_generated_metadata_from_plan_discovery(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+    write_plan(root, "example", valid_plan())
+    (root / "plans/legacy_unlinked.csv").write_text(
+        "plan,id,relation,missing_layer,baseline_revision\n", encoding="utf-8"
+    )
+
+    documents = load_repository(root, allow_legacy=False)
+
+    assert [document.id for document in documents] == ["example"]
+
+
 @spec_test(verifies=("plan_format#I1",), covers=("plan_format#T5",))
 def test_legacy_migration_preserves_claim_ids_and_statements(tmp_path: Path) -> None:
     root = repository(tmp_path)

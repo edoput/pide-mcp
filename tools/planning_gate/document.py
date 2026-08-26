@@ -481,7 +481,7 @@ def load_plan(path: Path, root: Path, *, allow_legacy: bool = True) -> PlanDocum
 def _is_plan_file(path: Path) -> bool:
     return (
         path.is_file()
-        and path.name not in {"README", "ASSUMPTIONS"}
+        and path.name not in {"README", "ASSUMPTIONS", "legacy_unlinked.csv"}
         and not path.name.startswith(".")
         and not path.name.endswith(("~", ".bak", ".orig", ".rej"))
     )

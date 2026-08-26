@@ -26,7 +26,9 @@ Cases:
      old designation's bundles)
 
 Usage:
-  ISABELLE=/path/to/isabelle python3 mcp/test/repro_concurrent_serve.py
+  python3 mcp/test/repro_concurrent_serve.py
+
+`ISABELLE` may override the default project Flatpak command.
 
 Exit code 0 iff all assertions pass.
 """
@@ -40,7 +42,7 @@ sys.path.insert(0, HERE)
 os.environ.setdefault("MCP_TEST_TIMEOUT", "900")
 import test_mcp as T
 
-ISABELLE = os.environ.get("ISABELLE") or sys.exit("set ISABELLE")
+ISABELLE = T.ISABELLE
 REPL = "Conc"
 NAP = 3.0
 
@@ -74,7 +76,7 @@ def race(client, first, second):
 
 
 def main():
-    client = T.Client([ISABELLE, "mcp_server", "-s", "MCP-HOL", "-T", "MCP_Repl"])
+    client = T.Client(ISABELLE + ["mcp_server", "-s", "MCP-HOL", "-T", "MCP_Repl"])
     client.request("initialize",
         {"protocolVersion": "2024-11-05", "capabilities": {},
          "clientInfo": {"name": "repro_concurrent_serve", "version": "0"}}, timeout=300)

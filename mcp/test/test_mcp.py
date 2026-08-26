@@ -6,8 +6,8 @@ stdio, and checks that a tool registered in Isabelle/ML can be listed
 and executed in the prover.
 
 Environment:
-  ISABELLE              path to the isabelle executable
-                        (default: the bundled Isabelle2025-2_linux distribution)
+  ISABELLE              shell-split Isabelle command
+                        (default: the project Flatpak invocation)
   MCP_TEST_TIMEOUT      per-reply timeout in seconds (default: 600) for
                         prover-backed replies -- the FIRST tools/call that
                         actually reaches the prover may still take minutes
@@ -32,18 +32,18 @@ Exit code 0 iff all assertions pass; prints one verdict line per case.
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-import queue
+
+from mcp.test.e2e.client import Client, wait_for_ready, wait_for_shout
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_ISABELLE = os.path.join(
-    PROJECT_ROOT, "Isabelle2025-2_linux", "Isabelle2025-2", "bin", "isabelle")
-ISABELLE = os.environ.get("ISABELLE", DEFAULT_ISABELLE)
+ISABELLE = shlex.split(os.environ.get(
+    "ISABELLE", "flatpak run --command=isabelle de.tum.in.isabelle.Isabelle"))
 TIMEOUT = float(os.environ.get("MCP_TEST_TIMEOUT", "600"))
 HANDSHAKE_TIMEOUT = float(os.environ.get("MCP_HANDSHAKE_TIMEOUT", "60"))
 
@@ -54,121 +54,10 @@ def verdict(name, ok, detail=""):
     global failures
     if not ok:
         failures += 1
+    limit = 2000 if not ok else 240
+    if len(detail) > limit:
+        detail = detail[:limit] + " ... [truncated]"
     print("%s %s%s" % ("PASS" if ok else "FAIL", name, " -- " + detail if detail else ""))
-
-
-class Client:
-    def __init__(self, argv):
-        self.proc = subprocess.Popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=sys.stderr.fileno(), text=True, bufsize=1)
-        self.replies = queue.Queue()
-        self.notifications = []
-        self.next_id = 0
-        self.reader = threading.Thread(target=self._read, daemon=True)
-        self.reader.start()
-
-    def _read(self):
-        for line in self.proc.stdout:
-            line = line.strip()
-            if line:
-                self.replies.put(line)
-
-    def send(self, method, params=None, notification=False):
-        msg = {"jsonrpc": "2.0", "method": method}
-        if params is not None:
-            msg["params"] = params
-        if not notification:
-            self.next_id += 1
-            msg["id"] = self.next_id
-        self.proc.stdin.write(json.dumps(msg) + "\n")
-        self.proc.stdin.flush()
-        return None if notification else msg["id"]
-
-    def send_raw(self, line):
-        self.proc.stdin.write(line + "\n")
-        self.proc.stdin.flush()
-
-    def recv(self, timeout=TIMEOUT):
-        return json.loads(self.replies.get(timeout=timeout))
-
-    def request(self, method, params=None, timeout=TIMEOUT):
-        rpc_id = self.send(method, params)
-        while True:
-            reply = self.recv(timeout=timeout)
-            # server-initiated notifications (list_changed) may interleave
-            # with replies; stash them for the tests that assert on them
-            if "id" not in reply and str(reply.get("method", "")).startswith("notifications/"):
-                self.notifications.append(reply)
-                continue
-            assert reply.get("id") == rpc_id, \
-                "reply id %r != request id %r" % (reply.get("id"), rpc_id)
-            return reply
-
-    def await_notification(self, method, timeout=30):
-        """True iff the named notification was already stashed or arrives
-        within timeout seconds."""
-        if any(n.get("method") == method for n in self.notifications):
-            return True
-        deadline = TIMEOUT if timeout is None else timeout
-        try:
-            msg = json.loads(self.replies.get(timeout=deadline))
-        except queue.Empty:
-            return False
-        if "id" not in msg and msg.get("method") == method:
-            return True
-        if "id" not in msg:
-            self.notifications.append(msg)
-        return False
-
-
-def wait_for_shout(client, timeout=TIMEOUT):
-    """Poll tools/list until the ML-registered "shout" tool appears.
-
-    plans/readiness: the FIRST tools/list (right after initialize) may
-    still answer Not_Ready -- the static builtin table only, no ML rows,
-    since there is no prover yet to ask (spec "server startup and
-    readiness"). "shout" is an ML-registered row, so its appearance IS
-    the client-observable readiness signal; this is the generous,
-    cold-build-tolerant wait, kept separate from the now-fast handshake.
-    Each individual tools/list reply comes back immediately regardless of
-    state, so polling costs nothing but the sleep between tries.
-    """
-    deadline = time.monotonic() + timeout
-    reply, tools = None, []
-    while True:
-        reply = client.request("tools/list", timeout=10)
-        tools = reply.get("result", {}).get("tools", [])
-        if any(t.get("name") == "shout" for t in tools):
-            return reply, tools
-        if time.monotonic() >= deadline:
-            return reply, tools
-        time.sleep(0.5)
-
-
-def wait_for_ready(client, probe_name="repl_list", probe_args=None, timeout=TIMEOUT):
-    """Poll a prover-backed builtin until the backend is Ready.
-
-    plans/readiness: unlike the mvp (where the whole handshake blocked
-    until the session was up), the FIRST tools/call after initialize may
-    now return the Not_Ready isError while the session heap builds in
-    the background -- repl_list is a harmless, read-only probe for it.
-    Generous, cold-build-tolerant timeout; each individual reply comes
-    back immediately regardless of state, so polling only costs the
-    sleep between tries.
-    """
-    deadline = time.monotonic() + timeout
-    reply = None
-    while True:
-        reply = client.request("tools/call",
-            {"name": probe_name, "arguments": probe_args or {}}, timeout=10)
-        content = reply.get("result", {}).get("content", [])
-        text = content[0].get("text", "") if content else ""
-        if not (" is not ready:" in text or " failed to start:" in text):
-            return reply
-        if time.monotonic() >= deadline:
-            return reply
-        time.sleep(0.5)
 
 
 def test_repl_builtins():
@@ -221,7 +110,7 @@ def test_repl_builtins():
     rejected edit is indistinguishable from a no-op at this level of
     the e2e test.)
     """
-    client = Client([ISABELLE, "mcp_server", "-s", "MCP-HOL", "-T", "MCP_Repl"])
+    client = Client(ISABELLE + ["mcp_server", "-s", "MCP-HOL", "-T", "MCP_Repl"])
     try:
         client.request("initialize", {
             "protocolVersion": "2025-03-26",
@@ -651,14 +540,31 @@ def test_repl_builtins():
         # proves the lemma independently and repl_text extracts the
         # script, which is then spliced into the fixture file exactly as
         # a client would after repl_init_from_source existed.
-        fixture_dir = tempfile.mkdtemp(prefix="mcp_wave2_")
+        # Flatpak Isabelle cannot see the host's private /tmp namespace.
+        # Keep real-process fixtures under the shared repository mount.
+        fixture_dir = tempfile.mkdtemp(prefix="mcp_wave2_", dir=PROJECT_ROOT)
         try:
             fixture_path = os.path.join(fixture_dir, "Wave2E2E.thy")
 
             def write_fixture(body):
+                # Isabelle's file fingerprint can retain a same-second rewrite.
+                # Cross a timestamp second before replacing an existing theory,
+                # otherwise the staleness test can read the previous snapshot.
+                if os.path.exists(fixture_path):
+                    previous_second = os.stat(fixture_path).st_mtime_ns // 1_000_000_000
+                    deadline = time.monotonic() + 2
+                    while (
+                        time.time_ns() // 1_000_000_000 <= previous_second
+                        and time.monotonic() < deadline
+                    ):
+                        time.sleep(0.02)
+                    if time.time_ns() // 1_000_000_000 <= previous_second:
+                        raise RuntimeError("filesystem timestamp did not advance")
                 with open(fixture_path, "w") as f:
                     f.write(
                         "theory Wave2E2E\n  imports Main\nbegin\n\n" + body + "\n\nend\n")
+                    f.flush()
+                    os.fsync(f.fileno())
 
             write_fixture("lemma wave2_e2e_good: \"True\" by simp")
             reply = client.request("tools/call", {"name": "load_theory",
@@ -843,7 +749,7 @@ def test_builtin_activation():
     theory: declare [[mcp_tools del: ...]] inside a repl step, same
     style as the tool_scope bridge suite (mcp_bridge_tests.scala).
     """
-    client = Client([ISABELLE, "mcp_server", "-s", "MCP-HOL", "-T", "MCP_Repl"])
+    client = Client(ISABELLE + ["mcp_server", "-s", "MCP-HOL", "-T", "MCP_Repl"])
     try:
         client.request("initialize", {
             "protocolVersion": "2025-03-26",
@@ -925,11 +831,11 @@ def test_builtin_activation():
 
 
 def main():
-    if not os.path.exists(ISABELLE):
-        print("FAIL setup -- isabelle executable not found: %s" % ISABELLE)
+    if not ISABELLE or shutil.which(ISABELLE[0]) is None:
+        print("FAIL setup -- isabelle command not found: %s" % " ".join(ISABELLE))
         return 1
 
-    client = Client([ISABELLE, "mcp_server"])
+    client = Client(ISABELLE + ["mcp_server"])
     try:
         # initialize handshake (plans/readiness, spec "server startup and
         # readiness"): must be fast NOW, regardless of session-heap state

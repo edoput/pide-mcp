@@ -87,6 +87,7 @@ class MissingCoverage:
     id: str
     relation: str
     layer: str
+    legacy: bool = False
 
 
 @dataclass(frozen=True)
@@ -454,7 +455,14 @@ def assemble(
         required_layers = claim.layers or ("unstated",)
         for layer in required_layers:
             if layer == "unstated" or not linked.get((ident, relation, layer)):
-                missing.append(MissingCoverage(ident, relation, layer))
+                missing.append(
+                    MissingCoverage(
+                        ident,
+                        relation,
+                        layer,
+                        legacy=document.format is not PlanFormat.V1,
+                    )
+                )
     return MatrixResult(
         manifests,
         tuple(sorted(required_producers - set(producers))),
@@ -466,10 +474,13 @@ def discover(
     root: Path, additional: Iterable[ProducerManifest] = ()
 ) -> MatrixResult:
     """Discover the currently implemented producers without executing tests."""
+    from mcp.test.e2e.registry import producer as e2e_producer
+
     manifests = [
         munit_producer(root),
         theory_producer(root),
         tooling_producer(root),
+        e2e_producer(root),
         *additional,
     ]
     return assemble(load_repository(root), load_layers(root), manifests)

@@ -175,7 +175,8 @@ multi, disagree, missing = [], [], []
 # Must agree with the document loader: a stray editor
 # swap file beside a plan is not a plan, and reading one as text kills the gate.
 plan_files = [p for p in sorted(PLANS.iterdir())
-              if p.is_file() and p.name not in ("README", "ASSUMPTIONS")
+              if p.is_file() and p.name not in
+              ("README", "ASSUMPTIONS", "legacy_unlinked.csv")
               and not p.name.startswith(".")
               and not p.name.endswith(("~", ".bak", ".orig", ".rej"))]
 for p in plan_files:

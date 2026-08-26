@@ -24,7 +24,7 @@ def result(*missing: MissingCoverage, producers: tuple[str, ...] = ()) -> Matrix
 
 
 def gap(ident: str = "example#T1", relation: str = "covers") -> MissingCoverage:
-    return MissingCoverage(ident, relation, "tooling-unit")
+    return MissingCoverage(ident, relation, "tooling-unit", legacy=True)
 
 
 @spec_test(covers=("verification_matrix#T6",))
@@ -59,6 +59,18 @@ def test_legacy_baseline_is_one_time_and_requires_every_producer(tmp_path: Path)
     assert generate_baseline(path, result(gap()), REVISION) == 1
     with pytest.raises(LegacyDebtError, match="generated once"):
         generate_baseline(path, result(gap()), REVISION)
+
+
+@spec_test(covers=("verification_matrix#T6",))
+def test_new_canonical_plan_gaps_are_never_written_as_legacy_debt(tmp_path: Path) -> None:
+    path = tmp_path / "legacy_unlinked.csv"
+    current_gap = MissingCoverage("new_plan#T1", "covers", "tooling-unit")
+
+    assert generate_baseline(path, result(gap(), current_gap), REVISION) == 1
+    baseline = parse_baseline(path.read_text(encoding="utf-8"))
+    assert [row.key.plan for row in baseline] == ["example"]
+    with pytest.raises(LegacyDebtError, match="current-plan coverage is missing"):
+        require_accepted(compare(result(gap(), current_gap), baseline))
 
 
 def test_legacy_csv_rejects_malformed_relation_duplicates_and_order() -> None:
