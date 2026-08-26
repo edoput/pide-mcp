@@ -12,6 +12,7 @@ from tools.planning_gate.labels import (
     validate_labels,
 )
 from tools.planning_gate.tests.test_document import repository, write_plan
+from tools.planning_gate.tooling import spec_test
 
 
 def canonical_plan(ident: str, claims: str, *, status: str = "planned") -> str:
@@ -55,6 +56,7 @@ def test_current_canonical_labels_are_semantically_valid() -> None:
     assert report.blockers == ()
 
 
+@spec_test(verifies=("plan_label_schema#A1",), covers=("plan_label_schema#T4",))
 def test_active_assumption_requires_a_layer(tmp_path: Path) -> None:
     claim = ACTIVE_A.replace("    layers: [tooling-unit]", "")
 
@@ -62,6 +64,7 @@ def test_active_assumption_requires_a_layer(tmp_path: Path) -> None:
         validate_one(tmp_path, claim)
 
 
+@spec_test(verifies=("plan_label_schema#A2",), covers=("plan_label_schema#T1",))
 def test_moot_assumption_requires_rationale_and_forbids_layers(tmp_path: Path) -> None:
     missing_rationale = ACTIVE_A.replace("state: active", "state: moot").replace(
         "    layers: [tooling-unit]", ""
@@ -77,6 +80,7 @@ def test_moot_assumption_requires_rationale_and_forbids_layers(tmp_path: Path) -
     assert validate_one(tmp_path / "valid", valid).claims == 1
 
 
+@spec_test(covers=("plan_label_schema#T2",))
 def test_dependency_design_requires_a_resolvable_target(tmp_path: Path) -> None:
     dependency = """  - id: D1
     kind: design
@@ -96,6 +100,7 @@ def test_dependency_design_requires_a_resolvable_target(tmp_path: Path) -> None:
     assert validate_labels(load_repository(root)).claims == 2
 
 
+@spec_test(covers=("plan_label_schema#T3",))
 def test_open_question_is_a_completion_blocker_not_malformed_metadata(
     tmp_path: Path,
 ) -> None:
@@ -119,6 +124,7 @@ def test_open_question_is_a_completion_blocker_not_malformed_metadata(
         validate_labels(load_repository(root))
 
 
+@spec_test(covers=("plan_label_schema#T3",))
 def test_resolved_question_requires_date_and_resolution_or_target(tmp_path: Path) -> None:
     incomplete = """  - id: Q1
     kind: question
@@ -131,6 +137,7 @@ def test_resolved_question_requires_date_and_resolution_or_target(tmp_path: Path
     assert validate_one(tmp_path / "complete", complete).claims == 1
 
 
+@spec_test(covers=("plan_label_schema#T5",))
 def test_supersession_requires_same_kind_and_rejects_cycles(tmp_path: Path) -> None:
     claims = """  - id: A1
     kind: assumption
@@ -146,6 +153,7 @@ def test_supersession_requires_same_kind_and_rejects_cycles(tmp_path: Path) -> N
         validate_one(tmp_path, claims)
 
 
+@spec_test(covers=("plan_label_schema#T4",))
 def test_test_claim_requires_active_state_and_layers(tmp_path: Path) -> None:
     claim = """  - id: T1
     kind: test
@@ -155,6 +163,7 @@ def test_test_claim_requires_active_state_and_layers(tmp_path: Path) -> None:
         validate_one(tmp_path, claim)
 
 
+@spec_test(covers=("plan_label_schema#T6",))
 def test_legacy_audit_contains_only_semantic_decisions(tmp_path: Path) -> None:
     root = repository(tmp_path)
     write_plan(
@@ -187,6 +196,7 @@ T1 [scala-unit]: explicit test requirement.
     assert by_id["legacy#D1"]["line"] > 0
 
 
+@spec_test(covers=("plan_label_schema#T2", "plan_label_schema#T6"))
 def test_design_layer_requires_removing_metadata_or_converting_kind(
     tmp_path: Path,
 ) -> None:
@@ -199,6 +209,7 @@ def test_design_layer_requires_removing_metadata_or_converting_kind(
         validate_one(tmp_path, design)
 
 
+@spec_test(verifies=("plan_label_schema#I1",), covers=("plan_label_schema#T5",))
 def test_alias_has_one_owner_and_cannot_shadow_a_canonical_id(tmp_path: Path) -> None:
     claims = """  - id: A1
     kind: assumption

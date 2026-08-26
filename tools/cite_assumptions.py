@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn a test theory's prose section headings into CHECKED assumption citations.
 
-MCP_Repl_Tests.thy already records which assumptions each section discharges --
+MCP_Repl_Tests.thy already records which plan requirements each section covers --
 `section <open>repl_init (plans/repl_init): T1..T6<close>` -- but as prose. Nothing
 checks it, and the first four sections are unqualified (`T2:`), resolving only
 via the theory header naming plans/repl_list.

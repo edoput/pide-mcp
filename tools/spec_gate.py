@@ -64,7 +64,7 @@ ID_RE = re.compile(r"^(?:D-(?:\d{4}-\d{2}-\d{2}|undated)|S)-[a-z0-9-]+$")
 PLAN = r"[\w-]+"
 LABEL = r"[AITDQ]\d+"
 # The LAYER column is one comma-joined field (`bridge,scala-unit`) for an
-# obligation discharged at more than one layer, so it stays a single \S+ token.
+# obligation covered at more than one layer, so it stays a single \S+ token.
 REG_ROW = re.compile(rf"^({PLAN}#{LABEL})\s+(\S+)\s")
 CITE = re.compile(rf"\b({PLAN}#{LABEL})\b")
 META = re.compile(r"^(id|supersedes|superseded_by|status):\s*(.*)$")
@@ -77,7 +77,7 @@ MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_PRODUCER = "isabelle-mcp/munit"
 MUNIT_FRAMEWORK = "munit"
 MUNIT_FRAMEWORK_VERSION = "1.1.1"
-LINK_RELATIONS = frozenset({"verifies", "discharges"})
+LINK_RELATIONS = frozenset({"verifies", "covers"})
 
 # The controlled vocabulary for a plan's status. "implemented" and "green" are
 # spellings the tree already uses for done; they are accepted rather than
@@ -376,14 +376,19 @@ for index, test in enumerate(tests):
         seen_links.add(key)
         manifest_ids.add(ident)
 
-        is_test_obligation = bool(re.fullmatch(r"T\d+", ident.rsplit("#", 1)[-1]))
-        manifest_require((relation == "discharges") == is_test_obligation,
+        label = ident.rsplit("#", 1)[-1]
+        relation_matches = (
+            relation == "covers" and bool(re.fullmatch(r"T\d+", label))
+        ) or (
+            relation == "verifies" and bool(re.fullmatch(r"[AI]\d+", label))
+        )
+        manifest_require(relation_matches,
                          f"{suite}::{name}: {relation} cannot target {ident}")
         manifest_require(ident in known_ids,
                          f"{suite}::{name} cites unknown plan id {ident}")
-        if relation == "discharges":
+        if relation == "covers":
             # An obligation may declare SEVERAL layers -- plans/scope_show T2 is
-            # discharged partly by a scala-unit test and partly by a bridge one.
+            # covered partly by a scala-unit test and partly by a bridge one.
             # The registry records them comma-joined, so the binding is
             # membership, not equality. This still refuses a link that claims a
             # layer the plan never named; what it does NOT check is that every

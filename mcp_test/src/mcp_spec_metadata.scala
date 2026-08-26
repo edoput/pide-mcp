@@ -23,8 +23,8 @@ object MCP_Spec_Metadata {
   val framework_version = "1.1.1"
 
   val Verifies = "verifies"
-  val Discharges = "discharges"
-  val Link_Relations: Set[String] = Set(Verifies, Discharges)
+  val Covers = "covers"
+  val Link_Relations: Set[String] = Set(Verifies, Covers)
 
   private val id_pattern = "[A-Za-z0-9_.-]+#[AITDQ][0-9]+".r
 
@@ -36,23 +36,28 @@ object MCP_Spec_Metadata {
   private def checked_link(relation: String, id: String): Link_Tag = {
     require(id_pattern.pattern.matcher(id).matches(),
       "malformed plan reference " + quote(id) +
-        "; expected a qualified A/I/D/Q claim or T obligation")
-    val test_obligation = id.substring(id.indexOf('#') + 1).startsWith("T")
-    require(relation == Verifies || relation == Discharges,
+        "; expected a qualified A/I claim or T requirement")
+    val label = id.substring(id.indexOf('#') + 1)
+    val expected_relation =
+      if (label.startsWith("A") || label.startsWith("I")) Verifies
+      else if (label.startsWith("T")) Covers
+      else throw new IllegalArgumentException(
+        "D/Q plan records cannot be test-link targets: " + quote(id))
+    require(relation == Verifies || relation == Covers,
       "unknown plan-link relation " + quote(relation))
-    require((relation == Discharges) == test_obligation,
+    require(relation == expected_relation,
       relation + " cannot target " + quote(id) +
-        (if (test_obligation) "; T labels must be discharged"
-         else "; A/I/D/Q labels must be verified"))
+        (if (expected_relation == Covers) "; T labels must be covered"
+         else "; A/I labels must be verified"))
     new Link_Tag(relation, id)
   }
 
-  def test_options(name: String, verifies: Seq[String], discharges: Seq[String],
+  def test_options(name: String, verifies: Seq[String], covers: Seq[String],
       location: munit.Location): munit.TestOptions = {
     require(name.trim.nonEmpty, "test name must not be empty")
     val links =
       verifies.map(checked_link(Verifies, _)) ++
-        discharges.map(checked_link(Discharges, _))
+        covers.map(checked_link(Covers, _))
     val duplicate_links =
       links.groupBy(link => (link.relation, link.id)).collect {
         case ((relation, id), same) if same.lengthCompare(1) > 0 => relation + ":" + id
@@ -185,8 +190,8 @@ object MCP_Spec_Metadata {
 
 trait MCP_Spec_Tests { self: munit.FunSuite =>
   final def spec_test(name: String, verifies: Seq[String] = Nil,
-      discharges: Seq[String] = Nil)(body: => Any)(implicit loc: munit.Location): Unit = {
-    val options = MCP_Spec_Metadata.test_options(name, verifies, discharges, loc)
+      covers: Seq[String] = Nil)(body: => Any)(implicit loc: munit.Location): Unit = {
+    val options = MCP_Spec_Metadata.test_options(name, verifies, covers, loc)
     test(options)(body)
   }
 }
@@ -218,12 +223,27 @@ class MCP_Spec_Metadata_Tests extends MCP_Suite {
     assertEquals(exported_suites, registered_suites)
   }
 
-  test("spec metadata discovery is deterministic and does not evaluate test bodies") {
+  spec_test(
+    "spec metadata discovery is deterministic and does not evaluate test bodies",
+    covers = List("verification_matrix#T7")) {
     val before = MCP_Spec_Metadata_Tests.sentinel_runs
-    MCP_Spec_Metadata.manifest(
-      List(MCP_Spec_Metadata.Suite_Def(unit_layer, classOf[MCP_Spec_Metadata_Tests])))
+    val catalog = MCP_Spec_Metadata.manifest(MCP_Test.suite_definitions)
     assertEquals(MCP_Spec_Metadata_Tests.sentinel_runs, before,
       "discovery evaluated a test body")
+    val direct_link_count =
+      MCP_Test.suite_definitions.map { definition =>
+        val suite = definition.suite.getDeclaredConstructor().newInstance()
+        suite.munitTests().toList.map(MCP_Spec_Metadata.links).map(_.length).sum
+      }.sum
+    val catalog_links =
+      get_list(catalog, "tests").flatMap(test => get_list(test, "links"))
+    assertEquals(catalog_links.length, direct_link_count,
+      "manifest dropped a registered plan link")
+    assert(
+      catalog_links.forall(link =>
+        Set(MCP_Spec_Metadata.Verifies, MCP_Spec_Metadata.Covers)(
+          get_string(link, "relation"))),
+      "manifest emitted a removed or unknown relation")
 
     val manifest =
       MCP_Spec_Metadata.manifest(
@@ -241,7 +261,7 @@ class MCP_Spec_Metadata_Tests extends MCP_Suite {
     val links = get_list(initialize, "links")
     assertEquals(
       links.map(link => (get_string(link, "relation"), get_string(link, "id"))),
-      List(("discharges", "readiness#T1"), ("verifies", "readiness#A1")))
+      List(("covers", "readiness#T1"), ("verifies", "readiness#A1")))
   }
 
   test("spec metadata rejects malformed and mistyped links at registration") {
@@ -254,6 +274,12 @@ class MCP_Spec_Metadata_Tests extends MCP_Suite {
     }
     intercept[IllegalArgumentException] {
       MCP_Spec_Metadata.test_options("bad", List("not qualified"), Nil, location)
+    }
+    intercept[IllegalArgumentException] {
+      MCP_Spec_Metadata.test_options("bad", List("plan#D1"), Nil, location)
+    }
+    intercept[IllegalArgumentException] {
+      MCP_Spec_Metadata.test_options("bad", List("plan#Q1"), Nil, location)
     }
   }
 

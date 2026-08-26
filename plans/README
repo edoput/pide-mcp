@@ -39,14 +39,15 @@ migration say things like "scala unit round-trips in isabelle
 mcp_test" -- read those through this mapping.
 
 plan/test links are structured munit metadata, not a test-name syntax.
-use `spec_test(name, verifies = List("plan#A1"), discharges =
-List("plan#T1"))`; A/I/D/Q claims are verified and T obligations are
-discharged. Every `isabelle mcp_test` invocation discovers every registered
+use `spec_test(name, verifies = List("plan#A1"), covers =
+List("plan#T1"))`; active A/I claims are verified and T requirements are
+covered. D dependencies and Q state are checked structurally. Every `isabelle
+mcp_test` invocation discovers every registered
 suite before execution filtering and writes the canonical full JSON manifest
 to `mcp_test/lib/munit-spec.json`. `isabelle mcp_test -M FILE` writes to an
 explicit destination without evaluating test bodies.
 `python3 tools/spec_gate.py --test-manifest FILE` requires the manifest and
-checks the links against plans/ASSUMPTIONS, including each discharged
+checks the links against plans/ASSUMPTIONS, including each covered
 obligation's pyramid layer.
 layer names and stable suite roles live in `mcp_test/etc/test_layers.json`;
 the runner, exporter, and gate all load that file, and the manifest records its

@@ -13,12 +13,14 @@ appears in the manifest consumed by `tools/spec_gate.py`.
 Use the plan filename as the ID prefix. A label declared in
 `plans/example_feature` is addressed as `example_feature#<label>`.
 
-- `A`, `I`, `D`, and `Q` labels go in `verifies`.
-- `T` labels go in `discharges`.
+- Active `A` and `I` labels go in `verifies`.
+- `T` labels go in `covers`.
+- `D` and `Q` are not test-link targets: dependencies resolve structurally and
+  open questions block completion.
 - One test may carry several genuine links of either kind.
 - Keep an ordinary `test(...)` when no declared plan claim is actually tested.
   Never attach an unrelated label merely to improve the coverage count.
-- A discharged `T` label's plan layer must equal the registered suite layer.
+- A covered `T` label's plan layer must equal the registered suite layer.
   Layer roles and names come from `mcp_test/etc/test_layers.json`.
 
 ## Worked mapping
@@ -48,8 +50,8 @@ the corresponding Scala test is:
 ```scala
 class Example_Feature_Tests extends MCP_Suite {
   spec_test("not-ready calls return an actionable tool result",
-      verifies = List("example_feature#A1", "example_feature#D1"),
-      discharges = List("example_feature#T1")) {
+      verifies = List("example_feature#A1"),
+      covers = List("example_feature#T1")) {
     // arrange, exercise, and assert the behavior declared above
   }
 }

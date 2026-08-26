@@ -255,7 +255,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("ir bridge: a slow step on one REPL does not delay a concurrent step on another",
-      discharges = List("repl_step#T5")) {
+      covers = List("repl_step#T5")) {
     with_repl("StepA") {
       with_repl("StepB") {
         val slow = slow_step("StepA")
@@ -268,7 +268,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("ir bridge: byte fidelity survives the scala-side yxml stripping (symbols, doubled spaces, embedded newline)",
-      discharges = List("repl_text#T1")) {
+      covers = List("repl_text#T1")) {
     with_repl("Texted") {
       val step_text = "lemma \"x \\<longrightarrow> x\"\n  by  simp"
       expect_ok(session.ir("step", List("repl" -> "Texted", "isar_text" -> step_text)),
@@ -279,7 +279,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("ir bridge: show on a busy REPL errors \"is busy\", not a stale read",
-      discharges = List("repl_show#T2")) {
+      covers = List("repl_show#T2")) {
     with_repl("Shown") {
       val slow = slow_step("Shown")
       eventually("show on Shown never errored \"busy\" while the step was in flight") {
@@ -295,7 +295,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("ir bridge: full chain, init/step/fork/step fork/repls shows both with origins",
-      discharges = List("repl_fork#T6")) {
+      covers = List("repl_fork#T6")) {
     with_repl("Fork6") {
       expect_ok(session.ir("step",
         List("repl" -> "Fork6", "isar_text" -> "lemma fork6: True")), "step 0 on Fork6")
@@ -328,7 +328,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("ir bridge: a busy orphan blocks the whole truncate, nothing is half-removed",
-      discharges = List("repl_truncate#T4")) {
+      covers = List("repl_truncate#T4")) {
     with_repl("Trunc") {
       expect_ok(session.ir("step",
         List("repl" -> "Trunc", "isar_text" -> "lemma trsu1: True")), "step 0 on Trunc")
@@ -355,7 +355,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("ir bridge: a busy parent blocks merge without corrupting the child",
-      discharges = List("repl_merge#T4")) {
+      covers = List("repl_merge#T4")) {
     with_repl("MPar") {
       expect_ok(session.ir("fork",
         List("repl" -> "MPar", "new_repl" -> "MChild", "state_idx" -> "0")), "fork MChild")
@@ -378,7 +378,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("ir bridge: the full chain sets and reports a per-REPL timeout",
-      discharges = List("repl_timeout#T4")) {
+      covers = List("repl_timeout#T4")) {
     with_repl("Tmo") {
       val text = expect_ok(session.ir("timeout", List("repl" -> "Tmo", "secs" -> "5")))
       assert(text.contains("5s"), "unexpected reply: " + text)
@@ -392,7 +392,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      a no-proof-found message, never a crash; only step the
      suggestion when one actually came back. */
   spec_test("ir bridge: happy path finds a proof for a trivial goal (tolerant of prover flakiness)",
-      discharges = List("sledgehammer#T3")) {
+      covers = List("sledgehammer#T3")) {
     with_repl("Sh3") {
       expect_ok(session.ir("step",
         List("repl" -> "Sh3", "isar_text" -> "lemma \"x + y = y + (x::nat)\"")), "step Sh3")
@@ -418,7 +418,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      lock rather than a busy error, so two concurrent calls on
      different REPLs must both return sane, uncrossed results. */
   spec_test("ir bridge: two concurrent calls on different REPLs never cross outputs",
-      discharges = List("sledgehammer#T4")) {
+      covers = List("sledgehammer#T4")) {
     with_repl("Sh4A") {
       with_repl("Sh4B") {
         expect_ok(session.ir("step",
@@ -444,7 +444,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      plans/repl_step T5 -- a fast call on another REPL returns
      while sledgehammer is still in flight on this one. */
   spec_test("ir bridge: async under load, a fast call on another repl returns while sledgehammer is in flight",
-      discharges = List("sledgehammer#T5")) {
+      covers = List("sledgehammer#T5")) {
     with_repl("Sh5") {
       expect_ok(session.ir("step",
         List("repl" -> "Sh5", "isar_text" -> "lemma \"x + y = y + (x::nat)\"")), "step Sh5")
@@ -459,7 +459,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      sledgehammer -- no async gymnastics needed, but it must not
      block behind a slow call on another REPL either. */
   spec_test("ir bridge: returns promptly on B during a slow step on A",
-      discharges = List("find_theorems#T6")) {
+      covers = List("find_theorems#T6")) {
     with_repl("FtA") {
       with_repl("FtB") {
         val slow = slow_step("FtA")
@@ -485,7 +485,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("ir bridge: the pin/unpin round trip",
-      discharges = List("repl_unpin#T3")) {
+      covers = List("repl_unpin#T3")) {
     with_repl("Upn") {
       expect_ok(session.ir("pin", List("repl" -> "Upn")), "pin Upn")
       val pinned = expect_ok(session.ir("show", List("repl" -> "Upn")))
@@ -570,7 +570,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("wave 2: a well-formed fixture under master_dir loads and reports ok",
-      discharges = List("load_theory#T1")) {
+      covers = List("load_theory#T1")) {
     with_fixture_dir("Wave2Good1" -> wave2_theory("Wave2Good1", wave2_good)) { dir =>
       val text = expect_ok(session.load_theory("Wave2Good1", File.standard_path(dir)))
       assert(text.contains("Wave2Good1: ok"), "unexpected load_theory reply: " + text)
@@ -578,7 +578,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("wave 2: a broken fixture is a line-positioned isError, and the session survives",
-      discharges = List("load_theory#T2")) {
+      covers = List("load_theory#T2")) {
     with_fixture_dir(
       "Wave2Bad1" -> wave2_theory("Wave2Bad1", wave2_bad),
       "Wave2Good2" -> wave2_theory("Wave2Good2", wave2_good)
@@ -592,7 +592,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("wave 2: re-loading an unchanged theory is ok both times",
-      discharges = List("load_theory#T4")) {
+      covers = List("load_theory#T4")) {
     with_fixture_dir("Wave2Good3" -> wave2_theory("Wave2Good3", wave2_good)) { dir =>
       val master_dir = File.standard_path(dir)
       expect_ok(session.load_theory("Wave2Good3", master_dir), "first load")
@@ -601,7 +601,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("wave 2: load, unload, and load fresh again all succeed",
-      discharges = List("unload_theory#T1")) {
+      covers = List("unload_theory#T1")) {
     with_fixture_dir("Wave2Unl1" -> wave2_theory("Wave2Unl1", wave2_good)) { dir =>
       val master_dir = File.standard_path(dir)
       expect_ok(session.load_theory("Wave2Unl1", master_dir), "load before unload")
@@ -611,7 +611,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("wave 2: THE staleness case: purge-before-reload picks up an on-disk edit",
-      discharges = List("check_theory#T1")) {
+      covers = List("check_theory#T1")) {
     with_fixture_dir("Wave2Stale" -> wave2_theory("Wave2Stale", wave2_good)) { dir =>
       val master_dir = File.standard_path(dir)
       val file = dir + Path.basic("Wave2Stale.thy")
@@ -629,14 +629,14 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("wave 2: checking a never-loaded filesystem theory works (purge no-op path)",
-      discharges = List("check_theory#T2")) {
+      covers = List("check_theory#T2")) {
     with_fixture_dir("Wave2Fresh" -> wave2_theory("Wave2Fresh", wave2_good)) { dir =>
       expect_ok(session.check_theory("Wave2Fresh", File.standard_path(dir)))
     }
   }
 
   spec_test("wave 2: warnings are ok, errors are isError (the pinned warning policy)",
-      discharges = List("check_theory#T3")) {
+      covers = List("check_theory#T3")) {
     with_fixture_dir(
       "Wave2Warn" -> wave2_theory("Wave2Warn", wave2_warn),
       "Wave2Err" -> wave2_theory("Wave2Err", wave2_bad)
@@ -816,7 +816,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
   }
 
   spec_test("ir bridge: a busy descendant blocks removal, nothing is half-removed",
-      discharges = List("repl_remove#T4")) {
+      covers = List("repl_remove#T4")) {
     with_repl("Par") {
       expect_ok(session.ir("fork",
         List("repl" -> "Par", "new_repl" -> "Child", "state_idx" -> "0")), "fork Child")
@@ -978,7 +978,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      filesystem-tier fixture to the resources/list working set, tagged
      loaded; unload_theory removes it again. */
   spec_test("bridge: load_theory auto-adds to resources/list; unload_theory removes it",
-      discharges = List("scope_add#T4")) {
+      covers = List("scope_add#T4")) {
     with_fixture_dir("ScopeBridgeLoad" -> wave2_theory("ScopeBridgeLoad", wave2_good)) { dir =>
       val handler = new MCP_Server.Handler(session)
       expect_ok(session.load_theory("ScopeBridgeLoad", File.standard_path(dir)), "load")
@@ -1026,7 +1026,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      active_repl_ids() actually parsing session.ir("repls", Nil)'s real
      text output. Removal of both makes them disappear again. */
   spec_test("bridge: a real repl and a real load_theory both appear, and disappear on removal",
-      discharges = List("scope_show#T2")) {
+      covers = List("scope_show#T2")) {
     val handler = new MCP_Server.Handler(session)
     with_repl("ScopeShowRepl") {
       val with_repl_text = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
@@ -1070,7 +1070,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      successful attach (the engine echoes it back in "from document ...
      command N") rather than guessing Isabelle's node-naming convention. */
   spec_test("an inaccessible command_id is a status error, not a hang",
-      discharges = List("repl_init_from_source#T3")) {
+      covers = List("repl_init_from_source#T3")) {
     with_fixture_dir(
       "InitFromSrcT3" -> wave2_theory("InitFromSrcT3", "lemma init_from_src_t3: \"True\" by simp")
     ) { dir =>
@@ -1100,7 +1100,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      exact text, so it needs no fragile byte-offset arithmetic; pattern
      targets a command known to appear exactly once. */
   spec_test("image-tier segment fallback resolves offset/pattern/index against recorded segments",
-      discharges = List("repl_init_from_source#T4")) {
+      covers = List("repl_init_from_source#T4")) {
     val by_pattern =
       expect_ok(
         session.init_from_source("SegPat", "MCP_Repl", None, Some("Ir.set_self_theory"), None),
@@ -1130,7 +1130,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      the SAME closing tactic through the fresh REPL, and confirm it is
      listed, steppable, its text readable, and removable. */
   spec_test("e2e attach-by-pattern on a loaded theory, step, text, remove",
-      discharges = List("repl_init_from_source#T5")) {
+      covers = List("repl_init_from_source#T5")) {
     with_fixture_dir(
       "InitFromSrcT5" ->
         wave2_theory("InitFromSrcT5",

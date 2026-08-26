@@ -92,7 +92,7 @@ class MCP_Protocol_Tests extends MCP_Suite {
 
 class MCP_Readiness_Tests extends MCP_Suite {
   spec_test("initialize never touches the backend, in any readiness state",
-      verifies = List("readiness#A1"), discharges = List("readiness#T1")) {
+      verifies = List("readiness#A1"), covers = List("readiness#T1")) {
     val throwing = new Throwing_Backend
     var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building MCP-HOL")
     val handler = new MCP_Server.Handler(() => state)
@@ -107,7 +107,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
   }
 
   spec_test("tools/list answers while not ready with exactly the static builtin table",
-      verifies = List("readiness#A2"), discharges = List("readiness#T2")) {
+      verifies = List("readiness#A2"), covers = List("readiness#T2")) {
     val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
     val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
     assertEquals(tools.map(t => get_string(t, "name")).toSet,
@@ -118,7 +118,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
   }
 
   spec_test("tools/call while not ready is isError (not a json-rpc error), naming the progress",
-      verifies = List("readiness#A3"), discharges = List("readiness#T3")) {
+      verifies = List("readiness#A3"), covers = List("readiness#T3")) {
     val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
     val reply = call_tool_on(handler, "repl_list", JSON.Object())
     assert(JSON.value(reply, "id").isDefined, "reply must echo the request id")
@@ -128,7 +128,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
   }
 
   spec_test("Failed is reported distinctly from Not_Ready, carrying the failure message",
-      verifies = List("readiness#A4"), discharges = List("readiness#T4")) {
+      verifies = List("readiness#A4"), covers = List("readiness#T4")) {
     val handler = new MCP_Server.Handler(() => MCP_Server.Failed("boom"))
     val text = assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
     assert(text.contains("failed"), "expected \"failed\" in the failed-state text: " + text)
@@ -136,7 +136,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
   }
 
   spec_test("Handler holds no cached backend -- a readiness transition is observed immediately",
-      verifies = List("readiness#A5"), discharges = List("readiness#T5")) {
+      verifies = List("readiness#A5"), covers = List("readiness#T5")) {
     var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building")
     val handler = new MCP_Server.Handler(() => state)
     assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
@@ -145,7 +145,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
   }
 
   spec_test("isabelle://session reports the readiness state, then the backend's text once ready",
-      verifies = List("readiness#A6"), discharges = List("readiness#T6")) {
+      verifies = List("readiness#A6"), covers = List("readiness#T6")) {
     var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building MCP-HOL")
     val handler =
       new MCP_Server.Handler(() => state,
@@ -1554,7 +1554,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
      "Loaded" theory, no patterns, no repls, the fixed "greeting" named
      resource). */
   spec_test("fresh state names only the implicit members",
-      discharges = List("scope_show#T1")) {
+      covers = List("scope_show#T1")) {
     val backend = new Fake_Backend
     val text = result_text(call_tool("scope_show", JSON.Object(), backend))
     assert(text.contains("patterns: (none)"), "no patterns yet: " + text)
@@ -1568,7 +1568,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
   /* T2 (patterns): scope_add's pattern shows up with its match count;
      scope_remove makes it disappear again. */
   spec_test("a scope_add pattern appears in scope_show; scope_remove removes it",
-      discharges = List("scope_show#T2")) {
+      covers = List("scope_show#T2")) {
     val backend = new Fake_Backend
     call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
     val added = result_text(call_tool("scope_show", JSON.Object(), backend))
@@ -1583,7 +1583,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
      the real backend's ir("repls")-derived list -- a created/removed
      repl shows up/disappears the same way a loaded theory does. */
   spec_test("an active repl appears in scope_show; its removal makes it disappear",
-      discharges = List("scope_show#T2")) {
+      covers = List("scope_show#T2")) {
     val backend = new Fake_Backend
     backend.active_repls = List("R")
     val present = result_text(call_tool("scope_show", JSON.Object(), backend))
@@ -1596,7 +1596,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
   /* T2 (load_theory): the implicit working set tracked via
      load_theory/check_theory shows up the same way. */
   spec_test("load_theory's implicit member appears in scope_show; unload_theory removes it",
-      discharges = List("scope_show#T2")) {
+      covers = List("scope_show#T2")) {
     val backend = new Fake_Backend
     call_tool("load_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
     val loaded = result_text(call_tool("scope_show", JSON.Object(), backend))
@@ -1612,7 +1612,7 @@ class MCP_Scope_Show_Tests extends MCP_Suite {
      (restricting resources/list to the theory/repl uris it shares with
      scope_show's vocabulary). */
   spec_test("scope_show's theories and repls agree with resources/list",
-      discharges = List("scope_show#T3")) {
+      covers = List("scope_show#T3")) {
     val backend = new Fake_Backend
     backend.active_repls = List("R")
     call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
@@ -1863,15 +1863,15 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
      case + hyphen, and a name collision with the theory Main (the join
      is over doc SESSIONS only, so "main" unambiguously means the Main
      manual, not the HOL theory). */
-  spec_test("isar-ref joins to session Isar_Ref", discharges = List("doc_list#T1")) {
+  spec_test("isar-ref joins to session Isar_Ref", covers = List("doc_list#T1")) {
     assertEquals(entry("isar-ref").source, "Isar_Ref")
   }
 
-  spec_test("logics-ZF joins to session Logics_ZF", discharges = List("doc_list#T1")) {
+  spec_test("logics-ZF joins to session Logics_ZF", covers = List("doc_list#T1")) {
     assertEquals(entry("logics-ZF").source, "Logics_ZF")
   }
 
-  spec_test("main joins to session Main", discharges = List("doc_list#T1")) {
+  spec_test("main joins to session Main", covers = List("doc_list#T1")) {
     assertEquals(entry("main").source, "Main")
   }
 
@@ -1879,13 +1879,13 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
      doing the mapping -- test it directly over synthetic
      (session, variant-names) pairs, no Sessions.Structure involved. */
   spec_test("join maps every variant name to the session",
-      discharges = List("doc_list#T2")) {
+      covers = List("doc_list#T2")) {
     val m = Doc_Catalog.join(Map.empty, "My_Doc", List("a", "b"))
     assertEquals(m, Map("a" -> "My_Doc", "b" -> "My_Doc"))
   }
 
   spec_test("join across sessions accumulates into one map",
-      discharges = List("doc_list#T2")) {
+      covers = List("doc_list#T2")) {
     val m0 = Doc_Catalog.join(Map.empty, "Sess_A", List("x"))
     val m1 = Doc_Catalog.join(m0, "Sess_B", List("y", "z"))
     assertEquals(m1, Map("x" -> "Sess_A", "y" -> "Sess_B", "z" -> "Sess_B"))
@@ -1894,14 +1894,14 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
   /* T3: plain entries (release notes) -- NEWS is readable directly, not
      via a doc session. */
   spec_test("NEWS is a plain entry, not joined to a session",
-      discharges = List("doc_list#T3")) {
+      covers = List("doc_list#T3")) {
     assertEquals(entry("NEWS").source, "plain")
   }
 
   /* T4: filtering is probe-safe -- a real pattern narrows the listing,
      an unmatched one is an EMPTY listing, not an error. */
   spec_test("pattern isar* returns exactly the isar-ref entry",
-      discharges = List("doc_list#T4")) {
+      covers = List("doc_list#T4")) {
     val text = Doc_Catalog.render(catalog, "isar*")
     assert(text.contains("isar-ref"), "isar-ref should be listed")
     assert(!text.contains("logics-ZF"), "logics-ZF should be filtered out")
@@ -1909,13 +1909,13 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
   }
 
   spec_test("an unmatched pattern is an empty listing, not an error",
-      discharges = List("doc_list#T4")) {
+      covers = List("doc_list#T4")) {
     val text = Doc_Catalog.render(catalog, "zzz_no_such_entry_zzz*")
     assert(text.contains("no matching documentation entries"),
       "unmatched pattern should report an empty listing")
   }
 
-  spec_test("empty pattern lists everything", discharges = List("doc_list#T4")) {
+  spec_test("empty pattern lists everything", covers = List("doc_list#T4")) {
     val all = Doc_Catalog.render(catalog, "")
     assert(all.contains("isar-ref") && all.contains("NEWS"),
       "empty pattern should list both manuals and plain entries")
@@ -1947,7 +1947,7 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
   /* T1: toc claim -- headings from ALL chapter files, both chapter and
      section levels present, every row carrying file + line. */
   spec_test("Isar_Ref toc has more than 40 rows spanning multiple files",
-      discharges = List("doc_read#T1")) {
+      covers = List("doc_read#T1")) {
     assert(isar_ref_toc.length > 40,
       "expected > 40 headings in Isar_Ref, got " + isar_ref_toc.length)
     assert(isar_ref_toc.map(_.file).distinct.length > 1,
@@ -1955,7 +1955,7 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
   }
 
   spec_test("toc includes both chapter and section levels, all with a line",
-      discharges = List("doc_read#T1")) {
+      covers = List("doc_read#T1")) {
     assert(isar_ref_toc.exists(_.level == 0), "expected at least one chapter heading")
     assert(isar_ref_toc.exists(_.level == 1), "expected at least one section heading")
     assert(isar_ref_toc.forall(_.line > 0), "every heading should carry a positive line")
@@ -1966,7 +1966,7 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      text contains a phrase from its body and stops before the next
      section's title. */
   spec_test("section extraction stops at the next same-level heading",
-      discharges = List("doc_read#T2")) {
+      covers = List("doc_read#T2")) {
     Doc_Catalog.find_section(isar_ref_toc, "Defining theories") match {
       case Doc_Catalog.Unique(heading) =>
         val in_file = isar_ref_toc.filter(_.file == heading.file)
@@ -1982,7 +1982,7 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
   /* T3: it is a search, not a compile -- ambiguous/unknown queries never
      guess. "proof" matches many section titles across Isar_Ref. */
   spec_test("an ambiguous section query returns candidates, not text",
-      discharges = List("doc_read#T3")) {
+      covers = List("doc_read#T3")) {
     Doc_Catalog.find_section(isar_ref_toc, "proof") match {
       case Doc_Catalog.Ambiguous(candidates) => assert(candidates.length > 1)
       case other => fail("expected Ambiguous for \"proof\", got " + other)
@@ -1990,7 +1990,7 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
   }
 
   spec_test("an unknown section query is No_Match, not an error",
-      discharges = List("doc_read#T3")) {
+      covers = List("doc_read#T3")) {
     assertEquals(
       Doc_Catalog.find_section(isar_ref_toc, "zzz_no_such_section_zzz"), Doc_Catalog.No_Match)
   }
@@ -2000,13 +2000,13 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      plain file, so this exercises Doc_Catalog.plain_read directly against
      NEWS). */
   spec_test("plain_read with an explicit lines window returns exactly that window",
-      discharges = List("doc_read#T4")) {
+      covers = List("doc_read#T4")) {
     val Right(text) = Doc_Catalog.plain_read(news_path, "1-5"): @unchecked
     assertEquals(split_lines(text).length, 5)
   }
 
   spec_test("plain_read rejects a malformed lines range",
-      discharges = List("doc_read#T4")) {
+      covers = List("doc_read#T4")) {
     assert(Doc_Catalog.plain_read(news_path, "not-a-range").isLeft)
   }
 
@@ -2014,7 +2014,7 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      heading itself, spanning the whole file) truncates at the window with
      the "narrow" note. */
   spec_test("a chapter-sized section read truncates with a narrow-the-section note",
-      discharges = List("doc_read#T5")) {
+      covers = List("doc_read#T5")) {
     val chapter = isar_ref_toc.find(_.level == 0).getOrElse(fail("no chapter heading found"))
     val in_file = isar_ref_toc.filter(_.file == chapter.file)
     val text = Doc_Catalog.section_text(in_file, chapter)
@@ -2029,7 +2029,7 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
      count is a plain line-start check, independent of the scanner's own
      cartouche-matching regex. */
   spec_test("scanner heading count matches a raw line-start count",
-      discharges = List("doc_read#T6")) {
+      covers = List("doc_read#T6")) {
     val command = """^(chapter|section|subsection|subsubsection)\b""".r
     val raw_count =
       isar_ref_files.map(f => split_lines(File.read(f)).count(l => command.findFirstIn(l).isDefined)).sum
@@ -2083,7 +2083,7 @@ class MCP_Config_Tests extends MCP_Suite {
      Sessions.load_structure over the same dirs) and must report exactly
      one Collision naming "Scratch", both ROOT paths, and both lines. */
   spec_test("two colliding -d roots produce a Collision, and check() does not throw",
-      verifies = List("session_dirs_errors#A1"), discharges = List("session_dirs_errors#T1")) {
+      verifies = List("session_dirs_errors#A1"), covers = List("session_dirs_errors#T1")) {
     with_two_projects { (_, alpha, beta) =>
       val issues = MCP_Config.check(List(alpha, beta))
       val collisions = issues.collect { case c: MCP_Config.Collision => c }
@@ -2165,7 +2165,7 @@ class MCP_Config_Tests extends MCP_Suite {
      classified From_Components, not From_Dir, and render() tells the
      user to rename THEIRS, never mentioning dropping the component. */
   spec_test("a -d session colliding with a component is classified From_Components",
-      verifies = List("session_dirs_errors#A3"), discharges = List("session_dirs_errors#T3")) {
+      verifies = List("session_dirs_errors#A3"), covers = List("session_dirs_errors#T3")) {
     Isabelle_System.with_tmp_dir("session_dirs_errors") { base =>
       val mine = base + Path.basic("myproj")
       Isabelle_System.make_directory(mine)

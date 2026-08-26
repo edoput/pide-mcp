@@ -14,6 +14,8 @@ tools/planning-gate registry check
 tools/planning-gate registry generate
 tools/planning-gate labels check
 tools/planning-gate labels audit check
+tools/planning-gate matrix dump
+tools/planning-gate matrix check
 .venv/bin/python -m pytest -q tools/planning_gate/tests
 ```
 
@@ -42,6 +44,14 @@ wrapper; it has no second plan parser.
 claims.  Legacy plans are not silently assigned states.  Instead, `labels audit
 generate` writes `plans/migration/label-audit.json`, containing only claims
 which need a human semantic decision before migration.
+
+`matrix dump` performs body-free discovery and emits the common producer
+catalog plus every missing verification relationship.  It remains diagnostic
+and succeeds even when a producer or relationship is missing.  `matrix check`
+additionally requires every registered producer and an exact match with the
+reviewed `plans/legacy_unlinked.csv` ratchet.  The one-time baseline command is
+`tools/planning-gate matrix legacy generate`; it refuses to run while any
+producer is absent or after the CSV exists.
 
 The final public command is `tools/planning-gate done`.  The checked-in launcher
 resolves the repository root, selects `.venv/bin/python`, checks its required

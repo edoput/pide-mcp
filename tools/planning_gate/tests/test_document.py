@@ -13,6 +13,7 @@ from tools.planning_gate.document import (
     load_plan,
     load_repository,
 )
+from tools.planning_gate.tooling import spec_test
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -72,6 +73,10 @@ def write_plan(root: Path, ident: str, text: str) -> Path:
     return path
 
 
+@spec_test(
+    verifies=("plan_format#A1", "plan_format#A3"),
+    covers=("plan_format#T1",),
+)
 def test_valid_v1_plan_becomes_immutable_typed_document(tmp_path: Path) -> None:
     root = repository(tmp_path)
     path = write_plan(root, "example", valid_plan())
@@ -136,6 +141,7 @@ def test_valid_v1_plan_becomes_immutable_typed_document(tmp_path: Path) -> None:
         ),
     ],
 )
+@spec_test(verifies=("plan_format#A2",), covers=("plan_format#T2", "plan_format#T4"))
 def test_invalid_v1_documents_are_rejected(
     tmp_path: Path, name: str, text: str, message: str
 ) -> None:
@@ -146,6 +152,7 @@ def test_invalid_v1_documents_are_rejected(
         load_plan(path, root, allow_legacy=False)
 
 
+@spec_test(covers=("plan_format#T3",))
 def test_repository_rejects_unknown_dependency(tmp_path: Path) -> None:
     root = repository(tmp_path)
     write_plan(root, "example", valid_plan(depends_on="[missing]"))
@@ -154,6 +161,7 @@ def test_repository_rejects_unknown_dependency(tmp_path: Path) -> None:
         load_repository(root, allow_legacy=False)
 
 
+@spec_test(covers=("plan_format#T3",))
 def test_repository_rejects_dependency_cycle(tmp_path: Path) -> None:
     root = repository(tmp_path)
     write_plan(root, "first", valid_plan("first", depends_on="[second]"))
@@ -163,6 +171,7 @@ def test_repository_rejects_dependency_cycle(tmp_path: Path) -> None:
         load_repository(root, allow_legacy=False)
 
 
+@spec_test(verifies=("plan_format#I1",), covers=("plan_format#T5",))
 def test_legacy_migration_preserves_claim_ids_and_statements(tmp_path: Path) -> None:
     root = repository(tmp_path)
     legacy = write_plan(

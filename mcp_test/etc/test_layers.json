@@ -5,6 +5,15 @@
     "heap_suites": "heap",
     "pide_suites": "bridge",
     "ml_unit_tests": "ml-unit",
+    "tooling_unit_tests": "tooling-unit",
     "end_to_end_tests": "e2e"
+  },
+  "producers": {
+    "scala-unit": "isabelle-mcp/munit",
+    "heap": "isabelle-mcp/munit",
+    "bridge": "isabelle-mcp/munit",
+    "ml-unit": "isabelle-mcp/isabelle-theory",
+    "tooling-unit": "isabelle-mcp/pytest",
+    "e2e": "isabelle-mcp/python-e2e"
   }
 }

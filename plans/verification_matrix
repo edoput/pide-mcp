@@ -114,9 +114,9 @@ producer contract
 -----------------
 
 Every producer emits the same versioned JSON shape without executing test
-bodies:
+bodies (the `schema` value carries the contract version):
 
-    schema_version, producer, producer_artifact, tests[]
+    schema, producer, artifact, tests[]
 
 Each test carries a stable producer-local identity, human name, layer, source
 path and line, plus sorted `verifies` and `covers` ID lists.  Producer-specific

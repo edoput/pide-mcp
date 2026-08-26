@@ -5,11 +5,20 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 from .document import DocumentError, PlanFormat, load_plan, load_repository
 from .files import write_atomic_text
+from .legacy import (
+    LegacyDebtError,
+    compare,
+    generate_baseline,
+    read_baseline,
+    require_accepted,
+)
 from .labels import audit_is_fresh, generate_audit, validate_labels
+from .matrix import MatrixError, discover
 from .registry import format_report, generate, stale_outputs
 
 
@@ -46,6 +55,16 @@ def _parser() -> argparse.ArgumentParser:
     audit_commands = audit.add_subparsers(dest="audit_command", required=True)
     audit_commands.add_parser("generate", help="regenerate the migration audit")
     audit_commands.add_parser("check", help="check migration-audit freshness")
+
+    matrix = commands.add_parser("matrix", help="discover static verification coverage")
+    matrix_commands = matrix.add_subparsers(dest="matrix_command", required=True)
+    matrix_dump = matrix_commands.add_parser("dump", help="emit the static matrix as JSON")
+    matrix_dump.add_argument("--output", type=Path, help="write JSON atomically")
+    matrix_commands.add_parser("check", help="check producers, links, and legacy debt")
+    legacy = matrix_commands.add_parser("legacy", help="manage the one-time debt baseline")
+    legacy_commands = legacy.add_subparsers(dest="legacy_command", required=True)
+    legacy_commands.add_parser("generate", help="create plans/legacy_unlinked.csv once")
+    legacy_commands.add_parser("check", help="check the reviewed legacy-debt ratchet")
     return parser
 
 
@@ -53,6 +72,51 @@ def _main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = args.root.resolve()
     try:
+        if args.command == "matrix":
+            result = discover(root)
+            if args.matrix_command == "dump":
+                rendered = json.dumps(
+                    result.to_json(), indent=2, sort_keys=True, ensure_ascii=False
+                ) + "\n"
+                if args.output:
+                    output = args.output if args.output.is_absolute() else root / args.output
+                    write_atomic_text(output, rendered)
+                    try:
+                        display = output.relative_to(root)
+                    except ValueError:
+                        display = output
+                    print(f"wrote {display}")
+                else:
+                    sys.stdout.write(rendered)
+                return 0
+
+            baseline_path = root / "plans/legacy_unlinked.csv"
+            if args.matrix_command == "legacy" and args.legacy_command == "generate":
+                revision = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                count = generate_baseline(baseline_path, result, revision)
+                print(f"wrote plans/legacy_unlinked.csv ({count} reviewed gaps)")
+                return 0
+
+            if result.missing_producers:
+                names = ", ".join(result.missing_producers)
+                raise MatrixError(f"missing verification producers: {names}")
+
+            baseline = read_baseline(baseline_path)
+            ratchet = compare(result, baseline)
+            require_accepted(ratchet)
+            print(
+                "matrix check: PASS "
+                f"({sum(len(value.tests) for value in result.producers)} tests; "
+                f"{len(result.missing_coverage)} reviewed legacy gaps)"
+            )
+            return 0
+
         if args.command == "registry":
             if args.registry_command == "generate":
                 report = generate(root)
@@ -120,8 +184,14 @@ def _main(argv: list[str] | None = None) -> int:
         else:
             sys.stdout.write(rendered)
         return 0
-    except (DocumentError, OSError) as ex:
-        print(f"plan gate: FAIL: {ex}", file=sys.stderr)
+    except (
+        DocumentError,
+        LegacyDebtError,
+        MatrixError,
+        OSError,
+        subprocess.SubprocessError,
+    ) as ex:
+        print(f"planning gate: FAIL: {ex}", file=sys.stderr)
         return 1
 
 

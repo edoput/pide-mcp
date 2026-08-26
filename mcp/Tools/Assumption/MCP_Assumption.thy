@@ -4,9 +4,9 @@
 Checked citation of a plan's assumption from a theory.
 
 The Isar answer to what munit gets from a structured `verifies` or
-`discharges` tag. An ML test block has no metadata slot --
-`\<^assert> (status = "ok")` is anonymous, so nothing says which assumption it
-discharges and nothing notices when that assumption is renamed or deleted.
+`covers` tag. An ML test block has no metadata slot --
+`\<^assert> (status = "ok")` is anonymous, so nothing says which plan record it
+verifies or covers and nothing notices when that record is renamed or deleted.
 
 This does NOT introduce a new convention. mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy
 already groups its asserts under `section \<open>T2: fresh state ...\<close>`; the IDs are
