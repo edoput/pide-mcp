@@ -134,7 +134,7 @@ planning_gate#T2          tooling-unit              Generating every discovery m
 planning_gate#T3          tooling-unit              Each registered command-step failure makes `done` exit nonzero and identifies its failed step.
 planning_gate#T4          tooling-unit              A filtered or reduced-layer invocation is rejected by the completion command while remaining available through diagnostic subcommands.
 planning_gate#T5          tooling-unit              Dirty paths are printed; a changed HEAD or tracked content during execution invalidates the run.
-planning_gate#T6          scala-unit                The existing shutdown-drain regression is selected by the full Scala suite and its failure propagates to `done`.
+planning_gate#T6          scala-unit                The shutdown-drain regression fixture is always selected by the full Scala suite; while red it blocks `done` through the layer-failure rule, and after
 planning_gate#T7          scala-unit,tooling-unit   Documentation TOC classification fixtures distinguish functional and performance checks;
 planning_gate#T8          bridge,e2e,heap,ml-unit,scala-unit,tooling-unit  An orchestration fixture requires every registered layer;
 python_e2e#A1             e2e                       A procedural process test exercises the shipped process and public protocol, not an in-process fake or an LLM agent.

@@ -70,7 +70,7 @@ claims:
   - id: T6
     kind: test
     state: active
-    statement: The existing shutdown-drain regression is selected by the full Scala suite and its failure propagates to `done`.
+    statement: The shutdown-drain regression fixture is always selected by the full Scala suite; while red it blocks `done` through the layer-failure rule, and after repair it remains a green regression guard.
     layers: [scala-unit]
   - id: T7
     kind: test

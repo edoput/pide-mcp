@@ -68,7 +68,8 @@ class MCP_Protocol_Tests extends MCP_Suite {
     assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_REQUEST)
   }
 
-  test("serve temporarily drains accepted lifecycle requests before stopping on EOF") {
+  spec_test("serve drains accepted lifecycle requests before stopping on EOF",
+      covers = List("planning_gate#T6")) {
     val backend = new Fake_Backend
     val input =
       List(
