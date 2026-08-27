@@ -229,7 +229,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(policy().revision, ProtocolRevision.V2025_03_26)
   }
 
-  test("deterministic schedulers execute sequentially with no waiting queue") {
+  spec_test("deterministic schedulers execute sequentially with no waiting queue",
+      verifies = List("connection_kernel#I2")) {
     var ran = List.empty[String]
     val inline = new DeterministicSequentialScheduler(1)
     val inlinePermit = inline.tryReserve().asInstanceOf[RequestScheduler.Reserved].permit
@@ -400,6 +401,27 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(largeConnection.receive().map(_.decision),
       Some(ConnectionLifecycle.Rejected(RevisionRules.NullReply, RevisionRules.InvalidRequest,
         "id must be a string")))
+  }
+
+  test("typed list_changed notifications are emitted only after Ready") {
+    val plane = new ScriptedDataPlane(Nil)
+    val connection = kernelWith(plane, new DeterministicSequentialScheduler(2), 2, application)
+
+    connection.listChanged(ConnectionKernel.ListChanged.Tools)
+    assertEquals(plane.written, Nil)
+
+    connection.handle(RevisionRules.Initialize(requestId(52), ProtocolRevision.V2025_03_26.value))
+    connection.listChanged(ConnectionKernel.ListChanged.Tools)
+    assertEquals(plane.written.length, 1, "AwaitingInitialized must not emit list_changed")
+
+    connection.handle(RevisionRules.Initialized)
+    connection.listChanged(ConnectionKernel.ListChanged.Resources)
+    assertEquals(plane.written.length, 2)
+    assert(plane.written.last.contains("notifications/resources/list_changed"))
+
+    connection.beginClosing()
+    connection.listChanged(ConnectionKernel.ListChanged.Tools)
+    assertEquals(plane.written.length, 2)
   }
 
   test("registry detects foreign and duplicate tokens and applies every invariant reaction") {

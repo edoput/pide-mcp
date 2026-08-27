@@ -31,14 +31,38 @@ final class StdioDataPlane(input: InputStream, output: OutputStream) extends Dat
   private val writer = new PrintStream(output, true, StandardCharsets.UTF_8)
   private val output_lock = new AnyRef
 
-  def receive(): Option[JsonRpc.Inbound] =
-    Option(reader.readLine()).map(JsonRpc.decode)
+  def receive(): Option[JsonRpc.Inbound] = {
+    var line = reader.readLine()
+    while (line != null && line.isBlank) line = reader.readLine()
+    Option(line).map(JsonRpc.decode)
+  }
 
   def send(outbound: JsonRpc.Outbound): Unit =
     output_lock.synchronized {
       writer.println(JsonRpc.render(outbound))
       writer.flush()
       if (writer.checkError()) throw new IOException("MCP stdio output failed")
+    }
+}
+
+
+/* Keeps the injectable reader/stream test seam on the same DataPlane contract
+   as production stdio.  Blank lines remain transport whitespace, matching the
+   historic serve loop rather than turning into JSON parse-error replies. */
+final class BufferedDataPlane(input: BufferedReader, output: PrintStream) extends DataPlane {
+  private val output_lock = new AnyRef
+
+  def receive(): Option[JsonRpc.Inbound] = {
+    var line = input.readLine()
+    while (line != null && line.isBlank) line = input.readLine()
+    Option(line).map(JsonRpc.decode)
+  }
+
+  def send(outbound: JsonRpc.Outbound): Unit =
+    output_lock.synchronized {
+      output.println(JsonRpc.render(outbound))
+      output.flush()
+      if (output.checkError()) throw new IOException("MCP stream output failed")
     }
 }
 
@@ -53,13 +77,15 @@ final class ScriptedDataPlane(lines: List[String]) extends DataPlane {
   private var emitted = Vector.empty[String]
   private val output_lock = new AnyRef
 
-  def receive(): Option[JsonRpc.Inbound] =
+  def receive(): Option[JsonRpc.Inbound] = {
+    while (remaining.headOption.exists(_.isBlank)) remaining = remaining.tail
     remaining match {
       case Nil => None
       case line :: more =>
         remaining = more
         Some(JsonRpc.decode(line))
     }
+  }
 
   def send(outbound: JsonRpc.Outbound): Unit =
     output_lock.synchronized {

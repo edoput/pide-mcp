@@ -9,8 +9,12 @@ package isabelle.mcp
 
 import isabelle._
 
-import java.io.{BufferedReader, ByteArrayOutputStream, PrintStream, StringReader}
+import java.io.{BufferedReader, ByteArrayOutputStream, PipedReader, PipedWriter, PrintStream, StringReader}
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
+
+import isabelle.mcp.connection.ConnectionPolicy
 
 import scala.concurrent.duration.DurationInt
 
@@ -64,17 +68,18 @@ class MCP_Protocol_Tests extends MCP_Suite {
     assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_REQUEST)
   }
 
-  spec_test("serve drains every dispatched reply before stopping on EOF",
-      covers = List("planning_gate#T6")) {
+  test("serve temporarily drains accepted lifecycle requests before stopping on EOF") {
     val backend = new Fake_Backend
     val input =
       List(
-        JSON.Format(request(Some(1), "initialize", None)),
+        JSON.Format(JSON.Object("jsonrpc" -> "2.0", "id" -> "initialize",
+          "method" -> "initialize", "params" -> JSON.Object("protocolVersion" -> "2025-03-26"))),
+        JSON.Format(JSON.Object("jsonrpc" -> "2.0", "method" -> "notifications/initialized")),
         "",
         "{garbage",
-        JSON.Format(request(Some(2), "tools/call",
-          Some(JSON.Object("name" -> "shout",
-            "arguments" -> JSON.Object("input" -> "hi")))))
+        JSON.Format(JSON.Object("jsonrpc" -> "2.0", "id" -> "call",
+          "method" -> "tools/call", "params" -> JSON.Object("name" -> "shout",
+            "arguments" -> JSON.Object("input" -> "hi"))))
       ).mkString("\n")
     val out_stream = new ByteArrayOutputStream
     val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
@@ -256,6 +261,30 @@ class MCP_Readiness_Tests extends MCP_Suite {
 /* tools: ML-registry tools, the builtin table rows, and their dispatch */
 
 class MCP_Tools_Tests extends MCP_Suite {
+  private def start_server(body: => Unit): (Thread, AtomicReference[Throwable]) = {
+    val failure = new AtomicReference[Throwable](null)
+    val server = new Thread(new Runnable {
+      def run(): Unit =
+        try body
+        catch { case exn: Throwable => failure.compareAndSet(null, exn) }
+    }, "mcp-serve-test")
+    /* A failing assertion must not leave the test JVM pinned on an input
+       reader.  Successful tests still close the pipe and join the thread. */
+    server.setDaemon(true)
+    server.start()
+    (server, failure)
+  }
+
+  private def check_server(
+    server: Thread,
+    failure: AtomicReference[Throwable],
+    timeoutMillis: Long
+  ): Unit = {
+    server.join(timeoutMillis)
+    assert(!server.isAlive, "serve did not stop after input closed")
+    Option(failure.get()).foreach(throw _)
+  }
+
   test("tools/list reports the backend tools with the fixed schema") {
     val shout = tool_row("shout")
     assertEquals(get_string(shout, "description"), "uppercase the input")
@@ -1084,17 +1113,131 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(get(reply, "result", "capabilities", "resources", "listChanged"), true)
   }
 
-  test("serve wires the changed handler to list_changed notifications") {
-    val backend = new Fake_Backend
+  test("serve emits list_changed through its live connection data plane") {
+    class Notifying_Backend extends Fake_Backend {
+      val changed = new CountDownLatch(1)
+      override def ml_run(name: String, args: List[(String, String)],
+          designation: String, bundles: List[String]): MCP_Session.Result = {
+        changed_handler("tools")
+        changed.countDown()
+        super.ml_run(name, args, designation, bundles)
+      }
+    }
+    val backend = new Notifying_Backend
     val out_stream = new ByteArrayOutputStream
     val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
-    /* fire the backend event mid-session: EOF right after */
-    val input = JSON.Format(request(Some(1), "ping", None))
-    MCP_Server.serve(backend, new BufferedReader(new StringReader(input)), out)
-    backend.changed_handler("tools")
-    val lines = split_lines(out_stream.toString(StandardCharsets.UTF_8)).filter(_.nonEmpty)
-    assert(lines.exists(_.contains("notifications/tools/list_changed")),
-      "missing list_changed notification: " + lines.toString)
+    val writer = new PipedWriter
+    val reader = new BufferedReader(new PipedReader(writer))
+    val (server, server_failure) = start_server { MCP_Server.serve(backend, reader, out) }
+    try {
+      List(
+        JSON.Object("jsonrpc" -> "2.0", "id" -> "initialize", "method" -> "initialize",
+          "params" -> JSON.Object("protocolVersion" -> "2025-03-26")),
+        JSON.Object("jsonrpc" -> "2.0", "method" -> "notifications/initialized"),
+        JSON.Object("jsonrpc" -> "2.0", "id" -> "call", "method" -> "tools/call",
+          "params" -> JSON.Object("name" -> "shout", "arguments" -> JSON.Object("input" -> "hi")))
+      ).foreach(json => writer.write(JSON.Format(json) + "\n"))
+      writer.flush()
+      assert(backend.changed.await(2, TimeUnit.SECONDS), "tool call never raised list_changed")
+      val lines = split_lines(out_stream.toString(StandardCharsets.UTF_8)).filter(_.nonEmpty)
+      assert(lines.exists(_.contains("notifications/tools/list_changed")),
+        "missing list_changed notification: " + lines.toString)
+    }
+    finally writer.close()
+    check_server(server, server_failure, 2000L)
+  }
+
+  private def serve_policy(maxInFlight: Int): ConnectionPolicy =
+    ConnectionPolicy.fromOptions(
+      Options.init() + ("mcp_max_in_flight=" + maxInFlight) +
+        "mcp_request_timeout=60.0" + "mcp_shutdown_drain=1.0") match {
+      case Right(policy) => policy
+      case Left(message) => fail(message)
+    }
+
+  private def eventually(label: String, timeoutMillis: Long = 2000L)(condition: => Boolean): Unit = {
+    val deadline = System.nanoTime() + timeoutMillis * 1000000L
+    while (!condition && System.nanoTime() < deadline) Thread.sleep(5L)
+    assert(condition, label)
+  }
+
+  spec_test("production serve rejects saturation without a waiting queue and recovers capacity",
+      verifies = List("connection_kernel#I2")) {
+    class Blocking_Backend extends Fake_Backend {
+      val calls = new AtomicInteger(0)
+      val first_started = new CountDownLatch(2)
+      val first_release = new CountDownLatch(1)
+      val first_finished = new CountDownLatch(2)
+      val fourth_started = new CountDownLatch(1)
+      val fourth_release = new CountDownLatch(1)
+
+      override def ml_run(name: String, args: List[(String, String)],
+          designation: String, bundles: List[String]): MCP_Session.Result = {
+        calls.incrementAndGet() match {
+          case n if n <= 2 =>
+            first_started.countDown()
+            if (!first_release.await(5, TimeUnit.SECONDS)) fail("first workers were not released")
+            first_finished.countDown()
+          case 3 =>
+            fourth_started.countDown()
+            if (!fourth_release.await(5, TimeUnit.SECONDS)) fail("recovered worker was not released")
+          case n => fail("unexpected queued execution " + n)
+        }
+        super.ml_run(name, args, designation, bundles)
+      }
+    }
+
+    val backend = new Blocking_Backend
+    val out_stream = new ByteArrayOutputStream
+    val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
+    val writer = new PipedWriter
+    val reader = new BufferedReader(new PipedReader(writer))
+    val (server, server_failure) = start_server {
+      MCP_Server.serve(backend, reader, out, policy = serve_policy(2))
+    }
+    def send(json: JSON.T): Unit = writer.write(JSON.Format(json) + "\n")
+
+    try {
+      send(JSON.Object("jsonrpc" -> "2.0", "id" -> "initialize", "method" -> "initialize",
+        "params" -> JSON.Object("protocolVersion" -> "2025-03-26")))
+      send(JSON.Object("jsonrpc" -> "2.0", "method" -> "notifications/initialized"))
+      List("one", "two", "overload").foreach(id =>
+        send(JSON.Object("jsonrpc" -> "2.0", "id" -> id, "method" -> "tools/call",
+          "params" -> JSON.Object("name" -> "shout", "arguments" -> JSON.Object("input" -> id)))))
+      writer.flush()
+
+      assert(backend.first_started.await(2, TimeUnit.SECONDS), "configured work never started")
+      eventually("N+1 did not receive the immediate overload reply") {
+        out_stream.toString(StandardCharsets.UTF_8).contains("\"id\":\"overload\"") &&
+          out_stream.toString(StandardCharsets.UTF_8).contains("\"code\":-32001")
+      }
+      assertEquals(backend.calls.get(), 2, "saturation must not queue application work")
+
+      backend.first_release.countDown()
+      assert(backend.first_finished.await(2, TimeUnit.SECONDS), "accepted work did not finish")
+      eventually("accepted work did not release its production worker permits") {
+        val output = out_stream.toString(StandardCharsets.UTF_8)
+        output.contains("\"id\":\"one\"") && output.contains("\"id\":\"two\"")
+      }
+      val recoveryDeadline = System.nanoTime() + 2000000000L
+      var recoveryAttempt = 0
+      while (backend.fourth_started.getCount > 0L && System.nanoTime() < recoveryDeadline) {
+        val id = "recovered-" + recoveryAttempt
+        send(JSON.Object("jsonrpc" -> "2.0", "id" -> id, "method" -> "tools/call",
+          "params" -> JSON.Object("name" -> "shout", "arguments" -> JSON.Object("input" -> id))))
+        writer.flush()
+        recoveryAttempt += 1
+        Thread.sleep(10L)
+      }
+      assert(backend.fourth_started.getCount == 0L, "capacity did not recover")
+      assertEquals(backend.calls.get(), 3)
+    }
+    finally {
+      backend.first_release.countDown()
+      backend.fourth_release.countDown()
+      writer.close()
+    }
+    check_server(server, server_failure, 3000L)
   }
 }
 

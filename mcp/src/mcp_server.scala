@@ -10,9 +10,10 @@ package isabelle.mcp
 
 import isabelle._
 import isabelle.mcp.application.McpApplication
+import isabelle.mcp.connection._
+import isabelle.mcp.transport.{BufferedDataPlane, DataPlane, StdioDataPlane}
 
-import java.io.{BufferedReader, InputStreamReader, PrintStream}
-import java.nio.charset.StandardCharsets
+import java.io.{BufferedReader, PrintStream}
 
 object MCP_Server {
   val server_name = "isabelle-mcp"
@@ -1219,11 +1220,100 @@ object MCP_Server {
   }
 
 
-  /* server loop over injectable streams (tests drive it with strings).
+  private def validatedConnectionPolicy(options: Options): ConnectionPolicy =
+    ConnectionPolicy.fromOptions(options) match {
+      case Right(policy) => policy
+      case Left(message) => error("mcp_server: invalid connection policy: " + message)
+    }
 
-     No default arguments here (Scala forbids two overloads that both
-     declare them) -- the backend-only overload below carries the
-     defaults instead, and run() passes everything explicitly. */
+  /* The single production composition root.  The backend readiness thunk is
+     intentionally separate from the connection lifecycle: one application
+     instance owns its per-connection scope for the whole wire connection. */
+  private def serveConnection(
+    readiness: () => Readiness,
+    dataPlane: DataPlane,
+    progress: Progress,
+    session_name: String,
+    session_dirs: List[Path],
+    theory: String,
+    install_changed_sender: (String => Unit) => Unit,
+    on_shutdown: () => Unit,
+    policy: ConnectionPolicy
+  ): Unit = {
+    val application = McpApplication.isabelle(readiness, session_name, session_dirs, theory)
+    val rules = new Mcp2025RevisionRules
+    val scheduler = new BoundedConcurrentScheduler(
+      ConnectionPolicy.MaxInFlight.value(policy.admission.maxInFlight), "mcp-worker")
+
+    /* Registry invariant reaction refers back to the connection it is part
+       of.  The lazy value is safe because the callback runs only after the
+       completed composition has admitted work. */
+    lazy val kernel: ConnectionKernel = {
+      val registry = new RequestRegistry(new RequestRegistry.InvariantViolationPolicy.LogAndClose(
+        close = () => kernel.close(),
+        log = message => progress.echo_error_message("mcp_server: " + message)))
+      ConnectionKernel(
+        policy = policy,
+        dataPlane = dataPlane,
+        revisionRules = rules,
+        scheduler = scheduler,
+        registry = registry,
+        application = application,
+        serverInfo = ConnectionKernel.ServerInfo(server_name, server_version))
+    }
+    val connection = kernel
+
+    /* MCP.tools_changed / MCP.resources_changed (MCP_Tool.declare in a
+       theory loaded at runtime) become connection-owned notifications. */
+    install_changed_sender { what =>
+      ConnectionKernel.ListChanged.fromBackend(what) match {
+        case Some(change) => connection.listChanged(change)
+        case None => progress.echo_warning("mcp_server: ignoring unknown list_changed kind " + quote(what))
+      }
+    }
+
+    var failure: Option[Throwable] = None
+    try {
+      var finished = false
+      while (!finished && connection.phase != ConnectionLifecycle.Closing &&
+          connection.phase != ConnectionLifecycle.Closed) {
+        connection.receiveAndExecute() match {
+          case None => finished = true
+          case Some(_) => ()
+        }
+      }
+    }
+    catch {
+      case exn: Throwable if !Exn.is_interrupt(exn) =>
+        progress.echo_error_message("mcp_server: connection failed: " + Exn.message(exn))
+        failure = Some(exn)
+    }
+    finally {
+      /* Temporary checkpoint-6 EOF behavior: stop new admissions, give
+         active requests the policy's bounded interval, then cancel them.
+         The final EOF drain contract remains a separate claim. */
+      connection.beginClosing()
+      val shutdown_drain =
+        Time.seconds(ConnectionPolicy.ShutdownDrain.seconds(policy.timing.shutdownDrain))
+      val deadline = Time.now() + shutdown_drain
+      while (connection.registry.snapshot.activeIds.nonEmpty && Time.now() < deadline)
+        Thread.sleep(5L)
+      val drained = connection.registry.snapshot.activeIds.isEmpty
+      if (!drained)
+        progress.echo_warning(
+          "mcp_server: shutting down with requests still in flight " +
+          "(waited " + shutdown_drain.message + "; raise mcp_shutdown_drain to wait longer)")
+      connection.close()
+      if (connection.phase == ConnectionLifecycle.Closing) connection.finishClosing()
+      progress.echo("Shutting down ...")
+      on_shutdown()
+    }
+    failure.foreach(exn => throw exn)
+  }
+
+
+  /* Injectable stream seam: it remains a DataPlane, so tests exercise the
+     same connection composition as stdio rather than a Handler bypass. */
   def serve(
     readiness: () => Readiness,
     in: BufferedReader,
@@ -1234,108 +1324,23 @@ object MCP_Server {
     theory: String,
     install_changed_sender: (String => Unit) => Unit,
     on_shutdown: () => Unit,
-    shutdown_drain: Time
-  ): Unit = {
-    val handler = new Handler(readiness, session_name, session_dirs, theory)
-
-    /* replies and server-initiated notifications interleave on stdout:
-       writes are line-atomic via the lock */
-    def print_json(json: JSON.T): Unit =
-      out.synchronized {
-        out.println(JSON.Format(json))
-        out.flush()
-      }
-
-    /* MCP.tools_changed / MCP.resources_changed (MCP_Tool.declare in a
-       theory loaded at runtime) -> notifications/{tools,resources}/
-       list_changed; capability listChanged: true is declared at
-       initialize. install_changed_sender hands the sender to whoever
-       owns the backend -- immediately for the backend-only overload
-       below (the backend already exists), or the readiness cell's
-       Ready-publish path in run() (plans/readiness 3a: serve() itself
-       runs before any backend exists, so there is nothing to register
-       the sender ON here). */
-    install_changed_sender(what =>
-      print_json(JSON.Object(
-        "jsonrpc" -> "2.0", "method" -> ("notifications/" + what + "/list_changed"))))
-
-    /* One thread per request. The loop used to handle a line to
-       COMPLETION before reading the next one, so a slow tool delayed
-       everything behind it -- measured: a 3s tool pushed an unrelated,
-       prover-free builtin out to the same 3s. Note the prover was never
-       the bottleneck; MCP.run_tool already forks on the ML side.
-
-       This is legal JSON-RPC: responses carry the request id, so a client
-       matches them without relying on order. print_json is already
-       line-atomic under the `out` lock, and the handler's only mutable
-       state (the tool scope) is a Synchronized cell.
-
-       Requests are NOT ordered against each other any more. A client that
-       needs `load_theory` to land before a tool call that reads it must
-       await the first reply -- which is what an MCP client does anyway,
-       and what every test here does. */
-    val in_flight = Synchronized(0)
-
-    def dispatch(line: String): Unit = {
-      in_flight.change(_ + 1)
-      Isabelle_Thread.fork(name = "mcp_request") {
-        try handler.handle_line(line).foreach(print_json)
-        catch {
-          case exn: Throwable if !Exn.is_interrupt(exn) =>
-            /* a handler that throws must not take the server down with
-               it, and must not leave the client waiting forever either */
-            progress.echo_error_message("mcp_server: request failed: " + Exn.message(exn))
-        }
-        finally in_flight.change(_ - 1)
-      }
-      ()
-    }
-
-    try {
-      var finished = false
-      while (!finished) {
-        in.readLine() match {
-          case null => finished = true
-          case line if line.isBlank =>
-          case line => dispatch(line)
-        }
-      }
-    }
-    finally {
-      /* drain before shutting the backend down: a request still running
-         would otherwise fail against a half-torn-down session and report
-         that as a tool error.
-
-         BOUNDED, because an unbounded wait would let one wedged tool keep
-         the process alive after stdin closed -- the drain must not be a
-         worse hang than the one it is tidying up. */
-      val drained =
-        if (shutdown_drain <= Time.zero) in_flight.value == 0
-        else
-          in_flight.timed_access(
-            _ => Some(Time.now() + shutdown_drain),
-            (n: Int) => if (n == 0) Some(((), n)) else None).isDefined
-      if (!drained)
-        progress.echo_warning(
-          "mcp_server: shutting down with requests still in flight " +
-          "(waited " + shutdown_drain.message + "; raise mcp_shutdown_drain to wait longer)")
-      progress.echo("Shutting down ...")
-      on_shutdown()
-    }
-  }
+    policy: ConnectionPolicy
+  ): Unit =
+    serveConnection(readiness, new BufferedDataPlane(in, out), progress,
+      session_name, session_dirs, theory, install_changed_sender, on_shutdown, policy)
 
   def serve(
     backend: MCP_Backend,
     in: BufferedReader,
     out: PrintStream,
     progress: Progress = new Progress,
-    shutdown_drain: Time = Time.seconds(10)
+    policy: ConnectionPolicy = validatedConnectionPolicy(Options.init())
   ): Unit =
     serve(() => Ready(backend), in, out, progress,
       session_name = "", session_dirs = Nil, theory = "",
       install_changed_sender = backend.set_changed_handler,
       on_shutdown = () => backend.stop(),
-      shutdown_drain = shutdown_drain)
+      policy = policy)
 
 
   /* stdio server on a headless PIDE session (plans/readiness, spec
@@ -1367,6 +1372,7 @@ object MCP_Server {
        existing Failed readiness path below, unchanged. */
     val config_issues = MCP_Config.check(session_dirs)
     if (config_issues.nonEmpty) error(MCP_Config.render(config_issues))
+    val policy = validatedConnectionPolicy(options)
 
     /* changed_sender: the list_changed notifier serve() installs on
        entry (3a) -- there is no backend yet to register it on until the
@@ -1414,12 +1420,11 @@ object MCP_Server {
       }
     }
 
-    val stdin = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))
     progress.echo(
       "Serving stdin; session " + quote(session_name) + " building in the background ...")
-    serve(
+    serveConnection(
       () => cell.value.readiness,
-      stdin, System.out, progress,
+      StdioDataPlane.standard(), progress,
       session_name = session_name, session_dirs = session_dirs, theory = theory,
       install_changed_sender = sender => cell.change(s => s.copy(changed_sender = Some(sender))),
       on_shutdown = () => {
@@ -1432,6 +1437,6 @@ object MCP_Server {
           }
         to_stop.foreach(_.stop())
       },
-      shutdown_drain = Time.seconds(options.real("mcp_shutdown_drain")))
+      policy = policy)
   }
 }

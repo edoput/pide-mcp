@@ -2,8 +2,9 @@
 
 Replaceable application-work scheduler.  The opaque permit is a direct
 handoff lease: there is never a task queue between reservation and execution.
-The request registry remains the source of request ownership and capacity
-truth; this port owns only worker resources.
+The request registry remains the source of request ownership and terminal
+state; this port is the source of execution-capacity admission and owns only
+worker resources.
 */
 
 package isabelle.mcp.connection
@@ -124,10 +125,12 @@ final class ManualSequentialScheduler extends PermitScheduler {
   private var pending: Option[() => Unit] = None
   private var occupied = false
   private var taken = false
+  private var releaseDeferred = false
 
   protected def reserveWorker(): Boolean =
     if (occupied) false else { occupied = true; true }
-  protected def releaseWorker(): Unit = occupied = false
+  protected def releaseWorker(): Unit =
+    if (taken) releaseDeferred = true else occupied = false
   protected def run(task: () => Unit): Boolean =
     synchronized {
       if (pending.isDefined) false else { pending = Some(task); true }
@@ -153,9 +156,17 @@ final class ManualSequentialScheduler extends PermitScheduler {
       case None => false
       case Some(value) =>
         /* Shutdown may proceed while this explicitly taken test task runs;
-           its permit remains owned until the wrapper's finally path finishes. */
+           its permit remains owned until the wrapper's finally path finishes.
+           Capacity stays unavailable until this latch also clears `taken`, so
+           a finishing task cannot race a replacement task against shutdown. */
         try { value(); true }
-        finally synchronized { taken = false }
+        finally synchronized {
+          taken = false
+          if (releaseDeferred) {
+            releaseDeferred = false
+            occupied = false
+          }
+        }
     }
   }
 }

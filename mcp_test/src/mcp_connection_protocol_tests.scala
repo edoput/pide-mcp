@@ -30,8 +30,6 @@ class MCP_Connection_Protocol_Tests extends MCP_Suite {
     assertEquals(plane.receive(), Some(JsonRpc.Inbound.Decoded(expected)))
 
   private def receive_contract(plane: DataPlane)(implicit loc: munit.Location): Unit = {
-    assertEquals(plane.receive(), Some(JsonRpc.Inbound.Malformed("")))
-    assertEquals(plane.receive(), Some(JsonRpc.Inbound.Malformed(" \t")))
     expect_decoded(plane, JsonRpc.Envelope.Single(ping))
     expect_decoded(plane, JsonRpc.Envelope.Batch(List(ping, notice)))
     expect_decoded(plane, JsonRpc.Envelope.Batch(Nil))

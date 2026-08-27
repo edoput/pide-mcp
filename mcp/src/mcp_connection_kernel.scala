@@ -44,9 +44,9 @@ final class ConnectionLifecycle {
 
   private var current: Phase = Fresh
 
-  def phase: Phase = current
+  def phase: Phase = synchronized { current }
 
-  def admit(message: RevisionRules.Message): Decision =
+  def admit(message: RevisionRules.Message): Decision = synchronized {
     message match {
       case RevisionRules.Invalid(reply, code, message) => Rejected(reply, code, message)
       case RevisionRules.Ignored => Ignored
@@ -75,17 +75,31 @@ final class ConnectionLifecycle {
         Rejected(RevisionRules.ReplyId(id), RevisionRules.InvalidRequest,
           "ordinary operations are only valid in Ready")
     }
+  }
 
-  def initializeCompleted(): Unit =
+  def initializeCompleted(): Unit = synchronized {
     if (current != Initializing) error("initialize completion is only valid in Initializing")
     else current = AwaitingInitialized
+  }
 
-  def beginClosing(): Unit =
+  def beginClosing(): Unit = synchronized {
     if (current != Closed) current = Closing
+  }
 
-  def finishClosing(): Unit =
+  def finishClosing(): Unit = synchronized {
     if (current != Closing) error("close completion is only valid in Closing")
     else current = Closed
+  }
+
+  /* Holding this lock across one complete transport send establishes the
+     notification/close linearization: an event is either sent while Ready or
+     ignored before capability negotiation and after Closing. */
+  def whileReady(body: => Unit): Unit = synchronized {
+    current match {
+      case Ready => body
+      case _ => ()
+    }
+  }
 }
 
 
@@ -143,7 +157,28 @@ final class ConnectionKernel private (
   def beginClosing(): Unit = lifecycle0.beginClosing()
   def finishClosing(): Unit = lifecycle0.finishClosing()
 
-  def shutdownScheduler(): Unit = scheduler.shutdown()
+  /* Server-initiated notifications stay on the same atomic data-plane write
+     path as responses.  A backend can still finish emitting an event after
+     stdin has closed, or before capabilities were negotiated, but that event
+     no longer belongs to this connection. */
+  def listChanged(change: ConnectionKernel.ListChanged): Unit =
+    lifecycle0.whileReady {
+      val what = change match {
+        case ConnectionKernel.ListChanged.Tools => "tools"
+        case ConnectionKernel.ListChanged.Resources => "resources"
+      }
+      send(JSON.Object(
+        "jsonrpc" -> "2.0", "method" -> ("notifications/" + what + "/list_changed")))
+    }
+
+  /* This is deliberately a begin-close operation, not the final EOF drain
+     protocol.  EOF calls it after the temporary policy-bounded drain;
+     invariant and output failures call it immediately. */
+  def close(): Unit = {
+    lifecycle0.beginClosing()
+    registry.shutdown()
+    scheduler.shutdown()
+  }
 
   def execute(admission: ConnectionKernel.Admission): ConnectionKernel.Admission = {
     admission match {
@@ -324,6 +359,20 @@ object ConnectionKernel {
   val Overloaded = -32001
   val InternalError = -32603
   final case class ServerInfo(name: String, version: String)
+
+  sealed trait ListChanged
+  object ListChanged {
+    case object Tools extends ListChanged
+    case object Resources extends ListChanged
+
+    def fromBackend(value: String): Option[ListChanged] =
+      value match {
+        case "tools" => Some(Tools)
+        case "resources" => Some(Resources)
+        case _ => None
+      }
+  }
+
   sealed trait Admission {
     def decision: ConnectionLifecycle.Decision
   }
