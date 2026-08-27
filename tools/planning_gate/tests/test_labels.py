@@ -51,8 +51,8 @@ def test_current_canonical_labels_are_semantically_valid() -> None:
     root = Path(__file__).resolve().parents[3]
     report = validate_labels(load_repository(root))
 
-    assert report.v1_plans == 5
-    assert report.claims == 57
+    assert report.v1_plans == 6
+    assert report.claims == 77
     assert report.blockers == ()
 
 

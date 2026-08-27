@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.planning_gate.registry import collect, generate, stale_outputs
+from tools.planning_gate.registry import (
+    RegistryRow,
+    collect,
+    generate,
+    render_text,
+    stale_outputs,
+)
 from tools.planning_gate.tests.test_document import repository, valid_plan, write_plan
 
 
@@ -59,11 +65,22 @@ T1 [tooling-unit]: Invalid values are rejected.
     )
 
 
+def test_rendered_registry_has_no_trailing_whitespace_after_truncation() -> None:
+    row = RegistryRow(
+        id="example#A1",
+        layer="tooling-unit",
+        statement="x" * 149 + " " + "truncated suffix",
+        layer_origin="tag",
+    )
+
+    assert all(line == line.rstrip() for line in render_text((row,)).splitlines())
+
+
 def test_current_catalog_keeps_prose_inference_explicit() -> None:
     root = Path(__file__).resolve().parents[3]
     report = collect(root)
 
-    assert len(report.rows) == 296
+    assert len(report.rows) == 316
     assert report.inferred_ids == (
         "find_definition#T6",
         "repl_remove#T5",

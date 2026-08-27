@@ -117,6 +117,12 @@ delivery and verification infrastructure (independent of feature waves):
   - [ ] planning_gate         plans/planning_gate (importable gate package and
         the single project done command; depends on all four plans above)
 
+boundary remediation (dependency-ordered architecture work packages):
+  - [ ] connection_kernel    plans/connection_kernel (replaceable stdio/scripted
+        data planes, MCP 2025-03-26 lifecycle, bounded request ownership,
+        cancellation, batching conformance, and shutdown drain; depends on
+        planning_gate and readiness)
+
 wave 0 — shared infrastructure (prerequisites, not tools):
   MCP_Session.ir promise-by-id bridge; named-args yxml encoding on
   both sides; builtin tool table + tools/list merge + tools/call

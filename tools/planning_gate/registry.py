@@ -73,7 +73,8 @@ def render_text(rows: Iterable[RegistryRow]) -> str:
     ]
     for row in rows:
         body.append(
-            f"{row.id.ljust(width)}  {row.layer.ljust(LAYER_WIDTH)}  {row.statement[:150]}"
+            f"{row.id.ljust(width)}  {row.layer.ljust(LAYER_WIDTH)}  "
+            f"{row.statement[:150].rstrip()}"
         )
     return "\n".join(body) + "\n"
 
