@@ -17,6 +17,7 @@ sources = \
   src/mcp_config.scala \
   src/mcp_protocol.scala \
   src/mcp_data_plane.scala \
+  src/mcp_application.scala \
   src/mcp_session.scala \
   src/mcp_server.scala
 

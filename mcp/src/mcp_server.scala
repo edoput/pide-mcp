@@ -9,6 +9,7 @@ through the given progress (Console_Progress(stderr = true) in the tool).
 package isabelle.mcp
 
 import isabelle._
+import isabelle.mcp.application.McpApplication
 
 import java.io.{BufferedReader, InputStreamReader, PrintStream}
 import java.nio.charset.StandardCharsets
@@ -939,11 +940,11 @@ object MCP_Server {
       scope_add_tool, scope_remove_tool, scope_show_tool,
       doc_list_tool, doc_read_tool)
 
-  /* tool_scope_show/set/include (below) are per-connection Builtin_Tool
-     values (Handler.tool_scope_builtins), so their names are listed here
+  /* tool_scope_show/set/include are per-connection Builtin_Tool values in
+     IsabelleMcpApplication, so their names are listed here
      separately -- the one authoritative name list beyond `builtins`,
      kept in sync BY HAND with the three name = "..." literals below.
-     Used for the exposure() reserved set (Handler.handle, tools/list)
+     Used for the exposure() reserved set (application tools/list)
      and as the drift-gate target (plans/builtin_activation, tested over
      the live bridge: mirror name set in MCP_Tools.thy == this list ++
      builtins.map(_.name), both directions). */
@@ -953,15 +954,9 @@ object MCP_Server {
   val all_builtin_names: List[String] = builtins.map(_.name) ++ tool_scope_builtin_names
 
   /* tool_scope_show/set/include (plans/tool_scope, spec "the agent
-     context"): unlike every other builtin above, these read and mutate
-     the CONNECTION's tool scope, not backend/prover state -- Builtin_Tool
-     values are shared, static (module-level), so their handler_fn cannot
-     close over a Handler's per-connection var directly. Handler builds
-     its OWN three Builtin_Tool values (tool_scope_builtins below),
-     closing over its own scope_designation/scope_bundles, and dispatch
-     looks them up ALONGSIDE the static list (builtins ++
-     tool_scope_builtins), which also reserves their names for
-     exposure() purposes. */
+     context") live in the concrete per-connection application. Unlike
+     every static builtin above, they close over that application's tool
+     scope rather than backend/prover state. */
   def format_designation(designation: String): String =
     if (designation == "") "default (the base registry theory)"
     else if (designation.startsWith("repl:")) "repl " + quote(designation.stripPrefix("repl:"))
@@ -1097,10 +1092,10 @@ object MCP_Server {
      SESSION" / "starting session SESSION"); Ready carries the live
      backend once build+boot succeed; Failed is terminal for the process
      (no retry loop -- restarting the server is the recovery). */
-  sealed abstract class Readiness
-  case class Not_Ready(progress: String) extends Readiness
-  case class Ready(backend: MCP_Backend) extends Readiness
-  case class Failed(message: String) extends Readiness
+  type Readiness = McpApplication.Readiness
+  val Not_Ready = McpApplication.Not_Ready
+  val Ready = McpApplication.Ready
+  val Failed = McpApplication.Failed
 
   /* decode_message / plain_message: prover and build error text often
      carries YXML position markup (e.g. "Duplicate session ... \x05\x06
@@ -1129,7 +1124,8 @@ object MCP_Server {
     readiness: () => Readiness,
     session_name: String = "",
     session_dirs: List[Path] = Nil,
-    theory: String = ""
+    theory: String = "",
+    application: Option[McpApplication] = None
   ) {
     /* pre-readiness Handler(backend) construction (every existing test and
        serve() call site): the backend is live from the start, so this is
@@ -1138,172 +1134,20 @@ object MCP_Server {
        which this shape never produces. */
     def this(backend: MCP_Backend) = this(() => Ready(backend))
 
-    /* the not-ready/failed tool-call and resource-read text (spec "server
-       startup and readiness"): named by session, not by a generic
-       placeholder, so a client watching multiple servers can tell them
-       apart. */
-    private def not_ready_text(progress: String): String =
-      "session " + session_name + " is not ready: " + progress + ". This tool needs " +
-      "the prover; retry shortly. Read isabelle://session for status."
+    private val mcp_application =
+      application.getOrElse(McpApplication.isabelle(readiness, session_name, session_dirs, theory))
 
-    private def failed_text(message: String): String =
-      "session " + session_name + " failed to start: " + message + ". The server " +
-      "cannot serve prover-backed tools; restart it after fixing the build."
+    private def application_response(
+      id: JSON.T, outcome: McpApplication.Outcome): Option[JSON.Object.T] =
+      outcome match {
+        case McpApplication.Outcome.Result(value) => Some(RPC.response(id, value))
+        case McpApplication.Outcome.InvalidParams(message) =>
+          Some(RPC.error(id, RPC.INVALID_PARAMS, message))
+      }
 
-    /* isabelle://session while not ready (spec): the same overview shape
-       the real backend reports when Ready, minus the Thy_Info round trip
-       nothing can answer yet. */
-    private def session_state_text(status: String): String =
-      "session: " + session_name + "\n" +
-      "dirs: " + session_dirs.map(_.implode).mkString(", ") + "\n" +
-      "theory: " + theory + "\n" +
-      "status: " + status
-
-    /* the AGENT CONTEXT (spec): "" = default (the -T theory); a bare
-       canonical theory long name; "repl:ID". Connection state, like the
-       phase-2 resource scope -- reset per connection, not persisted.
-
-       ONE cell rather than two independent vars, because serve() now
-       handles requests CONCURRENTLY. Every reader below uses designation
-       and bundles TOGETHER, and two vars would let a reader observe a new
-       designation carrying the previous designation's bundles -- a scope
-       that never existed. */
-    private case class Scope(designation: String = "", bundles: List[String] = Nil)
-    private val scope = Synchronized(Scope())
-
-    private val tool_scope_show_tool: Builtin_Tool =
-      Builtin_Tool(
-        name = "tool_scope_show",
-        fname = "",
-        description =
-          "Show the current tool scope: which theory or repl context " +
-          "the server reads user-registered tools from, the bundles " +
-          "included in it, and the tools registered and active there. " +
-          "Tools are context entities in Isabelle: a tool is visible " +
-          "when the scope's context (transitively) imports its " +
-          "registering theory and it has not been deactivated " +
-          "(declare [[mcp_tools del: ...]] or a closed bundle).",
-        input_schema = JSON.Object("type" -> "object"),
-        annotations = read_only_annotations,
-        handler_fn = Some((backend, _) => {
-          val sc = scope.value
-          val bundles_text =
-            if (sc.bundles.isEmpty) "none" else sc.bundles.mkString(", ")
-          /* a designation valid at tool_scope_set time can go stale
-             later (e.g. its repl was removed): ml_tools degrades a bad
-             designation to an empty list (MCP.tools' crash-safety
-             floor), indistinguishable from a merely-empty scope unless
-             checked separately -- so check first and say so, rather
-             than silently reporting "0 active tools". */
-          backend.check_designation(sc.designation, sc.bundles) match {
-            case MCP_Session.Error(msg) =>
-              MCP_Session.Ok(
-                "Tool scope: " + format_designation(sc.designation) + " (BROKEN: " + msg +
-                  ") -- use tool_scope_set to point it at a valid theory or repl\n" +
-                "Included bundles: " + bundles_text)
-            case MCP_Session.Ok(_) =>
-              val rows = backend.ml_tools(sc.designation, sc.bundles).rows
-              MCP_Session.Ok(
-                "Tool scope: " + format_designation(sc.designation) + "\n" +
-                "Included bundles: " + bundles_text + "\n" +
-                "Active tools (" + rows.length + "): " +
-                (if (rows.isEmpty) "none" else rows.map(_.name).mkString(", ")))
-          }
-        }))
-
-    private val tool_scope_set_tool: Builtin_Tool =
-      Builtin_Tool(
-        name = "tool_scope_set",
-        fname = "",
-        description =
-          "Set the tool scope to a theory (by name, any known spelling) " +
-          "or to a repl (by id). Repl scope serves the tools of the " +
-          "repl's CURRENT state -- use this after registering a tool " +
-          "via repl_step to call it without persisting the theory " +
-          "first. Replaces the designation AND clears any bundles " +
-          "included with tool_scope_include (fresh context, no " +
-          "accumulated soup).",
-        input_schema =
-          JSON.Object(
-            "type" -> "object",
-            "properties" -> JSON.Object(
-              "theory" -> JSON.Object("type" -> "string"),
-              "repl" -> JSON.Object("type" -> "string")),
-            "required" -> List()),
-        annotations = mutating_annotations,
-        handler_fn = Some((backend, args) => {
-          val theory = args.collectFirst({ case ("theory", v) => v })
-          val repl = args.collectFirst({ case ("repl", v) => v })
-          (theory, repl) match {
-            case (Some(t), Some(r)) =>
-              MCP_Session.Error(
-                "tool_scope_set: theory and repl are mutually exclusive (got theory=" +
-                  quote(t) + ", repl=" + quote(r) + ")")
-            case (None, None) =>
-              MCP_Session.Error("tool_scope_set: exactly one of theory or repl is required")
-            case (Some(t), None) =>
-              backend.resolve_context_theory(t) match {
-                case Right(canonical) =>
-                  scope.change(_ => Scope(canonical, Nil))
-                  MCP_Session.Ok("Tool scope set to theory " + quote(canonical))
-                case Left(msg) => MCP_Session.Error(msg)
-              }
-            case (None, Some(r)) =>
-              val candidate = "repl:" + r
-              backend.check_designation(candidate) match {
-                case MCP_Session.Ok(_) =>
-                  scope.change(_ => Scope(candidate, Nil))
-                  MCP_Session.Ok("Tool scope set to repl " + quote(r))
-                case error @ MCP_Session.Error(_) => error
-              }
-          }
-        }))
-
-    private val tool_scope_include_tool: Builtin_Tool =
-      Builtin_Tool(
-        name = "tool_scope_include",
-        fname = "",
-        description =
-          "Open bundles in the current tool scope (like Isar's `context " +
-          "includes`): tools activated by those bundles become servable " +
-          "until the scope changes (tool_scope_set). Bundle names " +
-          "resolve in the scope's context.",
-        input_schema =
-          JSON.Object(
-            "type" -> "object",
-            "properties" -> JSON.Object(
-              "bundles" ->
-                JSON.Object("type" -> "array", "items" -> JSON.Object("type" -> "string"))),
-            "required" -> List("bundles")),
-        annotations = mutating_annotations,
-        handler_fn = Some((backend, args) => {
-          val bundles = args.collect({ case ("bundles", v) => v })
-          val sc = scope.value
-          val candidate = sc.bundles ++ bundles
-          backend.check_designation(sc.designation, candidate) match {
-            case MCP_Session.Ok(_) =>
-              /* COMPARE-AND-SET, because check_designation above is a
-                 backend round trip and the lock must not be held across
-                 it: under the concurrent serve loop another request may
-                 have moved the scope meanwhile. Apply only if it is still
-                 the scope we validated -- otherwise say so, rather than
-                 silently grafting these bundles onto a designation nobody
-                 checked them against. */
-              val applied =
-                scope.change_result(cur =>
-                  if (cur == sc) (true, Scope(sc.designation, candidate))
-                  else (false, cur))
-              if (applied) MCP_Session.Ok("Included bundle(s): " + bundles.mkString(", "))
-              else
-                MCP_Session.Error(
-                  "tool_scope_include: the tool scope changed while this call was " +
-                  "validating; re-issue it against the new scope")
-            case error @ MCP_Session.Error(_) => error
-          }
-        }))
-
-    private val tool_scope_builtins: List[Builtin_Tool] =
-      List(tool_scope_show_tool, tool_scope_set_tool, tool_scope_include_tool)
+    private def execute(
+      id: JSON.T, operation: McpApplication.Operation): Option[JSON.Object.T] =
+      application_response(id, mcp_application.execute(operation, McpApplication.Cancellation.Never))
 
     def handle(json: JSON.T): Option[JSON.Object.T] = {
       val id = JSON.value(json, "id").orNull
@@ -1332,61 +1176,7 @@ object MCP_Server {
         case Some("ping") => Some(RPC.response(id, JSON.Object()))
 
         case Some("tools/list") =>
-          val all_builtins = builtins ++ tool_scope_builtins
-          readiness() match {
-            /* not ready / failed (plans/readiness): no prover to ask, so
-               the reply is the static builtin table alone -- an
-               ML-registered tool the server has never seen cannot be
-               described. Deliberately NOT filtered by activation either
-               (that needs backend.ml_tools() too): a client that lists
-               early sees every builtin; the ML rows and any hidden-builtin
-               narrowing appear on its next tools/list once ready. */
-            case Not_Ready(_) | Failed(_) =>
-              val builtin_json =
-                all_builtins.map(t =>
-                  JSON.Object(
-                    "name" -> t.name,
-                    "description" -> t.description,
-                    "inputSchema" -> t.input_schema,
-                    "annotations" -> t.annotations))
-              Some(RPC.response(id, JSON.Object("tools" -> builtin_json)))
-
-            case Ready(backend) =>
-              /* the RESERVED set for exposure() stays the FULL table
-                 regardless of activation: a del'd builtin is hidden but
-                 still callable (ASYMMETRIC CALLABILITY), so its bare name
-                 must stay reserved -- otherwise a same-named ML tool could
-                 grab the bare name while builtin dispatch precedence
-                 (tools/call below) still shadows it into being uncallable. */
-              val builtin_names = all_builtins.map(_.name).toSet
-              val sc = scope.value
-              val reply = backend.ml_tools(sc.designation, sc.bundles)
-              val rows = reply.rows
-              /* hide iff explicitly (name, false): an empty/missing section
-                 (no mirror registered -- broken -T theory, no MCP_Tools
-                 import) hides nothing, which IS the availability floor
-                 (plans/builtin_activation) -- no special case needed. */
-              val hidden = reply.builtin_activation.collect({ case (n, false) => n }).toSet
-              val visible_builtins = all_builtins.filterNot(t => hidden(t.name))
-              val builtin_json =
-                visible_builtins.map(t =>
-                  JSON.Object(
-                    "name" -> t.name,
-                    "description" -> t.description,
-                    "inputSchema" -> t.input_schema,
-                    "annotations" -> t.annotations))
-              val exposed = exposure(rows.map(_.name), builtin_names)
-              val ml_json =
-                rows.flatMap(row =>
-                  exposed.get(row.name).map(x =>
-                    JSON.Object(
-                      "name" -> x,
-                      "description" -> row.description,
-                      "inputSchema" -> ml_tool_schema(row.params)) ++
-                    JSON.Object.apply(
-                      ml_tool_annotations(row.annotations).toList.map("annotations" -> _)*)))
-              Some(RPC.response(id, JSON.Object("tools" -> (builtin_json ++ ml_json))))
-          }
+          execute(id, McpApplication.Operation.ToolsList)
 
         case Some("tools/call") =>
           val params = JSON.value(json, "params").getOrElse(JSON.Object())
@@ -1398,100 +1188,21 @@ object MCP_Server {
                   case Some(obj: JSON.Object.T @unchecked) => obj
                   case _ => JSON.Object()
                 }
-              readiness() match {
-                /* not ready / failed (plans/readiness): the call is
-                   well-formed and will succeed later, so this is a
-                   tool-level failure the agent can retry (isError), not a
-                   json-rpc error -- the name is not even looked up, since
-                   nothing prover-backed can run regardless of which tool
-                   was named. */
-                case Not_Ready(progress) =>
-                  Some(RPC.response(id, text_result(not_ready_text(progress), is_error = true)))
-                case Failed(message) =>
-                  Some(RPC.response(id, text_result(failed_text(message), is_error = true)))
-                case Ready(backend) =>
-                  (builtins ++ tool_scope_builtins).find(_.name == name) match {
-                    case Some(tool) =>
-                      tool.handler(backend, json_args(arguments)) match {
-                        case MCP_Session.Ok(text) =>
-                          Some(RPC.response(id, text_result(text)))
-                        case MCP_Session.Error(message) =>
-                          Some(RPC.response(id, text_result(message, is_error = true)))
-                      }
-                    case None =>
-                      /* resolve the exposed name back to the full internal
-                         name through the same map tools/list used; unknown
-                         names pass through for the ML side's error. Arguments
-                         go over as named pairs; missing/ill-typed values are
-                         the ML validator's job (typed errors name the arg). */
-                      /* read the scope ONCE: the name resolution below and
-                         the run itself must agree on which scope they are
-                         talking about, and under the concurrent serve loop
-                         a tool_scope_set could otherwise land between them. */
-                      val sc = scope.value
-                      val exposed =
-                        exposure(backend.ml_tools(sc.designation, sc.bundles).rows.map(_.name),
-                          (builtins ++ tool_scope_builtins).map(_.name).toSet)
-                      val internal =
-                        exposed.collectFirst({ case (i, x) if x == name => i }).getOrElse(name)
-                      backend.ml_run(internal, json_args(arguments), sc.designation, sc.bundles) match {
-                        case MCP_Session.Ok(text) =>
-                          Some(RPC.response(id, text_result(text)))
-                        case MCP_Session.Error(message) =>
-                          Some(RPC.response(id, text_result(message, is_error = true)))
-                      }
-                  }
-              }
+              execute(id, McpApplication.Operation.ToolsCall(name, arguments))
           }
 
         case Some("resources/list") =>
-          readiness() match {
-            /* not ready / failed (plans/readiness): isabelle://session is
-               the one resource that always exists and needs no backend --
-               it is the read that answers "what is this server doing". */
-            case Not_Ready(_) | Failed(_) =>
-              Some(RPC.response(id, JSON.Object("resources" -> List(
-                JSON.Object("uri" -> "isabelle://session", "name" -> "session",
-                  "description" -> "current session name, dirs, loaded theories")))))
-            case Ready(backend) =>
-              val resources =
-                backend.mcp_resources().map({ case (uri, name, description) =>
-                  JSON.Object("uri" -> uri, "name" -> name, "description" -> description)
-                })
-              Some(RPC.response(id, JSON.Object("resources" -> resources)))
-          }
+          execute(id, McpApplication.Operation.ResourcesList)
 
         case Some("resources/templates/list") =>
-          Some(RPC.response(id, JSON.Object("resourceTemplates" -> resource_templates)))
+          execute(id, McpApplication.Operation.ResourceTemplatesList)
 
         case Some("resources/read") =>
           val params = JSON.value(json, "params").getOrElse(JSON.Object())
           JSON.string(params, "uri") match {
             case None => Some(RPC.error(id, RPC.INVALID_PARAMS, "Missing resource uri"))
             case Some(uri) =>
-              readiness() match {
-                case Ready(backend) =>
-                  backend.mcp_resource_read(uri) match {
-                    case MCP_Session.Ok(text) => Some(RPC.response(id, resource_contents(uri, text)))
-                    case MCP_Session.Error(message) =>
-                      Some(RPC.error(id, RPC.INVALID_PARAMS, message))
-                  }
-                /* not ready / failed (plans/readiness): isabelle://session
-                   reports the state instead of the Thy_Info listing (which
-                   needs a round trip nothing can answer yet); every other
-                   uri names the state as a protocol-level error, same
-                   error shape a genuinely unknown uri would get. */
-                case Not_Ready(progress) =>
-                  if (uri == "isabelle://session")
-                    Some(RPC.response(id,
-                      resource_contents(uri, session_state_text("not ready (" + progress + ")"))))
-                  else Some(RPC.error(id, RPC.INVALID_PARAMS, not_ready_text(progress)))
-                case Failed(message) =>
-                  if (uri == "isabelle://session")
-                    Some(RPC.response(id,
-                      resource_contents(uri, session_state_text("failed (" + message + ")"))))
-                  else Some(RPC.error(id, RPC.INVALID_PARAMS, failed_text(message)))
-              }
+              execute(id, McpApplication.Operation.ResourcesRead(uri))
           }
 
         case Some(method) =>

@@ -22,6 +22,7 @@ sources = \
   src/mcp_theory_metadata.scala \
   src/mcp_testing.scala \
   src/mcp_connection_protocol_tests.scala \
+  src/mcp_application_tests.scala \
   src/mcp_handler_tests.scala \
   src/mcp_bridge_tests.scala \
   src/mcp_heap_tests.scala \
