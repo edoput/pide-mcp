@@ -1,4 +1,9 @@
-"""Shared newline-delimited JSON-RPC process client for e2e cases."""
+"""Shared newline-delimited JSON-RPC process client for e2e cases.
+
+Project-owned clients use string request IDs.  The server also accepts
+safe-integer JSON-RPC IDs for compatibility, but Isabelle decodes numeric JSON
+tokens through Double and therefore deliberately rejects unsafe integers.
+"""
 
 from __future__ import annotations
 
@@ -40,13 +45,13 @@ class Client:
 
     def send(
         self, method: str, params: Any = None, notification: bool = False
-    ) -> int | None:
+    ) -> str | None:
         message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             message["params"] = params
         if not notification:
             self.next_id += 1
-            message["id"] = self.next_id
+            message["id"] = f"e2e-{self.next_id}"
         if self.proc.stdin is None:
             raise RuntimeError("client stdin is unavailable")
         self.proc.stdin.write(json.dumps(message) + "\n")

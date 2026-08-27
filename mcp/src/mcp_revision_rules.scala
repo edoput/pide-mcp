@@ -27,12 +27,13 @@ object RevisionRules {
   sealed trait ReplyTarget
   case object NoReply extends ReplyTarget
   case object NullReply extends ReplyTarget
-  final case class ReplyId(value: JSON.T) extends ReplyTarget
+  final case class ReplyId(value: RequestId) extends ReplyTarget
 
-  final case class Initialize(id: JSON.T, requestedVersion: String) extends Message
+  final case class Initialize(id: RequestId, requestedVersion: String) extends Message
   case object Initialized extends Message
-  final case class Ping(id: JSON.T) extends Message
-  final case class Application(operation: McpApplication.Operation, id: JSON.T) extends Message
+  final case class Ping(id: RequestId) extends Message
+  final case class Application(operation: McpApplication.Operation, id: RequestId) extends Message
+  final case class Cancelled(id: RequestId, reason: Option[String]) extends Message
   final case class Invalid(reply: ReplyTarget, code: Int, message: String) extends Message
   case object Ignored extends Message
   final case class Batch(elements: List[JSON.T]) extends Message
@@ -72,6 +73,7 @@ final class Mcp2025RevisionRules extends RevisionRules {
                 case None => invalid(requestId, InvalidRequest, "Missing method")
                 case Some("initialize") => initialize(objectValue, requestId)
                 case Some("notifications/initialized") => initialized(objectValue, requestId)
+                case Some("notifications/cancelled") => cancelled(objectValue, requestId)
                 case Some("ping") => request(requestId, id => Ping(id))
                 case Some("tools/list") =>
                   request(requestId, id => Application(McpApplication.Operation.ToolsList, id))
@@ -89,19 +91,36 @@ final class Mcp2025RevisionRules extends RevisionRules {
       case _ => Invalid(NullReply, InvalidRequest, "Request must be an object")
     }
 
-  private def initialize(json: JSON.Object.T, requestId: Option[JSON.T]): Message =
+  private def initialize(json: JSON.Object.T, requestId: Option[RequestId]): Message =
     request(requestId, id =>
       JSON.value(json, "params").flatMap(JSON.string(_, "protocolVersion")) match {
         case Some(version) => Initialize(id, version)
         case None => Invalid(ReplyId(id), InvalidParams, "Missing protocolVersion")
       })
 
-  private def initialized(json: JSON.Object.T, requestId: Option[JSON.T]): Message =
+  private def initialized(json: JSON.Object.T, requestId: Option[RequestId]): Message =
     if (requestId.isEmpty) Initialized
     else Invalid(ReplyId(requestId.get), InvalidRequest,
       "notifications/initialized must be a notification")
 
-  private def toolsCall(json: JSON.Object.T, requestId: Option[JSON.T]): Message =
+  private def cancelled(json: JSON.Object.T, requestId: Option[RequestId]): Message =
+    if (requestId.nonEmpty) Ignored
+    else
+      JSON.value(json, "params") match {
+        case Some(params: JSON.Object.T @unchecked) =>
+          JSON.value(params, "requestId").flatMap(RequestId.fromJson(_).toOption) match {
+            case Some(id) =>
+              JSON.value(params, "reason") match {
+                case None => Cancelled(id, None)
+                case Some(_: String) => Cancelled(id, JSON.string(params, "reason"))
+                case _ => Ignored
+              }
+            case None => Ignored
+          }
+        case _ => Ignored
+      }
+
+  private def toolsCall(json: JSON.Object.T, requestId: Option[RequestId]): Message =
     request(requestId, id => {
       val params = JSON.value(json, "params").getOrElse(JSON.Object())
       JSON.string(params, "name") match {
@@ -116,7 +135,7 @@ final class Mcp2025RevisionRules extends RevisionRules {
       }
     })
 
-  private def resourcesRead(json: JSON.Object.T, requestId: Option[JSON.T]): Message =
+  private def resourcesRead(json: JSON.Object.T, requestId: Option[RequestId]): Message =
     request(requestId, id => {
       val params = JSON.value(json, "params").getOrElse(JSON.Object())
       JSON.string(params, "uri") match {
@@ -125,25 +144,19 @@ final class Mcp2025RevisionRules extends RevisionRules {
       }
     })
 
-  private def request(requestId: Option[JSON.T], message: JSON.T => Message): Message =
+  private def request(requestId: Option[RequestId], message: RequestId => Message): Message =
     requestId match {
       case Some(id) => message(id)
       case None => Ignored
     }
 
-  private def requestId(json: JSON.Object.T): Either[String, Option[JSON.T]] =
+  private def requestId(json: JSON.Object.T): Either[String, Option[RequestId]] =
     JSON.value(json, "id") match {
       case None => Right(None)
-      case Some(value) if validId(value) => Right(Some(value))
-      case Some(_) => Left("id must be a string or number")
+      case Some(value) => RequestId.fromJson(value).map(Some(_))
     }
 
-  private def validId(value: JSON.T): Boolean =
-    value.isInstanceOf[String] || value.isInstanceOf[Byte] || value.isInstanceOf[Short] ||
-      value.isInstanceOf[Int] || value.isInstanceOf[Long] || value.isInstanceOf[Float] ||
-      value.isInstanceOf[Double] || value.isInstanceOf[BigInt] || value.isInstanceOf[BigDecimal]
-
-  private def invalid(requestId: Option[JSON.T], code: Int, message: String): Invalid =
+  private def invalid(requestId: Option[RequestId], code: Int, message: String): Invalid =
     Invalid(requestId.map(ReplyId.apply).getOrElse(NoReply), code, message)
 
   private def isInitialize(json: JSON.T): Boolean =

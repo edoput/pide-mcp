@@ -19,6 +19,7 @@ sources = \
   src/mcp_data_plane.scala \
   src/mcp_application.scala \
   src/mcp_connection_policy.scala \
+  src/mcp_request_registry.scala \
   src/mcp_revision_rules.scala \
   src/mcp_request_scheduler.scala \
   src/mcp_connection_kernel.scala \
