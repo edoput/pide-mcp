@@ -17,6 +17,7 @@ object MCP_Test {
     List(
       classOf[MCP_Spec_Metadata_Tests],
       classOf[MCP_Theory_Metadata_Tests],
+      classOf[MCP_Connection_Protocol_Tests],
       classOf[MCP_Protocol_Tests],
       classOf[MCP_Readiness_Tests],
       classOf[MCP_Tools_Tests],
