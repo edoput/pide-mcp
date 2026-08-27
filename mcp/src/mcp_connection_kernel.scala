@@ -1,8 +1,8 @@
 /*  Title:      mcp/src/mcp_connection_kernel.scala
 
-Checkpoint-6 connection control path: revision classification, lifecycle,
-request ownership, bounded scheduling, and single-request wire completion over
-a DataPlane. Batch aggregation and EOF draining remain later checkpoints.
+Connection control path: revision classification, lifecycle, request ownership,
+bounded scheduling, and single/batch JSON-RPC completion over a DataPlane.
+Final EOF draining remains a later checkpoint.
 */
 
 package isabelle.mcp.connection
@@ -52,7 +52,7 @@ final class ConnectionLifecycle {
       case RevisionRules.Ignored => Ignored
       case RevisionRules.Cancelled(_, _) => Ignored
       case RevisionRules.Batch(_) => Rejected(RevisionRules.NullReply,
-        RevisionRules.InvalidRequest, "Batch aggregation is not available yet")
+        RevisionRules.InvalidRequest, "Batch must be expanded before lifecycle admission")
       case RevisionRules.Initialize(id, requestedVersion) if current == Fresh =>
         current = Initializing
         InitializeAccepted(id, requestedVersion)
@@ -100,6 +100,7 @@ final class ConnectionLifecycle {
       case _ => ()
     }
   }
+
 }
 
 
@@ -118,6 +119,62 @@ final class ConnectionKernel private (
     "connection policy and scheduler capacity disagree")
 
   private val lifecycle0 = new ConnectionLifecycle
+  private val batchLock = new AnyRef
+  private var batchSlots = Map.empty[RequestId, BatchSlot]
+  private var batchContexts = Set.empty[BatchContext]
+  private var batchOutputClosed = false
+
+  private sealed trait CompletionSink {
+    def response(value: JSON.Object.T): Unit
+    def omit(): Unit
+  }
+
+  private object DirectSink extends CompletionSink {
+    def response(value: JSON.Object.T): Unit = sendOutbound(JsonRpc.Outbound.Single(value))
+    def omit(): Unit = ()
+  }
+
+  private object DiscardSink extends CompletionSink {
+    def response(value: JSON.Object.T): Unit = ()
+    def omit(): Unit = ()
+  }
+
+  private final class BatchContext(expected: Int) {
+    private var nextSlot = 0
+    private var unresolved = (0 until expected).toSet
+    private var values = Vector.empty[JSON.Object.T]
+    private var finished = false
+
+    def newSlot(): BatchSlot = synchronized {
+      require(nextSlot < expected, "batch allocated too many response slots")
+      val slot = new BatchSlot(this, nextSlot)
+      nextSlot += 1
+      slot
+    }
+
+    def resolve(slot: Int, value: Option[JSON.Object.T]): Unit = {
+      val completed = synchronized {
+        if (finished || !unresolved(slot)) None
+        else {
+          unresolved -= slot
+          values ++= value.toList
+          if (unresolved.isEmpty) {
+            finished = true
+            Some(values)
+          }
+          else None
+        }
+      }
+      completed.foreach(completeBatch(this, _))
+    }
+
+    def abort(): Unit = synchronized { finished = true }
+  }
+
+  private final class BatchSlot(context: BatchContext, index: Int) extends CompletionSink {
+    def response(value: JSON.Object.T): Unit = context.resolve(index, Some(value))
+    def omit(): Unit = context.resolve(index, None)
+  }
 
   def phase: ConnectionLifecycle.Phase = lifecycle0.phase
 
@@ -128,15 +185,21 @@ final class ConnectionKernel private (
      admit separate lets deterministic tests inspect lifecycle decisions before
      they deliberately execute an accepted request. */
   def receiveAndExecute(): Option[ConnectionKernel.Admission] =
-    receive().map(execute)
+    dataPlane.receive().map(inbound => handle(revisionRules.classify(inbound)))
 
   def handle(message: RevisionRules.Message): ConnectionKernel.Admission =
-    execute(admit(message))
+    message match {
+      case RevisionRules.Batch(elements) => executeBatch(elements)
+      case _ => execute(admit(message))
+    }
 
   def admit(message: RevisionRules.Message): ConnectionKernel.Admission =
     message match {
       case RevisionRules.Cancelled(id, reason) =>
-        registry.cancel(id, reason)
+        registry.cancel(id, reason) match {
+          case _: RequestRegistry.Cancelled => takeBatchSlot(id).foreach(_.omit())
+          case _ => ()
+        }
         ConnectionKernel.Decided(ConnectionLifecycle.Ignored)
       case _ =>
         responseId(message) match {
@@ -167,8 +230,8 @@ final class ConnectionKernel private (
         case ConnectionKernel.ListChanged.Tools => "tools"
         case ConnectionKernel.ListChanged.Resources => "resources"
       }
-      send(JSON.Object(
-        "jsonrpc" -> "2.0", "method" -> ("notifications/" + what + "/list_changed")))
+      sendOutbound(JsonRpc.Outbound.Single(JSON.Object(
+        "jsonrpc" -> "2.0", "method" -> ("notifications/" + what + "/list_changed"))))
     }
 
   /* This is deliberately a begin-close operation, not the final EOF drain
@@ -176,34 +239,44 @@ final class ConnectionKernel private (
      invariant and output failures call it immediately. */
   def close(): Unit = {
     lifecycle0.beginClosing()
+    abortBatches()
     registry.shutdown()
     scheduler.shutdown()
   }
 
-  def execute(admission: ConnectionKernel.Admission): ConnectionKernel.Admission = {
+  def execute(admission: ConnectionKernel.Admission): ConnectionKernel.Admission =
+    execute(admission, DirectSink)
+
+  private def execute(
+    admission: ConnectionKernel.Admission,
+    sink: CompletionSink
+  ): ConnectionKernel.Admission = {
     admission match {
       case accepted @ ConnectionKernel.Accepted(ConnectionLifecycle.InitializeAccepted(_, _), request, _) =>
+        bindBatchSlot(request.id, sink)
         completeControl(request, successResponse(request.id,
           JSON.Object(
             "protocolVersion" -> policy.revision.value,
             "capabilities" -> JSON.Object(
               "tools" -> JSON.Object("listChanged" -> true),
               "resources" -> JSON.Object("listChanged" -> true)),
-            "serverInfo" -> JSON.Object("name" -> serverInfo.name, "version" -> serverInfo.version))))
+            "serverInfo" -> JSON.Object("name" -> serverInfo.name, "version" -> serverInfo.version))), sink)
         lifecycle0.initializeCompleted()
         accepted
 
       case accepted @ ConnectionKernel.Accepted(ConnectionLifecycle.PingAccepted(_), request, _) =>
-        completeControl(request, successResponse(request.id, JSON.Object()))
+        bindBatchSlot(request.id, sink)
+        completeControl(request, successResponse(request.id, JSON.Object()), sink)
         accepted
 
       case accepted @ ConnectionKernel.Accepted(
           ConnectionLifecycle.OperationAccepted(RevisionRules.Application(operation, _)), request, Some(permit)) =>
+        bindBatchSlot(request.id, sink)
         if (request.cancellation.isCancelled) {
           scheduler.abandon(permit)
           accepted
         }
-        else scheduler.start(permit, () => executeWorker(request, operation)) match {
+        else scheduler.start(permit, () => executeWorker(request, operation, sink)) match {
           case RequestScheduler.Started => accepted
           case RequestScheduler.StartRejected =>
             registry.shutdown(request.token)
@@ -211,11 +284,11 @@ final class ConnectionKernel private (
         }
 
       case ConnectionKernel.Decided(ConnectionLifecycle.Overloaded(id)) =>
-        send(overloadResponse(id))
+        sink.response(overloadResponse(id))
         admission
 
       case ConnectionKernel.Decided(rejected: ConnectionLifecycle.Rejected) =>
-        reply(rejected.reply, rejected.code, rejected.message)
+        reply(rejected.reply, rejected.code, rejected.message, sink)
         admission
 
       case _ => admission
@@ -288,7 +361,8 @@ final class ConnectionKernel private (
 
   private def executeWorker(
     request: RequestRegistry.Admitted,
-    operation: McpApplication.Operation
+    operation: McpApplication.Operation,
+    sink: CompletionSink
   ): Unit = {
     val (disposition, response) =
       try {
@@ -307,34 +381,100 @@ final class ConnectionKernel private (
       }
 
     registry.complete(request.token, disposition) match {
-      case RequestRegistry.Completed(_) => send(response)
+      case RequestRegistry.Completed(_) => completionSink(request.id, sink).response(response)
       case _: RequestRegistry.LateIgnored => ()
       case _: RequestRegistry.InvariantViolation => ()
       case _ => error("worker completion did not resolve to a terminal result")
     }
   }
 
-  private def completeControl(request: RequestRegistry.Admitted, response: JSON.Object.T): Unit =
+  private def completeControl(
+    request: RequestRegistry.Admitted,
+    response: JSON.Object.T,
+    sink: CompletionSink
+  ): Unit =
     registry.complete(request.token, RequestRegistry.WorkerDisposition.Success) match {
-      case RequestRegistry.Completed(_) => send(response)
+      case RequestRegistry.Completed(_) => completionSink(request.id, sink).response(response)
       case _: RequestRegistry.InvariantViolation => ()
       case _ => error("control completion did not resolve to a terminal result")
     }
 
-  private def reply(target: RevisionRules.ReplyTarget, code: Int, message: String): Unit =
+  private def reply(
+    target: RevisionRules.ReplyTarget,
+    code: Int,
+    message: String,
+    sink: CompletionSink
+  ): Unit =
     target match {
-      case RevisionRules.ReplyId(id) => send(errorResponse(id, code, message))
-      case RevisionRules.NullReply => send(RevisionRules.error(null, code, message))
+      case RevisionRules.ReplyId(id) => sink.response(errorResponse(id, code, message))
+      case RevisionRules.NullReply => sink.response(RevisionRules.error(null, code, message))
       case RevisionRules.NoReply => ()
     }
 
-  private def send(response: JSON.Object.T): Unit =
-    try dataPlane.send(JsonRpc.Outbound.Single(response))
+  private def executeBatch(elements: List[JSON.T]): ConnectionKernel.Admission = {
+    /* RevisionRules admits only non-empty batches without initialize.  Classify
+       and allocate every response slot before an accepted worker can start:
+       a fast first element must never flush a partial array. */
+    val messages = elements.map(classifyBatchElement)
+    val responseCount = messages.count(responseRequired)
+    val sinks =
+      if (responseCount == 0) messages.map(_ => DiscardSink: CompletionSink)
+      else {
+        val context = new BatchContext(responseCount)
+        batchLock.synchronized { batchContexts += context }
+        messages.map(message =>
+          if (responseRequired(message)) context.newSlot(): CompletionSink else DiscardSink)
+      }
+    messages.lazyZip(sinks).foreach { (message, sink) => execute(admit(message), sink) }
+    ConnectionKernel.Decided(ConnectionLifecycle.Ignored)
+  }
+
+  private def classifyBatchElement(value: JSON.T): RevisionRules.Message =
+    revisionRules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(value)))
+
+  private def responseRequired(message: RevisionRules.Message): Boolean =
+    responseId(message).isDefined ||
+      (message match {
+        case RevisionRules.Invalid(RevisionRules.NullReply, _, _) => true
+        case _ => false
+      })
+
+  private def bindBatchSlot(id: RequestId, sink: CompletionSink): Unit =
+    sink match {
+      case slot: BatchSlot => batchLock.synchronized { batchSlots += id -> slot }
+      case _ => ()
+    }
+
+  private def takeBatchSlot(id: RequestId): Option[BatchSlot] =
+    batchLock.synchronized {
+      val slot = batchSlots.get(id)
+      batchSlots -= id
+      slot
+    }
+
+  private def completionSink(id: RequestId, fallback: CompletionSink): CompletionSink =
+    takeBatchSlot(id).getOrElse(fallback)
+
+  private def completeBatch(context: BatchContext, values: Vector[JSON.Object.T]): Unit =
+    batchLock.synchronized {
+      if (!batchOutputClosed && batchContexts(context)) {
+        batchContexts -= context
+        if (values.nonEmpty) sendOutbound(JsonRpc.Outbound.Batch(values.toList))
+      }
+    }
+
+  private def abortBatches(): Unit = batchLock.synchronized {
+    batchOutputClosed = true
+    batchContexts.foreach(_.abort())
+    batchContexts = Set.empty
+    batchSlots = Map.empty
+  }
+
+  private def sendOutbound(outbound: JsonRpc.Outbound): Unit =
+    try dataPlane.send(outbound)
     catch {
       case exn: Throwable =>
-        lifecycle0.beginClosing()
-        registry.shutdown()
-        scheduler.shutdown()
+        close()
         throw exn
     }
 

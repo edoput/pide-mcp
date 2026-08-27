@@ -73,6 +73,17 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
       application = app,
       serverInfo = serverInfo)
 
+  private def ready(connection: ConnectionKernel, id: Long = 500): Unit = {
+    connection.handle(RevisionRules.Initialize(requestId(id), ProtocolRevision.V2025_03_26.value))
+    connection.handle(RevisionRules.Initialized)
+  }
+
+  private def batch_values(plane: ScriptedDataPlane)(implicit loc: munit.Location): List[JSON.T] =
+    JSON.Format.unapply(plane.written.last) match {
+      case Some(values: List[_]) => values.asInstanceOf[List[JSON.T]]
+      case other => fail("expected one aggregate JSON array, got " + other)
+    }
+
   private def admitted(
     registry: RequestRegistry,
     id: RequestId,
@@ -422,6 +433,259 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     connection.beginClosing()
     connection.listChanged(ConnectionKernel.ListChanged.Tools)
     assertEquals(plane.written.length, 2)
+  }
+
+  spec_test("batch aggregation uses the same application, scheduler, and registry path",
+      covers = List("connection_kernel#T10")) {
+    val inbound = List(
+      request(Some("first"), "tools/list"),
+      request(None, "notifications/unknown"),
+      request(Some("overload"), "resources/list"))
+    val plane = new ScriptedDataPlane(List(JSON.Format(inbound)))
+    val scheduler = new ManualSequentialScheduler
+    var executions = 0
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+        executions += 1
+        McpApplication.Outcome.Result(JSON.Object("operation" -> executions))
+      }
+    }
+    val connection = kernelWith(plane, scheduler, maxInFlight = 1, app)
+    ready(connection)
+    val before = plane.written.length
+    connection.receiveAndExecute()
+
+    assertEquals(executions, 0, "manual scheduler proves the batch used the application scheduler")
+    assertEquals(plane.written.length, before, "early overload must wait for all batch slots")
+    assert(scheduler.hasPending, "first application request must be registered and scheduled")
+    assert(scheduler.runPending())
+    assertEquals(executions, 1)
+    assertEquals(plane.written.length, before + 1)
+    val values = batch_values(plane)
+    assertEquals(values.length, 2)
+    assert(values.exists(value => get(value, "id") == "first"))
+    assert(values.exists(value => get(value, "id") == "overload" &&
+      get(value, "error", "code") == ConnectionKernel.Overloaded))
+    assertEquals(connection.registry.snapshot.activeCapacity, 0)
+  }
+
+  spec_test("notification-only batches emit no frame",
+      covers = List("connection_kernel#T10")) {
+    val plane = new ScriptedDataPlane(Nil)
+    val connection = kernelWith(plane, new DeterministicSequentialScheduler(1), 1, application)
+    ready(connection)
+    val before = plane.written.length
+    connection.handle(RevisionRules.Batch(List(
+      request(None, "notifications/unknown"),
+      request(None, "notifications/initialized"))))
+    assertEquals(plane.written.length, before)
+  }
+
+  spec_test("revision rules reject empty and initialize batches as one non-array error",
+      covers = List("connection_kernel#T10")) {
+    val emptyPlane = new ScriptedDataPlane(List(JSON.Format(List.empty[JSON.T])))
+    val empty = ConnectionKernel(policy(1), emptyPlane, rules, new DeterministicSequentialScheduler(1),
+      new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast), application, serverInfo)
+    empty.receiveAndExecute()
+    assertEquals(JSON.Format.unapply(emptyPlane.written.last).exists(_.isInstanceOf[List[_]]), false)
+    val emptyReply = JSON.Format.unapply(emptyPlane.written.last).getOrElse(fail("missing empty batch error"))
+    assertEquals(get(emptyReply, "id"), null)
+    assertEquals(get(emptyReply, "error", "code"), RevisionRules.InvalidRequest)
+
+    val initializeElement = request(Some("initialize"), "initialize",
+      Some(JSON.Object("protocolVersion" -> ProtocolRevision.V2025_03_26.value)))
+    val initializePlane = new ScriptedDataPlane(List(JSON.Format(List(initializeElement))))
+    val initialize = ConnectionKernel(policy(1), initializePlane, rules,
+      new DeterministicSequentialScheduler(1),
+      new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast), application, serverInfo)
+    initialize.receiveAndExecute()
+    assertEquals(JSON.Format.unapply(initializePlane.written.last).exists(_.isInstanceOf[List[_]]), false)
+    val initializeReply = JSON.Format.unapply(initializePlane.written.last)
+      .getOrElse(fail("missing initialize batch error"))
+    assertEquals(get(initializeReply, "id"), null)
+    assertEquals(get(initializeReply, "error", "code"), RevisionRules.InvalidRequest)
+  }
+
+  spec_test("batch aggregates invalid non-object elements with null ids",
+      covers = List("connection_kernel#T10")) {
+    val plane = new ScriptedDataPlane(Nil)
+    val connection = kernelWith(plane, new DeterministicSequentialScheduler(1), 1, application)
+    ready(connection)
+    val before = plane.written.length
+    connection.handle(RevisionRules.Batch(List(
+      List(JSON.Object("nested" -> true)),
+      request(Some("ping"), "ping"))))
+    assertEquals(plane.written.length, before + 1)
+    val values = batch_values(plane)
+    assertEquals(values.length, 2)
+    assert(values.exists(value => get(value, "id") == null &&
+      get(value, "error", "code") == RevisionRules.InvalidRequest))
+    assert(values.exists(value => get(value, "id") == "ping" && get(value, "result") == JSON.Object()))
+  }
+
+  spec_test("same-batch cancellation omits its slot and suppresses the late worker result",
+      covers = List("connection_kernel#T10")) {
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new ManualSequentialScheduler
+    var sawCancelled = false
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+        sawCancelled = cancellation.isCancelled
+        McpApplication.Outcome.Result(JSON.Object("late" -> true))
+      }
+    }
+    val connection = kernelWith(plane, scheduler, maxInFlight = 1, app)
+    ready(connection)
+    val before = plane.written.length
+    connection.handle(RevisionRules.Batch(List(
+      request(Some("slow"), "tools/list"),
+      request(None, "notifications/cancelled",
+        Some(JSON.Object("requestId" -> "slow", "reason" -> "gone"))),
+      request(Some("ping"), "ping"))))
+    assertEquals(plane.written.length, before + 1)
+    val values = batch_values(plane)
+    assertEquals(values.length, 1)
+    assertEquals(get(values.head, "id"), "ping")
+    assert(scheduler.runPending())
+    assert(sawCancelled)
+    assertEquals(plane.written.length, before + 1, "late worker result escaped its omitted batch slot")
+  }
+
+  spec_test("all-cancelled batch responses emit neither an empty array nor a late result",
+      covers = List("connection_kernel#T10")) {
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new ManualSequentialScheduler
+    val connection = kernelWith(plane, scheduler, maxInFlight = 1, application)
+    ready(connection)
+    val before = plane.written.length
+    connection.handle(RevisionRules.Batch(List(
+      request(Some("only"), "tools/list"),
+      request(None, "notifications/cancelled", Some(JSON.Object("requestId" -> "only"))))))
+    assertEquals(plane.written.length, before, "all-cancelled batch must not emit []")
+    assert(scheduler.runPending())
+    assertEquals(plane.written.length, before, "late all-cancelled worker result escaped")
+  }
+
+  spec_test("batch response order follows completion order, not input order",
+      covers = List("connection_kernel#T10")) {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new BoundedConcurrentScheduler(2, "kernel-batch-order-worker")
+    val slowStarted = new CountDownLatch(1)
+    val fastFinished = new CountDownLatch(1)
+    val releaseSlow = new CountDownLatch(1)
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) =
+        operation match {
+          case McpApplication.Operation.ToolsCall("slow", _) =>
+            slowStarted.countDown()
+            releaseSlow.await(2, TimeUnit.SECONDS)
+            McpApplication.Outcome.Result(JSON.Object("which" -> "slow"))
+          case McpApplication.Operation.ToolsCall("fast", _) =>
+            fastFinished.countDown()
+            McpApplication.Outcome.Result(JSON.Object("which" -> "fast"))
+          case _ => McpApplication.Outcome.Result(JSON.Object())
+        }
+    }
+    val connection = kernelWith(plane, scheduler, maxInFlight = 2, app)
+    try {
+      ready(connection)
+      val before = plane.written.length
+      connection.handle(RevisionRules.Batch(List(
+        request(Some("slow"), "tools/call",
+          Some(JSON.Object("name" -> "slow", "arguments" -> JSON.Object()))),
+        request(Some("fast"), "tools/call",
+          Some(JSON.Object("name" -> "fast", "arguments" -> JSON.Object()))))))
+      assert(slowStarted.await(2, TimeUnit.SECONDS), "slow batch worker did not start")
+      assert(fastFinished.await(2, TimeUnit.SECONDS), "fast batch worker did not finish")
+      assertEquals(plane.written.length, before, "partial batch aggregate escaped before slow completion")
+      releaseSlow.countDown()
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+      while (plane.written.length == before && System.nanoTime() < deadline) Thread.sleep(5L)
+      assertEquals(plane.written.length, before + 1)
+      val values = batch_values(plane)
+      assertEquals(values.map(value => get(value, "id")), List("fast", "slow"))
+    }
+    finally {
+      releaseSlow.countDown()
+      scheduler.shutdown()
+    }
+  }
+
+  spec_test("final close aborts unresolved batch contexts without a post-close aggregate",
+      covers = List("connection_kernel#T10")) {
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new ManualSequentialScheduler
+    val connection = kernelWith(plane, scheduler, maxInFlight = 1, application)
+    ready(connection)
+    val before = plane.written.length
+    connection.handle(RevisionRules.Batch(List(request(Some("pending"), "tools/list"))))
+    assert(scheduler.hasPending)
+    connection.close()
+    assertEquals(plane.written.length, before)
+    assert(!scheduler.runPending())
+    assertEquals(plane.written.length, before)
+  }
+
+  spec_test("aggregate emission and final close linearize under the batch output lock",
+      covers = List("connection_kernel#T10")) {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+    import java.util.concurrent.atomic.AtomicReference
+
+    final class BlockingBatchPlane extends DataPlane {
+      private var emitted = List.empty[JsonRpc.Outbound]
+      val batchSendStarted = new CountDownLatch(1)
+      val releaseBatchSend = new CountDownLatch(1)
+
+      def receive(): Option[JsonRpc.Inbound] = None
+      def send(outbound: JsonRpc.Outbound): Unit = {
+        outbound match {
+          case _: JsonRpc.Outbound.Batch =>
+            batchSendStarted.countDown()
+            if (!releaseBatchSend.await(2, TimeUnit.SECONDS))
+              throw new RuntimeException("test did not release aggregate send")
+          case _ => ()
+        }
+        synchronized { emitted = emitted :+ outbound }
+      }
+      def written: List[JsonRpc.Outbound] = synchronized { emitted }
+    }
+
+    val plane = new BlockingBatchPlane
+    val scheduler = new BoundedConcurrentScheduler(1, "kernel-batch-close-worker")
+    val connection = ConnectionKernel(policy(1), plane, rules, scheduler,
+      new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast), application, serverInfo)
+    val closeFailure = new AtomicReference[Throwable](null)
+    val closeStarted = new CountDownLatch(1)
+    var closer: Thread = null
+    try {
+      ready(connection)
+      connection.handle(RevisionRules.Batch(List(request(Some("race"), "tools/list"))))
+      assert(plane.batchSendStarted.await(2, TimeUnit.SECONDS), "aggregate send did not start")
+      closer = new Thread(new Runnable {
+        def run(): Unit = {
+          closeStarted.countDown()
+          try connection.close()
+          catch { case exn: Throwable => closeFailure.set(exn) }
+        }
+      }, "kernel-batch-close-race")
+      closer.setDaemon(true)
+      closer.start()
+      assert(closeStarted.await(2, TimeUnit.SECONDS), "close race thread did not start")
+      Thread.sleep(20L)
+      assert(closer.isAlive, "close must wait for an already-linearized aggregate send")
+      plane.releaseBatchSend.countDown()
+      closer.join(2000L)
+      assert(!closer.isAlive, "close race thread did not finish")
+      Option(closeFailure.get()).foreach(throw _)
+      assertEquals(plane.written.collect { case _: JsonRpc.Outbound.Batch => () }.length, 1)
+    }
+    finally {
+      plane.releaseBatchSend.countDown()
+      if (closer != null) closer.join(2000L)
+      scheduler.shutdown()
+    }
   }
 
   test("registry detects foreign and duplicate tokens and applies every invariant reaction") {
