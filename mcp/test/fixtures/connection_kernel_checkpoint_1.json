@@ -31,7 +31,7 @@
       "kind": "current-characterization",
       "input": "requests with numeric and string JSON-RPC ids, plus malformed JSON whose id is not recoverable",
       "current_observation": "Handler echoes a parsed id directly in each response and uses null for parse errors, but does not carry a typed request identity through admission, terminal ownership, and shutdown.",
-      "target_counterexample": "The kernel preserves each valid client request ID as the response correlation key regardless of completion order, and uses null only when JSON-RPC cannot determine an id. This wire-ID rule is separate from T6's connection-owned completion token, which detects a second or unknown completion attempt.",
+      "target_counterexample": "The kernel preserves each valid string client request ID as the response correlation key regardless of completion order, rejects every numeric ID as InvalidRequest, and uses null only when JSON-RPC cannot determine a valid string id. This wire-ID rule is separate from T6's connection-owned completion token, which detects a second or unknown completion attempt.",
       "evidence": "mcp/src/mcp_server.scala: RPC.response, Handler.handle, and Handler.handle_line"
     },
     {
@@ -39,7 +39,7 @@
       "kind": "current-characterization",
       "input": "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":7,\"reason\":\"user stopped\"}}",
       "current_observation": "The notification receives no reply but is otherwise ignored; no cancellation handle or late-result suppression exists.",
-      "target_counterexample": "If cancellation wins for an admitted non-initialize request, cooperative work is cancelled, its slot is released once, and no response or late result escapes.",
+      "target_counterexample": "If cancellation for an admitted valid string non-initialize request wins, cooperative work is cancelled, its slot is released once, and no response or late result escapes. A numeric cancellation target is ignored at the string-only boundary.",
       "evidence": "mcp/src/mcp_server.scala: Handler.handle has no notifications/cancelled case"
     },
     {

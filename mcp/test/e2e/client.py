@@ -1,8 +1,7 @@
 """Shared newline-delimited JSON-RPC process client for e2e cases.
 
-Project-owned clients use string request IDs.  The server also accepts
-safe-integer JSON-RPC IDs for compatibility, but Isabelle decodes numeric JSON
-tokens through Double and therefore deliberately rejects unsafe integers.
+Project-owned clients use string request IDs. The server's request-ID boundary
+is string-only, so numeric JSON-RPC IDs are rejected before admission.
 """
 
 from __future__ import annotations

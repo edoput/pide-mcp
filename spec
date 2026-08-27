@@ -581,18 +581,13 @@ The current implementation is documented by the checkpoint-1 non-coverage
 fixtures and is not evidence that these replacement guarantees are already
 implemented.
 
-MCP 2025-03-26 request identifiers are connection-local strings or integers.
-The current Isabelle JSON parser materializes numeric tokens as IEEE-754
-`Double`, so this implementation accepts numeric IDs only when they are finite,
-integral, and in the exact safe range [-9007199254740991, 9007199254740991].
-`null`, fractional, non-finite, and unsafe numeric values are invalid request
-identifiers and are rejected rather than rounded. Accepted numeric IDs are
-normalized to that exact integer value; this is not a claim to preserve
-arbitrary JSON integer spellings or values. The project-owned Python/e2e
-clients generate string IDs, while the server remains interoperable with
-clients using strings or safe integers. Rejection of unsafe numeric IDs is a
-deliberate compatibility limitation from MCP 2025-03-26's unrestricted integer
-domain. The kernel retains every valid received ID for the connection lifetime,
+MCP 2025-03-26 request identifiers are connection-local strings or integers,
+but this server boundary accepts strings only. `null` and every numeric value
+are InvalidRequest identifiers and are rejected before admission; there is no
+precision-preserving numeric parser or safe-integer exception. The
+project-owned Python/e2e clients generate string IDs. This is a deliberate
+compatibility limitation from MCP 2025-03-26's unrestricted integer domain.
+The kernel retains every valid received string ID for the connection lifetime,
 including rejected requests and terminal tombstones, so an identifier is never
 reused within a session. This makes a late completion unambiguously
 attributable to its original connection-owned token rather than to a newer

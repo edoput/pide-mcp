@@ -17,54 +17,17 @@ sealed trait RequestId {
 
 
 object RequestId {
-  /* Isabelle's JSON parser materializes every numeric token as Double.  Do
-     not manufacture an identity from a rounded token: this is deliberately
-     the IEEE-754 exact-integer range, inclusive. */
-  private val MaxExactWireInteger = 9007199254740991L
-
   final case class StringId private[connection] (value: String) extends RequestId {
     def json: JSON.T = value
-  }
-
-  final class IntegerId private[connection] (
-    val value: BigInt,
-    val json: JSON.T
-  ) extends RequestId {
-    override def equals(that: Any): Boolean =
-      that match {
-        case other: IntegerId => value == other.value
-        case _ => false
-      }
-
-    override def hashCode: Int = value.hashCode
-    override def toString: String = "RequestId.IntegerId(" + value + ")"
   }
 
   def fromJson(json: JSON.T): Either[String, RequestId] =
     json match {
       case value: String => Right(StringId(value))
-      case value: Byte => integerValue(value.toLong)
-      case value: Short => integerValue(value.toLong)
-      case value: Int => integerValue(value.toLong)
-      case value: Long => integerValue(value)
-      case value: Double if value.isFinite && value.isWhole &&
-          value >= -MaxExactWireInteger.toDouble && value <= MaxExactWireInteger.toDouble =>
-        integerValue(value.toLong)
-      case _ => Left("id must be a string or exactly representable integer")
+      case _ => Left("id must be a string")
     }
 
   def string(value: String): RequestId = StringId(value)
-  def integer(value: Long): RequestId = {
-    require(inSafeRange(value), "request integer is outside the exact JSON wire range")
-    new IntegerId(BigInt(value), value)
-  }
-
-  private def inSafeRange(value: Long): Boolean =
-    value >= -MaxExactWireInteger && value <= MaxExactWireInteger
-
-  private def integerValue(value: Long): Either[String, RequestId] =
-    if (inSafeRange(value)) Right(integer(value))
-    else Left("id must be a string or exactly representable integer")
 }
 
 
@@ -348,6 +311,18 @@ final class RequestRegistry(
       active.cancellation.cancel()
       terminal(active, TerminalDisposition.Shutdown, None)
     }
+  }
+
+  private[connection] def shutdown(token: CompletionToken): Completion = {
+    val result = synchronized {
+      activeByToken.get(token) match {
+        case Some(active) =>
+          active.cancellation.cancel()
+          Right(Completed(terminal(active, TerminalDisposition.Shutdown, None)))
+        case None => Left((UnknownCompletion(token), snapshot0))
+      }
+    }
+    react(result)
   }
 
   def snapshot: Snapshot = synchronized { snapshot0 }

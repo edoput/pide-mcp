@@ -150,7 +150,7 @@ spec_refinements:
   - id: R5
     state: folded
     folded_on: "2026-08-27"
-    statement: "Isabelle JSON materializes numeric tokens as Double. The resolved compatibility boundary retains the current parser: server-side numeric IDs are accepted only when finite, integral, and in the IEEE-754 exact range; unsafe numeric IDs are rejected rather than rounded. No precision-preserving parser is introduced. This is a chosen compatibility limitation from the unrestricted MCP 2025-03-26 integer domain. Project-owned Python/e2e clients generate string IDs, while the server remains interoperable with clients using strings or safe integers."
+    statement: "The resolved server-boundary contract accepts only string request IDs. No precision-preserving numeric parser is introduced and no safe-integer exception exists: every numeric ID is rejected as InvalidRequest before admission. This is a deliberate compatibility limitation from MCP 2025-03-26's unrestricted integer domain. Project-owned Python/e2e clients generate string IDs."
     spec_ids: [D-undated-architecture-decisions]
 done_command:
   - tools/planning-gate
@@ -311,17 +311,13 @@ The application does not decide or observe this policy.  The composition root
 selects it, allowing production and diagnostic commands to choose different
 reactions without weakening detection or permitting a second response.
 
-MCP 2025-03-26 request IDs are typed connection values. Strings are accepted;
-because Isabelle's JSON parser materializes numeric tokens as `Double`, a
-numeric ID is accepted only when it is finite, integral, and within the
-inclusive IEEE-754 exact range [-9007199254740991, 9007199254740991]. `null`,
-fractional, non-finite, and unsafe numeric values are invalid. Accepted numeric
-IDs are normalized to their exact integer value; the checkpoint makes no claim
-to preserve arbitrary JSON integer spellings or values. Python/e2e clients
-generate string IDs, and the server remains interoperable with clients using
-strings or safe integers. Rejection of unsafe numeric IDs is a deliberate
+MCP 2025-03-26 request IDs are typed connection values, but this server-boundary
+contract accepts strings only. `null` and every numeric value, including a
+finite integral safe integer, are InvalidRequest values and are rejected before
+admission. No precision-preserving numeric parser or safe-integer exception is
+present. Python/e2e clients generate string IDs. This is a deliberate
 compatibility limitation from MCP 2025-03-26's unrestricted integer domain.
-The registry retains every received valid ID for the whole connection,
+The registry retains every received valid string ID for the whole connection,
 including rejected requests and terminal tombstones, and rejects per-session
 ID reuse before lifecycle admission; completion tokens therefore remain
 independent of client IDs and cannot be redirected by reuse.

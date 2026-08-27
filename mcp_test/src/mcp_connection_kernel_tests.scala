@@ -1,8 +1,8 @@
 /*  Title:      mcp_test/src/mcp_connection_kernel_tests.scala
 
-Checkpoint-5 contracts for validated policy, revision classification,
-lifecycle control, request ownership, and deterministic scheduling without
-Isabelle.
+Checkpoint-6 contracts for validated policy, revision classification,
+lifecycle control, request ownership, direct-handoff scheduling, and
+connection-owned wire completion without Isabelle.
 */
 
 package isabelle.mcp
@@ -11,7 +11,7 @@ import isabelle._
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.connection._
 import isabelle.mcp.protocol.JsonRpc
-import isabelle.mcp.transport.ScriptedDataPlane
+import isabelle.mcp.transport.{DataPlane, ScriptedDataPlane}
 
 
 class MCP_Connection_Kernel_Tests extends MCP_Suite {
@@ -20,7 +20,16 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
   private def checked[A](value: Either[String, A]): A =
     value.fold(message => fail(message), identity)
 
-  private def requestId(value: Long): RequestId = RequestId.integer(value)
+  private def requestId(value: Long): RequestId = RequestId.string(value.toString)
+
+  private val application = new McpApplication {
+    def execute(
+      operation: McpApplication.Operation,
+      cancellation: McpApplication.Cancellation
+    ): McpApplication.Outcome = McpApplication.Outcome.Result(JSON.Object())
+  }
+
+  private val serverInfo = ConnectionKernel.ServerInfo("test-server", "test-version")
 
   private def policy(maxInFlight: Int = 2): ConnectionPolicy =
     ConnectionPolicy(
@@ -44,8 +53,25 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
       policy = policy(),
       dataPlane = new ScriptedDataPlane(lines),
       revisionRules = rules,
-      scheduler = new DeterministicSequentialScheduler,
-      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast))
+      scheduler = new DeterministicSequentialScheduler(2),
+      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
+      application = application,
+      serverInfo = serverInfo)
+
+  private def kernelWith(
+    plane: ScriptedDataPlane,
+    scheduler: RequestScheduler,
+    maxInFlight: Int,
+    app: McpApplication
+  ): ConnectionKernel =
+    ConnectionKernel(
+      policy = policy(maxInFlight),
+      dataPlane = plane,
+      revisionRules = rules,
+      scheduler = scheduler,
+      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
+      application = app,
+      serverInfo = serverInfo)
 
   private def admitted(
     registry: RequestRegistry,
@@ -73,8 +99,10 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
       policy = snapshot,
       dataPlane = new ScriptedDataPlane(Nil),
       revisionRules = rules,
-      scheduler = new DeterministicSequentialScheduler,
-      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast))
+      scheduler = new DeterministicSequentialScheduler(2),
+      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
+      application = application,
+      serverInfo = serverInfo)
 
     assertEquals(ConnectionPolicy.MaxInFlight.value(kernel0.policy.admission.maxInFlight), 2)
     assertEquals(ConnectionPolicy.MaxInFlight.value(
@@ -83,17 +111,17 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
   }
 
   test("MCP 2025-03-26 rules classify valid and invalid wire messages") {
-    val initialize = request(Some(1), "initialize",
+    val initialize = request(Some("1"), "initialize",
       Some(JSON.Object("protocolVersion" -> ProtocolRevision.V2025_03_26.value)))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(initialize))),
       RevisionRules.Initialize(requestId(1), ProtocolRevision.V2025_03_26.value))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
-      request(Some(1), "initialize", Some(JSON.Object("protocolVersion" -> "2024-11-05")))))),
+      request(Some("1"), "initialize", Some(JSON.Object("protocolVersion" -> "2024-11-05")))))),
       RevisionRules.Initialize(requestId(1), "2024-11-05"))
     assertEquals(rules.classify(JsonRpc.Inbound.Malformed("{")),
       RevisionRules.Invalid(RevisionRules.NullReply, RevisionRules.ParseError, "Parse error"))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
-      JSON.Object("jsonrpc" -> "1.0", "id" -> 1, "method" -> "ping")))),
+      JSON.Object("jsonrpc" -> "1.0", "id" -> "1", "method" -> "ping")))),
       RevisionRules.Invalid(RevisionRules.ReplyId(requestId(1)), RevisionRules.InvalidRequest,
         "jsonrpc must be 2.0"))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
@@ -103,14 +131,14 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       JSON.Object("jsonrpc" -> "2.0", "id" -> null, "method" -> "ping")))),
       RevisionRules.Invalid(RevisionRules.NullReply, RevisionRules.InvalidRequest,
-        "id must be a string or exactly representable integer"))
+        "id must be a string"))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
-      request(Some(2), "tools/call")))),
+      request(Some("2"), "tools/call")))),
       RevisionRules.Invalid(RevisionRules.ReplyId(requestId(2)), RevisionRules.InvalidParams, "Missing tool name"))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       request(None, "notifications/initialized")))), RevisionRules.Initialized)
     val resourceRead = JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
-      request(Some(3), "resources/read", Some(JSON.Object("uri" -> "isabelle://session")))))
+      request(Some("3"), "resources/read", Some(JSON.Object("uri" -> "isabelle://session")))))
     assertEquals(rules.classify(resourceRead),
       RevisionRules.Application(McpApplication.Operation.ResourcesRead("isabelle://session"), requestId(3)))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
@@ -123,13 +151,17 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(rules.classify(cancelled),
       RevisionRules.Cancelled(RequestId.string("slow"), Some("user left")))
     val cancelledWithWireId = JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
-      request(Some(8), "notifications/cancelled", Some(JSON.Object("requestId" -> 2)))))
+      request(Some("8"), "notifications/cancelled", Some(JSON.Object("requestId" -> 2)))))
     val cancelledWithFraction = JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       request(None, "notifications/cancelled", Some(JSON.Object("requestId" -> 1.5)))))
+    val cancelledWithNumericTarget = JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
+      request(None, "notifications/cancelled",
+        Some(JSON.Object("requestId" -> 2, "reason" -> "client left")))))
     val cancelledWithBadReason = JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       request(None, "notifications/cancelled", Some(JSON.Object("requestId" -> 2, "reason" -> 3)))))
     assertEquals(rules.classify(cancelledWithWireId), RevisionRules.Ignored)
     assertEquals(rules.classify(cancelledWithFraction), RevisionRules.Ignored)
+    assertEquals(rules.classify(cancelledWithNumericTarget), RevisionRules.Ignored)
     assertEquals(rules.classify(cancelledWithBadReason), RevisionRules.Ignored)
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       request(None, "not/a/method")))), RevisionRules.Ignored)
@@ -147,13 +179,13 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
 
   spec_test("lifecycle accepts only the MCP 2025-03-26 transition table",
       covers = List("connection_kernel#T2")) {
-    val initialize = JSON.Format(request(Some(1), "initialize",
+    val initialize = JSON.Format(request(Some("1"), "initialize",
       Some(JSON.Object("protocolVersion" -> ProtocolRevision.V2025_03_26.value))))
     val initialized = JSON.Format(request(None, "notifications/initialized"))
-    val earlyOperation = JSON.Format(request(Some(3), "tools/list"))
-    val initializingPing = JSON.Format(request(Some(2), "ping"))
-    val awaitingPing = JSON.Format(request(Some(4), "ping"))
-    val readyOperation = JSON.Format(request(Some(5), "tools/list"))
+    val earlyOperation = JSON.Format(request(Some("3"), "tools/list"))
+    val initializingPing = JSON.Format(request(Some("2"), "ping"))
+    val awaitingPing = JSON.Format(request(Some("4"), "ping"))
+    val readyOperation = JSON.Format(request(Some("5"), "tools/list"))
     val connection = kernel(List(
       earlyOperation, initialize, initializingPing, awaitingPing, initialized, readyOperation))
 
@@ -199,38 +231,31 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
 
   test("deterministic schedulers execute sequentially with no waiting queue") {
     var ran = List.empty[String]
-    val inline = new DeterministicSequentialScheduler
-    assertEquals(inline.submit(() => ran = ran :+ "inline"), RequestScheduler.Accepted)
+    val inline = new DeterministicSequentialScheduler(1)
+    val inlinePermit = inline.tryReserve().asInstanceOf[RequestScheduler.Reserved].permit
+    assertEquals(inline.start(inlinePermit, () => ran = ran :+ "inline"), RequestScheduler.Started)
     assertEquals(ran, List("inline"))
 
     val manual = new ManualSequentialScheduler
-    assertEquals(manual.submit(() => ran = ran :+ "first"), RequestScheduler.Accepted)
+    val firstPermit = manual.tryReserve().asInstanceOf[RequestScheduler.Reserved].permit
+    assertEquals(manual.start(firstPermit, () => ran = ran :+ "first"), RequestScheduler.Started)
     assert(manual.hasPending, "manual scheduler should hold its one explicitly controlled task")
-    assertEquals(manual.submit(() => ran = ran :+ "second"), RequestScheduler.Rejected)
+    assertEquals(manual.tryReserve(), RequestScheduler.Rejected)
     assert(manual.runPending(), "expected pending task")
     assertEquals(ran, List("inline", "first"))
     assert(!manual.hasPending, "running the task must release the slot")
-    assertEquals(manual.submit(() => ran = ran :+ "third"), RequestScheduler.Accepted)
+    val thirdPermit = manual.tryReserve().asInstanceOf[RequestScheduler.Reserved].permit
+    assertEquals(manual.start(thirdPermit, () => ran = ran :+ "third"), RequestScheduler.Started)
     assert(manual.runPending(), "expected replacement task")
     assertEquals(ran, List("inline", "first", "third"))
   }
 
-  test("request ids normalize finite safe integer values while rejecting unsafe values") {
+  test("request ids accept strings and reject every non-string value") {
     val string = checked(RequestId.fromJson("alpha"))
-    val integer = checked(RequestId.fromJson(7))
     assertEquals(string, RequestId.string("alpha"))
     assertEquals(string.json, "alpha")
-    assertEquals(integer, RequestId.integer(7))
-    assertEquals(integer.json, 7)
-    assertEquals(RequestId.fromJson(null), Left("id must be a string or exactly representable integer"))
-    val decodedInteger = checked(RequestId.fromJson(7.0))
-    assertEquals(decodedInteger, RequestId.integer(7))
-    assertEquals(decodedInteger.json, 7L)
-    assertEquals(RequestId.fromJson(7.5), Left("id must be a string or exactly representable integer"))
-    assertEquals(RequestId.fromJson(9007199254740992.0),
-      Left("id must be a string or exactly representable integer"))
-    intercept[IllegalArgumentException] {
-      RequestId.integer(9007199254740992L)
+    List(null, 7, 7.0, 7.5, 9007199254740992.0).foreach { value =>
+      assertEquals(RequestId.fromJson(value), Left("id must be a string"))
     }
   }
 
@@ -336,30 +361,36 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
       ConnectionLifecycle.Rejected(RevisionRules.ReplyId(requestId(51)), RevisionRules.InvalidRequest,
         "Request id must not be reused during a connection"))
 
-    val initializedConnection = kernel(List(JSON.Format(request(Some(52), "initialize",
+    val initializedConnection = kernel(List(JSON.Format(request(Some("52"), "initialize",
       Some(JSON.Object("protocolVersion" -> ProtocolRevision.V2025_03_26.value))))))
     initializedConnection.receive() match {
-      case Some(ConnectionKernel.Accepted(ConnectionLifecycle.InitializeAccepted(id, _), admitted)) =>
+      case Some(ConnectionKernel.Accepted(ConnectionLifecycle.InitializeAccepted(id, _), admitted, _)) =>
         assertEquals(id, requestId(52))
         assertEquals(admitted.id, requestId(52))
         assert(initializedConnection.registry.snapshot.activeIds.contains(requestId(52)))
       case other => fail("expected an owned initialize admission, got " + other)
     }
 
-    val safeIdLine = """{"jsonrpc":"2.0","id":7,"method":"ping"}"""
-    val decodedSafe = JSON.Format.unapply(safeIdLine).flatMap(JSON.value(_, "id"))
-    assert(decodedSafe.exists(_.isInstanceOf[Double]), "Isabelle JSON decodes numeric tokens as Double")
-    assertEquals(decodedSafe, Some(7.0))
-    val safeConnection = kernel(List(safeIdLine))
-    assertEquals(safeConnection.receive().map(_.decision),
+    val stringIdLine = """{"jsonrpc":"2.0","id":"7","method":"ping"}"""
+    val stringConnection = kernel(List(stringIdLine))
+    assertEquals(stringConnection.receive().map(_.decision),
       Some(ConnectionLifecycle.Rejected(RevisionRules.ReplyId(requestId(7)), RevisionRules.InvalidRequest,
         "ping is not valid in Fresh")))
+
+    val integerIdLine = """{"jsonrpc":"2.0","id":7,"method":"ping"}"""
+    val decodedInteger = JSON.Format.unapply(integerIdLine).flatMap(JSON.value(_, "id"))
+    assert(decodedInteger.exists(_.isInstanceOf[Double]), "Isabelle JSON decodes numeric tokens as Double")
+    assertEquals(decodedInteger, Some(7.0))
+    val integerConnection = kernel(List(integerIdLine))
+    assertEquals(integerConnection.receive().map(_.decision),
+      Some(ConnectionLifecycle.Rejected(RevisionRules.NullReply, RevisionRules.InvalidRequest,
+        "id must be a string")))
 
     val fractionalIdLine = """{"jsonrpc":"2.0","id":7.5,"method":"ping"}"""
     val fractionalConnection = kernel(List(fractionalIdLine))
     assertEquals(fractionalConnection.receive().map(_.decision),
       Some(ConnectionLifecycle.Rejected(RevisionRules.NullReply, RevisionRules.InvalidRequest,
-        "id must be a string or exactly representable integer")))
+        "id must be a string")))
 
     val largeIdLine = """{"jsonrpc":"2.0","id":9007199254740993,"method":"ping"}"""
     val decodedLarge = JSON.Format.unapply(largeIdLine).flatMap(JSON.value(_, "id"))
@@ -368,7 +399,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     val largeConnection = kernel(List(largeIdLine))
     assertEquals(largeConnection.receive().map(_.decision),
       Some(ConnectionLifecycle.Rejected(RevisionRules.NullReply, RevisionRules.InvalidRequest,
-        "id must be a string or exactly representable integer")))
+        "id must be a string")))
   }
 
   test("registry detects foreign and duplicate tokens and applies every invariant reaction") {
@@ -402,5 +433,245 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(diagnostic.admit(requestId(42), AdmissionKind.Ordinary),
       RequestRegistry.Broken(requestId(42)))
     assert(admitted(diagnostic, requestId(43), AdmissionKind.Diagnostic).token != null)
+  }
+
+  test("direct-handoff scheduler reserves exactly its bound with no task queue") {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+
+    val scheduler = new BoundedConcurrentScheduler(2, "kernel-test-worker")
+    val started = new CountDownLatch(2)
+    val finished = new CountDownLatch(2)
+    val release = new CountDownLatch(1)
+    def task(): () => Unit = () => {
+      started.countDown()
+      release.await(2, TimeUnit.SECONDS)
+      finished.countDown()
+    }
+
+    val first = scheduler.tryReserve().asInstanceOf[RequestScheduler.Reserved].permit
+    val second = scheduler.tryReserve().asInstanceOf[RequestScheduler.Reserved].permit
+    assertEquals(scheduler.start(first, task()), RequestScheduler.Started)
+    assertEquals(scheduler.start(second, task()), RequestScheduler.Started)
+    assert(started.await(2, TimeUnit.SECONDS), "both owned workers should start")
+    assertEquals(scheduler.tryReserve(), RequestScheduler.Rejected)
+    release.countDown()
+    assert(finished.await(2, TimeUnit.SECONDS), "owned tasks should finish")
+    val recovered = scheduler.tryReserve()
+    assert(recovered.isInstanceOf[RequestScheduler.Reserved], "worker permits must recover")
+    recovered match { case RequestScheduler.Reserved(permit) => scheduler.abandon(permit); case _ => () }
+    scheduler.shutdown()
+    assert(scheduler.isShutdown)
+    assertEquals(scheduler.tryReserve(), RequestScheduler.Rejected)
+  }
+
+  test("kernel rejects a scheduler whose execution capacity disagrees with policy") {
+    intercept[IllegalArgumentException] {
+      kernelWith(new ScriptedDataPlane(Nil), new ManualSequentialScheduler,
+        maxInFlight = 2, application)
+    }
+  }
+
+  test("initialize response selects the configured revision and injected server identity") {
+    val plane = new ScriptedDataPlane(Nil)
+    val connection = kernelWith(plane, new DeterministicSequentialScheduler(1),
+      maxInFlight = 1, application)
+    connection.handle(RevisionRules.Initialize(requestId(55), "2024-11-05"))
+    val reply = JSON.Format.unapply(plane.written.last).getOrElse(fail("missing initialize reply"))
+    assertEquals(get(reply, "id"), "55")
+    assertEquals(get(reply, "result", "protocolVersion"), ProtocolRevision.V2025_03_26.value)
+    assertEquals(get(reply, "result", "serverInfo", "name"), "test-server")
+    assertEquals(get(reply, "result", "serverInfo", "version"), "test-version")
+  }
+
+  test("scheduler permits are one-shot and shutdown consumes unstarted work") {
+    val manual = new ManualSequentialScheduler
+    val permit = manual.tryReserve().asInstanceOf[RequestScheduler.Reserved].permit
+    assertEquals(manual.start(permit, () => ()), RequestScheduler.Started)
+    assertEquals(manual.start(permit, () => ()), RequestScheduler.StartRejected)
+    manual.abandon(permit)
+    assertEquals(manual.tryReserve(), RequestScheduler.Rejected,
+      "abandoning a started permit must not free worker capacity")
+    assert(manual.hasPending)
+    manual.shutdown()
+    assert(!manual.hasPending)
+    assertEquals(manual.tryReserve(), RequestScheduler.Rejected)
+    assertEquals(manual.start(permit, () => ()), RequestScheduler.StartRejected)
+
+    val left = new DeterministicSequentialScheduler(1)
+    val right = new DeterministicSequentialScheduler(1)
+    val foreign = right.tryReserve().asInstanceOf[RequestScheduler.Reserved].permit
+    assertEquals(left.start(foreign, () => ()), RequestScheduler.StartRejected)
+    left.abandon(foreign)
+    assertEquals(right.start(foreign, () => ()), RequestScheduler.Started)
+
+    val reservedOnly = new ManualSequentialScheduler
+    val unstarted = reservedOnly.tryReserve().asInstanceOf[RequestScheduler.Reserved].permit
+    reservedOnly.shutdown()
+    assertEquals(reservedOnly.start(unstarted, () => ()), RequestScheduler.StartRejected)
+  }
+
+  spec_test("kernel saturates the configured bound without a waiting queue and recovers",
+      covers = List("connection_kernel#T3")) {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+    import java.util.concurrent.atomic.AtomicInteger
+
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new BoundedConcurrentScheduler(2, "kernel-saturation-worker")
+    val started = new CountDownLatch(2)
+    val release = new CountDownLatch(1)
+    val finished = new CountDownLatch(2)
+    val executions = new AtomicInteger(0)
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+        executions.incrementAndGet()
+        started.countDown()
+        release.await(2, TimeUnit.SECONDS)
+        finished.countDown()
+        McpApplication.Outcome.Result(JSON.Object("ok" -> true))
+      }
+    }
+    val connection = kernelWith(plane, scheduler, maxInFlight = 2, app)
+    connection.handle(RevisionRules.Initialize(requestId(60), ProtocolRevision.V2025_03_26.value))
+    connection.handle(RevisionRules.Initialized)
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(61)))
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(62)))
+    assert(started.await(2, TimeUnit.SECONDS), "configured bound should start exactly two workers")
+    assertEquals(connection.registry.snapshot.activeCapacity, 2)
+    assertEquals(connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(63))).decision,
+      ConnectionLifecycle.Overloaded(requestId(63)))
+    assertEquals(executions.get, 2, "overloaded work must neither run nor wait")
+    assertEquals(connection.registry.snapshot.activeCapacity, 2)
+    val overload = JSON.Format.unapply(plane.written.last).getOrElse(fail("missing overload JSON"))
+    assertEquals(get(overload, "id"), "63")
+    assertEquals(get(overload, "error", "code"), ConnectionKernel.Overloaded)
+    assertEquals(get(overload, "error", "data", "reason"), "maxInFlight")
+    assertEquals(get(overload, "error", "data", "maxInFlight"), 2)
+    release.countDown()
+    assert(finished.await(2, TimeUnit.SECONDS), "admitted workers should complete")
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+    while (connection.registry.snapshot.activeCapacity != 0 && System.nanoTime() < deadline)
+      Thread.sleep(5)
+    assertEquals(connection.registry.snapshot.activeCapacity, 0)
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(64)))
+    val recoveredDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+    while (executions.get != 3 && System.nanoTime() < recoveredDeadline)
+      Thread.sleep(5)
+    assertEquals(executions.get, 3, "completion must make direct-handoff capacity available")
+    scheduler.shutdown()
+  }
+
+  test("cancellation immediately after admission abandons its permit and cannot run or reply") {
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new ManualSequentialScheduler
+    var executions = 0
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+        executions += 1
+        McpApplication.Outcome.Result(JSON.Object())
+      }
+    }
+    val connection = kernelWith(plane, scheduler, maxInFlight = 1, app)
+    connection.handle(RevisionRules.Initialize(requestId(70), ProtocolRevision.V2025_03_26.value))
+    connection.handle(RevisionRules.Initialized)
+    val pending = connection.admit(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(71)))
+    assertEquals(connection.registry.snapshot.activeCapacity, 1)
+    connection.admit(RevisionRules.Cancelled(requestId(71), Some("gone")))
+    connection.execute(pending)
+    assertEquals(executions, 0)
+    assert(!scheduler.hasPending)
+    assertEquals(connection.registry.snapshot.activeCapacity, 0)
+    assertEquals(plane.written.count(_.contains("\"id\":\"71\"")), 0)
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(72)))
+    assert(scheduler.hasPending, "abandoned permit must be reusable")
+  }
+
+  test("worker errors and exceptions release capacity and emit one owned response") {
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new ManualSequentialScheduler
+    var mode = "error"
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) =
+        mode match {
+          case "error" => McpApplication.Outcome.InvalidParams("bad arguments")
+          case "exception" => throw new RuntimeException("boom")
+        }
+    }
+    val connection = kernelWith(plane, scheduler, maxInFlight = 1, app)
+    connection.handle(RevisionRules.Initialize(requestId(80), ProtocolRevision.V2025_03_26.value))
+    connection.handle(RevisionRules.Initialized)
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(81)))
+    assert(scheduler.runPending())
+    assertEquals(connection.registry.snapshot.activeCapacity, 0)
+    val errorReply = JSON.Format.unapply(plane.written.last).getOrElse(fail("missing application error"))
+    assertEquals(get(errorReply, "id"), "81")
+    assertEquals(get(errorReply, "error", "code"), RevisionRules.InvalidParams)
+
+    mode = "exception"
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(82)))
+    assert(scheduler.runPending())
+    assertEquals(connection.registry.snapshot.activeCapacity, 0)
+    val exceptionReply = JSON.Format.unapply(plane.written.last).getOrElse(fail("missing exception reply"))
+    assertEquals(get(exceptionReply, "id"), "82")
+    assertEquals(get(exceptionReply, "error", "code"), ConnectionKernel.InternalError)
+    assertEquals(plane.written.count(_.contains("\"id\":\"82\"")), 1)
+  }
+
+  test("bounded workers may complete responses out of order") {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new BoundedConcurrentScheduler(2, "kernel-order-worker")
+    val slowStarted = new CountDownLatch(1)
+    val releaseSlow = new CountDownLatch(1)
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) =
+        operation match {
+          case McpApplication.Operation.ToolsCall("slow", _) =>
+            slowStarted.countDown()
+            releaseSlow.await(2, TimeUnit.SECONDS)
+            McpApplication.Outcome.Result(JSON.Object("which" -> "slow"))
+          case McpApplication.Operation.ToolsCall("fast", _) =>
+            McpApplication.Outcome.Result(JSON.Object("which" -> "fast"))
+          case _ => McpApplication.Outcome.Result(JSON.Object())
+        }
+    }
+    val connection = kernelWith(plane, scheduler, maxInFlight = 2, app)
+    connection.handle(RevisionRules.Initialize(requestId(90), ProtocolRevision.V2025_03_26.value))
+    connection.handle(RevisionRules.Initialized)
+    connection.handle(RevisionRules.Application(
+      McpApplication.Operation.ToolsCall("slow", JSON.Object()), requestId(91)))
+    assert(slowStarted.await(2, TimeUnit.SECONDS), "slow worker did not start")
+    connection.handle(RevisionRules.Application(
+      McpApplication.Operation.ToolsCall("fast", JSON.Object()), requestId(92)))
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+    while (plane.written.count(_.contains("\"id\":\"92\"")) == 0 && System.nanoTime() < deadline)
+      Thread.sleep(5)
+    assertEquals(plane.written.count(_.contains("\"id\":\"92\"")), 1)
+    assertEquals(plane.written.count(_.contains("\"id\":\"91\"")), 0)
+    releaseSlow.countDown()
+    val slowDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+    while (plane.written.count(_.contains("\"id\":\"91\"")) == 0 && System.nanoTime() < slowDeadline)
+      Thread.sleep(5)
+    assertEquals(plane.written.count(_.contains("\"id\":\"91\"")), 1)
+    scheduler.shutdown()
+  }
+
+  test("an output failure closes kernel execution and never retries the response") {
+    import java.io.IOException
+
+    val scheduler = new DeterministicSequentialScheduler(1)
+    val plane = new DataPlane {
+      def receive(): Option[JsonRpc.Inbound] = None
+      def send(outbound: JsonRpc.Outbound): Unit = throw new IOException("closed output")
+    }
+    val connection = ConnectionKernel(
+      policy = policy(1), dataPlane = plane, revisionRules = rules, scheduler = scheduler,
+      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
+      application = application, serverInfo = serverInfo)
+    intercept[IOException] {
+      connection.handle(RevisionRules.Initialize(requestId(100), ProtocolRevision.V2025_03_26.value))
+    }
+    assertEquals(connection.phase, ConnectionLifecycle.Closing)
+    assert(scheduler.isShutdown)
   }
 }
