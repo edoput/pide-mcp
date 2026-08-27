@@ -101,6 +101,41 @@ id: D-undated-architecture-decisions
   needed; the test client just spawns the tool and writes/reads lines.
   IMPORTANT: nothing else may write to stdout — all logging/progress goes to
   stderr (Console_Progress(stderr = true)).
+
+  MCP connection lifecycle and JSON-RPC reception (amended 2026-08-27;
+  plans/connection_kernel): the selected MCP revision is exactly
+  `2025-03-26`. A stdio input line is one UTF-8 JSON-RPC message: either one
+  request/notification object or one non-empty JSON-RPC batch. It contains no
+  embedded newline; stdout contains only complete JSON-RPC messages. Receivers
+  accept batches because this revision requires JSON-RPC batch reception, not
+  because any product operation depends on batching.
+
+  The connection phases are Fresh -> Initializing -> AwaitingInitialized ->
+  Ready -> Closing -> Closed. Fresh accepts only a standalone `initialize`
+  request — never a batch element — and moves to Initializing while that
+  response is being formed; Initializing admits no second client operation.
+  The request supplies the client's protocol version, capabilities, and client
+  information. This server supports only `2025-03-26`: it returns that version
+  when it is requested and otherwise returns that sole supported version, so a
+  client that does not support it can disconnect. A successful initialize moves
+  the connection to AwaitingInitialized; only the `notifications/initialized`
+  notification and `ping` are accepted there. Receiving the notification moves
+  it to Ready, where ordinary client operations are admitted. Closing and
+  Closed accept no new work. Phase-invalid requests receive an Invalid Request
+  JSON-RPC error with their request ID; phase-invalid notifications receive no
+  reply.
+
+  The receiver rejects malformed JSON with `-32700`/null ID and an empty
+  batch, or a batch containing `initialize`, with `-32600`/null ID. Every
+  other batch element follows the same validation, lifecycle, and admission
+  rules as a single message. Its non-notification responses are emitted as one
+  non-empty response array after those elements terminate; a notification-only
+  batch, or a batch whose otherwise response-producing elements all end in
+  client-cancelled no-response dispositions, emits nothing rather than an empty
+  array. Response order within that array, and across independent messages, is
+  not an ordering guarantee; request IDs remain the correlation key. This is
+  client-visible protocol behavior. The connection kernel, rather than a tool
+  handler or the prover, owns it.
 - the prover is driven through a headless pide session (isabelle.Headless,
   Pure/PIDE/headless.scala): the server starts the session, loads the tool
   theory with use_theories, keeps the session alive while serving.
@@ -163,8 +198,9 @@ superseded_by: D-2026-07-21-server-startup-readiness
                                 {content: [{type: text, text: result}]}
                                 ml status=error -> {..., isError: true}
        unknown method with id -> json-rpc error -32601
-     malformed json -> error -32700; requests before initialize: allowed for
-     the mvp (no handshake state machine).
+     malformed json -> error -32700. Historical MVP behavior allowed requests
+     before initialize because it had no handshake state machine; that behavior
+     is superseded by the 2026-08-27 connection lifecycle above.
    - tool wiring: isabelle mcp_server [-d DIR] [-s SESSION] [-T THEORY]
      defaults: -d mcp/Tools -s MCP-Tools -T MCP_Tools. tool exits when stdin
      closes (client hangup) and stops the pide session cleanly.
@@ -523,6 +559,28 @@ right for a stdio server with one client; a pool would only matter under
 a flood, and Isabelle's own Future pool is the wrong instrument because a
 few slow lints would saturate it and reintroduce exactly this problem.
 
+amended 2026-08-27 (plans/connection_kernel): the preceding
+unbounded-thread choice is superseded. A connection has a configured
+`maxInFlight` bound and no application waiting queue: each ordinary request
+either acquires an owned slot immediately or receives one structured overload
+JSON-RPC error (`code: -32001`, `message: "Overloaded"`, and data naming
+`reason: "maxInFlight"` and the configured bound). A batch cannot bypass this
+rule because every response-producing element is admitted individually.
+Initialize, initialized,
+ping, cancellation, registry completion, and shutdown stay on the connection
+control path and do not consume an application slot. Accepted application work
+may still complete out of order; clients that need a dependency must await its
+response.
+
+Every admitted request has one connection-owned terminal disposition. The
+connection closes admission at EOF, drains only until its one configured
+shutdown deadline, then cancels any remaining cooperative work before backend
+teardown. It preserves replies that win completion before that deadline; it
+does not leave an admitted request silently owned by a worker after teardown.
+The current implementation is documented by the checkpoint-1 non-coverage
+fixtures and is not evidence that these replacement guarantees are already
+implemented.
+
 server startup and readiness (decided 2026-07-21)
 --------------------------------------------------
 id: D-2026-07-21-server-startup-readiness
@@ -542,6 +600,15 @@ never be gated on the prover.
 
 decision: the server serves immediately and carries a READINESS state;
 the build and prover boot run on a background thread.
+
+amended 2026-08-27 (plans/connection_kernel): MCP lifecycle is a separate
+per-connection state machine. Fresh, Initializing, AwaitingInitialized, Ready,
+Closing, and Closed govern protocol admission; Isabelle `Not_Ready`, `Ready`,
+and `Failed` govern only application results after an operation has been
+admitted. In particular, `initialize` and `notifications/initialized` never
+wait for the prover, and an MCP-Ready connection can truthfully return a
+retryable tool-level not-ready result or a failed-backend result. Prover startup
+or failure must not relax, skip, or otherwise change lifecycle validation.
 
   Not_Ready(progress)   building or booting; progress is a short human
                         string ("building HOL", "starting session")
@@ -607,6 +674,12 @@ AFTER start_session. the ordering is arbitrary: load_structure/deps/
 Store/Doc_Catalog are pure source parsing with no heap dependency.
 
 decision: extract the catalog and stop gating readiness on it.
+
+amended 2026-08-27 (plans/connection_kernel): catalog availability is also an
+application dependency, not an MCP lifecycle phase. It may determine a
+truthful result for a catalog-backed operation, but it never determines whether
+a connection accepts `initialize`, initialized, ping, cancellation, or a
+lifecycle-valid operation.
 
 - MCP_Catalog holds structure, deps, store, doc_catalog and the derived
   maps (sessions_map, theory_map, base_names), plus the five methods
@@ -2424,7 +2497,19 @@ id: S-out-scope
   {repl} (replace from the attach command to the end of the original
   proof) — with a digest guard against concurrent edits, an automatic
   re-check after writing, and an opt-in flag (mcp_server -W)
-- cancellation, progress notifications
+- progress notifications
+
+  cancellation is no longer out of scope (amended 2026-08-27;
+  plans/connection_kernel). A client cancellation is the
+  `notifications/cancelled` notification with the in-progress request ID and
+  an optional reason. Clients must not cancel `initialize`. A receiver
+  propagates a valid cancellation to cooperative Scala and Isabelle/ML work,
+  frees the owned admission slot exactly once, and emits no response when
+  cancellation wins the terminal race. A result that arrives afterwards is
+  suppressed. Unknown, malformed, already-complete, and non-cancellable
+  cancellation notifications are ignored without a reply; if a normal result
+  won first, that already-sent response remains valid. This preserves the
+  notification's fire-and-forget behavior while making the race client-safe.
 - resource subscriptions — one designated use case: asynchronous proof
   checking via the diagnostics resource. recommended shape when it
   comes:

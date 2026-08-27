@@ -1,0 +1,63 @@
+{
+  "schema": "isabelle-mcp.connection-kernel-characterization/v1",
+  "checkpoint": 1,
+  "status": "non-coverage",
+  "recorded_on": "2026-08-27",
+  "purpose": "Characterize the pre-kernel server and stage target counterexamples. These cases are intentionally not registered in the MUnit, Isabelle-theory, or Python-e2e producer manifests and therefore verify or cover no plan claim.",
+  "execution": {
+    "current_unit_surface": "isabelle mcp_test -L scala-unit",
+    "current_process_surface": "python3 mcp/test/repro_concurrent_serve.py",
+    "future_target": "Run unchanged through ScriptedDataPlane and ConnectionKernel once checkpoints 2-8 provide those ports. Promote only then with explicit verifies/covers links."
+  },
+  "cases": [
+    {
+      "id": "CK1-LIFECYCLE-PREINIT",
+      "kind": "current-characterization",
+      "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}",
+      "current_observation": "Handler serves tools/list before initialize; it has no connection lifecycle state.",
+      "target_counterexample": "Fresh accepts only a standalone initialize request. This request must receive the phase-invalid Invalid Request response once the kernel owns lifecycle.",
+      "evidence": "mcp/src/mcp_server.scala: Handler.handle dispatches tools/list without a phase check"
+    },
+    {
+      "id": "CK1-FRAMING-BATCH",
+      "kind": "current-characterization",
+      "input": "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"},{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}]",
+      "current_observation": "The line handler expects one object and has no JSON-RPC batch aggregation path.",
+      "target_counterexample": "MCP 2025-03-26 requires reception of this non-empty batch and one aggregate response containing the ping response; notification elements contribute no response.",
+      "evidence": "mcp/src/mcp_server.scala: Handler.handle_line and serve"
+    },
+    {
+      "id": "CK1-IDS-CORRELATION",
+      "kind": "current-characterization",
+      "input": "requests with numeric and string JSON-RPC ids, plus malformed JSON whose id is not recoverable",
+      "current_observation": "Handler echoes a parsed id directly in each response and uses null for parse errors, but does not carry a typed request identity through admission, terminal ownership, and shutdown.",
+      "target_counterexample": "The kernel preserves each valid client request ID as the response correlation key regardless of completion order, and uses null only when JSON-RPC cannot determine an id. This wire-ID rule is separate from T6's connection-owned completion token, which detects a second or unknown completion attempt.",
+      "evidence": "mcp/src/mcp_server.scala: RPC.response, Handler.handle, and Handler.handle_line"
+    },
+    {
+      "id": "CK1-CANCELLATION-IGNORED",
+      "kind": "current-characterization",
+      "input": "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":7,\"reason\":\"user stopped\"}}",
+      "current_observation": "The notification receives no reply but is otherwise ignored; no cancellation handle or late-result suppression exists.",
+      "target_counterexample": "If cancellation wins for an admitted non-initialize request, cooperative work is cancelled, its slot is released once, and no response or late result escapes.",
+      "evidence": "mcp/src/mcp_server.scala: Handler.handle has no notifications/cancelled case"
+    },
+    {
+      "id": "CK1-CONCURRENCY-UNBOUNDED",
+      "kind": "current-characterization",
+      "input": "more simultaneous tool requests than the future configured maxInFlight",
+      "current_observation": "serve forks one Isabelle thread for every non-blank input line; no direct-handoff admission bound or application queue policy exists.",
+      "target_counterexample": "Exactly maxInFlight ordinary requests are admitted. Each additional request receives an immediate structured overload error and creates no queued application work.",
+      "evidence": "mcp/src/mcp_server.scala: serve.dispatch; mcp/test/repro_concurrent_serve.py"
+    },
+    {
+      "id": "CK1-EOF-OWNERSHIP",
+      "kind": "known-red-counterexample",
+      "input": "three accepted requests whose completions occur in reverse order followed immediately by stdin EOF",
+      "current_observation": "The counter-based drain can finish before every worker publishes; the backend may stop with an admitted request lacking a terminal response.",
+      "target_counterexample": "EOF freezes admission, drains every completion that wins before one configured deadline, then cancels the rest before backend teardown. Every request has one recorded terminal disposition.",
+      "evidence": "mcp_test/src/mcp_handler_tests.scala: serve drains every dispatched reply before stopping on EOF"
+    }
+  ],
+  "promotion_rule": "A case may receive a producer registration or a plan verifies/covers link only after the named target behavior is implemented and the executable assertion is green. Pending, staged, and known-red cases are not coverage."
+}

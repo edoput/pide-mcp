@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from tools.planning_gate.registry import (
@@ -86,3 +87,32 @@ def test_current_catalog_keeps_prose_inference_explicit() -> None:
         "repl_remove#T5",
         "session_dirs_errors#A6",
     )
+
+
+def test_connection_kernel_checkpoint_1_fixture_is_staged_noncoverage() -> None:
+    root = Path(__file__).resolve().parents[3]
+    path = root / "mcp/test/fixtures/connection_kernel_checkpoint_1.json"
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+
+    assert fixture["schema"] == "isabelle-mcp.connection-kernel-characterization/v1"
+    assert fixture["status"] == "non-coverage"
+    assert fixture["checkpoint"] == 1
+    assert [case["id"] for case in fixture["cases"]] == [
+        "CK1-LIFECYCLE-PREINIT",
+        "CK1-FRAMING-BATCH",
+        "CK1-IDS-CORRELATION",
+        "CK1-CANCELLATION-IGNORED",
+        "CK1-CONCURRENCY-UNBOUNDED",
+        "CK1-EOF-OWNERSHIP",
+    ]
+
+    def plan_links(value: object) -> list[str]:
+        if isinstance(value, dict):
+            own = [key for key in value if key in {"verifies", "covers"}]
+            nested = [link for child in value.values() for link in plan_links(child)]
+            return own + nested
+        if isinstance(value, list):
+            return [link for nested in value for link in plan_links(nested)]
+        return []
+
+    assert plan_links(fixture) == []

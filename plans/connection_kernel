@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: connection_kernel
 title: Replaceable MCP connection kernel with bounded request ownership
-status: planned
+status: in_progress
 depends_on:
   - planning_gate
   - readiness
@@ -15,6 +15,7 @@ allowed_modules:
   - mcp/Tools
   - mcp_test/src
   - mcp/test
+  - tools/planning_gate/tests
 invariants:
   - id: INV1
     statement: The data plane owns byte transport, framing, JSON encoding, and complete writes but no MCP lifecycle, scheduling, or Isabelle behavior.
@@ -127,19 +128,23 @@ claims:
     layers: [scala-unit, e2e]
 spec_refinements:
   - id: R1
-    state: open
+    state: folded
+    folded_on: "2026-08-27"
     statement: Replace the MVP pre-initialize allowance with the MCP 2025-03-26 lifecycle and add the revision's required JSON-RPC batch reception rules.
     spec_ids: [D-undated-architecture-decisions]
   - id: R2
-    state: open
+    state: folded
+    folded_on: "2026-08-27"
     statement: Replace unbounded per-request threads with configurable bounded admission, no application waiting queue, explicit terminal ownership, and one bounded shutdown deadline.
     spec_ids: [D-2026-08-20-concurrent-serve-loop, S-concurrent-serve-how]
   - id: R3
-    state: open
+    state: folded
+    folded_on: "2026-08-27"
     statement: Specify MCP lifecycle separately from Isabelle backend readiness so protocol admission never depends on prover startup state.
     spec_ids: [D-2026-07-21-server-startup-readiness, D-2026-07-30-catalog-long-pole-build]
   - id: R4
-    state: open
+    state: folded
+    folded_on: "2026-08-27"
     statement: Bring cancellation into scope with propagation to cooperative work, a no-response client-cancelled terminal disposition, and race-safe late-result suppression.
     spec_ids: [S-out-scope]
 done_command:
