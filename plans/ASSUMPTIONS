@@ -107,7 +107,7 @@ plan_label_schema#T5      tooling-unit              Downstream references to an 
 plan_label_schema#T6      tooling-unit              Migration fixtures preserve qualified IDs and reject an unreviewed semantic conversion between A, D, and T.
 planning_gate#A1          tooling-unit              One invocation is the only project command that may establish done; static metadata generation alone cannot.
 planning_gate#A2          tooling-unit              A dirty working tree is reported with exact paths and left to explicit human review locally.
-planning_gate#I1          tooling-unit              Each build, discovery, static-check, and test-layer step remains callable independently for diagnosis and agent iteration.
+planning_gate#I1          scala-unit,tooling-unit   Each build, discovery, static-check, and test-layer step remains callable independently for diagnosis and agent iteration.
 planning_gate#D1          unstated                  CI integration is deferred; the host command is designed for later reuse without making CI a condition of this plan.
 planning_gate#T1          tooling-unit              Static fixtures reject missing A/I verification, missing T coverage in any layer, open Q/refinement state, dangling D dependencies, unknown IDs, and u
 planning_gate#T2          tooling-unit              Generating every discovery manifest without executing tests cannot make `done` succeed.

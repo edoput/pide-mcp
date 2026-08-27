@@ -48,8 +48,9 @@ Installation
 
    and, if you also registered the `mcp_test/` component
    (`isabelle components -u /path/to/isabelle-mcp/mcp_test`), run the
-   unit suites with `isabelle mcp_test` (add `-b` for the slower
-   bridge tests against a live session). Every invocation first writes the
+   unit suites with `isabelle mcp_test`. Use `-L scala-unit`, `-L heap`, or
+   `-L bridge` to run one layer, and `-L all` for all three (`-b` remains a
+   compatibility alias for `-L all`). Every invocation first writes the
    complete structured munit-to-plan metadata manifest to
    `mcp_test/lib/munit-spec.json`; execution filters never filter this file.
    `isabelle mcp_test -M FILE` writes it to an explicit destination without
@@ -61,6 +62,12 @@ Installation
    Test-layer roles and their machine-readable names are configured in
    `mcp_test/etc/test_layers.json`; both exporters and the gate load that
    registry.
+
+   The repository-level completion command is `tools/planning-gate done`.
+   It builds the catalogs, checks static plan coverage, runs every blocking
+   layer without filters, and rejects a run whose Git HEAD or tracked content
+   changes while it is executing. Individual diagnostic commands are listed by
+   `tools/planning-gate commands`.
 
 Running the server
 ------------------

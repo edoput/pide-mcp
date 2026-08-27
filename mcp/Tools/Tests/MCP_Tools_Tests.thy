@@ -650,6 +650,7 @@ section \<open>The mcp_tool command: capture form (plans/ml_builtin_migration A1
 
 spec_test \<open>capture-form tools return output and total declared arguments\<close>
   verifies \<open>ml_builtin_migration#A1\<close> and \<open>ml_builtin_migration#A2\<close>
+  covers \<open>planning_gate#T8\<close>
 
 mcp_tool capture_ok = capture \<open>fn _ => fn args =>
   writeln ("got:" ^ MCP_Combinators.arg args "x")\<close>

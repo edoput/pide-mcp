@@ -236,6 +236,8 @@ def munit_producer(root: Path, path: Path | None = None) -> ProducerManifest:
         raise MatrixError(f"cannot load MUnit manifest {path}: {ex}") from ex
     if not isinstance(value, dict) or value.get("producer") != "isabelle-mcp/munit":
         raise MatrixError("MUnit manifest has an unexpected producer")
+    if value.get("schema_version") != 2:
+        raise MatrixError("MUnit manifest schema_version must be 2")
     raw_tests = value.get("tests")
     if not isinstance(raw_tests, list):
         raise MatrixError("MUnit manifest tests is not an array")
@@ -243,6 +245,10 @@ def munit_producer(root: Path, path: Path | None = None) -> ProducerManifest:
     for index, raw in enumerate(raw_tests):
         if not isinstance(raw, dict):
             raise MatrixError(f"MUnit tests[{index}] is not an object")
+        if raw.get("test_class") not in {"functional", "performance"}:
+            raise MatrixError(
+                f"MUnit tests[{index}].test_class must be 'functional' or 'performance'"
+            )
         links = raw.get("links")
         if not isinstance(links, list):
             raise MatrixError(f"MUnit tests[{index}].links is not an array")

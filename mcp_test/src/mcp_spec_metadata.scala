@@ -18,7 +18,7 @@ import java.security.MessageDigest
 
 
 object MCP_Spec_Metadata {
-  val schema_version = 1
+  val schema_version = 2
   val producer = "isabelle-mcp/munit"
   val framework_version = "1.1.1"
 
@@ -26,10 +26,17 @@ object MCP_Spec_Metadata {
   val Covers = "covers"
   val Link_Relations: Set[String] = Set(Verifies, Covers)
 
+  val Functional = "functional"
+  val Performance = "performance"
+  val Test_Classes: Set[String] = Set(Functional, Performance)
+
   private val id_pattern = "[A-Za-z0-9_.-]+#[AITDQ][0-9]+".r
 
   final class Link_Tag private[MCP_Spec_Metadata] (val relation: String, val id: String)
       extends munit.Tag("mcp-spec:" + relation + ":" + id)
+
+  final class Test_Class_Tag private[MCP_Spec_Metadata] (val test_class: String)
+      extends munit.Tag("mcp-class:" + test_class)
 
   final case class Suite_Def(layer: String, suite: Class[? <: munit.Suite])
 
@@ -52,8 +59,15 @@ object MCP_Spec_Metadata {
     new Link_Tag(relation, id)
   }
 
+  private def checked_test_class(test_class: String): Test_Class_Tag = {
+    require(Test_Classes(test_class),
+      "unknown test class " + quote(test_class) + "; expected " +
+        Test_Classes.toList.sorted.map(quote).mkString(", "))
+    new Test_Class_Tag(test_class)
+  }
+
   def test_options(name: String, verifies: Seq[String], covers: Seq[String],
-      location: munit.Location): munit.TestOptions = {
+      location: munit.Location, test_class: String = Functional): munit.TestOptions = {
     require(name.trim.nonEmpty, "test name must not be empty")
     val links =
       verifies.map(checked_link(Verifies, _)) ++
@@ -64,7 +78,7 @@ object MCP_Spec_Metadata {
       }.toList.sorted
     require(duplicate_links.isEmpty,
       "duplicate plan links on test " + quote(name) + ": " + duplicate_links.mkString(", "))
-    new munit.TestOptions(name, links.toSet, location)
+    new munit.TestOptions(name, links.toSet + checked_test_class(test_class), location)
   }
 
   private def canonical_source_path(path: String): String = {
@@ -77,6 +91,13 @@ object MCP_Spec_Metadata {
   def links(test: munit.Test): List[Link_Tag] =
     test.tags.toList.collect { case link: Link_Tag => link }
       .sortBy(link => (link.relation, link.id))
+
+  def test_class(test: munit.Test): String = {
+    val classes = test.tags.toList.collect { case value: Test_Class_Tag => value.test_class }
+    require(classes.lengthCompare(1) <= 0,
+      "test " + quote(test.name) + " carries several test classes")
+    classes.headOption.getOrElse(Functional)
+  }
 
   def matches(test: munit.Test, pattern: String): Boolean =
     test.name.contains(pattern) || links(test).exists(_.id.contains(pattern))
@@ -113,6 +134,7 @@ object MCP_Spec_Metadata {
           "path" -> source_path,
           "line" -> test.location.line),
       "layer" -> definition.layer,
+      "test_class" -> test_class(test),
       "links" -> links)
   }
 
@@ -190,8 +212,10 @@ object MCP_Spec_Metadata {
 
 trait MCP_Spec_Tests { self: munit.FunSuite =>
   final def spec_test(name: String, verifies: Seq[String] = Nil,
-      covers: Seq[String] = Nil)(body: => Any)(implicit loc: munit.Location): Unit = {
-    val options = MCP_Spec_Metadata.test_options(name, verifies, covers, loc)
+      covers: Seq[String] = Nil,
+      test_class: String = MCP_Spec_Metadata.Functional)
+      (body: => Any)(implicit loc: munit.Location): Unit = {
+    val options = MCP_Spec_Metadata.test_options(name, verifies, covers, loc, test_class)
     test(options)(body)
   }
 }
@@ -204,6 +228,23 @@ object MCP_Spec_Metadata_Tests {
 
 class MCP_Spec_Metadata_Tests extends MCP_Suite {
   private val unit_layer = MCP_Test_Layers("scala_unit_suites")
+
+  spec_test(
+    "Scala runner exposes every blocking layer independently and all means their union",
+    verifies = List("planning_gate#I1"), covers = List("planning_gate#T8")) {
+    assertEquals(MCP_Test.executable_layers,
+      List(
+        MCP_Test_Layers("scala_unit_suites"),
+        MCP_Test_Layers("heap_suites"),
+        MCP_Test_Layers("pide_suites")))
+    assertEquals(MCP_Test.suites_for(MCP_Test.scala_unit_layer), MCP_Test.unit_suites)
+    assertEquals(MCP_Test.suites_for(MCP_Test.heap_layer), MCP_Test.heap_suites)
+    assertEquals(MCP_Test.suites_for(MCP_Test.bridge_layer), MCP_Test.pide_suites)
+    assertEquals(
+      MCP_Test.suites_for(MCP_Test.all_selector),
+      MCP_Test.unit_suites ::: MCP_Test.heap_suites ::: MCP_Test.pide_suites)
+    intercept[RuntimeException] { MCP_Test.suites_for("missing-layer") }
+  }
 
   test("test layers are loaded parametrically from the shared registry") {
     val registry =
@@ -221,6 +262,25 @@ class MCP_Spec_Metadata_Tests extends MCP_Suite {
       get_list(manifest, "tests").map(test => get_string(test, "suite")).toSet
     val registered_suites = MCP_Test.suite_definitions.map(_.suite.getName).toSet
     assertEquals(exported_suites, registered_suites)
+  }
+
+  spec_test(
+    "MUnit metadata distinguishes functional assertions from performance budgets",
+    covers = List("planning_gate#T7")) {
+    val manifest = MCP_Spec_Metadata.manifest(MCP_Test.suite_definitions)
+    val tests = get_list(manifest, "tests")
+    val performance =
+      tests.find(test =>
+        get_string(test, "name") ==
+          "documentation catalog construction stays within 30 seconds")
+        .getOrElse(fail("performance test missing from manifest"))
+    val functional =
+      tests.find(test =>
+        get_string(test, "name") ==
+          "Isar_Ref toc has more than 40 rows spanning multiple files")
+        .getOrElse(fail("functional test missing from manifest"))
+    assertEquals(get_string(performance, "test_class"), MCP_Spec_Metadata.Performance)
+    assertEquals(get_string(functional, "test_class"), MCP_Spec_Metadata.Functional)
   }
 
   spec_test(
@@ -280,6 +340,9 @@ class MCP_Spec_Metadata_Tests extends MCP_Suite {
     }
     intercept[IllegalArgumentException] {
       MCP_Spec_Metadata.test_options("bad", List("plan#Q1"), Nil, location)
+    }
+    intercept[IllegalArgumentException] {
+      MCP_Spec_Metadata.test_options("bad", Nil, Nil, location, "benchmark")
     }
   }
 

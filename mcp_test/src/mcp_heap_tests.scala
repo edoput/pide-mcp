@@ -106,7 +106,8 @@ class MCP_Tool_Scope_Heap_Tests extends MCP_Heap_Suite("MCP-HOL") {
 }
 
 class MCP_Heap_Fixture_Tests extends MCP_Heap_Suite("Pure") {
-  test("heap: ml captures writeln output") {
+  spec_test("heap layer executes a fresh ML process and captures its output",
+      covers = List("planning_gate#T8")) {
     val out = ml_check("""writeln "heap fixture hello";""")
     assert(out.contains("heap fixture hello"), out)
   }

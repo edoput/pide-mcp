@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: planning_gate
 title: Enforce plan evidence and provide one done command
-status: planned
+status: in_progress
 depends_on:
   - plan_format
   - plan_label_schema
@@ -37,7 +37,7 @@ claims:
     kind: infrastructure
     state: active
     statement: Each build, discovery, static-check, and test-layer step remains callable independently for diagnosis and agent iteration.
-    layers: [tooling-unit]
+    layers: [tooling-unit, scala-unit]
   - id: D1
     kind: design
     statement: CI integration is deferred; the host command is designed for later reuse without making CI a condition of this plan.
@@ -150,11 +150,17 @@ execution closure
    warning for local human review, not an unconditional local failure.
 2. Validate plan documents, labels, dependencies, refinements, and generated
    registry freshness.
-3. Compile the production and test artifacts needed by registered producers.
-4. Discover every producer and assemble/validate the verification matrix.
-5. Run tooling-unit tests.
-6. Run the complete Scala unit, heap, and bridge suites.
-7. Build every registered ml-unit test theory/session.
+3. Compile the production and test artifacts needed by registered producers,
+   then generate the body-free MUnit catalog.
+4. Build every registered ml-unit test theory/session.  Isabelle theory-test
+   metadata is an export of those sessions, so on a clean checkout this step
+   necessarily executes the ML tests before the catalog can be materialized.
+5. Materialize the structured theory catalog, discover every producer, and
+   assemble/validate the verification matrix.  The catalog remains static
+   coverage metadata; the successful session build in step 4 is its separate
+   execution evidence.
+6. Run tooling-unit tests.
+7. Run the complete Scala unit, heap, and bridge suites.
 8. Run the complete procedural Python e2e suite.
 9. Confirm HEAD and tracked file content did not change during the run, then
    print one summarized verdict and exit nonzero if any step failed.
@@ -191,8 +197,8 @@ implementation sequence
    cases and fake-command fixtures for build/test failure propagation.  They
    are test data, not temporary live plans or additions to legacy debt.
 7. Run the command against the real Flatpak Isabelle environment.  Keep the
-   shutdown-drain regression in the required Scala suite; its current failure
-   must make done red until WP1 fixes it.
+   shutdown-drain regression in the required Scala suite; the observed lost
+   reply at EOF must make `done` red until the drain is repaired.
 8. Split the documentation TOC functional assertion from its performance budget
    before treating either result as a stable completion signal.
 

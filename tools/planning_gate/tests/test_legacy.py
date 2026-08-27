@@ -27,7 +27,7 @@ def gap(ident: str = "example#T1", relation: str = "covers") -> MissingCoverage:
     return MissingCoverage(ident, relation, "tooling-unit", legacy=True)
 
 
-@spec_test(covers=("verification_matrix#T6",))
+@spec_test(covers=("verification_matrix#T6", "planning_gate#T1"))
 def test_legacy_ratchet_allows_exact_reviewed_debt_and_rejects_new_rows() -> None:
     baseline = parse_baseline(render_baseline([gap()], REVISION))
 

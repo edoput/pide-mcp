@@ -33,8 +33,10 @@ in mcp_test/src/mcp_testing.scala); new [bridge] cases in
 mcp_test/src/mcp_bridge_tests.scala, extending MCP_Session_Suite
 (one headless PIDE session per suite; with_repl / slow_step /
 await_busy / eventually / expect_ok / expect_error fixtures);
-register new suites in mcp_test/src/mcp_test_tool.scala. run:
-isabelle mcp_test [-b] [-t PATTERN]. plans written before the
+register new suites in mcp_test/src/mcp_test_tool.scala. run one layer with
+`isabelle mcp_test -L scala-unit|heap|bridge`, all Scala layers with
+`isabelle mcp_test -L all` (`-b` is the compatibility alias), and diagnostic
+filters with `-t PATTERN`. plans written before the
 migration say things like "scala unit round-trips in isabelle
 mcp_test" -- read those through this mapping.
 
@@ -62,6 +64,11 @@ generate the manifest from the freshly built test jar; a checked-in copy
 is evidence of neither current source nor a current test run. The manifest
 includes the compiled test jar's SHA-256 and the gate rejects a manifest made
 by any other jar.
+
+MUnit tests are classified as `functional` or `performance` in that manifest
+and in runner output. Functional tests assert behavior only. Performance tests
+live in separate suites, use MUnit's timeout only as a generous safety bound,
+and assert their tighter measured budget explicitly inside the test body.
 
 added 2026-07-10: MCP_Heap_Suite (mcp_test/src/mcp_testing.scala), a
 third fixture between [scala unit] and [bridge] -- raw ML evaluated

@@ -12,6 +12,8 @@ import isabelle._
 import java.io.{BufferedReader, ByteArrayOutputStream, PrintStream, StringReader}
 import java.nio.charset.StandardCharsets
 
+import scala.concurrent.duration.DurationInt
+
 
 /* protocol: initialize, ping, notifications, malformed input, stdio loop */
 
@@ -62,7 +64,8 @@ class MCP_Protocol_Tests extends MCP_Suite {
     assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_REQUEST)
   }
 
-  test("serve replies per line, skips blanks, stops the backend on EOF") {
+  spec_test("serve drains every dispatched reply before stopping on EOF",
+      covers = List("planning_gate#T6")) {
     val backend = new Fake_Backend
     val input =
       List(
@@ -1923,31 +1926,62 @@ class MCP_Doc_Catalog_Tests extends MCP_Suite {
 }
 
 
+/* The expensive catalog fixture is measured once and shared. Correctness
+   tests do not inherit a hidden performance assertion from MUnit's safety
+   timeout; the dedicated performance suite below owns the explicit budget. */
+
+object MCP_Doc_Read_Fixture {
+  final case class Loaded(
+    isar_ref_files: List[Path],
+    isar_ref_toc: List[Doc_Catalog.Heading],
+    news_path: Path,
+    elapsed: Time)
+
+  lazy val loaded: Loaded = {
+    val started = Time.now()
+    val structure =
+      Sessions.load_structure(MCP_Test_Config.options, dirs = MCP_Test_Config.session_dirs)
+    val deps = Sessions.deps(structure, progress = MCP_Test_Config.progress)
+    val files = deps("Isar_Ref").proper_session_theories.map(_.path)
+    val toc = Doc_Catalog.toc(files)
+    val news =
+      Doc_Catalog.make(structure).flatMap(_.entries).find(_.name == "NEWS")
+        .getOrElse(error("no NEWS entry in the catalog")).path
+    Loaded(files, toc, news, Time.now() - started)
+  }
+}
+
+
+class MCP_Doc_Read_Performance_Tests extends MCP_Suite {
+  override def munitTimeout = 10.minutes
+
+  spec_test("documentation catalog construction stays within 30 seconds",
+      covers = List("planning_gate#T7"),
+      test_class = MCP_Spec_Metadata.Performance) {
+    val elapsed = MCP_Doc_Read_Fixture.loaded.elapsed
+    val budget = Time.seconds(30)
+    assert(elapsed <= budget,
+      "documentation catalog performance budget exceeded: " +
+        elapsed.message + " > " + budget.message)
+  }
+}
+
+
 /* plans/doc_read: heading scan / toc / section slicing / plain-entry
    windowing, all pure functions of file paths -- run against the REAL
-   Isar_Ref chapter sources (Sessions.deps is the only non-cheap step here,
-   same one the server itself already pays once at startup). */
+   Isar_Ref chapter sources. These are functional assertions only. */
 
 class MCP_Doc_Read_Tests extends MCP_Suite {
-  private def real_structure(): Sessions.Structure =
-    Sessions.load_structure(MCP_Test_Config.options, dirs = MCP_Test_Config.session_dirs)
+  override def munitTimeout = 10.minutes
 
-  private lazy val deps: Sessions.Deps =
-    Sessions.deps(real_structure(), progress = MCP_Test_Config.progress)
-
-  private lazy val isar_ref_files: List[Path] =
-    deps("Isar_Ref").proper_session_theories.map(_.path)
-
-  private lazy val isar_ref_toc: List[Doc_Catalog.Heading] = Doc_Catalog.toc(isar_ref_files)
-
-  private lazy val news_path: Path =
-    Doc_Catalog.make(real_structure()).flatMap(_.entries).find(_.name == "NEWS")
-      .getOrElse(fail("no NEWS entry in the catalog")).path
+  private def isar_ref_files: List[Path] = MCP_Doc_Read_Fixture.loaded.isar_ref_files
+  private def isar_ref_toc: List[Doc_Catalog.Heading] = MCP_Doc_Read_Fixture.loaded.isar_ref_toc
+  private def news_path: Path = MCP_Doc_Read_Fixture.loaded.news_path
 
   /* T1: toc claim -- headings from ALL chapter files, both chapter and
      section levels present, every row carrying file + line. */
   spec_test("Isar_Ref toc has more than 40 rows spanning multiple files",
-      covers = List("doc_read#T1")) {
+      covers = List("doc_read#T1", "planning_gate#T7")) {
     assert(isar_ref_toc.length > 40,
       "expected > 40 headings in Isar_Ref, got " + isar_ref_toc.length)
     assert(isar_ref_toc.map(_.file).distinct.length > 1,
@@ -2236,4 +2270,3 @@ class MCP_Config_Tests extends MCP_Suite {
     }
   }
 }
-

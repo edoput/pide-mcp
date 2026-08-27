@@ -80,7 +80,7 @@ def test_moot_assumption_requires_rationale_and_forbids_layers(tmp_path: Path) -
     assert validate_one(tmp_path / "valid", valid).claims == 1
 
 
-@spec_test(covers=("plan_label_schema#T2",))
+@spec_test(covers=("plan_label_schema#T2", "planning_gate#T1"))
 def test_dependency_design_requires_a_resolvable_target(tmp_path: Path) -> None:
     dependency = """  - id: D1
     kind: design
@@ -100,7 +100,7 @@ def test_dependency_design_requires_a_resolvable_target(tmp_path: Path) -> None:
     assert validate_labels(load_repository(root)).claims == 2
 
 
-@spec_test(covers=("plan_label_schema#T3",))
+@spec_test(covers=("plan_label_schema#T3", "planning_gate#T1"))
 def test_open_question_is_a_completion_blocker_not_malformed_metadata(
     tmp_path: Path,
 ) -> None:

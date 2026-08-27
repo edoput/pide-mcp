@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 from pathlib import Path
 import subprocess
 import sys
 
 from .document import DocumentError, PlanFormat, load_plan, load_repository
+from .commands import CommandError, registered_commands, run_step
+from .done import DoneError, check_static_closure, run_done
 from .files import write_atomic_text
 from .legacy import (
     LegacyDebtError,
@@ -19,6 +22,7 @@ from .legacy import (
 )
 from .labels import audit_is_fresh, generate_audit, validate_labels
 from .matrix import MatrixError, discover
+from .refinements import RefinementError, validate_refinements
 from .registry import format_report, generate, stale_outputs
 
 
@@ -65,6 +69,34 @@ def _parser() -> argparse.ArgumentParser:
     legacy_commands = legacy.add_subparsers(dest="legacy_command", required=True)
     legacy_commands.add_parser("generate", help="create plans/legacy_unlinked.csv once")
     legacy_commands.add_parser("check", help="check the reviewed legacy-debt ratchet")
+
+    refinements = commands.add_parser(
+        "refinements", help="validate plan-owned specification refinements"
+    )
+    refinement_commands = refinements.add_subparsers(
+        dest="refinement_command", required=True
+    )
+    refinement_check = refinement_commands.add_parser("check")
+    refinement_check.add_argument(
+        "--completion", action="store_true", help="reject every open refinement"
+    )
+
+    commands.add_parser("commands", help="list registered build and test steps")
+    commands.add_parser("build", help="compile production and test Scala artifacts")
+    catalog = commands.add_parser("catalog", help="materialize static test catalogs")
+    catalog.add_argument("producer", choices=("munit", "theory", "all"))
+    commands.add_parser("static", help="run static closure and compatibility spec checks")
+    test_layer = commands.add_parser("test-layer", help="run one complete test layer")
+    test_layer.add_argument(
+        "layer",
+        choices=("tooling-unit", "scala-unit", "heap", "bridge", "ml-unit", "e2e"),
+    )
+    commands.add_parser("theories", help="build all registered theory sessions")
+    e2e = commands.add_parser("e2e", help="run procedural end-to-end cases")
+    e2e_selection = e2e.add_mutually_exclusive_group(required=True)
+    e2e_selection.add_argument("--all", action="store_true")
+    e2e_selection.add_argument("--filter", help="diagnostic name or plan-ID substring")
+    commands.add_parser("done", help="run the fixed repository completion pipeline")
     return parser
 
 
@@ -72,6 +104,68 @@ def _main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = args.root.resolve()
     try:
+        if args.command == "done":
+            return 0 if run_done(root).ok else 1
+
+        if args.command in {
+            "commands",
+            "build",
+            "catalog",
+            "static",
+            "test-layer",
+            "theories",
+            "e2e",
+        }:
+            steps = registered_commands(root)
+            if args.command == "commands":
+                for step in steps.values():
+                    layers = ",".join(step.layers) if step.layers else "preparation"
+                    print(f"{step.id:<16} {layers:<20} {step.description}")
+                return 0
+            if args.command == "build":
+                return 0 if run_step(steps["scala-build"], root).ok else 1
+            if args.command == "catalog":
+                selected = {
+                    "munit": ("munit-catalog",),
+                    "theory": ("theory-catalog",),
+                    "all": ("munit-catalog", "theory-catalog"),
+                }[args.producer]
+                return 0 if all(run_step(steps[value], root).ok for value in selected) else 1
+            if args.command == "static":
+                report = check_static_closure(root)
+                print(
+                    "static closure: PASS "
+                    f"({report.plans} plans; {report.tests} tests; "
+                    f"{report.legacy_gaps} reviewed legacy gaps)"
+                )
+                return 0 if run_step(steps["spec-gate"], root).ok else 1
+            if args.command == "theories":
+                return 0 if run_step(steps["theories"], root).ok else 1
+            if args.command == "test-layer":
+                step_id = "theories" if args.layer == "ml-unit" else args.layer
+                return 0 if run_step(steps[step_id], root).ok else 1
+            if args.command == "e2e":
+                step = steps["e2e"]
+                if args.filter is not None:
+                    step = replace(
+                        step,
+                        description="run a diagnostic filtered end-to-end selection",
+                        argv=step.argv[:-1] + ("--filter", args.filter),
+                    )
+                return 0 if run_step(step, root).ok else 1
+
+        if args.command == "refinements":
+            documents = load_repository(root)
+            report = validate_refinements(
+                documents, root, require_completion=args.completion
+            )
+            print(
+                "refinements check: PASS "
+                f"({report.refinements} records; {len(report.open)} open; "
+                f"{report.folded} folded)"
+            )
+            return 0
+
         if args.command == "matrix":
             result = discover(root)
             if args.matrix_command == "dump":
@@ -186,8 +280,11 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
     except (
         DocumentError,
+        CommandError,
+        DoneError,
         LegacyDebtError,
         MatrixError,
+        RefinementError,
         OSError,
         subprocess.SubprocessError,
     ) as ex:

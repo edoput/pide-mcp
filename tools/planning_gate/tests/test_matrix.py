@@ -13,6 +13,7 @@ from tools.planning_gate.matrix import (
     MatrixError,
     assemble,
     manifest_from_json,
+    munit_producer,
     theory_producer,
     tooling_producer,
 )
@@ -55,6 +56,44 @@ def fixture_record(
     }
 
 
+@spec_test(covers=("planning_gate#T7",))
+def test_munit_adapter_keeps_functional_and_performance_classes_distinct(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    path = root / "mcp_test/lib/munit-spec.json"
+    path.parent.mkdir(parents=True)
+
+    def write(test_class: str) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "producer": "isabelle-mcp/munit",
+                    "tests": [
+                        {
+                            "suite": "fixture.Suite",
+                            "name": f"{test_class} case",
+                            "layer": "scala-unit",
+                            "test_class": test_class,
+                            "location": {"path": "mcp_test/src/fixture.scala", "line": 1},
+                            "links": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    for test_class in ("functional", "performance"):
+        write(test_class)
+        assert munit_producer(root, path).tests[0].name == f"{test_class} case"
+
+    write("benchmark")
+    with pytest.raises(MatrixError, match="test_class"):
+        munit_producer(root, path)
+
+
 def claims_plan(ident: str = "example") -> str:
     claims = """  - id: A1
     kind: assumption
@@ -71,7 +110,7 @@ def claims_plan(ident: str = "example") -> str:
 
 @spec_test(
     verifies=("verification_matrix#I1",),
-    covers=("verification_matrix#T1",),
+    covers=("verification_matrix#T1", "planning_gate#T1"),
 )
 def test_matrix_rejects_unknown_ids_relation_mismatches_and_duplicate_identity(
     tmp_path: Path,

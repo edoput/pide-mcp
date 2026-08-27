@@ -13,6 +13,7 @@ from mcp.test.e2e.registry import e2e_test
         "check_theory#T4",
         "find_theorems#T5",
         "load_theory#T6",
+        "planning_gate#T8",
         "python_e2e#T4",
         "repl_back#T3",
         "repl_edit#T5",

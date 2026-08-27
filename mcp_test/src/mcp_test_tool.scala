@@ -3,10 +3,9 @@
 Command-line tool: isabelle mcp_test.
 
 The default run exercises the JSON-RPC handler and the stdio loop
-against Fake_Backend -- fast, no prover. With -b it additionally starts
-headless PIDE sessions on MCP-Tools and MCP-HOL and tests the ML
-bridges (protocol commands, promise routing), the one layer a fake
-cannot cover. Suites are munit; the runner reports PASS/FAIL per test.
+against Fake_Backend -- fast, no prover. -L selects one registered
+execution layer; -L all (and its compatibility alias -b) runs every
+Scala layer. Suites are munit; the runner reports PASS/FAIL per test.
 */
 
 package isabelle.mcp
@@ -29,6 +28,7 @@ object MCP_Test {
       classOf[MCP_Symbol_Tests],
       classOf[MCP_Locator_Tests],
       classOf[MCP_Doc_Catalog_Tests],
+      classOf[MCP_Doc_Read_Performance_Tests],
       classOf[MCP_Doc_Read_Tests],
       classOf[MCP_Config_Tests])
 
@@ -46,20 +46,36 @@ object MCP_Test {
       classOf[MCP_Ir_Bridge_Tests],
       classOf[MCP_Run_Tool_Async_Tests])
 
-  val bridge_suites: List[Class[? <: munit.Suite]] = heap_suites ::: pide_suites
+  val scala_unit_layer: String = MCP_Test_Layers("scala_unit_suites")
+  val heap_layer: String = MCP_Test_Layers("heap_suites")
+  val bridge_layer: String = MCP_Test_Layers("pide_suites")
+  val all_selector = "all"
+
+  val executable_layers: List[String] =
+    List(scala_unit_layer, heap_layer, bridge_layer)
+
+  def suites_for(selector: String): List[Class[? <: munit.Suite]] =
+    if (selector == scala_unit_layer) unit_suites
+    else if (selector == heap_layer) heap_suites
+    else if (selector == bridge_layer) pide_suites
+    else if (selector == all_selector) unit_suites ::: heap_suites ::: pide_suites
+    else error(
+      "Unknown test layer " + quote(selector) + "; expected " +
+        (executable_layers ::: List(all_selector)).map(quote).mkString(", "))
 
   val suite_definitions: List[MCP_Spec_Metadata.Suite_Def] =
     unit_suites.map(cls =>
-      MCP_Spec_Metadata.Suite_Def(MCP_Test_Layers("scala_unit_suites"), cls)) :::
+      MCP_Spec_Metadata.Suite_Def(scala_unit_layer, cls)) :::
       heap_suites.map(cls =>
-        MCP_Spec_Metadata.Suite_Def(MCP_Test_Layers("heap_suites"), cls)) :::
+        MCP_Spec_Metadata.Suite_Def(heap_layer, cls)) :::
       pide_suites.map(cls =>
-        MCP_Spec_Metadata.Suite_Def(MCP_Test_Layers("pide_suites"), cls))
+        MCP_Spec_Metadata.Suite_Def(bridge_layer, cls))
 
   val isabelle_tool =
     Isabelle_Tool("mcp_test", "run mcp component test suites", Scala_Project.here,
     { args =>
-      var bridge = false
+      var legacy_all = false
+      var selected_layer: Option[String] = None
       var session_dirs: List[Path] = Nil
       var name_filter: Option[String] = None
       var manifest: Option[Path] = None
@@ -68,10 +84,11 @@ object MCP_Test {
 Usage: isabelle mcp_test [OPTIONS]
 
   Options are:
-    -b           also run prover-spawning suites: heap tests (raw
-                 ML_process against saved heaps) and ML-bridge tests
-                 against real PIDE sessions
-    -d DIR       session directory for -b (default: $ISABELLE_MCP_HOME/Tools)
+    -b           compatibility alias for -L all
+    -L LAYER     execute scala-unit, heap, bridge, or all
+                 (default: scala-unit)
+    -d DIR       session directory for heap, bridge, or all
+                 (default: $ISABELLE_MCP_HOME/Tools)
     -M FILE      write the full metadata manifest to FILE and exit without
                  evaluating test bodies (default output for normal runs:
                  $ISABELLE_MCP_TEST_HOME/lib/munit-spec.json)
@@ -79,19 +96,32 @@ Usage: isabelle mcp_test [OPTIONS]
                  contains PATTERN; manifest output is never filtered
 
   Run the mcp component test suites (munit): JSON-RPC handler and stdio
-  loop against a fake backend (fast, no prover). With -b, additionally
-  start headless PIDE sessions on MCP-Tools and MCP-HOL and test the
-  protocol-command bridges (MCP.run_tool and MCP.ir) end to end.
+  loop against a fake backend (fast, no prover). Heap runs fresh
+  ML_process tests against saved heaps. Bridge starts headless PIDE
+  sessions on MCP-Tools and MCP-HOL. Use -L all (or -b) for all three.
 """,
-        "b" -> (_ => bridge = true),
+        "b" -> (_ => legacy_all = true),
+        "L:" -> (arg =>
+          if (selected_layer.isDefined) error("-L may be specified only once")
+          else selected_layer = Some(arg)),
         "d:" -> (arg => session_dirs = session_dirs ::: List(Path.explode(arg))),
         "M:" -> (arg => manifest = Some(Path.explode(arg))),
         "t:" -> (arg => name_filter = Some(arg)))
 
       val more_args = getopts(args)
       if (more_args.nonEmpty) getopts.usage()
-      if (manifest.isDefined && (bridge || session_dirs.nonEmpty || name_filter.nonEmpty)) {
-        error("-M cannot be combined with -b, -d, or -t")
+      if (legacy_all && selected_layer.isDefined) {
+        error("-b and -L are alternatives")
+      }
+      if (manifest.isDefined &&
+          (legacy_all || selected_layer.isDefined || session_dirs.nonEmpty || name_filter.nonEmpty)) {
+        error("-M cannot be combined with -b, -L, -d, or -t")
+      }
+      val execution_layer =
+        if (legacy_all) all_selector else selected_layer.getOrElse(scala_unit_layer)
+      val execution_suites = suites_for(execution_layer)
+      if (session_dirs.nonEmpty && execution_layer == scala_unit_layer) {
+        error("-d has no effect on the scala-unit layer")
       }
 
       val progress = new Console_Progress()
@@ -109,8 +139,8 @@ Usage: isabelle mcp_test [OPTIONS]
             else session_dirs
           MCP_Test_Config.progress = progress
 
-          val suites = unit_suites ::: (if (bridge) bridge_suites else Nil)
-          val failures = MCP_Test_Runner.run(suites, name_filter, progress)
+          progress.echo("Running test layer " + execution_layer)
+          val failures = MCP_Test_Runner.run(execution_suites, name_filter, progress)
 
           if (failures > 0) error(failures.toString + " test(s) failed")
           else progress.echo("All tests passed")

@@ -4,6 +4,34 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-08-27 (planning completion gate and explicit test layers)
+--------------------------------------------------------------------------
+
+- `tools/planning-gate done` now composes the repository's fixed completion
+  sequence. It reports HEAD and dirty paths, builds Scala and both Isabelle
+  test sessions, materializes both structured manifests, enforces the
+  four-producer coverage matrix and legacy-debt ratchet, runs every blocking
+  layer without filters, and rejects HEAD or tracked-content changes during
+  the invocation. Build, catalog, static, theory, and individual layer steps
+  remain callable for diagnosis.
+
+- `isabelle mcp_test -L scala-unit|heap|bridge|all` gives every Scala layer an
+  authoritative execution command; `-b` remains an alias for `-L all`. The
+  runner manifest schema is now version 2 and records `test_class` as either
+  `functional` or `performance`; console verdicts carry the same class.
+
+- the documentation catalog check now separates correctness from timing. A
+  dedicated performance suite measures construction against the explicit
+  30-second budget under a longer safety timeout, while functional tests reuse
+  the fixture and assert only catalog contents. On the current host the focused
+  run reported a 32.902-second `[performance]` failure while the linked
+  `[functional]` assertion passed.
+
+- real execution also reproduced the shutdown-drain defect: the Scala unit
+  suite intermittently observed only two of three replies before EOF shutdown.
+  Both failures remain blocking evidence for the eventual `done` run; the gate
+  does not relabel or suppress them.
+
 2026-08-24 (how much of the LAYER column is declared vs guessed)
 --------------------------------------------------------------------------
 

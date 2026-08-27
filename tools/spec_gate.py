@@ -75,7 +75,8 @@ PLAN_LINK_RE = re.compile(r"^[A-Za-z0-9_.-]+#[AITDQ]\d+$")
 LAYER_ROLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 LAYER_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
-MANIFEST_SCHEMA_VERSION = 1
+MUNIT_MANIFEST_SCHEMA_VERSION = 2
+THEORY_MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_PRODUCER = "isabelle-mcp/munit"
 THEORY_MANIFEST_PRODUCER = "isabelle-mcp/isabelle"
 MUNIT_FRAMEWORK = "munit"
@@ -83,6 +84,7 @@ MUNIT_FRAMEWORK_VERSION = "1.1.1"
 ISABELLE_FRAMEWORK = "isabelle"
 ISABELLE_EXPORT_NAME = "mcp/spec-tests"
 LINK_RELATIONS = frozenset({"verifies", "covers"})
+MUNIT_TEST_CLASSES = frozenset({"functional", "performance"})
 
 # The controlled vocabulary for a plan's status. "implemented" and "green" are
 # spellings the tree already uses for done; they are accepted rather than
@@ -292,8 +294,8 @@ except (OSError, json.JSONDecodeError) as ex:
 theory_manifest_require(isinstance(theory_manifest, dict),
                         "document root is not an object")
 theory_manifest_require(type(theory_manifest.get("schema_version")) is int and
-                        theory_manifest["schema_version"] == MANIFEST_SCHEMA_VERSION,
-                        f"schema_version must be {MANIFEST_SCHEMA_VERSION}")
+                        theory_manifest["schema_version"] == THEORY_MANIFEST_SCHEMA_VERSION,
+                        f"schema_version must be {THEORY_MANIFEST_SCHEMA_VERSION}")
 theory_manifest_require(theory_manifest.get("producer") == THEORY_MANIFEST_PRODUCER,
                         f"producer must be {THEORY_MANIFEST_PRODUCER!r}")
 theory_manifest_require(theory_manifest.get("framework") == ISABELLE_FRAMEWORK,
@@ -444,8 +446,8 @@ except (OSError, json.JSONDecodeError) as ex:
 
 manifest_require(isinstance(manifest, dict), "document root is not an object")
 manifest_require(type(manifest.get("schema_version")) is int and
-                 manifest["schema_version"] == MANIFEST_SCHEMA_VERSION,
-                 f"schema_version must be {MANIFEST_SCHEMA_VERSION}")
+                 manifest["schema_version"] == MUNIT_MANIFEST_SCHEMA_VERSION,
+                 f"schema_version must be {MUNIT_MANIFEST_SCHEMA_VERSION}")
 manifest_require(manifest.get("producer") == MANIFEST_PRODUCER,
                  f"producer must be {MANIFEST_PRODUCER!r}")
 manifest_require(manifest.get("framework") == MUNIT_FRAMEWORK,
@@ -488,6 +490,9 @@ for index, test in enumerate(tests):
                      f"{where}.name is not a non-empty string")
     manifest_require(isinstance(layer, str) and layer in TEST_LAYERS,
                      f"{where}.layer is not one of {sorted(TEST_LAYERS)}")
+    test_class = test.get("test_class")
+    manifest_require(test_class in MUNIT_TEST_CLASSES,
+                     f"{where}.test_class is not one of {sorted(MUNIT_TEST_CLASSES)}")
 
     identity = (suite, name)
     manifest_require(identity not in identities,

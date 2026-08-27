@@ -16,6 +16,18 @@ tools/planning-gate labels check
 tools/planning-gate labels audit check
 tools/planning-gate matrix dump
 tools/planning-gate matrix check
+tools/planning-gate refinements check
+tools/planning-gate commands
+tools/planning-gate build
+tools/planning-gate theories
+tools/planning-gate catalog all
+tools/planning-gate static
+tools/planning-gate test-layer scala-unit
+tools/planning-gate test-layer heap
+tools/planning-gate test-layer bridge
+tools/planning-gate test-layer ml-unit
+tools/planning-gate test-layer e2e
+tools/planning-gate done
 .venv/bin/python -m pytest -q tools/planning_gate/tests
 ```
 
@@ -59,3 +71,16 @@ resolves the repository root, selects `.venv/bin/python`, checks its required
 imports, and then invokes the importable module.  It does not depend on the
 caller's working directory or an activated environment, and it never installs
 packages automatically.
+
+`done` accepts no filters or reduced layer set. It reports the starting HEAD
+and exact dirty paths, prepares both structured manifests, checks the static
+four-producer matrix and compatibility spec gate, and executes tooling-unit,
+scala-unit, heap, bridge, ml-unit, and e2e. A dirty tree is a visible local
+warning; a change to HEAD or any tracked file during the invocation is a hard
+failure. The named build, catalog, theory, and test-layer commands remain
+independently callable for diagnosis, but their success alone is never
+completion evidence.
+
+The Scala runner uses explicit `-L scala-unit|heap|bridge|all` selection. Its
+manifest and console output distinguish functional assertions from explicit
+performance-budget tests. The compatibility `-b` option means `-L all`.

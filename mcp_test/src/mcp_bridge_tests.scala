@@ -17,7 +17,8 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
   /* the bridge carries FULL INTERNAL names + the form tag; exposed
      (shortened) names exist only in the scala layer above
      (MCP_Server.exposure, unit-tested in mcp_handler_tests.scala) */
-  test("bridge: ml_tools lists shout under its full internal name with form tag and params") {
+  spec_test("bridge layer executes against a live PIDE session",
+      covers = List("planning_gate#T8")) {
     val tools = session.ml_tools().rows
     val shout = tools.find(_.name == "MCP_Tools.shout")
       .getOrElse(fail("MCP_Tools.shout not in " + tools.toString))

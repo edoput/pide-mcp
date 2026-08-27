@@ -661,6 +661,20 @@ object MCP_Test_Runner {
 
   def run(suites: List[Class[? <: munit.Suite]], name_filter: Option[String],
       progress: Progress): Int = {
+    val test_classes =
+      suites.flatMap { cls =>
+        cls.getDeclaredConstructor().newInstance().munitTests().map { test =>
+          (cls.getName, test.name) -> MCP_Spec_Metadata.test_class(test)
+        }
+      }.toMap
+
+    def classified_name(desc: Description): String = {
+      val name = test_name(desc)
+      val test_class = test_classes.getOrElse((desc.getClassName, name),
+        MCP_Spec_Metadata.Functional)
+      "[" + test_class + "] " + name
+    }
+
     /* drop suites with no matching test up front: filtering a runner
        down to zero tests is a JUnit error, not an empty run */
     var selected_test_keys = Set.empty[(String, String)]
@@ -684,10 +698,10 @@ object MCP_Test_Runner {
       override def testFailure(failure: JUnit_Failure): Unit = {
         failed += failure.getDescription.getDisplayName
         progress.echo_error_message(
-          "FAIL " + test_name(failure.getDescription) + "\n" + failure.getMessage)
+          "FAIL " + classified_name(failure.getDescription) + "\n" + failure.getMessage)
       }
       override def testFinished(desc: Description): Unit =
-        if (!failed(desc.getDisplayName)) progress.echo("PASS " + test_name(desc))
+        if (!failed(desc.getDisplayName)) progress.echo("PASS " + classified_name(desc))
     })
 
     var req = Request.classes(selected*)
