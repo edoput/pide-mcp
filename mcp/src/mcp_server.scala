@@ -167,7 +167,8 @@ object MCP_Server {
     def handler(backend: MCP_Backend, args: List[(String, String)],
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
       handler_fn match {
-        case Some(f) => f(backend, args, cancellation)
+        case Some(f) =>
+          backend.direct_cancellable(cancellation) { f(backend, args, cancellation) }
         case None => backend.ir_cancellable(fname, args, cancellation)
       }
   }
@@ -935,7 +936,8 @@ object MCP_Server {
         "never limits resource reads, only the listing.",
       input_schema = JSON.Object("type" -> "object"),
       annotations = read_only_annotations,
-      handler_fn = Some((backend, _, _) => backend.scope_show()))
+      handler_fn = Some((backend, _, cancellation) =>
+        backend.scope_show_cancellable(cancellation)))
 
   val builtins: List[Builtin_Tool] =
     List(repl_list_tool, repl_init_tool, repl_init_from_source_tool, repl_fork_tool, repl_remove_tool, repl_step_tool, repl_state_tool,

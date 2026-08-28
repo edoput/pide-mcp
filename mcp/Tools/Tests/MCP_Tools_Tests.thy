@@ -1167,7 +1167,11 @@ val _ =
     val _ = \<^assert> (await inner_started 200);
     val _ = Future.cancel_group outer_group;
     val joined = Future.join_result outer;
-    val _ = \<^assert> (await inner_stopped 100);
+    (*The outer future can publish its interrupted result before the nested
+      worker finishes its cancellation cleanup.  This is a liveness bound,
+      not a performance assertion; allow scheduler contention without
+      weakening the separate proof that the five-second body did not finish.*)
+    val _ = \<^assert> (await inner_stopped 300);
     val _ = \<^assert> (Exn.is_exn joined);
     val _ = \<^assert> (not (Synchronized.value inner_completed));
   in () end;
@@ -1184,5 +1188,9 @@ installed" and skip re-installing them, and every capture-form tool would
 silently return empty output. Reset here, exactly as MCP_Repl.thy's
 own build-time self-test does.\<close>
 ML \<open>MCP_Output.reset ()\<close>
+
+mcp_resource slow_resource = \<open>fn _ =>
+  (OS.Process.sleep (Time.fromReal 2.0); "slow resource done")\<close>
+  (description \<open>a cancellable bridge fixture\<close>)
 
 end

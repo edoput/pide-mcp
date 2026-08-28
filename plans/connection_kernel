@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: connection_kernel
 title: Replaceable MCP connection kernel with bounded request ownership
-status: done
+status: in_progress
 depends_on:
   - planning_gate
   - readiness
@@ -70,6 +70,10 @@ claims:
     kind: design
     statement: The implementation remains on MCP revision 2025-03-26 and accepts JSON-RPC batches only because that revision requires batch reception; no product behavior depends on batching.
     category: design
+  - id: D6
+    kind: design
+    statement: Every concurrently callable Scala-to-ML round trip has a request-unique internal route; a reply completes only that route, and cancellation or shutdown removes every pending route without relying on FIFO arrival order.
+    category: design
   - id: Q1
     kind: question
     state: resolved
@@ -126,6 +130,16 @@ claims:
     state: active
     statement: Batch fixtures cover mixed requests and notifications, notification-only and empty batches, initialize-in-batch rejection, per-element admission limits, cancellation omission, and one aggregate response after all response-producing elements terminate.
     layers: [scala-unit, e2e]
+  - id: T11
+    kind: test
+    state: active
+    statement: Concurrent tool catalogs, theory catalogs, named-resource catalogs, resource reads, and designation checks retain request-unique routes; distinguishable replies cannot cross, and representative catalog/resource cancellation leaves later requests usable.
+    layers: [scala-unit, bridge]
+  - id: T12
+    kind: test
+    state: active
+    statement: Concurrent load, check, and unload operations are serialized around PIDE document mutation, cancellation while waiting is interruptible, and backend shutdown joins any admitted direct operation before stopping the Isabelle session.
+    layers: [bridge]
 spec_refinements:
   - id: R1
     state: folded

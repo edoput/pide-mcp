@@ -20,6 +20,7 @@ object MCP_Test {
       classOf[MCP_Theory_Metadata_Tests],
       classOf[MCP_Connection_Protocol_Tests],
       classOf[MCP_Application_Tests],
+      classOf[MCP_Bridge_Routes_Tests],
       classOf[MCP_Connection_Kernel_Tests],
       classOf[MCP_Connection_Runtime_Tests],
       classOf[MCP_Protocol_Tests],
@@ -51,7 +52,8 @@ object MCP_Test {
     List(
       classOf[MCP_Bridge_Tests],
       classOf[MCP_Ir_Bridge_Tests],
-      classOf[MCP_Run_Tool_Async_Tests])
+      classOf[MCP_Run_Tool_Async_Tests],
+      classOf[MCP_Bridge_Shutdown_Tests])
 
   val scala_unit_layer: String = MCP_Test_Layers("scala_unit_suites")
   val scala_performance_layer: String = MCP_Test_Layers("scala_performance_suites")

@@ -14,11 +14,16 @@ import isabelle._
 import isabelle.mcp.application.McpApplication
 
 import scala.util.control.NonFatal
+import java.util.concurrent.locks.ReentrantLock
 
 
 /* what the JSON-RPC layer (MCP_Server.Handler) needs from the prover side:
    MCP_Session is the real implementation, tests substitute MCP_Test.Fake_Backend */
 trait MCP_Backend {
+  /* Scala-side builtins do not cross a protocol route, but they still run in
+     an admitted connection worker.  The real backend makes their blocking
+     work interruptible; test backends may retain the direct default. */
+  def direct_cancellable[A](cancellation: McpApplication.Cancellation)(body: => A): A = body
   /* rows carry full internal names, form tags and declared params,
      relative to the DESIGNATION: "" = the ML side's default (the
      MCP_Tools theory); a bare canonical theory long name selects that
@@ -29,6 +34,9 @@ trait MCP_Backend {
      (client-visible) names are computed scala-side (MCP_Server.exposure)
      and params expand into JSON schemas at tools/list time. */
   def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply
+  def ml_tools_cancellable(designation: String, bundles: List[String],
+    cancellation: McpApplication.Cancellation): MCP_Session.Tools_Reply =
+    ml_tools(designation, bundles)
   def ml_run(name: String, args: List[(String, String)],
     designation: String = "", bundles: List[String] = Nil): MCP_Session.Result
   def ml_run_cancellable(name: String, args: List[(String, String)],
@@ -38,6 +46,9 @@ trait MCP_Backend {
   /* validate a candidate designation without committing to it
      (tool_scope_set/tool_scope_include, plans/tool_scope) */
   def check_designation(designation: String, bundles: List[String] = Nil): MCP_Session.Result
+  def check_designation_cancellable(designation: String, bundles: List[String],
+    cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    check_designation(designation, bundles)
   /* registration events (MCP.tools_changed / MCP.resources_changed from
      MCP_Tool.declare): the server loop registers a callback that pushes
      the matching notifications/{tools,resources}/list_changed line to the
@@ -67,7 +78,13 @@ trait MCP_Backend {
     cancellation: McpApplication.Cancellation): MCP_Session.Result =
     init_from_source(repl, theory, offset, pattern, index)
   def mcp_resources(): List[(String, String, String)]
+  def mcp_resources_cancellable(
+    cancellation: McpApplication.Cancellation): List[(String, String, String)] =
+    mcp_resources()
   def mcp_resource_read(uri: String): MCP_Session.Result
+  def mcp_resource_read_cancellable(uri: String,
+    cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    mcp_resource_read(uri)
   /* scope_add/scope_remove (plans/scope_add, plans/scope_remove, spec
      "scoping"): the resource scope is a set of theory-name glob patterns,
      scala-side only, no bridge. mcp_resources() enumerates matches
@@ -85,6 +102,9 @@ trait MCP_Backend {
      existing "repls" ir fname (repl_list's own bridge call) rather than
      adding a new one. */
   def scope_show(): MCP_Session.Result
+  def scope_show_cancellable(
+    cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    scope_show()
   def load_theory(name: String, master_dir: String): MCP_Session.Result
   def unload_theory(name: String): MCP_Session.Result
   def check_theory(name: String, master_dir: String): MCP_Session.Result
@@ -405,6 +425,74 @@ class MCP_Session private(
   val deps: Sessions.Deps,
   val store: Store
 ) extends MCP_Backend {
+  private final class DirectOperation {
+    val id: String = UUID.random().toString
+    val thread: Thread = Thread.currentThread()
+    val done: Promise[Unit] = Future.promise[Unit]
+    private var active = true
+    private var signalled = false
+
+    def interrupt(): Unit = synchronized {
+      if (active && !signalled) {
+        signalled = true
+        thread.interrupt()
+      }
+    }
+
+    def finish(): Unit = synchronized {
+      active = false
+      /* BoundedConcurrentScheduler reuses JVM workers.  Never leak one
+         request's interrupt status into the next admitted request. */
+      Thread.interrupted()
+    }
+  }
+
+  private case class DirectState(
+    closing: Boolean = false,
+    operations: Map[String, DirectOperation] = Map.empty)
+
+  private val direct_state = Synchronized(DirectState())
+
+  override def direct_cancellable[A](
+      cancellation: McpApplication.Cancellation)(body: => A): A = {
+    val operation = new DirectOperation
+    val admitted = direct_state.change_result { state =>
+      if (state.closing) (false, state)
+      else
+        (true, state.copy(operations = state.operations + (operation.id -> operation)))
+    }
+    if (!admitted) throw Exn.Interrupt()
+    cancellation.onCancel(() => operation.interrupt())
+    try {
+      if (cancellation.isCancelled) throw Exn.Interrupt()
+      body
+    }
+    finally {
+      operation.finish()
+      direct_state.change(state =>
+        state.copy(operations = state.operations - operation.id))
+      operation.done.fulfill(())
+    }
+  }
+
+  private def begin_direct_shutdown(): List[DirectOperation] =
+    direct_state.change_result(state =>
+      (state.operations.values.toList, state.copy(closing = true)))
+
+  private val theory_mutation_lock = new ReentrantLock(true)
+  private val theory_mutation_probe = Synchronized[() => Unit](() => ())
+
+  private[mcp] def set_theory_mutation_probe(probe: () => Unit): Unit =
+    theory_mutation_probe.change(_ => probe)
+
+  private def serialized_theory_mutation[A](body: => A): A = {
+    theory_mutation_lock.lockInterruptibly()
+    try {
+      theory_mutation_probe.value()
+      body
+    }
+    finally theory_mutation_lock.unlock()
+  }
   /* wave 3 infrastructure: derived maps over structure + deps (computed
      once at startup for library discovery) */
   private val sessions_map: Map[String, (String, String, List[String])] = {
@@ -465,80 +553,92 @@ class MCP_Session private(
       }
     }
 
-  private val tools_promises =
-    Synchronized(List.empty[Promise[MCP_Session.Tools_Reply]])
+  private val tools_routes = new BridgeRoutes[MCP_Session.Tools_Reply]
   private val changed_handler: Synchronized[String => Unit] =
     Synchronized(_ => ())
-  private val theories_promises =
-    Synchronized(List.empty[Promise[List[String]]])
-  private val run_promises =
-    Synchronized(Map.empty[String, Promise[MCP_Session.Result]])
-  private val ir_promises =
-    Synchronized(Map.empty[String, Promise[MCP_Session.Result]])
-  private val named_resources_promises =
-    Synchronized(List.empty[Promise[List[(String, String)]]])
-  private val read_resource_promises =
-    Synchronized(Map.empty[String, Promise[MCP_Session.Result]])
-  private val check_designation_promises =
-    Synchronized(Map.empty[String, Promise[MCP_Session.Result]])
+  private val theories_routes = new BridgeRoutes[List[String]]
+  private val run_routes = new BridgeRoutes[MCP_Session.Result]
+  private val ir_routes = new BridgeRoutes[MCP_Session.Result]
+  private val named_resources_routes = new BridgeRoutes[List[(String, String)]]
+  private val read_resource_routes = new BridgeRoutes[MCP_Session.Result]
+  private val check_designation_routes = new BridgeRoutes[MCP_Session.Result]
 
   private val bridge_cancelled = MCP_Session.Error("Request cancelled")
+  private def bridge_interrupted[A]: Exn.Result[A] = Exn.Exn(Exn.Interrupt())
 
-  private def take_bridge_promise(
-    promises: Synchronized[Map[String, Promise[MCP_Session.Result]]],
-    id: String
-  ): Option[Promise[MCP_Session.Result]] =
-    promises.change_result(current => (current.get(id), current - id))
-
-  private def complete_bridge(
-    promises: Synchronized[Map[String, Promise[MCP_Session.Result]]],
+  private def complete_bridge[A](
+    routes: BridgeRoutes[A],
     id: String,
-    result: MCP_Session.Result
+    result: A,
+    operation: String
   ): Unit =
-    take_bridge_promise(promises, id).foreach(_.fulfill(result))
+    if (!routes.complete(id, result))
+      Output.error_message(
+        "Unknown or duplicate MCP bridge result for " + operation + " id " + quote(id))
 
   /* The map removal is the Scala bridge race.  Exactly one of a normal
      protocol result or cancellation owns the promise.  Send cancellation
      only after the initial bridge command has been enqueued; always fulfill
      the local promise even if the session is already stopping. */
-  private def cancel_bridge(
-    promises: Synchronized[Map[String, Promise[MCP_Session.Result]]],
-    id: String
+  private def cancel_bridge[A](
+    routes: BridgeRoutes[A],
+    id: String,
+    cancelled: Exn.Result[A]
   ): Unit =
-    take_bridge_promise(promises, id).foreach { promise =>
+    routes.remove(id).foreach { promise =>
       try session.protocol_command_raw("MCP.cancel", List(Bytes(id)))
-      finally promise.fulfill(bridge_cancelled)
+      finally promise.fulfill_result(cancelled)
     }
 
-  private def cancel_all_bridges(
-    promises: Synchronized[Map[String, Promise[MCP_Session.Result]]]
+  private def cancel_all_bridges[A](
+    routes: BridgeRoutes[A],
+    cancelled: Exn.Result[A]
   ): Unit = {
-    val pending = promises.change_result(current => (current.toList, Map.empty))
-    pending.foreach { case (id, promise) =>
+    routes.drain().foreach { case (id, promise) =>
       try session.protocol_command_raw("MCP.cancel", List(Bytes(id)))
       catch { case NonFatal(_) => () }
-      finally promise.fulfill(bridge_cancelled)
+      finally promise.fulfill_result(cancelled)
     }
+  }
+
+  private def bridge_call[A](
+    routes: BridgeRoutes[A],
+    command: String,
+    arguments: String => List[Bytes],
+    cancellation: McpApplication.Cancellation,
+    cancelled: Exn.Result[A]
+  ): A = {
+    val id = UUID.random().toString
+    val promise = routes.register(id)
+    try session.protocol_command_raw(command, arguments(id))
+    catch {
+      case exn: Throwable =>
+        routes.remove(id)
+        throw exn
+    }
+    cancellation.onCancel(() => cancel_bridge(routes, id, cancelled))
+    promise.join
   }
 
   private object Handler extends Session.Protocol_Handler {
     private def tools_result(msg: Prover.Protocol_Output): Boolean = {
-      val tools = MCP_Session.decode_tools_reply(YXML.parse_body(msg.chunk))
-      tools_promises.change { promises =>
-        promises.reverse.foreach(_.fulfill(tools))
-        Nil
+      Properties.get(msg.properties, "id") match {
+        case Some(id) =>
+          val tools = MCP_Session.decode_tools_reply(YXML.parse_body(msg.chunk))
+          complete_bridge(tools_routes, id, tools, "MCP.tools")
+          true
+        case None => false
       }
-      true
     }
 
-    private def theories_result(msg: Prover.Protocol_Output): Boolean = {
-      val theories = MCP_Session.decode_theories(YXML.parse_body(msg.chunk))
-      theories_promises.change { promises =>
-        promises.reverse.foreach(_.fulfill(theories))
-        Nil
+    private def theories_result(msg: Prover.Protocol_Output): Boolean =
+      Properties.get(msg.properties, "id") match {
+        case Some(id) =>
+          val theories = MCP_Session.decode_theories(YXML.parse_body(msg.chunk))
+          complete_bridge(theories_routes, id, theories, "MCP.theories")
+          true
+        case None => false
       }
-      true
-    }
 
     private def run_tool_result(msg: Prover.Protocol_Output): Boolean =
       Properties.get(msg.properties, "id") match {
@@ -548,7 +648,7 @@ class MCP_Session private(
               MCP_Session.Ok(msg.text)
             }
             else MCP_Session.Error(msg.text)
-          complete_bridge(run_promises, id, result)
+          complete_bridge(run_routes, id, result, "MCP.run_tool")
           true
         case None => false
       }
@@ -560,19 +660,19 @@ class MCP_Session private(
           val result =
             if (Properties.get(msg.properties, "status") == Some("ok")) MCP_Session.Ok(text)
             else MCP_Session.Error(text)
-          complete_bridge(ir_promises, id, result)
+          complete_bridge(ir_routes, id, result, "MCP.ir")
           true
         case None => false
       }
 
-    private def named_resources_result(msg: Prover.Protocol_Output): Boolean = {
-      val resources = MCP_Session.decode_resources(YXML.parse_body(msg.chunk))
-      named_resources_promises.change { promises =>
-        promises.reverse.foreach(_.fulfill(resources))
-        Nil
+    private def named_resources_result(msg: Prover.Protocol_Output): Boolean =
+      Properties.get(msg.properties, "id") match {
+        case Some(id) =>
+          val resources = MCP_Session.decode_resources(YXML.parse_body(msg.chunk))
+          complete_bridge(named_resources_routes, id, resources, "MCP.resources")
+          true
+        case None => false
       }
-      true
-    }
 
     private def read_resource_result(msg: Prover.Protocol_Output): Boolean =
       Properties.get(msg.properties, "id") match {
@@ -582,10 +682,7 @@ class MCP_Session private(
               MCP_Session.Ok(msg.text)
             }
             else MCP_Session.Error(msg.text)
-          read_resource_promises.change { promises =>
-            promises.get(id).foreach(_.fulfill(result))
-            promises - id
-          }
+          complete_bridge(read_resource_routes, id, result, "MCP.read_resource")
           true
         case None => false
       }
@@ -596,10 +693,7 @@ class MCP_Session private(
           val result =
             if (Properties.get(msg.properties, "status") == Some("ok")) MCP_Session.Ok(msg.text)
             else MCP_Session.Error(msg.text)
-          check_designation_promises.change { promises =>
-            promises.get(id).foreach(_.fulfill(result))
-            promises - id
-          }
+          complete_bridge(check_designation_routes, id, result, "MCP.check_designation")
           true
         case None => false
       }
@@ -644,20 +738,30 @@ class MCP_Session private(
      ir argument payload, and that IS encoded because it rides
      encode_args. */
 
-  def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply = {
-    val promise = Future.promise[MCP_Session.Tools_Reply]
-    tools_promises.change(promise :: _)
-    session.protocol_command_raw("MCP.tools",
-      List(Bytes(designation), Bytes(MCP_Session.encode_names(bundles))))
-    promise.join
-  }
+  def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply =
+    ml_tools_cancellable(designation, bundles, McpApplication.Cancellation.Never)
 
-  def ml_theories(): List[String] = {
-    val promise = Future.promise[List[String]]
-    theories_promises.change(promise :: _)
-    session.protocol_command("MCP.theories")
-    promise.join
-  }
+  override def ml_tools_cancellable(designation: String, bundles: List[String],
+      cancellation: McpApplication.Cancellation): MCP_Session.Tools_Reply =
+    bridge_call(
+      tools_routes,
+      "MCP.tools",
+      id => List(
+        Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles))),
+      cancellation,
+      bridge_interrupted)
+
+  def ml_theories(): List[String] =
+    ml_theories_cancellable(McpApplication.Cancellation.Never)
+
+  private[mcp] def ml_theories_cancellable(
+      cancellation: McpApplication.Cancellation): List[String] =
+    bridge_call(
+      theories_routes,
+      "MCP.theories",
+      id => List(Bytes(id)),
+      cancellation,
+      bridge_interrupted)
 
   def ml_run(name: String, args: List[(String, String)],
       designation: String = "", bundles: List[String] = Nil): MCP_Session.Result =
@@ -665,23 +769,15 @@ class MCP_Session private(
 
   override def ml_run_cancellable(name: String, args: List[(String, String)],
       designation: String, bundles: List[String],
-      cancellation: McpApplication.Cancellation): MCP_Session.Result = {
-    val id = UUID.random().toString
-    val promise = Future.promise[MCP_Session.Result]
-    run_promises.change(_ + (id -> promise))
-    try {
-      session.protocol_command_raw("MCP.run_tool",
-        List(Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles)), Bytes(name),
-          Bytes(MCP_Session.encode_args(args))))
-    }
-    catch {
-      case exn: Throwable =>
-        take_bridge_promise(run_promises, id)
-        throw exn
-    }
-    cancellation.onCancel(() => cancel_bridge(run_promises, id))
-    promise.join
-  }
+      cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    bridge_call(
+      run_routes,
+      "MCP.run_tool",
+      id => List(
+        Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles)), Bytes(name),
+        Bytes(MCP_Session.encode_args(args))),
+      cancellation,
+      Exn.Res(bridge_cancelled))
 
   /* tool_scope_set/tool_scope_include (plans/tool_scope): validate a
      candidate repl/bundle designation against the prover BEFORE the
@@ -689,14 +785,17 @@ class MCP_Session private(
      resolution phase but discarding the context -- only ok/error and
      the message matter here. The theory case needs no round trip
      (resolve_context_theory already validates + normalizes it). */
-  def check_designation(designation: String, bundles: List[String] = Nil): MCP_Session.Result = {
-    val id = UUID.random().toString
-    val promise = Future.promise[MCP_Session.Result]
-    check_designation_promises.change(_ + (id -> promise))
-    session.protocol_command_raw("MCP.check_designation",
-      List(Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles))))
-    promise.join
-  }
+  def check_designation(designation: String, bundles: List[String] = Nil): MCP_Session.Result =
+    check_designation_cancellable(designation, bundles, McpApplication.Cancellation.Never)
+
+  override def check_designation_cancellable(designation: String, bundles: List[String],
+      cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    bridge_call(
+      check_designation_routes,
+      "MCP.check_designation",
+      id => List(Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles))),
+      cancellation,
+      Exn.Res(bridge_cancelled))
 
   /* MCP.ir: the I/R engine dispatcher (MCP_Repl.thy), named args, async
      (a slow call must not block a concurrent fast one) */
@@ -704,46 +803,49 @@ class MCP_Session private(
     ir_cancellable(fname, args, McpApplication.Cancellation.Never)
 
   override def ir_cancellable(fname: String, args: List[(String, String)],
-      cancellation: McpApplication.Cancellation): MCP_Session.Result = {
-    val id = UUID.random().toString
-    val promise = Future.promise[MCP_Session.Result]
-    ir_promises.change(_ + (id -> promise))
-    try {
-      session.protocol_command_raw("MCP.ir",
-        List(Bytes(id), Bytes(fname), Bytes(MCP_Session.encode_args(args))))
-    }
-    catch {
-      case exn: Throwable =>
-        take_bridge_promise(ir_promises, id)
-        throw exn
-    }
-    cancellation.onCancel(() => cancel_bridge(ir_promises, id))
-    promise.join
-  }
+      cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    bridge_call(
+      ir_routes,
+      "MCP.ir",
+      id => List(Bytes(id), Bytes(fname), Bytes(MCP_Session.encode_args(args))),
+      cancellation,
+      Exn.Res(bridge_cancelled))
 
   /* isabelle://named/{name}: user-registered resources from MCP_Resource
      (MCP_Tools.thy), the mcp_tool/mcp_resource ML registry -- mirrors
      ml_tools()/ml_run() exactly (MCP_Resource is MCP_Tool's sibling). */
-  def ml_named_resources(designation: String = ""): List[(String, String)] = {
-    val promise = Future.promise[List[(String, String)]]
-    named_resources_promises.change(promise :: _)
-    session.protocol_command_raw("MCP.resources", List(Bytes(designation)))
-    promise.join
-  }
+  def ml_named_resources(designation: String = ""): List[(String, String)] =
+    ml_named_resources_cancellable(designation, McpApplication.Cancellation.Never)
 
-  def ml_read_resource(name: String, designation: String = ""): MCP_Session.Result = {
-    val id = UUID.random().toString
-    val promise = Future.promise[MCP_Session.Result]
-    read_resource_promises.change(_ + (id -> promise))
-    session.protocol_command_raw("MCP.read_resource",
-      List(Bytes(id), Bytes(designation), Bytes(name)))
-    promise.join
-  }
+  private[mcp] def ml_named_resources_cancellable(designation: String,
+      cancellation: McpApplication.Cancellation): List[(String, String)] =
+    bridge_call(
+      named_resources_routes,
+      "MCP.resources",
+      id => List(Bytes(id), Bytes(designation)),
+      cancellation,
+      bridge_interrupted)
+
+  def ml_read_resource(name: String, designation: String = ""): MCP_Session.Result =
+    ml_read_resource_cancellable(name, designation, McpApplication.Cancellation.Never)
+
+  private[mcp] def ml_read_resource_cancellable(name: String, designation: String,
+      cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    bridge_call(
+      read_resource_routes,
+      "MCP.read_resource",
+      id => List(Bytes(id), Bytes(designation), Bytes(name)),
+      cancellation,
+      Exn.Res(bridge_cancelled))
 
   /* isabelle://session: the cheap always-there overview (name, dirs, loaded
      theory, loaded theories via Thy_Info.get_names()) */
-  def mcp_resources(): List[(String, String, String)] = {
-    val rows = ml_named_resources()
+  def mcp_resources(): List[(String, String, String)] =
+    mcp_resources_cancellable(McpApplication.Cancellation.Never)
+
+  override def mcp_resources_cancellable(
+      cancellation: McpApplication.Cancellation): List[(String, String, String)] = {
+    val rows = ml_named_resources_cancellable("", cancellation)
     val exposed = MCP_Server.exposure(rows.map(_._1))
     val universe = known_theory_tiers()
     val regexes = scope_patterns.value.map(MCP_Session.glob_to_regex)
@@ -762,7 +864,7 @@ class MCP_Session private(
       val tier = universe.getOrElse(name, LoadedTier)
       ("isabelle://theory/" + name, name, "theory (" + tier.name + ")")
     } ++
-    active_repl_ids().map(id => ("isabelle://repl/" + id, id, "repl"))
+    active_repl_ids(cancellation).map(id => ("isabelle://repl/" + id, id, "repl"))
   }
 
   /* MCP.ir (fname "repls" included) is a protocol command defined ONLY by
@@ -783,9 +885,10 @@ class MCP_Session private(
      line per repl: "    ID (n steps..., from ..., ...)" -- the id is the
      token up to the first " (". */
   private val repl_line = """\A\s*(\S+) \(.*\)\z""".r
-  private def active_repl_ids(): List[String] =
+  private def active_repl_ids(
+      cancellation: McpApplication.Cancellation = McpApplication.Cancellation.Never): List[String] =
     if (!repl_bridge_available) Nil
-    else ir("repls", Nil) match {
+    else ir_cancellable("repls", Nil, cancellation) match {
       case MCP_Session.Ok(text) => text.linesIterator.collect({ case repl_line(id) => id }).toList
       case MCP_Session.Error(_) => Nil
     }
@@ -800,28 +903,35 @@ class MCP_Session private(
   private val not_yet_backed_uri = """\Aisabelle://(theory/[^/]+(?:/[a-z]+)?)\z""".r
 
   def mcp_resource_read(uri: String): MCP_Session.Result =
+    mcp_resource_read_cancellable(uri, McpApplication.Cancellation.Never)
+
+  override def mcp_resource_read_cancellable(uri: String,
+      cancellation: McpApplication.Cancellation): MCP_Session.Result =
     uri match {
       case "isabelle://session" =>
         MCP_Session.Ok(
           "session: " + session_name + "\n" +
           "dirs: " + session_dirs.map(_.implode).mkString(", ") + "\n" +
           "theory: " + theory + "\n" +
-          "theories: " + ml_theories().mkString(", "))
+          "theories: " + ml_theories_cancellable(cancellation).mkString(", "))
       /* isabelle://repl/{id} and .../text (spec's resource templates):
          thin dispatch onto the same MCP.ir bridge repl_show/repl_text
          use, so a REPL is readable as a resource with no separate
          backing mechanism. */
-      case repl_text_uri(repl_id) => ir("text", List("repl" -> repl_id))
-      case repl_uri(repl_id) => ir("show", List("repl" -> repl_id))
+      case repl_text_uri(repl_id) =>
+        ir_cancellable("text", List("repl" -> repl_id), cancellation)
+      case repl_uri(repl_id) =>
+        ir_cancellable("show", List("repl" -> repl_id), cancellation)
       /* isabelle://named/{name}: thin dispatch onto MCP_Resource's own
          registry via the MCP.read_resource protocol command -- mirrors
          MCP.run_tool exactly (see ml_read_resource above). The uri holds
          the EXPOSED name; resolve it back to the full internal name
          through the same exposure map resources/list used. */
       case named_uri(name) =>
-        val exposed = MCP_Server.exposure(ml_named_resources().map(_._1))
+        val exposed =
+          MCP_Server.exposure(ml_named_resources_cancellable("", cancellation).map(_._1))
         val internal = exposed.collectFirst({ case (i, x) if x == name => i }).getOrElse(name)
-        ml_read_resource(internal)
+        ml_read_resource_cancellable(internal, "", cancellation)
       /* isabelle://theory/{name}/diagnostics: unblocked by wave 2
          (load_theory/check_theory), per the plans' gating chain. */
       case theory_diagnostics_uri(name) => theory_diagnostics(name)
@@ -843,8 +953,9 @@ class MCP_Session private(
          -- Headless.Session.use_theories goes through the PIDE
          document model, not Thy_Info, so they never have segments. */
       case theory_commands_uri(name) if image_tier(name) =>
-        ir("source_map",
-          List("theory_name" -> image_theory(name).get, "start" -> "0", "stop" -> "-1"))
+        ir_cancellable("source_map",
+          List("theory_name" -> image_theory(name).get, "start" -> "0", "stop" -> "-1"),
+          cancellation)
       case theory_commands_uri(name) =>
         resolve_theory(name) match {
           case Some((_, FileSystemTier(_))) =>
@@ -862,8 +973,9 @@ class MCP_Session private(
               "templates section")
         }
       case theory_source_uri(name) if image_tier(name) =>
-        ir("source",
-          List("theory_name" -> image_theory(name).get, "start" -> "0", "stop" -> "-1"))
+        ir_cancellable("source",
+          List("theory_name" -> image_theory(name).get, "start" -> "0", "stop" -> "-1"),
+          cancellation)
       case theory_source_uri(name) =>
         resolve_theory(name) match {
           case Some((_, FileSystemTier(path))) =>
@@ -891,7 +1003,7 @@ class MCP_Session private(
          Loaded (wave-2) tier via PIDE entity-def markup on the live
          snapshot -- see theory_entities below. Filesystem (never
          loaded) theories still fall through to not_yet_backed_uri. */
-      case theory_entities_uri(name) => theory_entities(name)
+      case theory_entities_uri(name) => theory_entities(name, cancellation)
       /* documented templates (resource_templates in mcp_server.scala)
          whose backing needs a later wave -- only true for unknown theories
          now (steps 2-3 backed all documented paths). */
@@ -1079,10 +1191,11 @@ class MCP_Session private(
      template, not backed yet" text the generic not_yet_backed_uri
      fallback uses, since there is no PIDE snapshot and no image
      name-space to query. */
-  private def theory_entities(name: String): MCP_Session.Result = {
+  private def theory_entities(name: String,
+      cancellation: McpApplication.Cancellation): MCP_Session.Result = {
     resolve_theory(name) match {
       case Some((resolved, ImageTier)) =>
-        ir("entities", List("theory_name" -> resolved))
+        ir_cancellable("entities", List("theory_name" -> resolved), cancellation)
       case Some((_, LoadedTier)) =>
         theory_master_dirs.value.get(name) match {
           case Some(master_dir) =>
@@ -1195,7 +1308,11 @@ class MCP_Session private(
     MCP_Session.Ok((notes :+ remaining_line).mkString("\n"))
   }
 
-  def scope_show(): MCP_Session.Result = {
+  def scope_show(): MCP_Session.Result =
+    scope_show_cancellable(McpApplication.Cancellation.Never)
+
+  override def scope_show_cancellable(
+      cancellation: McpApplication.Cancellation): MCP_Session.Result = {
     val universe = known_theory_tiers()
     val patterns = scope_patterns.value
     val pattern_lines =
@@ -1212,11 +1329,11 @@ class MCP_Session private(
       else "theories:" :: scoped_theories.map { name =>
         "  " + name + " (" + universe.getOrElse(name, LoadedTier).name + ")"
       }
-    val repl_ids = active_repl_ids()
+    val repl_ids = active_repl_ids(cancellation)
     val repl_lines =
       if (repl_ids.isEmpty) List("repls: (none)")
       else "repls:" :: repl_ids.map("  " + _)
-    val rows = ml_named_resources()
+    val rows = ml_named_resources_cancellable("", cancellation)
     val exposed = MCP_Server.exposure(rows.map(_._1))
     val named_names = rows.flatMap { case (name, _) => exposed.get(name) }
     val named_lines =
@@ -1260,19 +1377,20 @@ class MCP_Session private(
     }
   }
 
-  def load_theory(name: String, master_dir: String): MCP_Session.Result = {
-    val resolved_master_dir =
-      if (master_dir.isEmpty) {
-        resolve_theory(name) match {
-          case Some((_, FileSystemTier(path))) =>
-            File.standard_path(path.dir)
-          case Some((_, _)) => master_dir
-          case None => master_dir
+  def load_theory(name: String, master_dir: String): MCP_Session.Result =
+    serialized_theory_mutation {
+      val resolved_master_dir =
+        if (master_dir.isEmpty) {
+          resolve_theory(name) match {
+            case Some((_, FileSystemTier(path))) =>
+              File.standard_path(path.dir)
+            case Some((_, _)) => master_dir
+            case None => master_dir
+          }
         }
-      }
-      else master_dir
-    use_theories_result(name, resolved_master_dir)
-  }
+        else master_dir
+      use_theories_result(name, resolved_master_dir)
+    }
 
   /* unlike check_theory, unload_theory needs an actual document-level
      removal, not just a fresh use_theories call -- so it goes through
@@ -1286,22 +1404,23 @@ class MCP_Session private(
      "required" past the end of its own use_theories call (see
      Headless.Session.use_theories' finally-block auto-unload), so
      nothing else should be pinned required when this runs. */
-  def unload_theory(name: String): MCP_Session.Result = {
-    if (image_tier(name)) {
-      MCP_Session.Error(
-        "Cannot unload " + quote(name) + ": it is baked into the base image (image tier)")
+  def unload_theory(name: String): MCP_Session.Result =
+    serialized_theory_mutation {
+      if (image_tier(name)) {
+        MCP_Session.Error(
+          "Cannot unload " + quote(name) + ": it is baked into the base image (image tier)")
+      }
+      else theory_master_dirs.value.get(name) match {
+        case None => MCP_Session.Error("Cannot unload " + quote(name) + ": it was not loaded")
+        case Some(master_dir) =>
+          val node_name =
+            session.resources.import_name(
+              Sessions.DRAFT, session.master_directory(master_dir), name)
+          session.resources.clean_theories(session, UUID.random(), List(node_name))
+          theory_master_dirs.change(_ - name)
+          MCP_Session.Ok("Unloaded " + quote(node_name.theory))
+      }
     }
-    else theory_master_dirs.value.get(name) match {
-      case None => MCP_Session.Error("Cannot unload " + quote(name) + ": it was not loaded")
-      case Some(master_dir) =>
-        val node_name =
-          session.resources.import_name(
-            Sessions.DRAFT, session.master_directory(master_dir), name)
-        session.resources.clean_theories(session, UUID.random(), List(node_name))
-        theory_master_dirs.change(_ - name)
-        MCP_Session.Ok("Unloaded " + quote(node_name.theory))
-    }
-  }
 
   /* check_theory: NO explicit purge before reload (a correction of the
      plan's original "purge before re-reading" assumption, pinned here
@@ -1316,19 +1435,20 @@ class MCP_Session private(
      syntax errors). use_theories reads the file fresh and diffs against
      its OWN correctly-tracked prior content on every call, so a plain
      re-run already picks up on-disk edits with no purge needed. */
-  def check_theory(name: String, master_dir: String): MCP_Session.Result = {
-    val resolved_master_dir =
-      if (master_dir.isEmpty) {
-        resolve_theory(name) match {
-          case Some((_, FileSystemTier(path))) =>
-            File.standard_path(path.dir)
-          case Some((_, _)) => master_dir
-          case None => master_dir
+  def check_theory(name: String, master_dir: String): MCP_Session.Result =
+    serialized_theory_mutation {
+      val resolved_master_dir =
+        if (master_dir.isEmpty) {
+          resolve_theory(name) match {
+            case Some((_, FileSystemTier(path))) =>
+              File.standard_path(path.dir)
+            case Some((_, _)) => master_dir
+            case None => master_dir
+          }
         }
-      }
-      else master_dir
-    use_theories_result(name, resolved_master_dir)
-  }
+        else master_dir
+      use_theories_result(name, resolved_master_dir)
+    }
 
   /* wave 3 library discovery tools: pure functions over structure/deps
      maps and store (no prover) */
@@ -1441,8 +1561,16 @@ class MCP_Session private(
   }
 
   def stop(): Unit = {
-    cancel_all_bridges(run_promises)
-    cancel_all_bridges(ir_promises)
+    val direct_operations = begin_direct_shutdown()
+    cancel_all_bridges(tools_routes, bridge_interrupted)
+    cancel_all_bridges(theories_routes, bridge_interrupted)
+    cancel_all_bridges(run_routes, Exn.Res(bridge_cancelled))
+    cancel_all_bridges(ir_routes, Exn.Res(bridge_cancelled))
+    cancel_all_bridges(named_resources_routes, bridge_interrupted)
+    cancel_all_bridges(read_resource_routes, Exn.Res(bridge_cancelled))
+    cancel_all_bridges(check_designation_routes, Exn.Res(bridge_cancelled))
+    direct_operations.foreach(_.interrupt())
+    direct_operations.foreach(_.done.join)
     session.stop()
     ()
   }

@@ -117,17 +117,17 @@ private[application] final class IsabelleMcpApplication(
         "(declare [[mcp_tools del: ...]] or a closed bundle).",
       input_schema = JSON.Object("type" -> "object"),
       annotations = MCP_Server.read_only_annotations,
-      handler_fn = Some((backend, _, _) => {
+      handler_fn = Some((backend, _, cancellation) => {
         val sc = scope.value
         val bundles_text = if (sc.bundles.isEmpty) "none" else sc.bundles.mkString(", ")
-        backend.check_designation(sc.designation, sc.bundles) match {
+        backend.check_designation_cancellable(sc.designation, sc.bundles, cancellation) match {
           case MCP_Session.Error(msg) =>
             MCP_Session.Ok(
               "Tool scope: " + MCP_Server.format_designation(sc.designation) + " (BROKEN: " + msg +
                 ") -- use tool_scope_set to point it at a valid theory or repl\n" +
                 "Included bundles: " + bundles_text)
           case MCP_Session.Ok(_) =>
-            val rows = backend.ml_tools(sc.designation, sc.bundles).rows
+            val rows = backend.ml_tools_cancellable(sc.designation, sc.bundles, cancellation).rows
             MCP_Session.Ok(
               "Tool scope: " + MCP_Server.format_designation(sc.designation) + "\n" +
                 "Included bundles: " + bundles_text + "\n" +
@@ -156,7 +156,7 @@ private[application] final class IsabelleMcpApplication(
             "repl" -> JSON.Object("type" -> "string")),
           "required" -> List()),
       annotations = MCP_Server.mutating_annotations,
-      handler_fn = Some((backend, args, _) => {
+      handler_fn = Some((backend, args, cancellation) => {
         val theory = args.collectFirst({ case ("theory", v) => v })
         val repl = args.collectFirst({ case ("repl", v) => v })
         (theory, repl) match {
@@ -175,7 +175,7 @@ private[application] final class IsabelleMcpApplication(
             }
           case (None, Some(r)) =>
             val candidate = "repl:" + r
-            backend.check_designation(candidate) match {
+            backend.check_designation_cancellable(candidate, Nil, cancellation) match {
               case MCP_Session.Ok(_) =>
                 scope.change(_ => Scope(candidate, Nil))
                 MCP_Session.Ok("Tool scope set to repl " + quote(r))
@@ -201,11 +201,11 @@ private[application] final class IsabelleMcpApplication(
               JSON.Object("type" -> "array", "items" -> JSON.Object("type" -> "string"))),
           "required" -> List("bundles")),
       annotations = MCP_Server.mutating_annotations,
-      handler_fn = Some((backend, args, _) => {
+      handler_fn = Some((backend, args, cancellation) => {
         val bundles = args.collect({ case ("bundles", v) => v })
         val sc = scope.value
         val candidate = sc.bundles ++ bundles
-        backend.check_designation(sc.designation, candidate) match {
+        backend.check_designation_cancellable(sc.designation, candidate, cancellation) match {
           case MCP_Session.Ok(_) =>
             val applied =
               scope.change_result(cur =>
@@ -225,7 +225,7 @@ private[application] final class IsabelleMcpApplication(
   private def all_builtins: List[MCP_Server.Builtin_Tool] =
     MCP_Server.builtins ++ tool_scope_builtins
 
-  private def tools_list(): Outcome = {
+  private def tools_list(cancellation: Cancellation): Outcome = {
     val builtins = all_builtins
     readiness() match {
       case McpApplication.Not_Ready(_) | McpApplication.Failed(_) =>
@@ -234,7 +234,7 @@ private[application] final class IsabelleMcpApplication(
       case McpApplication.Ready(backend) =>
         val builtin_names = builtins.map(_.name).toSet
         val sc = scope.value
-        val reply = backend.ml_tools(sc.designation, sc.bundles)
+        val reply = backend.ml_tools_cancellable(sc.designation, sc.bundles, cancellation)
         val hidden = reply.builtin_activation.collect({ case (name, false) => name }).toSet
         val builtin_json = builtins.filterNot(tool => hidden(tool.name)).map(tool_json)
         val exposed = MCP_Server.exposure(reply.rows.map(_.name), builtin_names)
@@ -276,7 +276,7 @@ private[application] final class IsabelleMcpApplication(
             val sc = scope.value
             val exposed =
               MCP_Server.exposure(
-                backend.ml_tools(sc.designation, sc.bundles).rows.map(_.name),
+                backend.ml_tools_cancellable(sc.designation, sc.bundles, cancellation).rows.map(_.name),
                 all_builtins.map(_.name).toSet)
             val internal = exposed.collectFirst({ case (full, visible) if visible == name => full })
               .getOrElse(name)
@@ -287,23 +287,23 @@ private[application] final class IsabelleMcpApplication(
         }
     }
 
-  private def resources_list(): Outcome =
+  private def resources_list(cancellation: Cancellation): Outcome =
     readiness() match {
       case McpApplication.Not_Ready(_) | McpApplication.Failed(_) =>
         Outcome.Result(JSON.Object("resources" -> List(
           JSON.Object("uri" -> "isabelle://session", "name" -> "session",
             "description" -> "current session name, dirs, loaded theories"))))
       case McpApplication.Ready(backend) =>
-        val resources = backend.mcp_resources().map({ case (uri, name, description) =>
+        val resources = backend.mcp_resources_cancellable(cancellation).map({ case (uri, name, description) =>
           JSON.Object("uri" -> uri, "name" -> name, "description" -> description)
         })
         Outcome.Result(JSON.Object("resources" -> resources))
     }
 
-  private def resources_read(uri: String): Outcome =
+  private def resources_read(uri: String, cancellation: Cancellation): Outcome =
     readiness() match {
       case McpApplication.Ready(backend) =>
-        backend.mcp_resource_read(uri) match {
+        backend.mcp_resource_read_cancellable(uri, cancellation) match {
           case MCP_Session.Ok(text) =>
             Outcome.Result(MCP_Server.resource_contents(uri, text))
           case MCP_Session.Error(message) => Outcome.InvalidParams(message)
@@ -320,11 +320,11 @@ private[application] final class IsabelleMcpApplication(
 
   def execute(operation: Operation, cancellation: Cancellation): Outcome =
     operation match {
-      case Operation.ToolsList => tools_list()
+      case Operation.ToolsList => tools_list(cancellation)
       case Operation.ToolsCall(name, arguments) => tools_call(name, arguments, cancellation)
-      case Operation.ResourcesList => resources_list()
+      case Operation.ResourcesList => resources_list(cancellation)
       case Operation.ResourceTemplatesList =>
         Outcome.Result(JSON.Object("resourceTemplates" -> MCP_Server.resource_templates))
-      case Operation.ResourcesRead(uri) => resources_read(uri)
+      case Operation.ResourcesRead(uri) => resources_read(uri, cancellation)
     }
 }

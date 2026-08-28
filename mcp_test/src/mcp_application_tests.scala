@@ -74,3 +74,28 @@ class MCP_Application_Tests extends MCP_Suite {
     assertEquals(get(ping, "result"), JSON.Object())
   }
 }
+
+
+class MCP_Bridge_Routes_Tests extends MCP_Suite {
+  spec_test("bridge routes resolve reverse-order replies by id and reject duplicates",
+      covers = List("connection_kernel#T11")) {
+    val routes = new BridgeRoutes[String]
+    val first = routes.register("first")
+    val second = routes.register("second")
+
+    assert(routes.complete("second", "reply-second"))
+    assert(routes.complete("first", "reply-first"))
+    assertEquals(first.join, "reply-first")
+    assertEquals(second.join, "reply-second")
+    assert(!routes.complete("second", "duplicate"))
+    assert(!routes.complete("unknown", "forged"))
+  }
+
+  test("bridge route drain transfers every pending promise exactly once") {
+    val routes = new BridgeRoutes[Int]
+    routes.register("a")
+    routes.register("b")
+    assertEquals(routes.drain().map(_._1).toSet, Set("a", "b"))
+    assertEquals(routes.drain(), Nil)
+  }
+}

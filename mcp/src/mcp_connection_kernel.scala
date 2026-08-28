@@ -446,6 +446,14 @@ final class ConnectionKernel private (
         }
       }
       catch {
+        /* Cooperative interruption is an expected late worker outcome once
+           cancellation, timeout, or shutdown already owns the registry
+           entry.  Convert it into a disposition so the scheduler thread does
+           not leak an uncaught InterruptedException; the terminal race below
+           suppresses its placeholder response. */
+        case exn if Exn.is_interrupt(exn) && request.cancellation.isCancelled =>
+          (RequestRegistry.WorkerDisposition.Exception,
+            errorResponse(request.id, ConnectionKernel.InternalError, "Internal error"))
         case NonFatal(exn) if !Exn.is_interrupt(exn) =>
           (RequestRegistry.WorkerDisposition.Exception,
             errorResponse(request.id, ConnectionKernel.InternalError, "Internal error"))

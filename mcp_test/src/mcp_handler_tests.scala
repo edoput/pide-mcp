@@ -263,23 +263,65 @@ class MCP_Readiness_Tests extends MCP_Suite {
 /* tools: ML-registry tools, the builtin table rows, and their dispatch */
 
 class MCP_Tools_Tests extends MCP_Suite {
-  spec_test("application forwards the connection cancellation handle to ML and IR bridges",
+  spec_test("application forwards the connection cancellation handle to every prover-backed path",
       covers = List("connection_kernel#T4")) {
     class Cancellable_Backend extends Fake_Backend {
       var mlCancellation: Option[McpApplication.Cancellation] = None
       var irCancellation: Option[McpApplication.Cancellation] = None
+      var forwarded = List.empty[(String, McpApplication.Cancellation)]
+
+      private def record(name: String, cancellation: McpApplication.Cancellation): Unit =
+        forwarded = forwarded :+ (name -> cancellation)
+
+      override def direct_cancellable[A](
+          cancellation: McpApplication.Cancellation)(body: => A): A = {
+        record("direct", cancellation)
+        body
+      }
+
+      override def ml_tools_cancellable(designation: String, bundles: List[String],
+          cancellation: McpApplication.Cancellation): MCP_Session.Tools_Reply = {
+        record("tools", cancellation)
+        super.ml_tools(designation, bundles)
+      }
 
       override def ml_run_cancellable(name: String, args: List[(String, String)],
           designation: String, bundles: List[String],
           cancellation: McpApplication.Cancellation): MCP_Session.Result = {
         mlCancellation = Some(cancellation)
+        record("run", cancellation)
         super.ml_run(name, args, designation, bundles)
       }
 
       override def ir_cancellable(fname: String, args: List[(String, String)],
           cancellation: McpApplication.Cancellation): MCP_Session.Result = {
         irCancellation = Some(cancellation)
+        record("ir", cancellation)
         super.ir(fname, args)
+      }
+
+      override def check_designation_cancellable(designation: String, bundles: List[String],
+          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
+        record("designation", cancellation)
+        super.check_designation(designation, bundles)
+      }
+
+      override def mcp_resources_cancellable(
+          cancellation: McpApplication.Cancellation): List[(String, String, String)] = {
+        record("resources-list", cancellation)
+        super.mcp_resources()
+      }
+
+      override def mcp_resource_read_cancellable(uri: String,
+          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
+        record("resources-read", cancellation)
+        super.mcp_resource_read(uri)
+      }
+
+      override def scope_show_cancellable(
+          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
+        record("scope-show", cancellation)
+        super.scope_show()
       }
     }
 
@@ -295,8 +337,21 @@ class MCP_Tools_Tests extends MCP_Suite {
       cancellation)
     application.execute(
       McpApplication.Operation.ToolsCall("repl_list", JSON.Object()), cancellation)
+    application.execute(McpApplication.Operation.ToolsList, cancellation)
+    application.execute(McpApplication.Operation.ResourcesList, cancellation)
+    application.execute(
+      McpApplication.Operation.ResourcesRead("isabelle://session"), cancellation)
+    application.execute(
+      McpApplication.Operation.ToolsCall("tool_scope_show", JSON.Object()), cancellation)
+    application.execute(
+      McpApplication.Operation.ToolsCall("scope_show", JSON.Object()), cancellation)
     assert(backend.mlCancellation.exists(_ eq cancellation))
     assert(backend.irCancellation.exists(_ eq cancellation))
+    assertEquals(
+      backend.forwarded.map(_._1).toSet,
+      Set("tools", "run", "ir", "resources-list", "resources-read", "designation",
+        "scope-show", "direct"))
+    assert(backend.forwarded.forall(_._2 eq cancellation))
   }
 
   private def start_server(body: => Unit): (Thread, AtomicReference[Throwable]) = {

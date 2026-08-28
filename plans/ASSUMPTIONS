@@ -24,6 +24,7 @@ connection_kernel#D2      unstated                  Lifecycle, cancellation, pin
 connection_kernel#D3      unstated                  Policy is a nested Scala value with named construction, validated opaque leaf types, no correctness-affecting defaults, and one options-to-policy comp
 connection_kernel#D4      unstated                  Registry invariant detection is fixed inside the connection kernel; FailFast, LogAndClose, and MarkBroken reactions are replaceable control-plane poli
 connection_kernel#D5      unstated                  The implementation remains on MCP revision 2025-03-26 and accepts JSON-RPC batches only because that revision requires batch reception; no product beh
+connection_kernel#D6      unstated                  Every concurrently callable Scala-to-ML round trip has a request-unique internal route; a reply completes only that route, and cancellation or shutdow
 connection_kernel#Q1      unstated                  Which MCP revision and batch behavior does this remediation target?
 connection_kernel#T1      scala-unit                Protocol fixtures cover valid and invalid requests, notifications, IDs, parameters, malformed JSON, and MCP 2025-03-26 wire responses without starting
 connection_kernel#T2      e2e,scala-unit            A lifecycle transition table accepts only initialize in Fresh, initialized notification and ping in AwaitingInitialized, normal operations in Ready, a
@@ -35,6 +36,8 @@ connection_kernel#T7      e2e,scala-unit            EOF with zero, one, and many
 connection_kernel#T8      scala-unit                Contract suites run unchanged against stdio and scripted data planes and against bounded-concurrent and deterministic-sequential schedulers.
 connection_kernel#T9      e2e,scala-unit            MCP Ready can coexist with Isabelle NotReady, Ready, or Failed; lifecycle acceptance is unchanged while application results truthfully report backend
 connection_kernel#T10     e2e,scala-unit            Batch fixtures cover mixed requests and notifications, notification-only and empty batches, initialize-in-batch rejection, per-element admission limit
+connection_kernel#T11     bridge,scala-unit         Concurrent tool catalogs, theory catalogs, named-resource catalogs, resource reads, and designation checks retain request-unique routes; distinguishab
+connection_kernel#T12     bridge                    Concurrent load, check, and unload operations are serialized around PIDE document mutation, cancellation while waiting is interruptible, and backend s
 doc_list#D1               unstated                  document_variants parsing: the option value is a ":"-separated variant list, each variant "name" or "name=tags" (see Document_Build in Pure). the doc
 doc_list#Q1               unstated                  where the catalog struct lives: mcp_session.scala already owns the startup structure/deps; a small Doc_Catalog object in mcp/src (own file or inside m
 doc_list#D2               unstated                  Doc.contents needs ML_Settings (the examples section expands $ML_SOURCES): ML_Settings.init() at startup, once. if init proves awkward in the server c

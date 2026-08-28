@@ -9,7 +9,11 @@ Fake_Backend cannot cover.
 package isabelle.mcp
 
 import isabelle._
-import isabelle.mcp.connection.{RequestId, RequestRegistry}
+import isabelle.mcp.connection._
+import isabelle.mcp.application.McpApplication
+import isabelle.mcp.protocol.JsonRpc
+import isabelle.mcp.transport.ScriptedDataPlane
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 
 /* protocol-command bridge: MCP.run_tool + resources over MCP-Tools */
@@ -644,6 +648,105 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     }
   }
 
+  spec_test("composed direct builtins serialize theory mutation and cancel a lock waiter",
+      covers = List("connection_kernel#T12")) {
+    with_fixture_dir("SerializedMutation" -> wave2_theory("SerializedMutation", wave2_good)) {
+      dir =>
+        def checked[A](value: Either[String, A]): A = value.fold(error, identity)
+        val policy = ConnectionPolicy(
+          revision = ProtocolRevision.V2025_03_26,
+          admission = ConnectionPolicy.AdmissionPolicy(
+            checked(ConnectionPolicy.MaxInFlight.checked(2))),
+          timing = ConnectionPolicy.TimingPolicy(
+            checked(ConnectionPolicy.RequestTimeout.checked(10.0)),
+            checked(ConnectionPolicy.ShutdownDrain.checked(2.0))))
+        val plane = new ScriptedDataPlane(Nil)
+        val rules = new Mcp2025RevisionRules
+        val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
+        val application = McpApplication.isabelle(
+          () => McpApplication.Ready(session), "MCP-HOL", Nil, "MCP_Repl")
+        val kernel = ConnectionKernel(
+          policy = policy,
+          dataPlane = plane,
+          revisionRules = rules,
+          scheduler = new BoundedConcurrentScheduler(2, "theory-mutation-kernel"),
+          deadlineScheduler = new ManualDeadlineScheduler,
+          registry = registry,
+          application = application,
+          serverInfo = ConnectionKernel.ServerInfo("test", "test"))
+
+        def request(id: Option[String], method: String,
+            params: Option[JSON.Object.T] = None): RevisionRules.Message = {
+          var json = JSON.Object("jsonrpc" -> "2.0", "method" -> method)
+          id.foreach(value => json += ("id" -> value))
+          params.foreach(value => json += ("params" -> value))
+          rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(json)))
+        }
+        def call(id: String, name: String, arguments: JSON.Object.T): Unit =
+          kernel.handle(request(Some(id), "tools/call",
+            Some(JSON.Object("name" -> name, "arguments" -> arguments))))
+        def response(id: String): Option[JSON.T] =
+          plane.written.iterator.flatMap(JSON.Format.unapply).find(json =>
+            JSON.string(json, "id").contains(id))
+        def successful(id: String): Boolean =
+          response(id).exists(json =>
+            JSON.value(json, "result").flatMap(JSON.bool(_, "isError")) != Some(true) &&
+              JSON.value(json, "error").isEmpty)
+
+        val entered = new CountDownLatch(1)
+        val release = new CountDownLatch(1)
+        val first = new java.util.concurrent.atomic.AtomicBoolean(true)
+        session.set_theory_mutation_probe(() => {
+          if (first.compareAndSet(true, false)) {
+            entered.countDown()
+            if (!release.await(5, TimeUnit.SECONDS))
+              error("theory mutation fixture release timed out")
+          }
+        })
+
+        try {
+          kernel.handle(request(Some("init"), "initialize",
+            Some(JSON.Object("protocolVersion" -> ProtocolRevision.V2025_03_26.value))))
+          kernel.handle(request(None, "notifications/initialized"))
+          val masterDir = File.standard_path(dir)
+          call("load", "load_theory",
+            JSON.Object("name" -> "SerializedMutation", "master_dir" -> masterDir))
+          assert(entered.await(5, TimeUnit.SECONDS), "load_theory did not enter mutation gate")
+
+          call("cancelled-check", "check_theory",
+            JSON.Object("name" -> "SerializedMutation", "master_dir" -> masterDir))
+          eventually("check_theory was not admitted behind load_theory", Time.seconds(2.0)) {
+            registry.snapshot.activeIds.contains(RequestId.string("cancelled-check"))
+          }
+          kernel.handle(request(None, "notifications/cancelled",
+            Some(JSON.Object("requestId" -> "cancelled-check", "reason" -> "gate fixture"))))
+          eventually("cancelled lock waiter retained connection capacity", Time.seconds(2.0)) {
+            !registry.snapshot.activeIds.contains(RequestId.string("cancelled-check"))
+          }
+          release.countDown()
+
+          eventually("load_theory did not complete after releasing mutation gate",
+              Time.seconds(5.0)) { successful("load") }
+          call("check", "check_theory",
+            JSON.Object("name" -> "SerializedMutation", "master_dir" -> masterDir))
+          eventually("check_theory did not run after cancelled waiter", Time.seconds(5.0)) {
+            successful("check")
+          }
+          call("unload", "unload_theory", JSON.Object("name" -> "SerializedMutation"))
+          eventually("unload_theory did not run after check_theory", Time.seconds(5.0)) {
+            successful("unload")
+          }
+          assert(response("cancelled-check").isEmpty,
+            "client-cancelled check_theory emitted a response")
+        }
+        finally {
+          release.countDown()
+          session.set_theory_mutation_probe(() => ())
+          kernel.drainAndClose()
+        }
+    }
+  }
+
   spec_test("wave 2: THE staleness case: purge-before-reload picks up an on-disk edit",
       covers = List("check_theory#T1")) {
     with_fixture_dir("Wave2Stale" -> wave2_theory("Wave2Stale", wave2_good)) { dir =>
@@ -1264,6 +1367,164 @@ class MCP_Run_Tool_Async_Tests
     session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
       .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
 
+  spec_test("bridge routes correlate concurrent distinguishable catalogs and resources",
+      covers = List("connection_kernel#T11")) {
+    val probes: List[(String, () => Boolean)] = List(
+      "valid tools" -> (() =>
+        session.ml_tools(test_theory).rows.exists(_.name == "MCP_Tools_Tests.capture_ok")),
+      "invalid tools" -> (() => session.ml_tools("No_Such_Theory").rows.isEmpty),
+      "valid resources" -> (() =>
+        session.ml_named_resources(test_theory)
+          .exists(_._1 == "MCP_Tools_Tests.slow_resource")),
+      "invalid resources" -> (() => session.ml_named_resources("No_Such_Theory").isEmpty),
+      "valid designation" -> (() =>
+        session.check_designation(test_theory).isInstanceOf[MCP_Session.Ok]),
+      "invalid designation" -> (() =>
+        session.check_designation("No_Such_Theory").isInstanceOf[MCP_Session.Error]),
+      "valid resource read" -> (() =>
+        session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory).ok),
+      "invalid resource read" -> (() =>
+        !session.ml_read_resource("MCP_Tools_Tests.no_such_resource", test_theory).ok),
+      "theory catalog A" -> (() => session.ml_theories().contains(test_theory)),
+      "theory catalog B" -> (() => session.ml_theories().contains(test_theory)))
+
+    val ready = new CountDownLatch(probes.length)
+    val release = new CountDownLatch(1)
+    val results = probes.zipWithIndex.map { case ((label, probe), index) =>
+      label -> Future.thread(name = "bridge-route-probe-" + index, daemon = true) {
+        ready.countDown()
+        if (!release.await(5, TimeUnit.SECONDS)) error("bridge route start barrier timed out")
+        probe()
+      }
+    }
+    assert(ready.await(5, TimeUnit.SECONDS), "concurrent bridge probes did not reach barrier")
+    release.countDown()
+    results.foreach { case (label, result) =>
+      assert(result.join, label + " received another request's bridge reply")
+    }
+  }
+
+  spec_test("named-resource bridge cancellation returns promptly and remains usable",
+      covers = List("connection_kernel#T11", "connection_kernel#T4")) {
+    val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
+    val requestId = RequestId.string("live-resource-cancel")
+    val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
+      case value: RequestRegistry.Admitted => value
+      case other => fail("could not admit live resource cancellation fixture: " + other)
+    }
+    val slow = Future.fork(session.ml_read_resource_cancellable(
+      "MCP_Tools_Tests.slow_resource", test_theory, admitted.cancellation))
+    Thread.sleep(100)
+    assert(!slow.is_finished, "slow resource fixture completed before cancellation")
+
+    val before = Time.now()
+    assert(registry.cancel(requestId, Some("bridge fixture"))
+      .isInstanceOf[RequestRegistry.Cancelled])
+    expect_error(slow.join, containing = "cancelled")
+    assert(Time.now() - before < Time.seconds(1.0),
+      "Scala resource bridge promise did not return promptly after cancellation")
+    assertEquals(
+      session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory).ok,
+      true,
+      "resource bridge was unusable after cancellation")
+  }
+
+  spec_test("direct Scala backend work is interrupted without poisoning the reused worker",
+      covers = List("connection_kernel#T4")) {
+    val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
+    val requestId = RequestId.string("live-direct-cancel")
+    val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
+      case value: RequestRegistry.Admitted => value
+      case other => fail("could not admit direct cancellation fixture: " + other)
+    }
+    val slow = Future.fork(session.direct_cancellable(admitted.cancellation) {
+      Thread.sleep(5000)
+      "unexpected completion"
+    })
+    Thread.sleep(100)
+    assert(!slow.is_finished, "slow direct fixture completed before cancellation")
+
+    val before = Time.now()
+    assert(registry.cancel(requestId, Some("direct fixture"))
+      .isInstanceOf[RequestRegistry.Cancelled])
+    assert(Exn.is_exn(slow.join_result), "cancelled direct work returned normally")
+    assert(Time.now() - before < Time.seconds(1.0),
+      "direct Scala work did not return promptly after cancellation")
+    assertEquals(
+      session.direct_cancellable(McpApplication.Cancellation.Never) { "usable" },
+      "usable",
+      "direct cancellation poisoned later worker work")
+  }
+
+  spec_test("live connection kernel cancels a named-resource read and remains usable",
+      covers = List("connection_kernel#T4", "connection_kernel#T11")) {
+    def checked[A](value: Either[String, A]): A = value.fold(error, identity)
+    val policy = ConnectionPolicy(
+      revision = ProtocolRevision.V2025_03_26,
+      admission = ConnectionPolicy.AdmissionPolicy(
+        checked(ConnectionPolicy.MaxInFlight.checked(1))),
+      timing = ConnectionPolicy.TimingPolicy(
+        checked(ConnectionPolicy.RequestTimeout.checked(10.0)),
+        checked(ConnectionPolicy.ShutdownDrain.checked(1.0))))
+    val plane = new ScriptedDataPlane(Nil)
+    val rules = new Mcp2025RevisionRules
+    val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
+    val testTheory = test_theory
+    val backend = new Fake_Backend {
+      override def mcp_resource_read_cancellable(uri: String,
+          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
+        val name =
+          if (uri.endsWith("/slow_resource")) "MCP_Tools_Tests.slow_resource"
+          else "MCP_Tools_Tests.test_collection"
+        session.ml_read_resource_cancellable(name, testTheory, cancellation)
+      }
+    }
+    val application = McpApplication.isabelle(
+      () => McpApplication.Ready(backend), "MCP-Tools-Tests", Nil, "MCP_Tools_Tests")
+    val kernel = ConnectionKernel(
+      policy = policy,
+      dataPlane = plane,
+      revisionRules = rules,
+      scheduler = new BoundedConcurrentScheduler(1, "live-resource-kernel"),
+      deadlineScheduler = new ManualDeadlineScheduler,
+      registry = registry,
+      application = application,
+      serverInfo = ConnectionKernel.ServerInfo("test", "test"))
+
+    def request(id: Option[String], method: String,
+        params: Option[JSON.Object.T] = None): RevisionRules.Message = {
+      var json = JSON.Object("jsonrpc" -> "2.0", "method" -> method)
+      id.foreach(value => json += ("id" -> value))
+      params.foreach(value => json += ("params" -> value))
+      rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(json)))
+    }
+
+    try {
+      kernel.handle(request(Some("init"), "initialize",
+        Some(JSON.Object("protocolVersion" -> ProtocolRevision.V2025_03_26.value))))
+      kernel.handle(request(None, "notifications/initialized"))
+      kernel.handle(request(Some("slow"), "resources/read",
+        Some(JSON.Object("uri" -> "isabelle://named/slow_resource"))))
+      Thread.sleep(100)
+      kernel.handle(request(None, "notifications/cancelled",
+        Some(JSON.Object("requestId" -> "slow", "reason" -> "bridge fixture"))))
+      eventually("cancelled resource worker retained connection capacity", Time.seconds(2.0)) {
+        registry.snapshot.activeIds.isEmpty
+      }
+
+      kernel.handle(request(Some("fast"), "resources/read",
+        Some(JSON.Object("uri" -> "isabelle://named/test_collection"))))
+      eventually("connection did not answer after resource cancellation", Time.seconds(2.0)) {
+        plane.written.exists(line =>
+          JSON.Format.unapply(line).flatMap(JSON.string(_, "id")).contains("fast"))
+      }
+      assert(!plane.written.exists(line =>
+        JSON.Format.unapply(line).flatMap(JSON.string(_, "id")).contains("slow")),
+        "client-cancelled resource read emitted a response: " + plane.written.mkString(" | "))
+    }
+    finally kernel.drainAndClose()
+  }
+
   def run(name: String, args: List[(String, String)] = Nil): MCP_Session.Result =
     session.ml_run("MCP_Tools_Tests." + name, args, designation = test_theory)
 
@@ -1322,5 +1583,36 @@ class MCP_Run_Tool_Async_Tests
 
     assertEquals(fast, MCP_Session.Ok("got:hi"))
     expect_error(slow.join, containing = "silent boom")
+  }
+}
+
+
+class MCP_Bridge_Shutdown_Tests
+  extends MCP_Session_Suite("MCP-Tools-Tests", "MCP_Tools_Tests") {
+  private var stopped = false
+
+  override def afterAll(): Unit = if (!stopped) super.afterAll()
+
+  spec_test("backend stop cancels every pending bridge and joins direct Scala work",
+      covers = List("connection_kernel#T4", "connection_kernel#T11", "connection_kernel#T12")) {
+    val testTheory =
+      session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
+        .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+    val resource = Future.fork(session.ml_read_resource_cancellable(
+      "MCP_Tools_Tests.slow_resource", testTheory, McpApplication.Cancellation.Never))
+    val direct = Future.fork(session.direct_cancellable(McpApplication.Cancellation.Never) {
+      Thread.sleep(5000)
+      "unexpected completion"
+    })
+    Thread.sleep(100)
+    assert(!resource.is_finished && !direct.is_finished,
+      "shutdown fixtures completed before backend stop")
+
+    session.stop()
+    stopped = true
+    assert(resource.is_finished && direct.is_finished,
+      "backend stop returned before pending work terminated")
+    expect_error(resource.join, containing = "cancelled")
+    assert(Exn.is_exn(direct.join_result), "direct work escaped backend stop")
   }
 }

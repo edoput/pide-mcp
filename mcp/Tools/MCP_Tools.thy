@@ -1704,6 +1704,7 @@ sig
   val register: string -> Future.group -> unit
   val cancel: string -> bool
   val finish: string -> bool option
+  val fork: string -> string -> (unit -> 'a) -> ('a Exn.result -> unit) -> unit
 end;
 
 structure MCP_Cancellation: MCP_CANCELLATION =
@@ -1744,6 +1745,32 @@ fun finish id =
         | NONE => NONE);
     in (result, AList.delete (op =) id entries) end);
 
+(*Every Scala-to-ML protocol round trip uses the same route lifecycle: a
+  request-owned future group, an id-indexed cancellation entry, and a
+  non-interruptible publisher.  The publisher is skipped when cancellation
+  wins, so Scala can remove its promise immediately without a late result.*)
+fun fork id name body publish =
+  let
+    val group = Future.new_group NONE;
+    val _ = register id group;
+    val result =
+      (singleton o Future.forks)
+        {name = name, group = SOME group, deps = [], pri = ~1, interrupts = true}
+        body;
+    val _ =
+      (singleton o Future.forks)
+        {name = name ^ "_result", group = NONE,
+         deps = [Future.task_of result], pri = ~1, interrupts = false}
+        (fn () =>
+          let
+            val joined = Future.join_result result;
+            val cancelled =
+              (case finish id of
+                SOME value => value
+              | NONE => error ("Missing MCP cancellation route " ^ quote id));
+          in if cancelled then () else publish joined end);
+  in () end;
+
 end;
 \<close>
 
@@ -1756,18 +1783,43 @@ val _ =
 ML \<open>
 val _ =
   Protocol_Command.define "MCP.tools"
-    (fn [designation, bundles_yxml] =>
-      Output.protocol_message [Markup.function "MCP.tools_result"]
-        [(case MCP_Protocol.designated_context_safe designation
-            (MCP_Protocol.decode_names bundles_yxml) of
-           SOME ctxt => MCP_Protocol.tools_body ctxt
-         | NONE => MCP_Protocol.empty_tools_body)]);
+    (fn [id, designation, bundles_yxml] =>
+      MCP_Cancellation.fork id "MCP.tools"
+        (fn () =>
+          (case MCP_Protocol.designated_context_safe designation
+              (MCP_Protocol.decode_names bundles_yxml) of
+             SOME ctxt => MCP_Protocol.tools_body ctxt
+           | NONE => MCP_Protocol.empty_tools_body))
+        (fn joined =>
+          let
+            val body =
+              (case joined of
+                Exn.Res value => value
+              | Exn.Exn exn =>
+                  (Output.error_message (Runtime.exn_message exn);
+                   MCP_Protocol.empty_tools_body));
+          in
+            Output.protocol_message
+              [Markup.function "MCP.tools_result", ("id", id)] [body]
+          end));
 
 val _ =
   Protocol_Command.define "MCP.theories"
-    (fn [] =>
-      Output.protocol_message [Markup.function "MCP.theories_result"]
-        [MCP_Protocol.theories_body ()]);
+    (fn [id] =>
+      MCP_Cancellation.fork id "MCP.theories"
+        MCP_Protocol.theories_body
+        (fn joined =>
+          let
+            val body =
+              (case joined of
+                Exn.Res value => value
+              | Exn.Exn exn =>
+                  (Output.error_message (Runtime.exn_message exn);
+                   let open XML.Encode in list string [] end));
+          in
+            Output.protocol_message
+              [Markup.function "MCP.theories_result", ("id", id)] [body]
+          end));
 \<close>
 
 text \<open>ASYNC (plans/ml_builtin_migration step 5): the same two-future shape
@@ -1843,45 +1895,63 @@ ML \<open>
 val _ =
   Protocol_Command.define "MCP.check_designation"
     (fn [id, designation, bundles_yxml] =>
-      let
-        val (status, output) =
-          (case Exn.capture_body (fn () =>
-              MCP_Protocol.designated_context designation (MCP_Protocol.decode_names bundles_yxml)) of
-            Exn.Res _ => ("ok", "")
-          | Exn.Exn exn =>
-              if Exn.is_interrupt exn then Exn.reraise exn
-              else ("error", Runtime.exn_message exn));
-      in
-        Output.protocol_message
-          [Markup.function "MCP.check_designation_result", ("id", id), ("status", status)]
-          [[XML.Text output]]
-      end);
+      MCP_Cancellation.fork id "MCP.check_designation"
+        (fn () =>
+          MCP_Protocol.designated_context designation
+            (MCP_Protocol.decode_names bundles_yxml))
+        (fn joined =>
+          let
+            val (status, output) =
+              (case joined of
+                Exn.Res _ => ("ok", "")
+              | Exn.Exn exn => ("error", Runtime.exn_message exn));
+          in
+            Output.protocol_message
+              [Markup.function "MCP.check_designation_result", ("id", id),
+               ("status", status)]
+              [[XML.Text output]]
+          end));
 \<close>
 
 ML \<open>
 val _ =
   Protocol_Command.define "MCP.resources"
-    (fn [designation] =>
-      Output.protocol_message [Markup.function "MCP.resources_result"]
-        [(case MCP_Protocol.designated_context_safe designation [] of
-           SOME ctxt => MCP_Protocol.resources_body ctxt
-         | NONE => [])]);
+    (fn [id, designation] =>
+      MCP_Cancellation.fork id "MCP.resources"
+        (fn () =>
+          (case MCP_Protocol.designated_context_safe designation [] of
+             SOME ctxt => MCP_Protocol.resources_body ctxt
+           | NONE => []))
+        (fn joined =>
+          let
+            val body =
+              (case joined of
+                Exn.Res value => value
+              | Exn.Exn exn =>
+                  (Output.error_message (Runtime.exn_message exn); []));
+          in
+            Output.protocol_message
+              [Markup.function "MCP.resources_result", ("id", id)] [body]
+          end));
 
 val _ =
   Protocol_Command.define "MCP.read_resource"
     (fn [id, designation, name] =>
-      let
-        val (status, output) =
-          (case Exn.capture_body (fn () => MCP_Protocol.designated_context designation []) of
-            Exn.Res ctxt => MCP_Protocol.read_resource ctxt name
-          | Exn.Exn exn =>
-              if Exn.is_interrupt exn then Exn.reraise exn
-              else ("error", Runtime.exn_message exn));
-      in
-        Output.protocol_message
-          [Markup.function "MCP.read_resource_result", ("id", id), ("status", status)]
-          [[XML.Text output]]
-      end);
+      MCP_Cancellation.fork id "MCP.read_resource"
+        (fn () =>
+          let val ctxt = MCP_Protocol.designated_context designation []
+          in MCP_Protocol.read_resource ctxt name end)
+        (fn joined =>
+          let
+            val (status, output) =
+              (case joined of
+                Exn.Res value => value
+              | Exn.Exn exn => ("error", Runtime.exn_message exn));
+          in
+            Output.protocol_message
+              [Markup.function "MCP.read_resource_result", ("id", id), ("status", status)]
+              [[XML.Text output]]
+          end));
 \<close>
 
 section \<open>Demo tool and resource\<close>
