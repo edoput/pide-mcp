@@ -152,6 +152,11 @@ spec_refinements:
     folded_on: "2026-08-27"
     statement: "The resolved server-boundary contract accepts only string request IDs. No precision-preserving numeric parser is introduced and no safe-integer exception exists: every numeric ID is rejected as InvalidRequest before admission. This is a deliberate compatibility limitation from MCP 2025-03-26's unrestricted integer domain. Project-owned Python/e2e clients generate string IDs."
     spec_ids: [D-undated-architecture-decisions]
+  - id: R6
+    state: folded
+    folded_on: "2026-08-28"
+    statement: Define the previously unspecified client-visible result when the configured per-request deadline wins the terminal race.
+    spec_ids: [D-2026-08-20-concurrent-serve-loop]
 done_command:
   - tools/planning-gate
   - done

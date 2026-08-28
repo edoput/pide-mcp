@@ -1244,6 +1244,7 @@ object MCP_Server {
     val rules = new Mcp2025RevisionRules
     val scheduler = new BoundedConcurrentScheduler(
       ConnectionPolicy.MaxInFlight.value(policy.admission.maxInFlight), "mcp-worker")
+    val deadlines = new ScheduledDeadlineScheduler("mcp-deadline")
 
     /* Registry invariant reaction refers back to the connection it is part
        of.  The lazy value is safe because the callback runs only after the
@@ -1257,6 +1258,7 @@ object MCP_Server {
         dataPlane = dataPlane,
         revisionRules = rules,
         scheduler = scheduler,
+        deadlineScheduler = deadlines,
         registry = registry,
         application = application,
         serverInfo = ConnectionKernel.ServerInfo(server_name, server_version))
@@ -1289,22 +1291,16 @@ object MCP_Server {
         failure = Some(exn)
     }
     finally {
-      /* Temporary checkpoint-6 EOF behavior: stop new admissions, give
-         active requests the policy's bounded interval, then cancel them.
-         The final EOF drain contract remains a separate claim. */
-      connection.beginClosing()
+      /* The kernel owns the one terminal deadline and the response-write
+         barrier.  Backend teardown is deliberately sequenced afterward. */
       val shutdown_drain =
         Time.seconds(ConnectionPolicy.ShutdownDrain.seconds(policy.timing.shutdownDrain))
-      val deadline = Time.now() + shutdown_drain
-      while (connection.registry.snapshot.activeIds.nonEmpty && Time.now() < deadline)
-        Thread.sleep(5L)
-      val drained = connection.registry.snapshot.activeIds.isEmpty
-      if (!drained)
+      val drain = connection.drainAndClose()
+      if (!drain.drained)
         progress.echo_warning(
           "mcp_server: shutting down with requests still in flight " +
-          "(waited " + shutdown_drain.message + "; raise mcp_shutdown_drain to wait longer)")
-      connection.close()
-      if (connection.phase == ConnectionLifecycle.Closing) connection.finishClosing()
+          "(waited " + shutdown_drain.message + "; cancelled " + drain.cancelled.length +
+          "; raise mcp_shutdown_drain to wait longer)")
       progress.echo("Shutting down ...")
       on_shutdown()
     }

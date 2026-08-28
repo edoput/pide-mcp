@@ -577,6 +577,11 @@ connection closes admission at EOF, drains only until its one configured
 shutdown deadline, then cancels any remaining cooperative work before backend
 teardown. It preserves replies that win completion before that deadline; it
 does not leave an admitted request silently owned by a worker after teardown.
+When the configured per-request deadline wins, the server emits one JSON-RPC
+server error with code `-32002`, message `Request timed out`, and data naming
+`reason: requestTimeout` and the configured `seconds`. Client cancellation and
+shutdown remain no-response terminal outcomes; any later worker result is
+discarded.
 The current implementation is documented by the checkpoint-1 non-coverage
 fixtures and is not evidence that these replacement guarantees are already
 implemented.

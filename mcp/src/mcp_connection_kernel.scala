@@ -1,8 +1,8 @@
 /*  Title:      mcp/src/mcp_connection_kernel.scala
 
 Connection control path: revision classification, lifecycle, request ownership,
-bounded scheduling, and single/batch JSON-RPC completion over a DataPlane.
-Final EOF draining remains a later checkpoint.
+bounded scheduling, deadlines, single/batch JSON-RPC completion, and EOF drain
+over a DataPlane.
 */
 
 package isabelle.mcp.connection
@@ -109,6 +109,7 @@ final class ConnectionKernel private (
   val dataPlane: DataPlane,
   val revisionRules: RevisionRules,
   val scheduler: RequestScheduler,
+  val deadlineScheduler: DeadlineScheduler,
   val registry: RequestRegistry,
   val application: McpApplication,
   val serverInfo: ConnectionKernel.ServerInfo
@@ -119,6 +120,11 @@ final class ConnectionKernel private (
     "connection policy and scheduler capacity disagree")
 
   private val lifecycle0 = new ConnectionLifecycle
+  private val terminalLock = new AnyRef
+  private var deadlineHandles = Map.empty[RequestId, DeadlineScheduler.Handle]
+  private var responseWrites = 0
+  private val outputLock = new AnyRef
+  private var outputOpen = true
   private val batchLock = new AnyRef
   private var batchSlots = Map.empty[RequestId, BatchSlot]
   private var batchContexts = Set.empty[BatchContext]
@@ -196,12 +202,19 @@ final class ConnectionKernel private (
   def admit(message: RevisionRules.Message): ConnectionKernel.Admission =
     message match {
       case RevisionRules.Cancelled(id, reason) =>
-        registry.cancel(id, reason) match {
-          case _: RequestRegistry.Cancelled => takeBatchSlot(id).foreach(_.omit())
-          case _ => ()
+        val cancelled = terminalLock.synchronized {
+          registry.cancel(id, reason) match {
+            case result: RequestRegistry.Cancelled =>
+              cancelDeadline(id)
+              terminalLock.notifyAll()
+              Some(result)
+            case _ => None
+          }
         }
+        cancelled.foreach(_ =>
+          takeBatchSlot(id).foreach(slot => withResponseWrite(slot.omit())))
         ConnectionKernel.Decided(ConnectionLifecycle.Ignored)
-      case _ =>
+      case _ => terminalLock.synchronized {
         responseId(message) match {
           case Some(id) =>
             registry.reserve(id) match {
@@ -214,11 +227,12 @@ final class ConnectionKernel private (
             }
           case None => ConnectionKernel.Decided(lifecycle0.admit(message))
         }
+      }
     }
 
   def initializeCompleted(): Unit = lifecycle0.initializeCompleted()
-  def beginClosing(): Unit = lifecycle0.beginClosing()
-  def finishClosing(): Unit = lifecycle0.finishClosing()
+  def beginClosing(): Unit = terminalLock.synchronized { lifecycle0.beginClosing() }
+  def finishClosing(): Unit = terminalLock.synchronized { lifecycle0.finishClosing() }
 
   /* Server-initiated notifications stay on the same atomic data-plane write
      path as responses.  A backend can still finish emitting an event after
@@ -234,14 +248,50 @@ final class ConnectionKernel private (
         "jsonrpc" -> "2.0", "method" -> ("notifications/" + what + "/list_changed"))))
     }
 
-  /* This is deliberately a begin-close operation, not the final EOF drain
-     protocol.  EOF calls it after the temporary policy-bounded drain;
-     invariant and output failures call it immediately. */
+  /* Immediate failure close: no waiting is allowed from an output-failure or
+     invariant callback.  Normal EOF uses drainAndClose below. */
   def close(): Unit = {
-    lifecycle0.beginClosing()
+    beginClosing()
+    terminalLock.synchronized {
+      registry.shutdown()
+      cancelAllDeadlines()
+      terminalLock.notifyAll()
+    }
+    closeOutput()
     abortBatches()
-    registry.shutdown()
     scheduler.shutdown()
+    deadlineScheduler.shutdown()
+  }
+
+  /* One configured shutdown deadline covers both admitted work and a response
+     that has won terminal ownership but is still inside DataPlane.send. */
+  def drainAndClose(): ConnectionKernel.DrainResult = {
+    beginClosing()
+    val seconds = ConnectionPolicy.ShutdownDrain.seconds(policy.timing.shutdownDrain)
+    val deadline = System.nanoTime() + Math.ceil(seconds * 1000000000.0).toLong
+    val result = terminalLock.synchronized {
+      def complete: Boolean = registry.snapshot.activeIds.isEmpty && responseWrites == 0
+      var remaining = deadline - System.nanoTime()
+      while (!complete && remaining > 0L) {
+        val millis = remaining / 1000000L
+        val nanos = (remaining % 1000000L).toInt
+        terminalLock.wait(millis, nanos)
+        remaining = deadline - System.nanoTime()
+      }
+      val drained = complete
+      val cancelled =
+        if (drained) Nil
+        else registry.shutdown()
+      cancelAllDeadlines()
+      terminalLock.notifyAll()
+      ConnectionKernel.DrainResult(drained, cancelled)
+    }
+    closeOutput()
+    abortBatches()
+    scheduler.shutdown()
+    deadlineScheduler.shutdown()
+    lifecycle0.finishClosing()
+    result
   }
 
   def execute(admission: ConnectionKernel.Admission): ConnectionKernel.Admission =
@@ -276,11 +326,18 @@ final class ConnectionKernel private (
           scheduler.abandon(permit)
           accepted
         }
-        else scheduler.start(permit, () => executeWorker(request, operation, sink)) match {
-          case RequestScheduler.Started => accepted
-          case RequestScheduler.StartRejected =>
-            registry.shutdown(request.token)
-            error("reserved scheduler permit could not start")
+        else {
+          scheduleDeadline(request)
+          scheduler.start(permit, () => executeWorker(request, operation, sink)) match {
+            case RequestScheduler.Started => accepted
+            case RequestScheduler.StartRejected =>
+              terminalLock.synchronized {
+                cancelDeadline(request.id)
+                if (registry.snapshot.activeIds.contains(request.id)) registry.shutdown(request.token)
+                terminalLock.notifyAll()
+              }
+              error("reserved scheduler permit could not start")
+          }
         }
 
       case ConnectionKernel.Decided(ConnectionLifecycle.Overloaded(id)) =>
@@ -380,8 +437,11 @@ final class ConnectionKernel private (
             errorResponse(request.id, ConnectionKernel.InternalError, "Internal error"))
       }
 
-    registry.complete(request.token, disposition) match {
-      case RequestRegistry.Completed(_) => completionSink(request.id, sink).response(response)
+    completeTerminal(request, disposition) match {
+      case RequestRegistry.Completed(_) =>
+        try completionSink(request.id, sink).response(response)
+        catch { case NonFatal(exn) if !Exn.is_interrupt(exn) => () }
+        finally finishResponseWrite()
       case _: RequestRegistry.LateIgnored => ()
       case _: RequestRegistry.InvariantViolation => ()
       case _ => error("worker completion did not resolve to a terminal result")
@@ -393,8 +453,10 @@ final class ConnectionKernel private (
     response: JSON.Object.T,
     sink: CompletionSink
   ): Unit =
-    registry.complete(request.token, RequestRegistry.WorkerDisposition.Success) match {
-      case RequestRegistry.Completed(_) => completionSink(request.id, sink).response(response)
+    completeTerminal(request, RequestRegistry.WorkerDisposition.Success) match {
+      case RequestRegistry.Completed(_) =>
+        try completionSink(request.id, sink).response(response)
+        finally finishResponseWrite()
       case _: RequestRegistry.InvariantViolation => ()
       case _ => error("control completion did not resolve to a terminal result")
     }
@@ -455,13 +517,16 @@ final class ConnectionKernel private (
   private def completionSink(id: RequestId, fallback: CompletionSink): CompletionSink =
     takeBatchSlot(id).getOrElse(fallback)
 
-  private def completeBatch(context: BatchContext, values: Vector[JSON.Object.T]): Unit =
-    batchLock.synchronized {
+  private def completeBatch(context: BatchContext, values: Vector[JSON.Object.T]): Unit = {
+    val outbound = batchLock.synchronized {
       if (!batchOutputClosed && batchContexts(context)) {
         batchContexts -= context
-        if (values.nonEmpty) sendOutbound(JsonRpc.Outbound.Batch(values.toList))
+        if (values.nonEmpty) Some(JsonRpc.Outbound.Batch(values.toList)) else None
       }
+      else None
     }
+    outbound.foreach(sendOutbound)
+  }
 
   private def abortBatches(): Unit = batchLock.synchronized {
     batchOutputClosed = true
@@ -470,13 +535,89 @@ final class ConnectionKernel private (
     batchSlots = Map.empty
   }
 
-  private def sendOutbound(outbound: JsonRpc.Outbound): Unit =
-    try dataPlane.send(outbound)
-    catch {
-      case exn: Throwable =>
-        close()
-        throw exn
+  private def sendOutbound(outbound: JsonRpc.Outbound): Unit = {
+    val failure = outputLock.synchronized {
+      if (!outputOpen) None
+      else {
+        try { dataPlane.send(outbound); None }
+        catch {
+          case exn: Throwable =>
+            outputOpen = false
+            Some(exn)
+        }
+      }
     }
+    failure.foreach { exn => close(); throw exn }
+  }
+
+  private def closeOutput(): Unit = outputLock.synchronized { outputOpen = false }
+
+  private def scheduleDeadline(request: RequestRegistry.Admitted): Unit =
+    terminalLock.synchronized {
+      if (registry.snapshot.activeIds.contains(request.id)) {
+        val seconds = ConnectionPolicy.RequestTimeout.seconds(policy.timing.requestTimeout)
+        val handle = deadlineScheduler.schedule(seconds, () => timeout(request))
+        deadlineHandles += request.id -> handle
+      }
+    }
+
+  private def cancelDeadline(id: RequestId): Unit = {
+    deadlineHandles.get(id).foreach(_.cancel())
+    deadlineHandles -= id
+  }
+
+  private def cancelAllDeadlines(): Unit = {
+    deadlineHandles.values.foreach(_.cancel())
+    deadlineHandles = Map.empty
+  }
+
+  private def timeout(request: RequestRegistry.Admitted): Unit = {
+    val result = terminalLock.synchronized {
+      deadlineHandles -= request.id
+      val completed = registry.timeout(request.token)
+      completed match {
+        case _: RequestRegistry.Completed => responseWrites += 1
+        case _ => ()
+      }
+      terminalLock.notifyAll()
+      completed
+    }
+    result match {
+      case _: RequestRegistry.Completed =>
+        try completionSink(request.id, DirectSink).response(timeoutResponse(request.id))
+        finally finishResponseWrite()
+      case _: RequestRegistry.TimerIgnored => ()
+      case _: RequestRegistry.InvariantViolation => ()
+      case _ => error("request timeout did not resolve to a terminal result")
+    }
+  }
+
+  private def completeTerminal(
+    request: RequestRegistry.Admitted,
+    disposition: RequestRegistry.WorkerDisposition
+  ): RequestRegistry.Completion =
+    terminalLock.synchronized {
+      val completed = registry.complete(request.token, disposition)
+      cancelDeadline(request.id)
+      completed match {
+        case _: RequestRegistry.Completed => responseWrites += 1
+        case _ => ()
+      }
+      terminalLock.notifyAll()
+      completed
+    }
+
+  private def withResponseWrite(body: => Unit): Unit = {
+    terminalLock.synchronized { responseWrites += 1 }
+    try body
+    finally finishResponseWrite()
+  }
+
+  private def finishResponseWrite(): Unit = terminalLock.synchronized {
+    responseWrites -= 1
+    require(responseWrites >= 0, "response-write barrier underflow")
+    terminalLock.notifyAll()
+  }
 
   private def successResponse(id: RequestId, result: JSON.T): JSON.Object.T =
     JSON.Object("jsonrpc" -> "2.0", "id" -> id.json, "result" -> result)
@@ -492,13 +633,24 @@ final class ConnectionKernel private (
         "data" -> JSON.Object(
           "reason" -> "maxInFlight",
           "maxInFlight" -> ConnectionPolicy.MaxInFlight.value(policy.admission.maxInFlight))))
+
+  private def timeoutResponse(id: RequestId): JSON.Object.T =
+    JSON.Object("jsonrpc" -> "2.0", "id" -> id.json,
+      "error" -> JSON.Object(
+        "code" -> ConnectionKernel.RequestTimedOut,
+        "message" -> "Request timed out",
+        "data" -> JSON.Object(
+          "reason" -> "requestTimeout",
+          "seconds" -> ConnectionPolicy.RequestTimeout.seconds(policy.timing.requestTimeout))))
 }
 
 
 object ConnectionKernel {
   val Overloaded = -32001
+  val RequestTimedOut = -32002
   val InternalError = -32603
   final case class ServerInfo(name: String, version: String)
+  final case class DrainResult(drained: Boolean, cancelled: List[RequestRegistry.Tombstone])
 
   sealed trait ListChanged
   object ListChanged {
@@ -532,7 +684,9 @@ object ConnectionKernel {
     scheduler: RequestScheduler,
     registry: RequestRegistry,
     application: McpApplication,
-    serverInfo: ServerInfo
+    serverInfo: ServerInfo,
+    deadlineScheduler: DeadlineScheduler
   ): ConnectionKernel =
-    new ConnectionKernel(policy, dataPlane, revisionRules, scheduler, registry, application, serverInfo)
+    new ConnectionKernel(policy, dataPlane, revisionRules, scheduler, deadlineScheduler,
+      registry, application, serverInfo)
 }

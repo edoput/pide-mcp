@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
-import isabelle.mcp.connection.ConnectionPolicy
+import isabelle.mcp.connection.{ConnectionKernel, ConnectionPolicy}
 
 import scala.concurrent.duration.DurationInt
 
@@ -69,7 +69,7 @@ class MCP_Protocol_Tests extends MCP_Suite {
   }
 
   spec_test("serve drains accepted lifecycle requests before stopping on EOF",
-      covers = List("planning_gate#T6")) {
+      covers = List("planning_gate#T6", "connection_kernel#T7")) {
     val backend = new Fake_Backend
     val input =
       List(
@@ -1148,10 +1148,15 @@ class MCP_Tools_Tests extends MCP_Suite {
     check_server(server, server_failure, 2000L)
   }
 
-  private def serve_policy(maxInFlight: Int): ConnectionPolicy =
+  private def serve_policy(
+    maxInFlight: Int,
+    requestTimeout: Double = 60.0,
+    shutdownDrain: Double = 1.0
+  ): ConnectionPolicy =
     ConnectionPolicy.fromOptions(
       Options.init() + ("mcp_max_in_flight=" + maxInFlight) +
-        "mcp_request_timeout=60.0" + "mcp_shutdown_drain=1.0") match {
+        ("mcp_request_timeout=" + requestTimeout) +
+        ("mcp_shutdown_drain=" + shutdownDrain)) match {
       case Right(policy) => policy
       case Left(message) => fail(message)
     }
@@ -1239,6 +1244,122 @@ class MCP_Tools_Tests extends MCP_Suite {
       writer.close()
     }
     check_server(server, server_failure, 3000L)
+  }
+
+  spec_test("production deadline emits one timeout response and suppresses the late backend result",
+      covers = List("connection_kernel#T5")) {
+    class Blocking_Backend extends Fake_Backend {
+      val started = new CountDownLatch(1)
+      val release = new CountDownLatch(1)
+
+      override def ml_run(name: String, args: List[(String, String)],
+          designation: String, bundles: List[String]): MCP_Session.Result = {
+        started.countDown()
+        if (!release.await(2, TimeUnit.SECONDS)) fail("timeout fixture backend was never released")
+        super.ml_run(name, args, designation, bundles)
+      }
+    }
+
+    val backend = new Blocking_Backend
+    val out_stream = new ByteArrayOutputStream
+    val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
+    val writer = new PipedWriter
+    val reader = new BufferedReader(new PipedReader(writer))
+    val policy = serve_policy(1, requestTimeout = 0.05, shutdownDrain = 1.0)
+    val (server, server_failure) = start_server {
+      MCP_Server.serve(backend, reader, out, progress = new Progress, policy = policy)
+    }
+    try {
+      List(
+        JSON.Object("jsonrpc" -> "2.0", "id" -> "initialize", "method" -> "initialize",
+          "params" -> JSON.Object("protocolVersion" -> "2025-03-26")),
+        JSON.Object("jsonrpc" -> "2.0", "method" -> "notifications/initialized"),
+        JSON.Object("jsonrpc" -> "2.0", "id" -> "timed", "method" -> "tools/call",
+          "params" -> JSON.Object("name" -> "shout",
+            "arguments" -> JSON.Object("input" -> "late")))
+      ).foreach(json => writer.write(JSON.Format(json) + "\n"))
+      writer.flush()
+      assert(backend.started.await(2, TimeUnit.SECONDS), "timed request never reached the backend")
+
+      def timedReplies: List[JSON.T] =
+        split_lines(out_stream.toString(StandardCharsets.UTF_8)).flatMap(JSON.Format.unapply)
+          .filter(value => JSON.value(value, "id").contains("timed"))
+      eventually("production timeout response was not emitted") { timedReplies.nonEmpty }
+      val timeout = timedReplies.head
+      assertEquals(get(timeout, "error", "code"), ConnectionKernel.RequestTimedOut)
+      assertEquals(get(timeout, "error", "data", "reason"), "requestTimeout")
+
+      backend.release.countDown()
+      writer.close()
+      check_server(server, server_failure, 2000L)
+      assertEquals(timedReplies.length, 1, "late production backend result escaped")
+    }
+    finally {
+      backend.release.countDown()
+      try writer.close() catch { case _: Throwable => () }
+    }
+  }
+
+  spec_test("production EOF drains an ordinary reply before backend teardown",
+      covers = List("connection_kernel#T7")) {
+    class Draining_Backend extends Fake_Backend {
+      val started = new CountDownLatch(1)
+      val release = new CountDownLatch(1)
+      val stoppedLatch = new CountDownLatch(1)
+      private var events = List.empty[String]
+
+      override def ml_run(name: String, args: List[(String, String)],
+          designation: String, bundles: List[String]): MCP_Session.Result = {
+        started.countDown()
+        if (!release.await(2, TimeUnit.SECONDS)) fail("drain fixture backend was never released")
+        synchronized { events :+= "completed" }
+        super.ml_run(name, args, designation, bundles)
+      }
+
+      override def stop(): Unit = {
+        synchronized { events :+= "stopped" }
+        super.stop()
+        stoppedLatch.countDown()
+      }
+
+      def eventOrder: List[String] = synchronized { events }
+    }
+
+    val backend = new Draining_Backend
+    val out_stream = new ByteArrayOutputStream
+    val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
+    val writer = new PipedWriter
+    val reader = new BufferedReader(new PipedReader(writer))
+    val policy = serve_policy(1, requestTimeout = 60.0, shutdownDrain = 1.0)
+    val (server, server_failure) = start_server {
+      MCP_Server.serve(backend, reader, out, progress = new Progress, policy = policy)
+    }
+    try {
+      List(
+        JSON.Object("jsonrpc" -> "2.0", "id" -> "initialize-drain", "method" -> "initialize",
+          "params" -> JSON.Object("protocolVersion" -> "2025-03-26")),
+        JSON.Object("jsonrpc" -> "2.0", "method" -> "notifications/initialized"),
+        JSON.Object("jsonrpc" -> "2.0", "id" -> "ordinary-drain", "method" -> "tools/call",
+          "params" -> JSON.Object("name" -> "shout",
+            "arguments" -> JSON.Object("input" -> "drained")))
+      ).foreach(json => writer.write(JSON.Format(json) + "\n"))
+      writer.flush()
+      assert(backend.started.await(2, TimeUnit.SECONDS), "ordinary drain request never started")
+      writer.close()
+      assert(!backend.stoppedLatch.await(100, TimeUnit.MILLISECONDS),
+        "backend teardown ran before the in-flight request completed")
+      backend.release.countDown()
+      check_server(server, server_failure, 2000L)
+      val replies = split_lines(out_stream.toString(StandardCharsets.UTF_8))
+        .flatMap(JSON.Format.unapply)
+      assert(replies.exists(value => JSON.value(value, "id").contains("ordinary-drain")),
+        "ordinary response was dropped during production EOF drain")
+      assertEquals(backend.eventOrder, List("completed", "stopped"))
+    }
+    finally {
+      backend.release.countDown()
+      try writer.close() catch { case _: Throwable => () }
+    }
   }
 }
 

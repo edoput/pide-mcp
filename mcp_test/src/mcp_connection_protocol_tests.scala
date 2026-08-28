@@ -1,8 +1,6 @@
 /*  Title:      mcp_test/src/mcp_connection_protocol_tests.scala
 
-Focused contracts for the checkpoint-2 JSON-RPC/data-plane seam. These tests
-intentionally carry no connection_kernel plan links: lifecycle, admission,
-scheduler, and application contracts do not exist at this checkpoint.
+Focused contracts for the JSON-RPC/data-plane seam.
 */
 
 package isabelle.mcp
@@ -51,17 +49,19 @@ class MCP_Connection_Protocol_Tests extends MCP_Suite {
     Option(failure.get()).foreach(throw _)
   }
 
-  test("typed JSON-RPC values preserve single, batch, empty-batch, and malformed framing") {
+  spec_test("typed JSON-RPC values preserve single, batch, empty-batch, and malformed framing",
+      covers = List("connection_kernel#T1")) {
     val input = List("", " \t", JSON.Format(ping), JSON.Format(List(ping, notice)), "[]", "{not json")
     receive_contract(new ScriptedDataPlane(input))
   }
 
-  test("stdio and scripted data planes obey the same receive contract") {
-    val input = List("", " \t", JSON.Format(ping), JSON.Format(List(ping, notice)), "[]", "{not json")
-      .mkString("\n")
+  spec_test("stdio and scripted data planes obey the same receive contract",
+      covers = List("connection_kernel#T8")) {
+    val lines = List("", " \t", JSON.Format(ping), JSON.Format(List(ping, notice)), "[]", "{not json")
+    receive_contract(new ScriptedDataPlane(lines))
     val output = new ByteArrayOutputStream
     receive_contract(new StdioDataPlane(
-      new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), output))
+      new ByteArrayInputStream(lines.mkString("\n").getBytes(StandardCharsets.UTF_8)), output))
   }
 
   test("stdio input is strict UTF-8") {

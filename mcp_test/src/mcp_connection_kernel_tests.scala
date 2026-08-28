@@ -1,8 +1,8 @@
 /*  Title:      mcp_test/src/mcp_connection_kernel_tests.scala
 
-Checkpoint-6 contracts for validated policy, revision classification,
-lifecycle control, request ownership, direct-handoff scheduling, and
-connection-owned wire completion without Isabelle.
+Connection-kernel contracts for validated policy, revision classification,
+lifecycle control, request ownership, deadlines, bounded scheduling, batch
+aggregation, and shutdown without Isabelle.
 */
 
 package isabelle.mcp
@@ -11,7 +11,7 @@ import isabelle._
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.connection._
 import isabelle.mcp.protocol.JsonRpc
-import isabelle.mcp.transport.{DataPlane, ScriptedDataPlane}
+import isabelle.mcp.transport.{DataPlane, ScriptedDataPlane, StdioDataPlane}
 
 
 class MCP_Connection_Kernel_Tests extends MCP_Suite {
@@ -31,14 +31,18 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
 
   private val serverInfo = ConnectionKernel.ServerInfo("test-server", "test-version")
 
-  private def policy(maxInFlight: Int = 2): ConnectionPolicy =
+  private def policy(
+    maxInFlight: Int = 2,
+    requestTimeout: Double = 5.0,
+    shutdownDrain: Double = 0.0
+  ): ConnectionPolicy =
     ConnectionPolicy(
       revision = ProtocolRevision.V2025_03_26,
       admission = ConnectionPolicy.AdmissionPolicy(
         maxInFlight = checked(ConnectionPolicy.MaxInFlight.checked(maxInFlight))),
       timing = ConnectionPolicy.TimingPolicy(
-        requestTimeout = checked(ConnectionPolicy.RequestTimeout.checked(5.0)),
-        shutdownDrain = checked(ConnectionPolicy.ShutdownDrain.checked(0.0))))
+        requestTimeout = checked(ConnectionPolicy.RequestTimeout.checked(requestTimeout)),
+        shutdownDrain = checked(ConnectionPolicy.ShutdownDrain.checked(shutdownDrain))))
 
   private def request(
     id: Option[JSON.T], method: String, params: Option[JSON.Object.T] = None): JSON.Object.T = {
@@ -54,6 +58,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
       dataPlane = new ScriptedDataPlane(lines),
       revisionRules = rules,
       scheduler = new DeterministicSequentialScheduler(2),
+      deadlineScheduler = new ManualDeadlineScheduler,
       registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
       application = application,
       serverInfo = serverInfo)
@@ -62,13 +67,17 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     plane: ScriptedDataPlane,
     scheduler: RequestScheduler,
     maxInFlight: Int,
-    app: McpApplication
+    app: McpApplication,
+    deadlineScheduler: DeadlineScheduler = new ManualDeadlineScheduler,
+    requestTimeout: Double = 5.0,
+    shutdownDrain: Double = 0.0
   ): ConnectionKernel =
     ConnectionKernel(
-      policy = policy(maxInFlight),
+      policy = policy(maxInFlight, requestTimeout, shutdownDrain),
       dataPlane = plane,
       revisionRules = rules,
       scheduler = scheduler,
+      deadlineScheduler = deadlineScheduler,
       registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
       application = app,
       serverInfo = serverInfo)
@@ -111,6 +120,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
       dataPlane = new ScriptedDataPlane(Nil),
       revisionRules = rules,
       scheduler = new DeterministicSequentialScheduler(2),
+      deadlineScheduler = new ManualDeadlineScheduler,
       registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
       application = application,
       serverInfo = serverInfo)
@@ -121,7 +131,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assert(kernel0.policy eq snapshot, "kernel must retain the construction-time policy snapshot")
   }
 
-  test("MCP 2025-03-26 rules classify valid and invalid wire messages") {
+  spec_test("MCP 2025-03-26 rules classify valid and invalid wire messages",
+      covers = List("connection_kernel#T1")) {
     val initialize = request(Some("1"), "initialize",
       Some(JSON.Object("protocolVersion" -> ProtocolRevision.V2025_03_26.value)))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(initialize))),
@@ -262,7 +273,68 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(ran, List("inline", "first", "third"))
   }
 
-  test("request ids accept strings and reject every non-string value") {
+  spec_test("one kernel contract runs against deterministic and bounded schedulers",
+      covers = List("connection_kernel#T8")) {
+    import java.util.concurrent.TimeUnit
+
+    def runContract(name: String, scheduler: RequestScheduler, base: Long): Unit = {
+      val plane = new ScriptedDataPlane(Nil)
+      val deadlines = new ManualDeadlineScheduler
+      val connection = kernelWith(plane, scheduler, 1, application, deadlines, shutdownDrain = 1.0)
+      ready(connection, base)
+      val id = requestId(base + 1)
+      val before = plane.written.length
+      connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, id))
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+      while (plane.written.length == before && System.nanoTime() < deadline) Thread.sleep(2L)
+      assertEquals(plane.written.length, before + 1,
+        name + " scheduler did not complete the shared contract")
+      val reply = JSON.Format.unapply(plane.written.last).getOrElse(fail("missing " + name + " reply"))
+      assertEquals(get(reply, "id"), id.json)
+      assert(connection.drainAndClose().drained)
+      assert(scheduler.isShutdown)
+      assert(deadlines.isShutdown)
+    }
+
+    runContract("deterministic", new DeterministicSequentialScheduler(1), 520)
+    runContract("bounded", new BoundedConcurrentScheduler(1, "kernel-contract-worker"), 530)
+  }
+
+  spec_test("stdio data plane and bounded scheduler run the kernel contract together",
+      covers = List("connection_kernel#T8")) {
+    import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+    import java.nio.charset.StandardCharsets
+
+    val input = List(
+      request(Some("initialize-stdio"), "initialize",
+        Some(JSON.Object("protocolVersion" -> ProtocolRevision.V2025_03_26.value))),
+      request(None, "notifications/initialized"),
+      request(Some("operation-stdio"), "tools/list")
+    ).map(JSON.Format.apply).mkString("\n")
+    val output = new ByteArrayOutputStream
+    val scheduler = new BoundedConcurrentScheduler(1, "kernel-stdio-contract-worker")
+    val deadlines = new ManualDeadlineScheduler
+    val connection = ConnectionKernel(
+      policy = policy(1, shutdownDrain = 1.0),
+      dataPlane = new StdioDataPlane(
+        new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), output),
+      revisionRules = rules,
+      scheduler = scheduler,
+      deadlineScheduler = deadlines,
+      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
+      application = application,
+      serverInfo = serverInfo)
+    while (connection.receiveAndExecute().nonEmpty) ()
+    assert(connection.drainAndClose().drained)
+    val replies = output.toString(StandardCharsets.UTF_8).linesIterator.toList
+      .flatMap(JSON.Format.unapply)
+    assertEquals(replies.flatMap(value => JSON.value(value, "id")).toSet,
+      Set("initialize-stdio", "operation-stdio"))
+    assertEquals(connection.phase, ConnectionLifecycle.Closed)
+  }
+
+  spec_test("request ids accept strings and reject every non-string value",
+      covers = List("connection_kernel#T1")) {
     val string = checked(RequestId.fromJson("alpha"))
     assertEquals(string, RequestId.string("alpha"))
     assertEquals(string.json, "alpha")
@@ -320,7 +392,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assert(policy.isBroken)
   }
 
-  test("timeout and shutdown cancel owned work without consuming late worker completion") {
+  spec_test("timeout and shutdown cancel owned work without consuming late worker completion",
+      covers = List("connection_kernel#T5")) {
     import RequestRegistry.{AdmissionKind, WorkerDisposition}
 
     val registry = new RequestRegistry(new RequestRegistry.InvariantViolationPolicy.MarkBroken)
@@ -351,6 +424,50 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assert(shuttingDown.cancellation.isCancelled)
     assert(closingRegistry.complete(shuttingDown.token, WorkerDisposition.Success)
       .isInstanceOf[RequestRegistry.LateIgnored])
+  }
+
+  spec_test("request timeout and worker completion race to one response and one disposition",
+      covers = List("connection_kernel#T5")) {
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new ManualSequentialScheduler
+    val deadlines = new ManualDeadlineScheduler
+    var sawCancellation = false
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+        sawCancellation = cancellation.isCancelled
+        McpApplication.Outcome.Result(JSON.Object("late" -> true))
+      }
+    }
+    val connection = kernelWith(plane, scheduler, 1, app, deadlines)
+    ready(connection)
+    val before = plane.written.length
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(39)))
+    assertEquals(deadlines.pendingCount, 1)
+    assert(deadlines.fireNext(), "request deadline did not fire")
+    val timeoutReply = JSON.Format.unapply(plane.written.last).getOrElse(fail("missing timeout reply"))
+    assertEquals(get(timeoutReply, "id"), "39")
+    assertEquals(get(timeoutReply, "error", "code"), ConnectionKernel.RequestTimedOut)
+    assertEquals(get(timeoutReply, "error", "message"), "Request timed out")
+    assertEquals(get(timeoutReply, "error", "data", "reason"), "requestTimeout")
+    assertEquals(get(timeoutReply, "error", "data", "seconds"), 5.0)
+    assertEquals(connection.registry.snapshot.tombstones.find(_.id == requestId(39)).map(_.disposition),
+      Some(RequestRegistry.TerminalDisposition.Timeout))
+    assertEquals(connection.registry.snapshot.activeCapacity, 0)
+
+    assert(scheduler.runPending(), "timed-out worker must still reach its cooperative stop path")
+    assert(sawCancellation)
+    assertEquals(plane.written.length, before + 1, "late timed-out result escaped")
+
+    val scheduler2 = new ManualSequentialScheduler
+    val deadlines2 = new ManualDeadlineScheduler
+    val connection2 = kernelWith(new ScriptedDataPlane(Nil), scheduler2, 1, application, deadlines2)
+    ready(connection2, 540)
+    connection2.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(541)))
+    assert(scheduler2.runPending())
+    assertEquals(deadlines2.pendingCount, 0, "successful completion retained a live deadline")
+    assert(!deadlines2.fireNext(), "cancelled deadline fired after worker completion")
+    assertEquals(connection2.registry.snapshot.tombstones.find(_.id == requestId(541)).map(_.disposition),
+      Some(RequestRegistry.TerminalDisposition.Success))
   }
 
   test("kernel reserves rejected request IDs before lifecycle admission") {
@@ -485,7 +602,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
       covers = List("connection_kernel#T10")) {
     val emptyPlane = new ScriptedDataPlane(List(JSON.Format(List.empty[JSON.T])))
     val empty = ConnectionKernel(policy(1), emptyPlane, rules, new DeterministicSequentialScheduler(1),
-      new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast), application, serverInfo)
+      new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast), application, serverInfo,
+      new ManualDeadlineScheduler)
     empty.receiveAndExecute()
     assertEquals(JSON.Format.unapply(emptyPlane.written.last).exists(_.isInstanceOf[List[_]]), false)
     val emptyReply = JSON.Format.unapply(emptyPlane.written.last).getOrElse(fail("missing empty batch error"))
@@ -497,7 +615,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     val initializePlane = new ScriptedDataPlane(List(JSON.Format(List(initializeElement))))
     val initialize = ConnectionKernel(policy(1), initializePlane, rules,
       new DeterministicSequentialScheduler(1),
-      new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast), application, serverInfo)
+      new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast), application, serverInfo,
+      new ManualDeadlineScheduler)
     initialize.receiveAndExecute()
     assertEquals(JSON.Format.unapply(initializePlane.written.last).exists(_.isInstanceOf[List[_]]), false)
     val initializeReply = JSON.Format.unapply(initializePlane.written.last)
@@ -655,7 +774,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     val plane = new BlockingBatchPlane
     val scheduler = new BoundedConcurrentScheduler(1, "kernel-batch-close-worker")
     val connection = ConnectionKernel(policy(1), plane, rules, scheduler,
-      new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast), application, serverInfo)
+      new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast), application, serverInfo,
+      new ManualDeadlineScheduler)
     val closeFailure = new AtomicReference[Throwable](null)
     val closeStarted = new CountDownLatch(1)
     var closer: Thread = null
@@ -688,7 +808,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     }
   }
 
-  test("registry detects foreign and duplicate tokens and applies every invariant reaction") {
+  spec_test("registry detects foreign and duplicate tokens and applies every invariant reaction",
+      covers = List("connection_kernel#T6")) {
     import RequestRegistry.{AdmissionKind, WorkerDisposition}
 
     val failFast = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
@@ -846,7 +967,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     scheduler.shutdown()
   }
 
-  test("cancellation immediately after admission abandons its permit and cannot run or reply") {
+  spec_test("cancellation immediately after admission abandons its permit and cannot run or reply",
+      covers = List("connection_kernel#T5")) {
     val plane = new ScriptedDataPlane(Nil)
     val scheduler = new ManualSequentialScheduler
     var executions = 0
@@ -871,7 +993,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assert(scheduler.hasPending, "abandoned permit must be reusable")
   }
 
-  test("worker errors and exceptions release capacity and emit one owned response") {
+  spec_test("worker errors and exceptions release capacity and emit one owned response",
+      covers = List("connection_kernel#T5")) {
     val plane = new ScriptedDataPlane(Nil)
     val scheduler = new ManualSequentialScheduler
     var mode = "error"
@@ -942,6 +1065,153 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     scheduler.shutdown()
   }
 
+  spec_test("EOF drain handles zero and reverse-completing in-flight requests before close",
+      covers = List("connection_kernel#T7")) {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+
+    val emptyPlane = new ScriptedDataPlane(Nil)
+    val emptyDeadlines = new ManualDeadlineScheduler
+    val empty = kernelWith(emptyPlane, new DeterministicSequentialScheduler(3), 3,
+      application, emptyDeadlines, shutdownDrain = 1.0)
+    ready(empty, 600)
+    val emptyResult = empty.drainAndClose()
+    assert(emptyResult.drained)
+    assertEquals(emptyResult.cancelled, Nil)
+    assertEquals(empty.phase, ConnectionLifecycle.Closed)
+    assert(emptyDeadlines.isShutdown)
+
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new BoundedConcurrentScheduler(3, "kernel-drain-worker")
+    val deadlines = new ManualDeadlineScheduler
+    val started = new CountDownLatch(3)
+    val gates = Map(
+      "first" -> new CountDownLatch(1),
+      "second" -> new CountDownLatch(1),
+      "third" -> new CountDownLatch(1))
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+        val name = operation match {
+          case McpApplication.Operation.ToolsCall(value, _) => value
+          case _ => fail("unexpected drain operation " + operation)
+        }
+        started.countDown()
+        if (!gates(name).await(2, TimeUnit.SECONDS)) fail("drain gate did not open for " + name)
+        McpApplication.Outcome.Result(JSON.Object("which" -> name))
+      }
+    }
+    val connection = kernelWith(plane, scheduler, 3, app, deadlines, shutdownDrain = 2.0)
+    ready(connection, 610)
+    val before = plane.written.length
+    List(("first", 611L), ("second", 612L), ("third", 613L)).foreach { case (name, id) =>
+      connection.handle(RevisionRules.Application(
+        McpApplication.Operation.ToolsCall(name, JSON.Object()), requestId(id)))
+    }
+    assert(started.await(2, TimeUnit.SECONDS), "drain workers did not all start")
+
+    def written(id: String): Boolean = plane.written.exists(_.contains("\"id\":\"" + id + "\""))
+    def awaitWritten(id: String): Unit = {
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+      while (!written(id) && System.nanoTime() < deadline) Thread.sleep(2L)
+      assert(written(id), "missing drained response " + id)
+    }
+    val releaser = new Thread(new Runnable {
+      def run(): Unit = {
+        gates("third").countDown(); awaitWritten("613")
+        gates("second").countDown(); awaitWritten("612")
+        gates("first").countDown()
+      }
+    }, "kernel-drain-release")
+    releaser.setDaemon(true)
+    releaser.start()
+    val result = connection.drainAndClose()
+    releaser.join(2000L)
+    assert(!releaser.isAlive, "drain release thread did not finish")
+    assert(result.drained)
+    assertEquals(result.cancelled, Nil)
+    val ids = plane.written.drop(before).flatMap(line =>
+      JSON.Format.unapply(line).flatMap(value => JSON.value(value, "id")).collect { case id: String => id })
+    assertEquals(ids, List("613", "612", "611"))
+    assertEquals(connection.phase, ConnectionLifecycle.Closed)
+    assert(scheduler.isShutdown)
+    assert(deadlines.isShutdown)
+  }
+
+  spec_test("EOF deadline terminalizes remaining work before close and suppresses late output",
+      covers = List("connection_kernel#T5", "connection_kernel#T7")) {
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new ManualSequentialScheduler
+    val deadlines = new ManualDeadlineScheduler
+    val connection = kernelWith(plane, scheduler, 1, application, deadlines,
+      shutdownDrain = 0.0)
+    ready(connection, 620)
+    val before = plane.written.length
+    val accepted = connection.handle(
+      RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(621))) match {
+      case value: ConnectionKernel.Accepted => value
+      case other => fail("expected admitted shutdown fixture, got " + other)
+    }
+    val result = connection.drainAndClose()
+    assert(!result.drained)
+    assertEquals(result.cancelled.map(_.id), List(requestId(621)))
+    assertEquals(result.cancelled.map(_.disposition), List(RequestRegistry.TerminalDisposition.Shutdown))
+    assert(accepted.request.cancellation.isCancelled)
+    assertEquals(connection.phase, ConnectionLifecycle.Closed)
+    assert(scheduler.isShutdown)
+    assert(deadlines.isShutdown)
+    assert(!scheduler.runPending(), "shutdown scheduler retained unstarted application work")
+    assertEquals(plane.written.length, before)
+  }
+
+  spec_test("EOF drain waits for a winning response write before returning",
+      covers = List("connection_kernel#T7")) {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+
+    final class BlockingResponsePlane extends DataPlane {
+      private var values = List.empty[JsonRpc.Outbound]
+      val sendStarted = new CountDownLatch(1)
+      val release = new CountDownLatch(1)
+
+      def receive(): Option[JsonRpc.Inbound] = None
+      def send(outbound: JsonRpc.Outbound): Unit = {
+        val work = JsonRpc.value(outbound) match {
+          case value: JSON.Object.T @unchecked => JSON.value(value, "id").contains("631")
+          case _ => false
+        }
+        if (work) {
+          sendStarted.countDown()
+          if (!release.await(2, TimeUnit.SECONDS)) fail("blocked response was never released")
+        }
+        synchronized { values :+= outbound }
+      }
+      def written: List[JsonRpc.Outbound] = synchronized { values }
+    }
+
+    val plane = new BlockingResponsePlane
+    val scheduler = new BoundedConcurrentScheduler(1, "kernel-drain-write-worker")
+    val deadlines = new ManualDeadlineScheduler
+    val connection = ConnectionKernel(
+      policy = policy(1, shutdownDrain = 1.0), dataPlane = plane, revisionRules = rules,
+      scheduler = scheduler, deadlineScheduler = deadlines,
+      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
+      application = application, serverInfo = serverInfo)
+    ready(connection, 630)
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(631)))
+    assert(plane.sendStarted.await(2, TimeUnit.SECONDS), "winning response did not enter DataPlane.send")
+    val release = new Thread(new Runnable {
+      def run(): Unit = { Thread.sleep(50L); plane.release.countDown() }
+    }, "kernel-drain-write-release")
+    release.setDaemon(true)
+    release.start()
+    val result = connection.drainAndClose()
+    release.join(2000L)
+    assert(result.drained)
+    assertEquals(plane.written.count(value => JsonRpc.value(value) match {
+      case json: JSON.Object.T @unchecked => JSON.value(json, "id").contains("631")
+      case _ => false
+    }), 1)
+    assertEquals(connection.phase, ConnectionLifecycle.Closed)
+  }
+
   test("an output failure closes kernel execution and never retries the response") {
     import java.io.IOException
 
@@ -952,6 +1222,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     }
     val connection = ConnectionKernel(
       policy = policy(1), dataPlane = plane, revisionRules = rules, scheduler = scheduler,
+      deadlineScheduler = new ManualDeadlineScheduler,
       registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
       application = application, serverInfo = serverInfo)
     intercept[IOException] {
@@ -959,5 +1230,60 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     }
     assertEquals(connection.phase, ConnectionLifecycle.Closing)
     assert(scheduler.isShutdown)
+  }
+
+  spec_test("output failure closes the gate before another completed worker can write",
+      covers = List("connection_kernel#T5")) {
+    import java.io.IOException
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+
+    final class FirstFailurePlane extends DataPlane {
+      private var values = List.empty[JsonRpc.Outbound]
+      val failingSendStarted = new CountDownLatch(1)
+      val releaseFailure = new CountDownLatch(1)
+
+      def receive(): Option[JsonRpc.Inbound] = None
+      def send(outbound: JsonRpc.Outbound): Unit = {
+        val id = JsonRpc.value(outbound) match {
+          case value: JSON.Object.T @unchecked => JSON.value(value, "id")
+          case _ => None
+        }
+        if (id.contains("fail")) {
+          failingSendStarted.countDown()
+          if (!releaseFailure.await(2, TimeUnit.SECONDS)) fail("failing send was never released")
+          throw new IOException("closed output")
+        }
+        synchronized { values :+= outbound }
+      }
+      def written: List[JsonRpc.Outbound] = synchronized { values }
+    }
+
+    val plane = new FirstFailurePlane
+    val scheduler = new BoundedConcurrentScheduler(2, "kernel-output-gate-worker")
+    val deadlines = new ManualDeadlineScheduler
+    val connection = ConnectionKernel(
+      policy = policy(2), dataPlane = plane, revisionRules = rules, scheduler = scheduler,
+      deadlineScheduler = deadlines,
+      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
+      application = application, serverInfo = serverInfo)
+    ready(connection, 640)
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList,
+      RequestId.string("fail")))
+    assert(plane.failingSendStarted.await(2, TimeUnit.SECONDS), "first response never reached output")
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList,
+      RequestId.string("later")))
+    val completed = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+    while (!connection.registry.snapshot.activeIds.isEmpty && System.nanoTime() < completed)
+      Thread.sleep(2L)
+    plane.releaseFailure.countDown()
+    val closed = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+    while (connection.phase != ConnectionLifecycle.Closing && System.nanoTime() < closed)
+      Thread.sleep(2L)
+    assertEquals(connection.phase, ConnectionLifecycle.Closing)
+    Thread.sleep(20L)
+    assertEquals(plane.written.count(value => JsonRpc.value(value) match {
+      case json: JSON.Object.T @unchecked => JSON.value(json, "id").contains("later")
+      case _ => false
+    }), 0, "a second response started after output failure closed the gate")
   }
 }
