@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: plan_format
 title: Machine-readable implementation plans
-status: planned
+status: done
 depends_on: []
 allowed_modules:
   - plans

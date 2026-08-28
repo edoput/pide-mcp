@@ -174,10 +174,15 @@ def run_cases(
     if jobs <= 0:
         raise RegistryError("e2e jobs must be positive")
     if filtered:
-        print("DIAGNOSTIC FILTERED RUN: not completion evidence", file=stream)
+        print(
+            "DIAGNOSTIC FILTERED RUN: not completion evidence",
+            file=stream,
+            flush=True,
+        )
     print(
         f"e2e: running {len(cases)} case(s) with {min(jobs, len(cases))} worker(s)",
         file=stream,
+        flush=True,
     )
     output_lock = threading.Lock()
     supervisor = ProcessSupervisor()
@@ -218,12 +223,20 @@ def run_cases(
         if not passed and not verbose:
             prefix = f"[e2e:{case.function}]"
             for line in result.stdout.splitlines():
-                print(f"{prefix} {line}", file=stream)
+                print(f"{prefix} {line}", file=stream, flush=True)
             for line in result.stderr.splitlines():
-                print(f"{prefix} ! {line}", file=stream)
-        print(f"{'PASS' if passed else 'FAIL'} e2e {case.name} ({detail})", file=stream)
+                print(f"{prefix} ! {line}", file=stream, flush=True)
+        print(
+            f"{'PASS' if passed else 'FAIL'} e2e {case.name} ({detail})",
+            file=stream,
+            flush=True,
+        )
         failures += int(not passed)
-    print(f"e2e: {len(cases) - failures} passed; {failures} failed", file=stream)
+    print(
+        f"e2e: {len(cases) - failures} passed; {failures} failed",
+        file=stream,
+        flush=True,
+    )
     return 1 if failures else 0
 
 

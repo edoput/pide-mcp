@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: verification_matrix
 title: Assemble static verification relationships across test producers
-status: planned
+status: done
 depends_on:
   - plan_format
   - plan_label_schema

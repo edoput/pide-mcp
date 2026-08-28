@@ -34,9 +34,9 @@ mcp_test/src/mcp_bridge_tests.scala, extending MCP_Session_Suite
 (one headless PIDE session per suite; with_repl / slow_step /
 await_busy / eventually / expect_ok / expect_error fixtures);
 register new suites in mcp_test/src/mcp_test_tool.scala. run one layer with
-`isabelle mcp_test -L scala-unit|heap|bridge`, all Scala layers with
+`isabelle mcp_test -L scala-unit|scala-performance|heap|bridge`, all Scala layers with
 `isabelle mcp_test -L all` (`-b` is the compatibility alias), and diagnostic
-filters with `-t PATTERN`. plans written before the
+filters with `-t PATTERN`; add `-v` to print every passing test. plans written before the
 migration say things like "scala unit round-trips in isabelle
 mcp_test" -- read those through this mapping.
 
@@ -105,20 +105,20 @@ index (wave order from the spec's implementation plan)
 ------------------------------------------------------
 
 delivery and verification infrastructure (independent of feature waves):
-  - [ ] plan_format            plans/plan_format (YAML frontmatter + schema;
+  - [x] plan_format            plans/plan_format (YAML frontmatter + schema;
         bootstrap migration from convention-only prose plans)
-  - [ ] plan_label_schema      plans/plan_label_schema (typed A/I/D/Q/T
+  - [x] plan_label_schema      plans/plan_label_schema (typed A/I/D/Q/T
         lifecycle and bounded historical normalization; depends on plan_format)
-  - [ ] verification_matrix   plans/verification_matrix (static verifies/covers
+  - [x] verification_matrix   plans/verification_matrix (static verifies/covers
         relationships across MUnit, Isabelle theory, tooling, and Python e2e
         producers; depends on plan_label_schema)
-  - [ ] python_e2e             plans/python_e2e (registered deterministic
+  - [x] python_e2e             plans/python_e2e (registered deterministic
         real-process Python client tests; depends on verification_matrix)
-  - [ ] planning_gate         plans/planning_gate (importable gate package and
+  - [x] planning_gate         plans/planning_gate (importable gate package and
         the single project done command; depends on all four plans above)
 
 boundary remediation (dependency-ordered architecture work packages):
-  - [ ] connection_kernel    plans/connection_kernel (replaceable stdio/scripted
+  - [x] connection_kernel    plans/connection_kernel (replaceable stdio/scripted
         data planes, MCP 2025-03-26 lifecycle, bounded request ownership,
         cancellation, batching conformance, and shutdown drain; depends on
         planning_gate and readiness)

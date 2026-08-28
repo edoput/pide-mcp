@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: plan_label_schema
 title: Normalize plan label semantics and lifecycle
-status: planned
+status: done
 depends_on:
   - plan_format
 allowed_modules:

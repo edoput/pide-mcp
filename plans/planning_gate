@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: planning_gate
 title: Enforce plan evidence and provide one done command
-status: in_progress
+status: done
 depends_on:
   - plan_format
   - plan_label_schema
