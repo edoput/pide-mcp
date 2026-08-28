@@ -74,6 +74,7 @@ def registered_commands(
     registry = load_layers(root)
     required_roles = {
         "scala_unit_suites",
+        "scala_performance_suites",
         "heap_suites",
         "pide_suites",
         "ml_unit_tests",
@@ -85,6 +86,7 @@ def registered_commands(
         raise CommandError(f"test-layer registry has no runners for roles: {missing_roles}")
 
     scala = registry.roles["scala_unit_suites"]
+    performance = registry.roles["scala_performance_suites"]
     heap = registry.roles["heap_suites"]
     bridge = registry.roles["pide_suites"]
     ml = registry.roles["ml_unit_tests"]
@@ -107,7 +109,7 @@ def registered_commands(
             "theories", "build production and ML-unit theory sessions",
             isabelle
             + (
-                "build", "-d", theory_dir, "-v",
+                "build", "-d", theory_dir,
                 "MCP-Tools", "MCP-Tools-Tests", "MCP-HOL", "MCP-HOL-Tests",
             ),
             7200,
@@ -136,6 +138,10 @@ def registered_commands(
             scala, "run the complete Scala unit layer",
             isabelle + ("mcp_test", "-L", scala), 3600, (scala,),
         ),
+        performance: CommandStep(
+            performance, "run the explicit Scala performance budgets",
+            isabelle + ("mcp_test", "-L", performance), 3600, (performance,),
+        ),
         heap: CommandStep(
             heap, "run the complete fresh-heap layer",
             isabelle + ("mcp_test", "-L", heap, "-d", theory_dir), 3600, (heap,),
@@ -159,6 +165,7 @@ def layer_step_ids(root: Path) -> tuple[str, ...]:
         for role in (
             "tooling_unit_tests",
             "scala_unit_suites",
+            "scala_performance_suites",
             "heap_suites",
             "pide_suites",
             "end_to_end_tests",

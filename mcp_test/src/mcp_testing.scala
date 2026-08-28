@@ -650,7 +650,8 @@ abstract class MCP_Heap_Suite(logic: String) extends munit.FunSuite with MCP_Spe
 }
 
 
-/* runner: munit suites through the JUnit4 core, PASS/FAIL per test */
+/* runner: munit suites through the JUnit4 core. Completion output is quiet;
+   focused diagnosis can request each passing test explicitly. */
 
 object MCP_Test_Runner {
   private def test_name(desc: Description): String =
@@ -660,7 +661,7 @@ object MCP_Test_Runner {
     }
 
   def run(suites: List[Class[? <: munit.Suite]], name_filter: Option[String],
-      progress: Progress): Int = {
+      progress: Progress, verbose: Boolean = false): Int = {
     val test_classes =
       suites.flatMap { cls =>
         cls.getDeclaredConstructor().newInstance().munitTests().map { test =>
@@ -701,7 +702,8 @@ object MCP_Test_Runner {
           "FAIL " + classified_name(failure.getDescription) + "\n" + failure.getMessage)
       }
       override def testFinished(desc: Description): Unit =
-        if (!failed(desc.getDisplayName)) progress.echo("PASS " + classified_name(desc))
+        if (verbose && !failed(desc.getDisplayName))
+          progress.echo("PASS " + classified_name(desc))
     })
 
     var req = Request.classes(selected*)

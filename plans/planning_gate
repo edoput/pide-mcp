@@ -76,12 +76,12 @@ claims:
     kind: test
     state: active
     statement: Documentation TOC classification fixtures distinguish functional and performance checks;
-    layers: [tooling-unit, scala-unit]
+    layers: [tooling-unit, scala-unit, scala-performance]
   - id: T8
     kind: test
     state: active
     statement: An orchestration fixture requires every registered layer;
-    layers: [tooling-unit, scala-unit, ml-unit, heap, bridge, e2e]
+    layers: [tooling-unit, scala-unit, scala-performance, ml-unit, heap, bridge, e2e]
 spec_refinements: []
 done_command:
   - tools/planning-gate

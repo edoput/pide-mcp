@@ -235,14 +235,18 @@ class MCP_Spec_Metadata_Tests extends MCP_Suite {
     assertEquals(MCP_Test.executable_layers,
       List(
         MCP_Test_Layers("scala_unit_suites"),
+        MCP_Test_Layers("scala_performance_suites"),
         MCP_Test_Layers("heap_suites"),
         MCP_Test_Layers("pide_suites")))
     assertEquals(MCP_Test.suites_for(MCP_Test.scala_unit_layer), MCP_Test.unit_suites)
+    assertEquals(MCP_Test.suites_for(MCP_Test.scala_performance_layer),
+      MCP_Test.performance_suites)
     assertEquals(MCP_Test.suites_for(MCP_Test.heap_layer), MCP_Test.heap_suites)
     assertEquals(MCP_Test.suites_for(MCP_Test.bridge_layer), MCP_Test.pide_suites)
     assertEquals(
       MCP_Test.suites_for(MCP_Test.all_selector),
-      MCP_Test.unit_suites ::: MCP_Test.heap_suites ::: MCP_Test.pide_suites)
+      MCP_Test.unit_suites ::: MCP_Test.performance_suites :::
+        MCP_Test.heap_suites ::: MCP_Test.pide_suites)
     intercept[RuntimeException] { MCP_Test.suites_for("missing-layer") }
   }
 
@@ -280,7 +284,9 @@ class MCP_Spec_Metadata_Tests extends MCP_Suite {
           "Isar_Ref toc has more than 40 rows spanning multiple files")
         .getOrElse(fail("functional test missing from manifest"))
     assertEquals(get_string(performance, "test_class"), MCP_Spec_Metadata.Performance)
+    assertEquals(get_string(performance, "layer"), MCP_Test.scala_performance_layer)
     assertEquals(get_string(functional, "test_class"), MCP_Spec_Metadata.Functional)
+    assertEquals(get_string(functional, "layer"), MCP_Test.scala_unit_layer)
   }
 
   spec_test(

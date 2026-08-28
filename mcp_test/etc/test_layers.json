@@ -2,6 +2,7 @@
   "schema_version": 1,
   "layers": {
     "scala_unit_suites": "scala-unit",
+    "scala_performance_suites": "scala-performance",
     "heap_suites": "heap",
     "pide_suites": "bridge",
     "ml_unit_tests": "ml-unit",
@@ -10,6 +11,7 @@
   },
   "producers": {
     "scala-unit": "isabelle-mcp/munit",
+    "scala-performance": "isabelle-mcp/munit",
     "heap": "isabelle-mcp/munit",
     "bridge": "isabelle-mcp/munit",
     "ml-unit": "isabelle-mcp/isabelle-theory",

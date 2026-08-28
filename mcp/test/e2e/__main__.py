@@ -22,6 +22,17 @@ def parser() -> argparse.ArgumentParser:
     selection = run.add_mutually_exclusive_group(required=True)
     selection.add_argument("--all", action="store_true", help="run the completion suite")
     selection.add_argument("--filter", help="diagnostic substring or plan-ID filter")
+    run.add_argument(
+        "--jobs", type=int, default=1,
+        help=(
+            "diagnostic concurrency override (default: 1; use only with "
+            "independently isolated Isabelle state)"
+        ),
+    )
+    run.add_argument(
+        "--verbose", action="store_true",
+        help="stream passing case output instead of showing transcripts only on failure",
+    )
     worker = commands.add_parser("_worker", help=argparse.SUPPRESS)
     worker.add_argument("identity")
     return result
@@ -46,7 +57,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         cases = discover_cases(root)
         selected = select_cases(cases, args.filter)
-        return run_cases(root, selected, filtered=not args.all)
+        return run_cases(
+            root, selected, filtered=not args.all,
+            jobs=args.jobs, verbose=args.verbose,
+        )
     except (OSError, RegistryError) as ex:
         print(f"e2e: FAIL: {ex}", file=sys.stderr)
         return 1

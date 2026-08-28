@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import io
 import json
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 
 import pytest
@@ -275,3 +277,48 @@ def test_filtered_e2e_run_is_prominently_diagnostic(
 
     assert run_cases(tmp_path, selected, filtered=True, stream=output) == 0
     assert "DIAGNOSTIC FILTERED RUN: not completion evidence" in output.getvalue()
+
+
+@spec_test(verifies=("python_e2e#I1",), covers=("python_e2e#T3",))
+def test_e2e_runner_is_quiet_on_success_verbose_on_failure_and_bounded_parallel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entrypoint = write_entrypoint(tmp_path)
+    write_case(tmp_path, "fixture", case_source(entrypoint))
+    first = discover_cases(tmp_path, required_entrypoints={entrypoint})[0]
+    second = replace(first, identity=first.identity + "_second", name="second case")
+    barrier = threading.Barrier(2)
+    active = 0
+    maximum = 0
+    lock = threading.Lock()
+
+    def fake_run(argv, cwd, timeout, **kwargs):
+        nonlocal active, maximum
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+        barrier.wait(timeout=2)
+        with lock:
+            active -= 1
+        return ProcessResult(0, "passing detail\n", "passing diagnostic\n", False)
+
+    monkeypatch.setattr("mcp.test.e2e.runner.run_process", fake_run)
+    output = io.StringIO()
+    assert run_cases(
+        tmp_path, (first, second), filtered=False, jobs=2, stream=output
+    ) == 0
+    assert maximum == 2
+    assert "passing detail" not in output.getvalue()
+    assert "passing diagnostic" not in output.getvalue()
+    assert output.getvalue().count("PASS e2e") == 2
+
+    monkeypatch.setattr(
+        "mcp.test.e2e.runner.run_process",
+        lambda argv, cwd, timeout, **kwargs: ProcessResult(
+            1, "failed stdout\n", "failed stderr\n", False
+        ),
+    )
+    output = io.StringIO()
+    assert run_cases(tmp_path, (first,), filtered=False, stream=output) == 1
+    assert "failed stdout" in output.getvalue()
+    assert "failed stderr" in output.getvalue()

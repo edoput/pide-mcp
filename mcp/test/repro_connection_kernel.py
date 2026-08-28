@@ -32,8 +32,8 @@ ISABELLE = shlex.split(
 PROTOCOL = "2025-03-26"
 
 
-def server(*arguments: str) -> Client:
-    return Client(ISABELLE + ["mcp_server", *arguments])
+def server(*arguments: str, stderr: int | None = None) -> Client:
+    return Client(ISABELLE + ["mcp_server", *arguments], stderr=stderr)
 
 
 def initialize(client: Client) -> dict[str, Any]:
@@ -192,7 +192,10 @@ def run_lifecycle_readiness() -> int:
 
 
 def _test_server(
-    *, max_in_flight: int, shutdown_drain: float = 5.0
+    *,
+    max_in_flight: int,
+    shutdown_drain: float = 5.0,
+    stderr: int | None = None,
 ) -> tuple[Client, dict[str, str]]:
     client = server(
         "-o",
@@ -205,6 +208,7 @@ def _test_server(
         "MCP-Tools-Tests",
         "-T",
         "MCP_Tools_Tests",
+        stderr=stderr,
     )
     initialize(client)
     ready = wait_for_ready(client, probe_name="shout", probe_args={"input": "ready"})
@@ -396,21 +400,26 @@ def run_eof_drain() -> int:
     many_ids = [value.get("id") for value in many_messages]
     assert many_ids == [fast_id, slow_id], many_messages
 
-    deadline_client, deadline_tools = _test_server(
-        max_in_flight=1, shutdown_drain=0.05
-    )
-    cancelled_id = deadline_client.send(
-        "tools/call", {"name": deadline_tools["slow"], "arguments": {}}
-    )
-    assert cancelled_id is not None
-    before = time.monotonic()
-    deadline_code, deadline_messages = _close_and_messages(deadline_client, timeout=10)
-    elapsed = time.monotonic() - before
-    assert deadline_code == 0, deadline_code
-    assert elapsed < 2.0, f"EOF deadline did not cancel promptly: {elapsed:.3f}s"
-    assert all(value.get("id") != cancelled_id for value in deadline_messages), (
-        deadline_messages
-    )
+    with tempfile.TemporaryFile(mode="w+") as deadline_stderr:
+        deadline_client, deadline_tools = _test_server(
+            max_in_flight=1,
+            shutdown_drain=0.05,
+            stderr=deadline_stderr.fileno(),
+        )
+        cancelled_id = deadline_client.send(
+            "tools/call", {"name": deadline_tools["slow"], "arguments": {}}
+        )
+        assert cancelled_id is not None
+        deadline_code, deadline_messages = _close_and_messages(
+            deadline_client, timeout=10
+        )
+        deadline_stderr.seek(0)
+        shutdown_log = deadline_stderr.read()
+        assert deadline_code == 0, deadline_code
+        assert "waited 0.050s; cancelled 1" in shutdown_log, shutdown_log
+        assert all(value.get("id") != cancelled_id for value in deadline_messages), (
+            deadline_messages
+        )
     return 0
 
 

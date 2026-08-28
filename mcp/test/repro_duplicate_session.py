@@ -188,7 +188,8 @@ def run_case(label, dirs, base):
     print("=" * 72)
     client = Client(label, dirs, base)
     try:
-        client.call("initialize", {"protocolVersion": "2024-11-05"}, timeout=120)
+        client.call("initialize", {"protocolVersion": "2025-03-26"}, timeout=120)
+        client.rpc.send("notifications/initialized", notification=True)
         print("  initialize ....... ok (the handshake never waits on the prover)")
 
         status = client.await_terminal(TIMEOUT)

@@ -24,6 +24,9 @@ def test_every_layer_has_an_explicit_shell_free_diagnostic_command() -> None:
     assert steps["scala-unit"].argv == (
         "isabelle-fixture", "--flag", "value", "mcp_test", "-L", "scala-unit"
     )
+    assert steps["scala-performance"].argv == (
+        "isabelle-fixture", "--flag", "value", "mcp_test", "-L", "scala-performance"
+    )
     assert steps["heap"].argv[-4:] == ("-L", "heap", "-d", "mcp/Tools")
     assert steps["bridge"].argv[-4:] == ("-L", "bridge", "-d", "mcp/Tools")
     assert steps["theories"].layers == ("ml-unit",)

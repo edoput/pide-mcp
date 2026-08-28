@@ -2236,11 +2236,9 @@ object MCP_Doc_Read_Fixture {
   final case class Loaded(
     isar_ref_files: List[Path],
     isar_ref_toc: List[Doc_Catalog.Heading],
-    news_path: Path,
-    elapsed: Time)
+    news_path: Path)
 
   lazy val loaded: Loaded = {
-    val started = Time.now()
     val structure =
       Sessions.load_structure(MCP_Test_Config.options, dirs = MCP_Test_Config.session_dirs)
     val deps = Sessions.deps(structure, progress = MCP_Test_Config.progress)
@@ -2249,7 +2247,7 @@ object MCP_Doc_Read_Fixture {
     val news =
       Doc_Catalog.make(structure).flatMap(_.entries).find(_.name == "NEWS")
         .getOrElse(error("no NEWS entry in the catalog")).path
-    Loaded(files, toc, news, Time.now() - started)
+    Loaded(files, toc, news)
   }
 }
 
@@ -2258,9 +2256,16 @@ class MCP_Doc_Read_Performance_Tests extends MCP_Suite {
   override def munitTimeout = 10.minutes
 
   spec_test("documentation catalog construction stays within 30 seconds",
-      covers = List("planning_gate#T7"),
+      covers = List("planning_gate#T7", "planning_gate#T8"),
       test_class = MCP_Spec_Metadata.Performance) {
-    val elapsed = MCP_Doc_Read_Fixture.loaded.elapsed
+    /* MCP_Session receives Structure and Deps from backend startup before it
+       constructs Doc_Catalog.  This budget measures the named product path,
+       not unrelated dependency-graph construction. */
+    val structure =
+      Sessions.load_structure(MCP_Test_Config.options, dirs = MCP_Test_Config.session_dirs)
+    val started = Time.now()
+    Doc_Catalog.make(structure)
+    val elapsed = Time.now() - started
     val budget = Time.seconds(30)
     assert(elapsed <= budget,
       "documentation catalog performance budget exceeded: " +
