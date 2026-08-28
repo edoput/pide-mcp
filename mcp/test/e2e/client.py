@@ -31,6 +31,7 @@ class Client:
         )
         self.replies: queue.Queue[str] = queue.Queue()
         self.notifications: list[dict[str, Any]] = []
+        self.pending_replies: dict[str, dict[str, Any]] = {}
         self.next_id = 0
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
@@ -63,16 +64,25 @@ class Client:
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
 
+    def send_json(self, message: Any) -> None:
+        """Send an arbitrary JSON-RPC envelope, including a batch."""
+        self.send_raw(json.dumps(message))
+
+    def recv_json(self, timeout: float = DEFAULT_TIMEOUT) -> Any:
+        return json.loads(self.replies.get(timeout=timeout))
+
     def recv(self, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
-        value = json.loads(self.replies.get(timeout=timeout))
+        value = self.recv_json(timeout)
         if not isinstance(value, dict):
             raise AssertionError(f"server emitted non-object JSON: {value!r}")
         return value
 
-    def request(
-        self, method: str, params: Any = None, timeout: float = DEFAULT_TIMEOUT
+    def await_reply(
+        self, rpc_id: str, timeout: float = DEFAULT_TIMEOUT
     ) -> dict[str, Any]:
-        rpc_id = self.send(method, params)
+        pending = self.pending_replies.pop(rpc_id, None)
+        if pending is not None:
+            return pending
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -84,11 +94,23 @@ class Client:
             ):
                 self.notifications.append(reply)
                 continue
-            if reply.get("id") != rpc_id:
+            reply_id = reply.get("id")
+            if reply_id == rpc_id:
+                return reply
+            if not isinstance(reply_id, str):
                 raise AssertionError(
-                    f"reply id {reply.get('id')!r} != request id {rpc_id!r}"
+                    f"uncorrelated server message while waiting for {rpc_id!r}: {reply!r}"
                 )
-            return reply
+            if reply_id in self.pending_replies:
+                raise AssertionError(f"duplicate reply id {reply_id!r}")
+            self.pending_replies[reply_id] = reply
+
+    def request(
+        self, method: str, params: Any = None, timeout: float = DEFAULT_TIMEOUT
+    ) -> dict[str, Any]:
+        rpc_id = self.send(method, params)
+        assert rpc_id is not None
+        return self.await_reply(rpc_id, timeout)
 
     def await_notification(self, method: str, timeout: float = 30) -> bool:
         if any(value.get("method") == method for value in self.notifications):
@@ -101,20 +123,63 @@ class Client:
             return True
         if "id" not in message:
             self.notifications.append(message)
+        elif isinstance(message.get("id"), str):
+            reply_id = message["id"]
+            if reply_id in self.pending_replies:
+                raise AssertionError(f"duplicate reply id {reply_id!r}")
+            self.pending_replies[reply_id] = message
         return False
+
+    def assert_no_reply(self, rpc_id: str, timeout: float = 0.5) -> None:
+        if rpc_id in self.pending_replies:
+            raise AssertionError(
+                f"unexpected reply for cancelled request {rpc_id!r}: "
+                f"{self.pending_replies[rpc_id]!r}"
+            )
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                message = self.recv(timeout=remaining)
+            except queue.Empty:
+                return
+            if "id" not in message:
+                self.notifications.append(message)
+                continue
+            reply_id = message.get("id")
+            if reply_id == rpc_id:
+                raise AssertionError(f"unexpected reply for cancelled request {rpc_id!r}")
+            if not isinstance(reply_id, str):
+                raise AssertionError(f"uncorrelated server message: {message!r}")
+            if reply_id in self.pending_replies:
+                raise AssertionError(f"duplicate reply id {reply_id!r}")
+            self.pending_replies[reply_id] = message
+
+    def drain_json(self) -> list[Any]:
+        """Drain complete envelopes after process exit, preserving wire order."""
+        result: list[Any] = []
+        while True:
+            try:
+                result.append(json.loads(self.replies.get_nowait()))
+            except queue.Empty:
+                return result
 
     def close(self, timeout: float = 30) -> int:
         if self.proc.stdin is not None and not self.proc.stdin.closed:
             self.proc.stdin.close()
         try:
-            return self.proc.wait(timeout=timeout)
+            result = self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             self.proc.terminate()
             try:
-                return self.proc.wait(timeout=2)
+                result = self.proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
-                return self.proc.wait()
+                result = self.proc.wait()
+        self.reader.join(timeout=2)
+        return result
 
     def __enter__(self) -> "Client":
         return self
@@ -157,7 +222,9 @@ def wait_for_ready(
         )
         content = reply.get("result", {}).get("content", [])
         text = content[0].get("text", "") if content else ""
-        if not (" is not ready:" in text or " failed to start:" in text):
+        if " failed to start:" in text:
+            return reply
+        if " is not ready:" not in text:
             return reply
         if time.monotonic() >= deadline:
             return reply

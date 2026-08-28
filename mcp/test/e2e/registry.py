@@ -20,6 +20,7 @@ ENTRYPOINTS = frozenset(
     {
         "mcp/test/test_mcp.py",
         "mcp/test/repro_concurrent_serve.py",
+        "mcp/test/repro_connection_kernel.py",
         "mcp/test/repro_duplicate_session.py",
     }
 )

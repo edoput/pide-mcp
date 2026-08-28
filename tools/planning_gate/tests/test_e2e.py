@@ -191,6 +191,37 @@ for line in sys.stdin:
     ).read_text(encoding="utf-8")
 
 
+@spec_test(verifies=("python_e2e#I1",))
+def test_shared_e2e_client_correlates_out_of_order_replies_and_batches() -> None:
+    server = r'''import json, sys
+first = json.loads(sys.stdin.readline())
+second = json.loads(sys.stdin.readline())
+print(json.dumps({"jsonrpc":"2.0","id":second["id"],"result":{"order":2}}), flush=True)
+print(json.dumps({"jsonrpc":"2.0","id":first["id"],"result":{"order":1}}), flush=True)
+batch = json.loads(sys.stdin.readline())
+print(json.dumps([{"jsonrpc":"2.0","id":value["id"],"result":{}} for value in batch]), flush=True)
+'''
+    client = Client([sys.executable, "-c", server])
+    try:
+        first = client.send("first")
+        second = client.send("second")
+        assert first is not None and second is not None
+        assert client.await_reply(first, timeout=2)["result"] == {"order": 1}
+        assert client.await_reply(second, timeout=2)["result"] == {"order": 2}
+
+        client.send_json(
+            [
+                {"jsonrpc": "2.0", "id": "batch-a", "method": "ping"},
+                {"jsonrpc": "2.0", "id": "batch-b", "method": "ping"},
+            ]
+        )
+        batch = client.recv_json(timeout=2)
+        assert isinstance(batch, list)
+        assert {value["id"] for value in batch} == {"batch-a", "batch-b"}
+    finally:
+        assert client.close() == 0
+
+
 @spec_test(covers=("python_e2e#T3",))
 def test_e2e_process_runner_cleans_lingering_child_after_success(tmp_path: Path) -> None:
     script = (
