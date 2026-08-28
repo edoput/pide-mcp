@@ -34,16 +34,19 @@ object McpApplication {
     final case class InvalidParams(message: String) extends Outcome
   }
 
-  /* The kernel will supply a connection-owned implementation in checkpoint 5.
-     Application dispatch can observe cancellation but cannot create, complete,
-     or otherwise control it. */
+  /* The kernel supplies a connection-owned implementation.  Application code
+     can observe the signal or register cooperative cleanup, but cannot trigger
+     or complete it.  Registration is safe on either side of the cancellation
+     race: a callback registered after cancellation runs immediately. */
   trait Cancellation {
     def isCancelled: Boolean
+    def onCancel(callback: () => Unit): Unit
   }
 
   object Cancellation {
     val Never: Cancellation = new Cancellation {
       def isCancelled: Boolean = false
+      def onCancel(callback: () => Unit): Unit = ()
     }
   }
 
@@ -114,7 +117,7 @@ private[application] final class IsabelleMcpApplication(
         "(declare [[mcp_tools del: ...]] or a closed bundle).",
       input_schema = JSON.Object("type" -> "object"),
       annotations = MCP_Server.read_only_annotations,
-      handler_fn = Some((backend, _) => {
+      handler_fn = Some((backend, _, _) => {
         val sc = scope.value
         val bundles_text = if (sc.bundles.isEmpty) "none" else sc.bundles.mkString(", ")
         backend.check_designation(sc.designation, sc.bundles) match {
@@ -153,7 +156,7 @@ private[application] final class IsabelleMcpApplication(
             "repl" -> JSON.Object("type" -> "string")),
           "required" -> List()),
       annotations = MCP_Server.mutating_annotations,
-      handler_fn = Some((backend, args) => {
+      handler_fn = Some((backend, args, _) => {
         val theory = args.collectFirst({ case ("theory", v) => v })
         val repl = args.collectFirst({ case ("repl", v) => v })
         (theory, repl) match {
@@ -198,7 +201,7 @@ private[application] final class IsabelleMcpApplication(
               JSON.Object("type" -> "array", "items" -> JSON.Object("type" -> "string"))),
           "required" -> List("bundles")),
       annotations = MCP_Server.mutating_annotations,
-      handler_fn = Some((backend, args) => {
+      handler_fn = Some((backend, args, _) => {
         val bundles = args.collect({ case ("bundles", v) => v })
         val sc = scope.value
         val candidate = sc.bundles ++ bundles
@@ -255,7 +258,11 @@ private[application] final class IsabelleMcpApplication(
       "inputSchema" -> tool.input_schema,
       "annotations" -> tool.annotations)
 
-  private def tools_call(name: String, arguments: JSON.Object.T): Outcome =
+  private def tools_call(
+    name: String,
+    arguments: JSON.Object.T,
+    cancellation: Cancellation
+  ): Outcome =
     readiness() match {
       case McpApplication.Not_Ready(progress) =>
         Outcome.Result(MCP_Server.text_result(not_ready_text(progress), is_error = true))
@@ -263,7 +270,8 @@ private[application] final class IsabelleMcpApplication(
         Outcome.Result(MCP_Server.text_result(failed_text(message), is_error = true))
       case McpApplication.Ready(backend) =>
         all_builtins.find(_.name == name) match {
-          case Some(tool) => text_outcome(tool.handler(backend, MCP_Server.json_args(arguments)))
+          case Some(tool) =>
+            text_outcome(tool.handler(backend, MCP_Server.json_args(arguments), cancellation))
           case None =>
             val sc = scope.value
             val exposed =
@@ -273,7 +281,9 @@ private[application] final class IsabelleMcpApplication(
             val internal = exposed.collectFirst({ case (full, visible) if visible == name => full })
               .getOrElse(name)
             text_outcome(
-              backend.ml_run(internal, MCP_Server.json_args(arguments), sc.designation, sc.bundles))
+              backend.ml_run_cancellable(
+                internal, MCP_Server.json_args(arguments), sc.designation, sc.bundles,
+                cancellation))
         }
     }
 
@@ -311,7 +321,7 @@ private[application] final class IsabelleMcpApplication(
   def execute(operation: Operation, cancellation: Cancellation): Outcome =
     operation match {
       case Operation.ToolsList => tools_list()
-      case Operation.ToolsCall(name, arguments) => tools_call(name, arguments)
+      case Operation.ToolsCall(name, arguments) => tools_call(name, arguments, cancellation)
       case Operation.ResourcesList => resources_list()
       case Operation.ResourceTemplatesList =>
         Outcome.Result(JSON.Object("resourceTemplates" -> MCP_Server.resource_templates))

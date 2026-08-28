@@ -51,6 +51,8 @@ sig
   val decode_args: string -> (string * string) list
   val dispatch: string -> (string * string) list -> unit
   val fork_run: string -> (string * string) list -> (string * string) future
+  val fork_run_cancellable:
+    string -> string -> (string * string) list -> unit future * (unit -> string)
   val run: string -> (string * string) list -> string * string
   val reset: unit -> unit
   val set_self_theory: theory -> unit
@@ -443,6 +445,28 @@ fun fork_run fname args =
               in ("error", if output = "" then msg else output ^ "\n" ^ msg) end))
   end;
 
+(*Protocol calls expose their group through MCP_Cancellation and leave output
+  cleanup to the non-interruptible dependent task.  Thus cancellation before
+  the worker starts cannot leak the registered output route.*)
+fun fork_run_cancellable id fname args =
+  let
+    val _ = MCP_Output.install_wrappers ();
+    val group = Future.new_group NONE;
+    val finish0 = MCP_Output.register group;
+    val finished = Synchronized.var "MCP_Repl.finished_output" (NONE: string option);
+    fun finish () =
+      Synchronized.change_result finished (fn state =>
+        (case state of
+          SOME output => (output, state)
+        | NONE => let val output = finish0 () in (output, SOME output) end));
+    val _ = MCP_Cancellation.register id group;
+    val result =
+      (singleton o Future.forks)
+        {name = "MCP.ir." ^ fname, group = SOME group, deps = [],
+         pri = ir_pri, interrupts = true}
+        (fn () => Print_Mode.with_modes [Print_Mode.PIDE] (fn () => dispatch fname args) ());
+  in (result, finish) end;
+
 fun run fname args = Future.join (fork_run fname args);
 
 end;
@@ -467,21 +491,34 @@ val _ =
   Protocol_Command.define "MCP.ir"
     (fn [id, fname, args_yxml] =>
       let
-        val result = MCP_Repl.fork_run fname (MCP_Repl.decode_args args_yxml);
+        val (result, finish_output) =
+          MCP_Repl.fork_run_cancellable id fname (MCP_Repl.decode_args args_yxml);
         val _ =
           (singleton o Future.forks)
             {name = "MCP.ir_result", group = NONE,
              deps = [Future.task_of result], pri = ~1, interrupts = false}
             (fn () =>
               let
+                val joined = Future.join_result result;
+                val captured = finish_output ();
+                val cancelled =
+                  (case MCP_Cancellation.finish id of
+                    SOME value => value
+                  | NONE => error ("Missing MCP.ir cancellation route " ^ quote id));
                 val (status, output) =
-                  (case Future.join_result result of
-                    Exn.Res res => res
-                  | Exn.Exn exn => ("error", Runtime.exn_message exn));
+                  (case joined of
+                    Exn.Res () => ("ok", captured)
+                  | Exn.Exn exn =>
+                      let val message = Runtime.exn_message exn
+                      in
+                        ("error", if captured = "" then message else captured ^ "\n" ^ message)
+                      end);
               in
-                Output.protocol_message
-                  [Markup.function "MCP.ir_result", ("id", id), ("status", status)]
-                  [[XML.Text output]]
+                if cancelled then ()
+                else
+                  Output.protocol_message
+                    [Markup.function "MCP.ir_result", ("id", id), ("status", status)]
+                    [[XML.Text output]]
               end);
       in () end);
 \<close>

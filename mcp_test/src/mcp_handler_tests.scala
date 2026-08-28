@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
+import isabelle.mcp.application.McpApplication
 import isabelle.mcp.connection.{ConnectionKernel, ConnectionPolicy}
 
 import scala.concurrent.duration.DurationInt
@@ -262,6 +263,42 @@ class MCP_Readiness_Tests extends MCP_Suite {
 /* tools: ML-registry tools, the builtin table rows, and their dispatch */
 
 class MCP_Tools_Tests extends MCP_Suite {
+  spec_test("application forwards the connection cancellation handle to ML and IR bridges",
+      covers = List("connection_kernel#T4")) {
+    class Cancellable_Backend extends Fake_Backend {
+      var mlCancellation: Option[McpApplication.Cancellation] = None
+      var irCancellation: Option[McpApplication.Cancellation] = None
+
+      override def ml_run_cancellable(name: String, args: List[(String, String)],
+          designation: String, bundles: List[String],
+          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
+        mlCancellation = Some(cancellation)
+        super.ml_run(name, args, designation, bundles)
+      }
+
+      override def ir_cancellable(fname: String, args: List[(String, String)],
+          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
+        irCancellation = Some(cancellation)
+        super.ir(fname, args)
+      }
+    }
+
+    val cancellation = new McpApplication.Cancellation {
+      def isCancelled: Boolean = false
+      def onCancel(callback: () => Unit): Unit = ()
+    }
+    val backend = new Cancellable_Backend
+    val application = McpApplication.isabelle(
+      () => McpApplication.Ready(backend), "TEST", Nil, "MCP_Repl")
+    application.execute(
+      McpApplication.Operation.ToolsCall("shout", JSON.Object("input" -> "hello")),
+      cancellation)
+    application.execute(
+      McpApplication.Operation.ToolsCall("repl_list", JSON.Object()), cancellation)
+    assert(backend.mlCancellation.exists(_ eq cancellation))
+    assert(backend.irCancellation.exists(_ eq cancellation))
+  }
+
   private def start_server(body: => Unit): (Thread, AtomicReference[Throwable]) = {
     val failure = new AtomicReference[Throwable](null)
     val server = new Thread(new Runnable {

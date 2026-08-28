@@ -876,9 +876,14 @@ behavior:
    the scala side with XML.content(YXML.parse_body(...)) — lossless,
    no ML changes, and keeps the door open for structured output later.
 
-cancellation (later, cheap): keep the group in the routing table;
-"MCP.ir_cancel" id -> Future.cancel_group. Ir's claim mechanism already
-keeps a cancelled/failed step from corrupting the repl.
+cancellation: both `MCP.ir` and `MCP.run_tool` retain their fresh future group
+under the internal Scala bridge UUID. The shared internal `MCP.cancel` command
+requests `Future.cancel_group`, and a non-interruptible dependent cleanup task
+removes the group/output route and suppresses its protocol result when
+cancellation won. The client JSON-RPC ID never crosses this internal bridge.
+The Scala request registry, not ML interrupt timing, owns the client-visible
+terminal race. It removes and resolves the pending bridge promise promptly so
+the Scala worker can return even when ML code defers or ignores interrupts.
 
 dispatcher table (fname -> Ir call), mirroring mcp_server.py:
 
@@ -2527,6 +2532,11 @@ id: S-out-scope
   cancellation notifications are ignored without a reply; if a normal result
   won first, that already-sent response remains valid. This preserves the
   notification's fire-and-forget behavior while making the race client-safe.
+  Cancellation, timeout, and shutdown request an Isabelle future-group
+  interrupt and promptly unblock any Scala worker waiting on an `MCP.ir` or
+  `MCP.run_tool` promise. This interruption is cooperative and best-effort:
+  code that masks or defers interrupts may continue internally, but its bridge
+  route has already been removed and its late result cannot reach the client.
 - resource subscriptions — one designated use case: asynchronous proof
   checking via the diagnostics resource. recommended shape when it
   comes:

@@ -10,6 +10,8 @@ package isabelle.mcp.connection
 import isabelle.{JSON, error}
 import isabelle.mcp.application.McpApplication
 
+import scala.util.control.NonFatal
+
 
 sealed trait RequestId {
   def json: JSON.T
@@ -184,6 +186,25 @@ object RequestRegistry {
   sealed trait Cancellation
   final case class Cancelled(tombstone: Tombstone) extends Cancellation
   case object CancellationIgnored extends Cancellation
+
+  /* A terminal state transition and its cooperative notification are two
+     distinct operations.  The connection kernel may prepare while holding
+     its own terminal-state lock, then deliver only after releasing that lock.
+     Public registry operations still prepare and deliver synchronously. */
+  private[connection] final class Prepared[+A] private[connection] (
+    val result: A,
+    signal: () => Unit
+  ) {
+    private var delivered = false
+
+    def deliver(): A = {
+      val run = synchronized {
+        if (delivered) false else { delivered = true; true }
+      }
+      if (run) signal()
+      result
+    }
+  }
 }
 
 
@@ -200,8 +221,37 @@ final class RequestRegistry(
 
   private final class OwnedCancellation extends McpApplication.Cancellation {
     private var cancelled = false
+    private var callbacks = Vector.empty[() => Unit]
+
     def isCancelled: Boolean = synchronized { cancelled }
-    def cancel(): Unit = synchronized { cancelled = true }
+
+    def onCancel(callback: () => Unit): Unit = {
+      val runNow = synchronized {
+        if (cancelled) true
+        else {
+          callbacks :+= callback
+          false
+        }
+      }
+      if (runNow) runCallback(callback)
+    }
+
+    def prepareCancel(): () => Unit = {
+      val pending = synchronized {
+        if (cancelled) Vector.empty
+        else {
+          cancelled = true
+          val result = callbacks
+          callbacks = Vector.empty
+          result
+        }
+      }
+      () => pending.foreach(runCallback)
+    }
+
+    private def runCallback(callback: () => Unit): Unit =
+      try callback()
+      catch { case NonFatal(_) => () }
   }
 
   private final case class Active(
@@ -264,13 +314,22 @@ final class RequestRegistry(
     consumedReservations += reservation
   }
 
-  def cancel(id: RequestId, reason: Option[String]): Cancellation = synchronized {
-    activeById.get(id) match {
-      case Some(active) if active.kind.cancellable =>
-        active.cancellation.cancel()
-        Cancelled(terminal(active, TerminalDisposition.ClientCancelled, reason))
-      case _ => CancellationIgnored
+  def cancel(id: RequestId, reason: Option[String]): Cancellation =
+    prepareCancel(id, reason).deliver()
+
+  private[connection] def prepareCancel(
+    id: RequestId,
+    reason: Option[String]
+  ): Prepared[Cancellation] = {
+    val (result, signal) = synchronized {
+      activeById.get(id) match {
+        case Some(active) if active.kind.cancellable =>
+          (Cancelled(terminal(active, TerminalDisposition.ClientCancelled, reason)),
+            active.cancellation.prepareCancel())
+        case _ => (CancellationIgnored, () => ())
+      }
     }
+    new Prepared(result, signal)
   }
 
   def complete(token: CompletionToken, disposition: WorkerDisposition): Completion = {
@@ -290,39 +349,49 @@ final class RequestRegistry(
     react(result)
   }
 
-  def timeout(token: CompletionToken): Completion = {
-    val result = synchronized {
+  def timeout(token: CompletionToken): Completion =
+    prepareTimeout(token).deliver()
+
+  private[connection] def prepareTimeout(token: CompletionToken): Prepared[Completion] = {
+    val (result, signal) = synchronized {
       activeByToken.get(token) match {
         case Some(active) =>
-          active.cancellation.cancel()
-          Right(Completed(terminal(active, TerminalDisposition.Timeout, None)))
+          (Right(Completed(terminal(active, TerminalDisposition.Timeout, None))),
+            active.cancellation.prepareCancel())
         case None =>
           pastByToken.get(token) match {
-            case Some(past) => Right(TimerIgnored(past.tombstone))
-            case None => Left((UnknownCompletion(token), snapshot0))
+            case Some(past) => (Right(TimerIgnored(past.tombstone)), () => ())
+            case None => (Left((UnknownCompletion(token), snapshot0)), () => ())
           }
       }
     }
-    react(result)
+    new Prepared(react(result), signal)
   }
 
-  def shutdown(): List[Tombstone] = synchronized {
-    activeByToken.values.toList.map { active =>
-      active.cancellation.cancel()
-      terminal(active, TerminalDisposition.Shutdown, None)
+  def shutdown(): List[Tombstone] = prepareShutdown().deliver()
+
+  private[connection] def prepareShutdown(): Prepared[List[Tombstone]] = {
+    val (tombstones, signals) = synchronized {
+      val active = activeByToken.values.toList
+      val tombstones = active.map(terminal(_, TerminalDisposition.Shutdown, None))
+      (tombstones, active.map(_.cancellation.prepareCancel()))
     }
+    new Prepared(tombstones, () => signals.foreach(_()))
   }
 
-  private[connection] def shutdown(token: CompletionToken): Completion = {
-    val result = synchronized {
+  private[connection] def shutdown(token: CompletionToken): Completion =
+    prepareShutdown(token).deliver()
+
+  private[connection] def prepareShutdown(token: CompletionToken): Prepared[Completion] = {
+    val (result, signal) = synchronized {
       activeByToken.get(token) match {
         case Some(active) =>
-          active.cancellation.cancel()
-          Right(Completed(terminal(active, TerminalDisposition.Shutdown, None)))
-        case None => Left((UnknownCompletion(token), snapshot0))
+          (Right(Completed(terminal(active, TerminalDisposition.Shutdown, None))),
+            active.cancellation.prepareCancel())
+        case None => (Left((UnknownCompletion(token), snapshot0)), () => ())
       }
     }
-    react(result)
+    new Prepared(react(result), signal)
   }
 
   def snapshot: Snapshot = synchronized { snapshot0 }

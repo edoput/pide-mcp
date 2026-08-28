@@ -370,19 +370,44 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(controls.snapshot.activeCapacity, 0)
   }
 
-  test("cancellation wins once, exposes the application signal, and suppresses one stale completion") {
+  spec_test("cancellation callbacks are exactly-once, outside registry ownership, and suppress stale completion",
+      covers = List("connection_kernel#T4")) {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+    import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
     import RequestRegistry.{AdmissionKind, TerminalDisposition, WorkerDisposition}
 
     val policy = new RequestRegistry.InvariantViolationPolicy.MarkBroken
     val registry = new RequestRegistry(policy)
     val ordinary = admitted(registry, requestId(30), AdmissionKind.Ordinary)
     val initialize = admitted(registry, requestId(31), AdmissionKind.Initialize)
+    val callbacks = new AtomicInteger(0)
+    val outsideRegistry = new AtomicBoolean(false)
+    ordinary.cancellation.onCancel(() => {
+      callbacks.incrementAndGet()
+      throw new IllegalStateException("one bad cooperative callback")
+    })
+    ordinary.cancellation.onCancel(() => {
+      val reentered = new CountDownLatch(1)
+      val probe = new Thread(new Runnable {
+        def run(): Unit = { registry.snapshot; reentered.countDown() }
+      }, "cancellation-registry-reentry")
+      probe.setDaemon(true)
+      probe.start()
+      outsideRegistry.set(reentered.await(1, TimeUnit.SECONDS))
+      callbacks.incrementAndGet()
+    })
     assert(!ordinary.cancellation.isCancelled)
     assertEquals(registry.cancel(requestId(30), Some("client closed pane")),
       RequestRegistry.Cancelled(RequestRegistry.Tombstone(requestId(30), AdmissionKind.Ordinary,
         TerminalDisposition.ClientCancelled, Some("client closed pane"), capacityReleased = true)))
     assert(ordinary.cancellation.isCancelled)
+    assertEquals(callbacks.get(), 2, "one failing callback prevented a later callback")
+    assert(outsideRegistry.get(), "cooperative callback ran while the registry monitor was held")
+    ordinary.cancellation.onCancel(() => callbacks.incrementAndGet())
+    assertEquals(callbacks.get(), 3, "late registration did not run immediately")
     assertEquals(registry.snapshot.activeCapacity, 0)
+    assertEquals(registry.cancel(requestId(30), None), RequestRegistry.CancellationIgnored)
+    assertEquals(callbacks.get(), 3, "repeated cancellation invoked a callback twice")
     assertEquals(registry.cancel(requestId(31), None), RequestRegistry.CancellationIgnored)
     assertEquals(registry.complete(ordinary.token, WorkerDisposition.Success),
       RequestRegistry.LateIgnored(RequestRegistry.Tombstone(requestId(30), AdmissionKind.Ordinary,
@@ -392,8 +417,9 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assert(policy.isBroken)
   }
 
-  spec_test("timeout and shutdown cancel owned work without consuming late worker completion",
-      covers = List("connection_kernel#T5")) {
+  spec_test("timeout and shutdown propagate cancellation without consuming late worker completion",
+      covers = List("connection_kernel#T4", "connection_kernel#T5")) {
+    import java.util.concurrent.atomic.AtomicInteger
     import RequestRegistry.{AdmissionKind, WorkerDisposition}
 
     val registry = new RequestRegistry(new RequestRegistry.InvariantViolationPolicy.MarkBroken)
@@ -411,17 +437,22 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
 
     val closingRegistry = new RequestRegistry(new RequestRegistry.InvariantViolationPolicy.MarkBroken)
     val timed = admitted(closingRegistry, requestId(37), AdmissionKind.Ordinary)
+    val signals = new AtomicInteger(0)
+    timed.cancellation.onCancel(() => signals.incrementAndGet())
     assert(!timed.cancellation.isCancelled)
     assertEquals(closingRegistry.timeout(timed.token),
       RequestRegistry.Completed(RequestRegistry.Tombstone(requestId(37), AdmissionKind.Ordinary,
         RequestRegistry.TerminalDisposition.Timeout, None, capacityReleased = true)))
     assert(timed.cancellation.isCancelled)
+    assertEquals(signals.get(), 1)
 
     val shuttingDown = admitted(closingRegistry, requestId(38), AdmissionKind.Ordinary)
+    shuttingDown.cancellation.onCancel(() => signals.incrementAndGet())
     assertEquals(closingRegistry.shutdown(), List(RequestRegistry.Tombstone(requestId(38),
       AdmissionKind.Ordinary, RequestRegistry.TerminalDisposition.Shutdown, None,
       capacityReleased = true)))
     assert(shuttingDown.cancellation.isCancelled)
+    assertEquals(signals.get(), 2)
     assert(closingRegistry.complete(shuttingDown.token, WorkerDisposition.Success)
       .isInstanceOf[RequestRegistry.LateIgnored])
   }
@@ -991,6 +1022,130 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(plane.written.count(_.contains("\"id\":\"71\"")), 0)
     connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, requestId(72)))
     assert(scheduler.hasPending, "abandoned permit must be reusable")
+  }
+
+  spec_test("cancellation during saturation releases registry capacity before the worker permit",
+      covers = List("connection_kernel#T4")) {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new BoundedConcurrentScheduler(1, "kernel-cancellation-worker")
+    val deadlines = new ManualDeadlineScheduler
+    val started = new CountDownLatch(1)
+    val signalled = new CountDownLatch(1)
+    val allowReturn = new CountDownLatch(1)
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+        cancellation.onCancel(() => signalled.countDown())
+        started.countDown()
+        if (!allowReturn.await(2, TimeUnit.SECONDS)) fail("cancelled worker was never released")
+        McpApplication.Outcome.Result(JSON.Object("late" -> true))
+      }
+    }
+    val connection = kernelWith(plane, scheduler, 1, app, deadlines, shutdownDrain = 1.0)
+    ready(connection, 650)
+    val before = plane.written.length
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList,
+      RequestId.string("saturated-cancel")))
+    assert(started.await(2, TimeUnit.SECONDS), "saturated cancellation worker did not start")
+    connection.handle(RevisionRules.Cancelled(
+      RequestId.string("saturated-cancel"), Some("client stopped")))
+    assert(signalled.await(1, TimeUnit.SECONDS), "application cancellation callback did not run")
+    assertEquals(connection.registry.snapshot.activeCapacity, 0,
+      "terminal cancellation did not release registry capacity")
+
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList,
+      RequestId.string("permit-still-owned")))
+    val overloaded = JSON.Format.unapply(plane.written.last)
+      .getOrElse(fail("missing scheduler-saturation response"))
+    assertEquals(get(overloaded, "id"), "permit-still-owned")
+    assertEquals(get(overloaded, "error", "code"), ConnectionKernel.Overloaded)
+    assertEquals(plane.written.length, before + 1,
+      "cancelled request emitted a response before its worker returned")
+
+    allowReturn.countDown()
+    val releasedBy = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+    var permitReleased = false
+    while (!permitReleased && System.nanoTime() < releasedBy) {
+      scheduler.tryReserve() match {
+        case RequestScheduler.Reserved(value) =>
+          scheduler.abandon(value)
+          permitReleased = true
+        case RequestScheduler.Rejected => Thread.sleep(2L)
+      }
+    }
+    assert(permitReleased, "cooperative worker return did not release its scheduler permit")
+
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList,
+      RequestId.string("after-cancel")))
+    val completedBy = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+    while (!plane.written.exists(_.contains("\"id\":\"after-cancel\"")) &&
+        System.nanoTime() < completedBy) Thread.sleep(2L)
+    assert(plane.written.exists(_.contains("\"id\":\"after-cancel\"")),
+      "scheduler did not recover after cooperative cancellation")
+    assertEquals(plane.written.count(_.contains("\"id\":\"saturated-cancel\"")), 0,
+      "late cancelled result escaped")
+    assert(connection.drainAndClose().drained)
+  }
+
+  spec_test("terminal cancellation callbacks run outside the kernel terminal lock",
+      covers = List("connection_kernel#T4")) {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+    import java.util.concurrent.atomic.AtomicBoolean
+
+    def exercise(terminal: String): Unit = {
+      val plane = new ScriptedDataPlane(Nil)
+      val scheduler = new BoundedConcurrentScheduler(1, "kernel-terminal-callback-" + terminal)
+      val deadlines = new ManualDeadlineScheduler
+      val started = new CountDownLatch(1)
+      val releaseWorker = new CountDownLatch(1)
+      val callbackObservedWorkerCompletion = new AtomicBoolean(false)
+      val app = new McpApplication {
+        def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+          cancellation.onCancel(() => {
+            releaseWorker.countDown()
+            val limit = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            var acquired = false
+            while (!acquired && System.nanoTime() < limit) {
+              scheduler.tryReserve() match {
+                case RequestScheduler.Reserved(permit) =>
+                  scheduler.abandon(permit)
+                  acquired = true
+                case RequestScheduler.Rejected => Thread.sleep(2L)
+              }
+            }
+            callbackObservedWorkerCompletion.set(acquired)
+          })
+          started.countDown()
+          if (!releaseWorker.await(2, TimeUnit.SECONDS))
+            fail("terminal callback did not release the worker")
+          McpApplication.Outcome.Result(JSON.Object("late" -> true))
+        }
+      }
+      val connection = kernelWith(plane, scheduler, 1, app, deadlines,
+        requestTimeout = 5.0, shutdownDrain = 0.0)
+      ready(connection, 660)
+      val id = RequestId.string("terminal-callback-" + terminal)
+      connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, id))
+      assert(started.await(2, TimeUnit.SECONDS), terminal + " worker did not start")
+
+      terminal match {
+        case "client" => connection.handle(RevisionRules.Cancelled(id, Some("stop")))
+        case "timeout" => assert(deadlines.fireNext(), "timeout was not scheduled")
+        case "close" => connection.close()
+      }
+
+      assert(callbackObservedWorkerCompletion.get(),
+        terminal + " callback waited while the worker was blocked on the kernel terminal lock")
+      if (terminal == "timeout")
+        assert(plane.written.exists(line =>
+          line.contains("\"id\":\"terminal-callback-timeout\"") &&
+            line.contains("\"code\":-32002")), "timeout response was not emitted")
+      if (terminal != "close") connection.drainAndClose()
+      assert(scheduler.isShutdown, terminal + " did not finish scheduler shutdown")
+    }
+
+    List("client", "timeout", "close").foreach(exercise)
   }
 
   spec_test("worker errors and exceptions release capacity and emit one owned response",

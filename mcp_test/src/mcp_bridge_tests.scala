@@ -9,6 +9,7 @@ Fake_Backend cannot cover.
 package isabelle.mcp
 
 import isabelle._
+import isabelle.mcp.connection.{RequestId, RequestRegistry}
 
 
 /* protocol-command bridge: MCP.run_tool + resources over MCP-Tools */
@@ -198,6 +199,38 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
 /* MCP.ir bridge: the dispatcher over the I/R engine (MCP-HOL/MCP_Repl) */
 
 class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
+  spec_test("ir bridge cancellation returns promptly, releases the claim, and leaves the session usable",
+      covers = List("connection_kernel#T4")) {
+    with_repl("CancelledIR") {
+      val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
+      val requestId = RequestId.string("live-ir-cancel")
+      val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
+        case value: RequestRegistry.Admitted => value
+        case other => fail("could not admit live IR cancellation fixture: " + other)
+      }
+      val slow = Future.fork(session.ir_cancellable("step",
+        List("repl" -> "CancelledIR",
+          "isar_text" -> "ML_command \\<open>OS.Process.sleep (seconds 5.0)\\<close>"),
+        admitted.cancellation))
+      await_busy("CancelledIR")
+
+      val before = Time.now()
+      assert(registry.cancel(requestId, Some("bridge fixture"))
+        .isInstanceOf[RequestRegistry.Cancelled])
+      expect_error(slow.join, containing = "cancelled")
+      assert(Time.now() - before < Time.seconds(1.0),
+        "Scala IR bridge promise did not return promptly after cancellation")
+      eventually("cancelled IR operation retained the REPL claim", Time.seconds(2.0)) {
+        session.ir("repls", Nil) match {
+          case MCP_Session.Ok(text) => text.contains("CancelledIR") && !text.contains("busy")
+          case _ => false
+        }
+      }
+      expect_ok(session.ir("state", List("repl" -> "CancelledIR", "state_idx" -> "-1")),
+        "IR session was unusable after cancellation")
+    }
+  }
+
   test("ir bridge: repls on an empty table returns ok") {
     expect_ok(session.ir("repls", Nil))
   }
@@ -1233,6 +1266,30 @@ class MCP_Run_Tool_Async_Tests
 
   def run(name: String, args: List[(String, String)] = Nil): MCP_Session.Result =
     session.ml_run("MCP_Tools_Tests." + name, args, designation = test_theory)
+
+  spec_test("run-tool bridge cancellation unblocks Scala and leaves later calls usable",
+      covers = List("connection_kernel#T4")) {
+    val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
+    val requestId = RequestId.string("live-run-tool-cancel")
+    val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
+      case value: RequestRegistry.Admitted => value
+      case other => fail("could not admit live run-tool cancellation fixture: " + other)
+    }
+    val slow = Future.fork(session.ml_run_cancellable(
+      "MCP_Tools_Tests.capture_slow", Nil, test_theory, Nil, admitted.cancellation))
+    assertEquals(run("capture_ok", List("x" -> "before-cancel")),
+      MCP_Session.Ok("got:before-cancel"))
+    assert(!slow.is_finished, "slow run-tool fixture completed before cancellation")
+
+    val before = Time.now()
+    assert(registry.cancel(requestId, Some("bridge fixture"))
+      .isInstanceOf[RequestRegistry.Cancelled])
+    expect_error(slow.join, containing = "cancelled")
+    assert(Time.now() - before < Time.seconds(1.0),
+      "Scala run-tool bridge promise did not return promptly after cancellation")
+    assertEquals(run("capture_ok", List("x" -> "after-cancel")),
+      MCP_Session.Ok("got:after-cancel"))
+  }
 
   test("bridge: run_tool async -- a slow capture tool does not block a concurrent fast one") {
     val slow = Future.fork(run("capture_slow"))

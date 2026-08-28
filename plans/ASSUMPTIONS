@@ -28,7 +28,7 @@ connection_kernel#Q1      unstated                  Which MCP revision and batch
 connection_kernel#T1      scala-unit                Protocol fixtures cover valid and invalid requests, notifications, IDs, parameters, malformed JSON, and MCP 2025-03-26 wire responses without starting
 connection_kernel#T2      e2e,scala-unit            A lifecycle transition table accepts only initialize in Fresh, initialized notification and ping in AwaitingInitialized, normal operations in Ready, a
 connection_kernel#T3      scala-unit                Saturating maxInFlight admits exactly the configured bound, immediately returns structured overload errors for additional requests, creates no waiting
-connection_kernel#T4      e2e,scala-unit            Cancellation during saturation reaches cooperative Scala and ML work, emits no response when cancellation wins, releases capacity once, and suppresses
+connection_kernel#T4      bridge,e2e,ml-unit,scala-unit  Cancellation during saturation reaches cooperative Scala and ML work, promptly removes and resolves the Scala bridge route, emits no response when can
 connection_kernel#T5      scala-unit                Success, application error, exception, client cancellation, timeout, and shutdown each produce exactly one recorded terminal disposition and never mor
 connection_kernel#T6      scala-unit                A second completion attempt and an unknown or forged completion token emit an invariant event, never emit a second response, and exercise FailFast, Lo
 connection_kernel#T7      e2e,scala-unit            EOF with zero, one, and many in-flight requests drains replies including reverse completion order until one configured deadline, then cancels remainin

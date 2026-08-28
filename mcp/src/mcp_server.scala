@@ -163,11 +163,13 @@ object MCP_Server {
     description: String,
     input_schema: JSON.Object.T,
     annotations: JSON.Object.T,
-    handler_fn: Option[(MCP_Backend, List[(String, String)]) => MCP_Session.Result] = None) {
-    def handler(backend: MCP_Backend, args: List[(String, String)]): MCP_Session.Result =
+    handler_fn: Option[(MCP_Backend, List[(String, String)],
+      McpApplication.Cancellation) => MCP_Session.Result] = None) {
+    def handler(backend: MCP_Backend, args: List[(String, String)],
+      cancellation: McpApplication.Cancellation): MCP_Session.Result =
       handler_fn match {
-        case Some(f) => f(backend, args)
-        case None => backend.ir(fname, args)
+        case Some(f) => f(backend, args, cancellation)
+        case None => backend.ir_cancellable(fname, args, cancellation)
       }
   }
 
@@ -271,7 +273,7 @@ object MCP_Server {
             "index" -> JSON.Object("type" -> "integer")),
           "required" -> List("repl", "theory")),
       annotations = mutating_annotations,
-      handler_fn = Some((backend, args) => {
+      handler_fn = Some((backend, args, cancellation) => {
         val repl = pass_arg(args, "repl")
         val theory = pass_arg(args, "theory")
         val offset = args.collectFirst({ case ("offset", v) => v.toInt })
@@ -279,7 +281,9 @@ object MCP_Server {
         val index = args.collectFirst({ case ("index", v) => v.toInt })
         MCP_Session.Locator.exactly_one(offset, pattern, index) match {
           case Left(msg) => MCP_Session.Error("repl_init_from_source: " + msg)
-          case Right(()) => backend.init_from_source(repl, theory, offset, pattern, index)
+          case Right(()) =>
+            backend.init_from_source_cancellable(
+              repl, theory, offset, pattern, index, cancellation)
         }
       }))
 
@@ -591,7 +595,7 @@ object MCP_Server {
               "max_results" -> JSON.Object("type" -> "integer", "default" -> 40)),
           "required" -> List("query")),
       annotations = read_only_annotations,
-      handler_fn = Some((backend, args) => {
+      handler_fn = Some((backend, args, cancellation) => {
         val repl = args.collectFirst({ case ("repl", v) => v })
         val theory = args.collectFirst({ case ("theory", v) => v })
         (repl, theory) match {
@@ -602,11 +606,12 @@ object MCP_Server {
           case (_, Some(t)) =>
             backend.resolve_context_theory(t) match {
               case Right(resolved) =>
-                backend.ir("find_theorems",
-                  args.map({ case ("theory", _) => "theory" -> resolved; case p => p }))
+                backend.ir_cancellable("find_theorems",
+                  args.map({ case ("theory", _) => "theory" -> resolved; case p => p }),
+                  cancellation)
               case Left(msg) => MCP_Session.Error(msg)
             }
-          case _ => backend.ir("find_theorems", args)
+          case _ => backend.ir_cancellable("find_theorems", args, cancellation)
         }
       }))
 
@@ -648,7 +653,7 @@ object MCP_Server {
               "theory" -> JSON.Object("type" -> "string")),
           "required" -> List("name")),
       annotations = read_only_annotations,
-      handler_fn = Some((backend, args) => {
+      handler_fn = Some((backend, args, cancellation) => {
         val repl = args.collectFirst({ case ("repl", v) => v })
         val theory = args.collectFirst({ case ("theory", v) => v })
         (repl, theory) match {
@@ -659,11 +664,12 @@ object MCP_Server {
           case (_, Some(t)) =>
             backend.resolve_context_theory(t) match {
               case Right(resolved) =>
-                backend.ir("find_definition",
-                  args.map({ case ("theory", _) => "theory" -> resolved; case p => p }))
+                backend.ir_cancellable("find_definition",
+                  args.map({ case ("theory", _) => "theory" -> resolved; case p => p }),
+                  cancellation)
               case Left(msg) => MCP_Session.Error(msg)
             }
-          case _ => backend.ir("find_definition", args)
+          case _ => backend.ir_cancellable("find_definition", args, cancellation)
         }
       }))
 
@@ -705,7 +711,7 @@ object MCP_Server {
               "master_dir" -> JSON.Object("type" -> "string")),
           "required" -> List("name")),
       annotations = idempotent_mutating_annotations,
-      handler_fn = Some((backend, args) =>
+      handler_fn = Some((backend, args, _) =>
         backend.load_theory(pass_arg(args, "name"), pass_arg(args, "master_dir"))))
 
   val unload_theory_tool: Builtin_Tool =
@@ -726,7 +732,7 @@ object MCP_Server {
           "properties" -> JSON.Object("name" -> JSON.Object("type" -> "string")),
           "required" -> List("name")),
       annotations = mutating_annotations,
-      handler_fn = Some((backend, args) => backend.unload_theory(pass_arg(args, "name"))))
+      handler_fn = Some((backend, args, _) => backend.unload_theory(pass_arg(args, "name"))))
 
   val check_theory_tool: Builtin_Tool =
     Builtin_Tool(
@@ -749,7 +755,7 @@ object MCP_Server {
               "master_dir" -> JSON.Object("type" -> "string")),
           "required" -> List("name")),
       annotations = idempotent_mutating_annotations,
-      handler_fn = Some((backend, args) =>
+      handler_fn = Some((backend, args, _) =>
         backend.check_theory(pass_arg(args, "name"), pass_arg(args, "master_dir"))))
 
   val list_sessions_tool: Builtin_Tool =
@@ -768,7 +774,7 @@ object MCP_Server {
         "list_theories to see what is in a session.",
       input_schema = JSON.Object("type" -> "object", "properties" -> JSON.Object.empty, "required" -> List()),
       annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
-      handler_fn = Some((backend, _) => backend.list_sessions_info()))
+      handler_fn = Some((backend, _, _) => backend.list_sessions_info()))
 
   val list_theories_tool: Builtin_Tool =
     Builtin_Tool(
@@ -784,7 +790,8 @@ object MCP_Server {
           "properties" -> JSON.Object("session" -> JSON.Object("type" -> "string")),
           "required" -> List("session")),
       annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
-      handler_fn = Some((backend, args) => backend.list_theories_info(pass_arg(args, "session"))))
+      handler_fn = Some((backend, args, _) =>
+        backend.list_theories_info(pass_arg(args, "session"))))
 
   val search_sources_tool: Builtin_Tool =
     Builtin_Tool(
@@ -801,7 +808,7 @@ object MCP_Server {
           "properties" -> JSON.Object("pattern" -> JSON.Object("type" -> "string")),
           "required" -> List("pattern")),
       annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
-      handler_fn = Some((backend, args) => backend.search_sources(pass_arg(args, "pattern"))))
+      handler_fn = Some((backend, args, _) => backend.search_sources(pass_arg(args, "pattern"))))
 
   /* wave 5 (plans/doc_list, spec "documentation for the agent"): the
      Doc.contents() catalog (manuals, release notes, examples), joined per
@@ -828,7 +835,7 @@ object MCP_Server {
           "properties" -> JSON.Object("pattern" -> JSON.Object("type" -> "string")),
           "required" -> List()),
       annotations = read_only_annotations,
-      handler_fn = Some((backend, args) => backend.doc_list(pass_arg(args, "pattern"))))
+      handler_fn = Some((backend, args, _) => backend.doc_list(pass_arg(args, "pattern"))))
 
   /* wave 5 (plans/doc_read, spec "documentation for the agent"): reads a
      doc_list entry from its plain-text source -- manuals resolve through
@@ -863,7 +870,7 @@ object MCP_Server {
               "lines" -> JSON.Object("type" -> "string")),
           "required" -> List("name")),
       annotations = read_only_annotations,
-      handler_fn = Some((backend, args) =>
+      handler_fn = Some((backend, args, _) =>
         backend.doc_read(
           pass_arg(args, "name"), pass_arg(args, "section"), pass_arg(args, "lines"))))
 
@@ -893,7 +900,7 @@ object MCP_Server {
               JSON.Object("type" -> "array", "items" -> JSON.Object("type" -> "string"))),
           "required" -> List("patterns")),
       annotations = idempotent_mutating_annotations,
-      handler_fn = Some((backend, args) => backend.scope_add(pass_args(args, "patterns"))))
+      handler_fn = Some((backend, args, _) => backend.scope_add(pass_args(args, "patterns"))))
 
   val scope_remove_tool: Builtin_Tool =
     Builtin_Tool(
@@ -915,7 +922,7 @@ object MCP_Server {
               JSON.Object("type" -> "array", "items" -> JSON.Object("type" -> "string"))),
           "required" -> List("patterns")),
       annotations = idempotent_mutating_annotations,
-      handler_fn = Some((backend, args) => backend.scope_remove(pass_args(args, "patterns"))))
+      handler_fn = Some((backend, args, _) => backend.scope_remove(pass_args(args, "patterns"))))
 
   val scope_show_tool: Builtin_Tool =
     Builtin_Tool(
@@ -929,7 +936,7 @@ object MCP_Server {
         "never limits resource reads, only the listing.",
       input_schema = JSON.Object("type" -> "object"),
       annotations = read_only_annotations,
-      handler_fn = Some((backend, _) => backend.scope_show()))
+      handler_fn = Some((backend, _, _) => backend.scope_show()))
 
   val builtins: List[Builtin_Tool] =
     List(repl_list_tool, repl_init_tool, repl_init_from_source_tool, repl_fork_tool, repl_remove_tool, repl_step_tool, repl_state_tool,

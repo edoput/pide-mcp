@@ -1835,6 +1835,41 @@ val _ =
     (Synchronized.value routing_probe));
 \<close>
 
+spec_test \<open>IR bridge cancellation interrupts work and cleans its output route\<close>
+  covers \<open>connection_kernel#T4\<close>
+
+ML \<open>
+val _ =
+  let
+    val id = "ir-cancellation-route";
+    val (s_init, _) = MCP_Repl.run "init" [("repl", "Cancel_IR"), ("theories", main)];
+    val _ = \<^assert> (s_init = "ok");
+    val (work, finish_output) =
+      MCP_Repl.fork_run_cancellable id "step"
+        [("repl", "Cancel_IR"),
+         ("isar_text", "ML_command \<open>OS.Process.sleep (seconds 5.0)\<close>")];
+    fun await_busy 0 = false
+      | await_busy attempts =
+          let val (_, listing) = MCP_Repl.run "repls" [] in
+            if String.isSubstring "Cancel_IR" (plain listing) andalso
+                String.isSubstring "busy" (plain listing)
+            then true
+            else (OS.Process.sleep (seconds 0.01); await_busy (attempts - 1))
+          end;
+    val _ = \<^assert> (await_busy 200);
+    val _ = \<^assert> (MCP_Cancellation.cancel id);
+    val joined = Future.join_result work;
+    val output1 = finish_output ();
+    val output2 = finish_output ();
+    val _ = \<^assert> (Exn.is_exn joined);
+    val _ = \<^assert> (output1 = output2);
+    val _ = \<^assert> (MCP_Cancellation.finish id = SOME true);
+    val _ = \<^assert> (MCP_Cancellation.finish id = NONE);
+    val (s_remove, _) = MCP_Repl.run "remove" [("repl", "Cancel_IR")];
+    val _ = \<^assert> (s_remove = "ok");
+  in () end;
+\<close>
+
 (*drop this session's repl churn and wrapper state -- see MCP_Repl.reset*)
 ML \<open>MCP_Repl.reset ()\<close>
 

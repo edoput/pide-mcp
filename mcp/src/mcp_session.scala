@@ -11,6 +11,9 @@ promises created by ml_tools()/ml_run().
 package isabelle.mcp
 
 import isabelle._
+import isabelle.mcp.application.McpApplication
+
+import scala.util.control.NonFatal
 
 
 /* what the JSON-RPC layer (MCP_Server.Handler) needs from the prover side:
@@ -28,6 +31,10 @@ trait MCP_Backend {
   def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply
   def ml_run(name: String, args: List[(String, String)],
     designation: String = "", bundles: List[String] = Nil): MCP_Session.Result
+  def ml_run_cancellable(name: String, args: List[(String, String)],
+    designation: String, bundles: List[String],
+    cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    ml_run(name, args, designation, bundles)
   /* validate a candidate designation without committing to it
      (tool_scope_set/tool_scope_include, plans/tool_scope) */
   def check_designation(designation: String, bundles: List[String] = Nil): MCP_Session.Result
@@ -37,6 +44,9 @@ trait MCP_Backend {
      client. Default: drop (Fake_Backend tests set their own). */
   def set_changed_handler(handler: String => Unit): Unit = ()
   def ir(fname: String, args: List[(String, String)]): MCP_Session.Result
+  def ir_cancellable(fname: String, args: List[(String, String)],
+    cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    ir(fname, args)
   /* context-taking tools (find_theorems' "context promotion", later
      find_definition): resolve a client-given theory name to the
      canonical Thy_Info key the ir bridge needs, same normalization as
@@ -52,6 +62,10 @@ trait MCP_Backend {
      to resolve tier and locator, then dispatch to the right ir fname. */
   def init_from_source(repl: String, theory: String,
     offset: Option[Int], pattern: Option[String], index: Option[Int]): MCP_Session.Result
+  def init_from_source_cancellable(repl: String, theory: String,
+    offset: Option[Int], pattern: Option[String], index: Option[Int],
+    cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    init_from_source(repl, theory, offset, pattern, index)
   def mcp_resources(): List[(String, String, String)]
   def mcp_resource_read(uri: String): MCP_Session.Result
   /* scope_add/scope_remove (plans/scope_add, plans/scope_remove, spec
@@ -468,6 +482,45 @@ class MCP_Session private(
   private val check_designation_promises =
     Synchronized(Map.empty[String, Promise[MCP_Session.Result]])
 
+  private val bridge_cancelled = MCP_Session.Error("Request cancelled")
+
+  private def take_bridge_promise(
+    promises: Synchronized[Map[String, Promise[MCP_Session.Result]]],
+    id: String
+  ): Option[Promise[MCP_Session.Result]] =
+    promises.change_result(current => (current.get(id), current - id))
+
+  private def complete_bridge(
+    promises: Synchronized[Map[String, Promise[MCP_Session.Result]]],
+    id: String,
+    result: MCP_Session.Result
+  ): Unit =
+    take_bridge_promise(promises, id).foreach(_.fulfill(result))
+
+  /* The map removal is the Scala bridge race.  Exactly one of a normal
+     protocol result or cancellation owns the promise.  Send cancellation
+     only after the initial bridge command has been enqueued; always fulfill
+     the local promise even if the session is already stopping. */
+  private def cancel_bridge(
+    promises: Synchronized[Map[String, Promise[MCP_Session.Result]]],
+    id: String
+  ): Unit =
+    take_bridge_promise(promises, id).foreach { promise =>
+      try session.protocol_command_raw("MCP.cancel", List(Bytes(id)))
+      finally promise.fulfill(bridge_cancelled)
+    }
+
+  private def cancel_all_bridges(
+    promises: Synchronized[Map[String, Promise[MCP_Session.Result]]]
+  ): Unit = {
+    val pending = promises.change_result(current => (current.toList, Map.empty))
+    pending.foreach { case (id, promise) =>
+      try session.protocol_command_raw("MCP.cancel", List(Bytes(id)))
+      catch { case NonFatal(_) => () }
+      finally promise.fulfill(bridge_cancelled)
+    }
+  }
+
   private object Handler extends Session.Protocol_Handler {
     private def tools_result(msg: Prover.Protocol_Output): Boolean = {
       val tools = MCP_Session.decode_tools_reply(YXML.parse_body(msg.chunk))
@@ -495,10 +548,7 @@ class MCP_Session private(
               MCP_Session.Ok(msg.text)
             }
             else MCP_Session.Error(msg.text)
-          run_promises.change { promises =>
-            promises.get(id).foreach(_.fulfill(result))
-            promises - id
-          }
+          complete_bridge(run_promises, id, result)
           true
         case None => false
       }
@@ -510,10 +560,7 @@ class MCP_Session private(
           val result =
             if (Properties.get(msg.properties, "status") == Some("ok")) MCP_Session.Ok(text)
             else MCP_Session.Error(text)
-          ir_promises.change { promises =>
-            promises.get(id).foreach(_.fulfill(result))
-            promises - id
-          }
+          complete_bridge(ir_promises, id, result)
           true
         case None => false
       }
@@ -613,13 +660,26 @@ class MCP_Session private(
   }
 
   def ml_run(name: String, args: List[(String, String)],
-      designation: String = "", bundles: List[String] = Nil): MCP_Session.Result = {
+      designation: String = "", bundles: List[String] = Nil): MCP_Session.Result =
+    ml_run_cancellable(name, args, designation, bundles, McpApplication.Cancellation.Never)
+
+  override def ml_run_cancellable(name: String, args: List[(String, String)],
+      designation: String, bundles: List[String],
+      cancellation: McpApplication.Cancellation): MCP_Session.Result = {
     val id = UUID.random().toString
     val promise = Future.promise[MCP_Session.Result]
     run_promises.change(_ + (id -> promise))
-    session.protocol_command_raw("MCP.run_tool",
-      List(Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles)), Bytes(name),
-        Bytes(MCP_Session.encode_args(args))))
+    try {
+      session.protocol_command_raw("MCP.run_tool",
+        List(Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles)), Bytes(name),
+          Bytes(MCP_Session.encode_args(args))))
+    }
+    catch {
+      case exn: Throwable =>
+        take_bridge_promise(run_promises, id)
+        throw exn
+    }
+    cancellation.onCancel(() => cancel_bridge(run_promises, id))
     promise.join
   }
 
@@ -640,12 +700,24 @@ class MCP_Session private(
 
   /* MCP.ir: the I/R engine dispatcher (MCP_Repl.thy), named args, async
      (a slow call must not block a concurrent fast one) */
-  def ir(fname: String, args: List[(String, String)]): MCP_Session.Result = {
+  def ir(fname: String, args: List[(String, String)]): MCP_Session.Result =
+    ir_cancellable(fname, args, McpApplication.Cancellation.Never)
+
+  override def ir_cancellable(fname: String, args: List[(String, String)],
+      cancellation: McpApplication.Cancellation): MCP_Session.Result = {
     val id = UUID.random().toString
     val promise = Future.promise[MCP_Session.Result]
     ir_promises.change(_ + (id -> promise))
-    session.protocol_command_raw("MCP.ir",
-      List(Bytes(id), Bytes(fname), Bytes(MCP_Session.encode_args(args))))
+    try {
+      session.protocol_command_raw("MCP.ir",
+        List(Bytes(id), Bytes(fname), Bytes(MCP_Session.encode_args(args))))
+    }
+    catch {
+      case exn: Throwable =>
+        take_bridge_promise(ir_promises, id)
+        throw exn
+    }
+    cancellation.onCancel(() => cancel_bridge(ir_promises, id))
     promise.join
   }
 
@@ -884,6 +956,12 @@ class MCP_Session private(
      tier and unknown names have no context to attach to. */
   def init_from_source(repl: String, theory: String,
       offset: Option[Int], pattern: Option[String], index: Option[Int]): MCP_Session.Result =
+    init_from_source_cancellable(
+      repl, theory, offset, pattern, index, McpApplication.Cancellation.Never)
+
+  override def init_from_source_cancellable(repl: String, theory: String,
+      offset: Option[Int], pattern: Option[String], index: Option[Int],
+      cancellation: McpApplication.Cancellation): MCP_Session.Result =
     resolve_theory(theory) match {
       case Some((resolved, LoadedTier)) =>
         theory_master_dirs.value.get(resolved) match {
@@ -898,19 +976,20 @@ class MCP_Session private(
                 .map({ case (cmd, off) => MCP_Session.Locator.Item(cmd.id, off, cmd.length, cmd.source) })
             MCP_Session.Locator.resolve(items, offset, pattern, index) match {
               case Right(command_id) =>
-                ir("init_from_document",
-                  List("repl" -> repl, "node_name" -> node_name.node, "command_id" -> command_id.toString))
+                ir_cancellable("init_from_document",
+                  List("repl" -> repl, "node_name" -> node_name.node,
+                    "command_id" -> command_id.toString), cancellation)
               case Left(msg) => MCP_Session.Error("repl_init_from_source: " + msg)
             }
           case None =>
             MCP_Session.Error(quote(resolved) + ": loaded theory (no snapshot available)")
         }
       case Some((resolved, ImageTier)) =>
-        ir("init_from_segment",
+        ir_cancellable("init_from_segment",
           List("repl" -> repl, "theory_name" -> resolved) ++
             offset.toList.map(o => "offset" -> o.toString) ++
             pattern.toList.map(p => "pattern" -> p) ++
-            index.toList.map(i => "index" -> i.toString))
+            index.toList.map(i => "index" -> i.toString), cancellation)
       case Some((_, FileSystemTier(_))) =>
         MCP_Session.Error(
           "Unknown theory " + quote(theory) + " context: filesystem theory, not yet " +
@@ -1361,5 +1440,10 @@ class MCP_Session private(
     }
   }
 
-  def stop(): Unit = { session.stop(); () }
+  def stop(): Unit = {
+    cancel_all_bridges(run_promises)
+    cancel_all_bridges(ir_promises)
+    session.stop()
+    ()
+  }
 }

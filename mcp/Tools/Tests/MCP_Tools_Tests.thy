@@ -1097,6 +1097,82 @@ ML \<open>
 \<^assert> (reg_fails "mcp_resource no_such_fact_xyz" "no_such_fact_xyz");
 \<close>
 
+section \<open>Bridge cancellation routing\<close>
+
+spec_test \<open>run-tool bridge groups are cancelled and cleaned before execution\<close>
+  covers \<open>connection_kernel#T4\<close>
+
+ML \<open>
+val _ =
+  let
+    val normal_group = Future.new_group NONE;
+    val _ = MCP_Cancellation.register "normal-route" normal_group;
+    val _ = \<^assert> (MCP_Cancellation.finish "normal-route" = SOME false);
+    val _ = \<^assert> (MCP_Cancellation.finish "normal-route" = NONE);
+
+    val dependency = Future.promise_name "MCP cancellation dependency" (fn () => ());
+    val cancelled_group = Future.new_group NONE;
+    val ran = Synchronized.var "MCP cancelled worker ran" false;
+    val _ = MCP_Cancellation.register "cancelled-route" cancelled_group;
+    val work =
+      (singleton o Future.forks)
+        {name = "MCP cancelled-before-start probe", group = SOME cancelled_group,
+         deps = [Future.task_of dependency], pri = ~1, interrupts = true}
+        (fn () => Synchronized.change ran (K true));
+    val _ = \<^assert> (MCP_Cancellation.cancel "cancelled-route");
+    val _ = \<^assert> (not (MCP_Cancellation.cancel "cancelled-route"));
+    val _ = Future.fulfill dependency ();
+    val result = Future.join_result work;
+    val _ = \<^assert> (Exn.is_exn result);
+    val _ = \<^assert> (not (Synchronized.value ran));
+    val _ = \<^assert> (MCP_Cancellation.finish "cancelled-route" = SOME true);
+    val _ = \<^assert> (MCP_Cancellation.finish "cancelled-route" = NONE);
+  in () end;
+\<close>
+
+ML \<open>
+(*MCP_Output.captured must inherit MCP.run_tool's cancellation group.  A
+  fresh, unrelated group would let the outer bridge request finish as
+  cancelled while the actual capture-form user tool kept running.*)
+val _ =
+  let
+    val outer_group = Future.new_group NONE;
+    val inner_started = Synchronized.var "MCP nested capture started" false;
+    val inner_stopped = Synchronized.var "MCP nested capture stopped" false;
+    val inner_completed = Synchronized.var "MCP nested capture completed" false;
+    fun await _ 0 = false
+      | await state attempts =
+          if Synchronized.value state then true
+          else (OS.Process.sleep (seconds 0.01); await state (attempts - 1));
+    fun inner () =
+      let
+        val _ = Synchronized.change inner_started (K true);
+        val result = Exn.capture_body (fn () => OS.Process.sleep (seconds 5.0));
+        val _ =
+          Thread_Attributes.uninterruptible_body (fn _ =>
+            (Synchronized.change inner_completed
+              (K (case result of Exn.Res _ => true | Exn.Exn _ => false));
+             Synchronized.change inner_stopped (K true)));
+      in
+        (case result of Exn.Res () => () | Exn.Exn exn => Exn.reraise exn)
+      end;
+    val outer =
+      (singleton o Future.forks)
+        {name = "MCP nested capture cancellation", group = SOME outer_group,
+         deps = [], pri = ~1, interrupts = true}
+        (fn () =>
+          case MCP_Output.captured inner of
+            (Exn.Res (), _) => ()
+          | (Exn.Exn exn, _) => Exn.reraise exn);
+    val _ = \<^assert> (await inner_started 200);
+    val _ = Future.cancel_group outer_group;
+    val joined = Future.join_result outer;
+    val _ = \<^assert> (await inner_stopped 100);
+    val _ = \<^assert> (Exn.is_exn joined);
+    val _ = \<^assert> (not (Synchronized.value inner_completed));
+  in () end;
+\<close>
+
 text \<open>A13 (plans/ml_builtin_migration): the capture-form exercises above ran
 \<^verbatim>\<open>MCP_Output.captured\<close> at BUILD time, which installs the Private_Output
 wrappers and marks \<^verbatim>\<open>wrapped = true\<close> in a Synchronized var that survives

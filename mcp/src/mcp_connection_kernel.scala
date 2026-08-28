@@ -202,14 +202,20 @@ final class ConnectionKernel private (
   def admit(message: RevisionRules.Message): ConnectionKernel.Admission =
     message match {
       case RevisionRules.Cancelled(id, reason) =>
-        val cancelled = terminalLock.synchronized {
-          registry.cancel(id, reason) match {
+        val prepared = terminalLock.synchronized {
+          val result = registry.prepareCancel(id, reason)
+          result.result match {
             case result: RequestRegistry.Cancelled =>
               cancelDeadline(id)
               terminalLock.notifyAll()
-              Some(result)
-            case _ => None
+            case _ => ()
           }
+          result
+        }
+        prepared.deliver()
+        val cancelled = prepared.result match {
+          case result: RequestRegistry.Cancelled => Some(result)
+          case _ => None
         }
         cancelled.foreach(_ =>
           takeBatchSlot(id).foreach(slot => withResponseWrite(slot.omit())))
@@ -252,11 +258,13 @@ final class ConnectionKernel private (
      invariant callback.  Normal EOF uses drainAndClose below. */
   def close(): Unit = {
     beginClosing()
-    terminalLock.synchronized {
-      registry.shutdown()
+    val shutdown = terminalLock.synchronized {
+      val prepared = registry.prepareShutdown()
       cancelAllDeadlines()
       terminalLock.notifyAll()
+      prepared
     }
+    shutdown.deliver()
     closeOutput()
     abortBatches()
     scheduler.shutdown()
@@ -269,7 +277,7 @@ final class ConnectionKernel private (
     beginClosing()
     val seconds = ConnectionPolicy.ShutdownDrain.seconds(policy.timing.shutdownDrain)
     val deadline = System.nanoTime() + Math.ceil(seconds * 1000000000.0).toLong
-    val result = terminalLock.synchronized {
+    val (result, shutdown) = terminalLock.synchronized {
       def complete: Boolean = registry.snapshot.activeIds.isEmpty && responseWrites == 0
       var remaining = deadline - System.nanoTime()
       while (!complete && remaining > 0L) {
@@ -279,13 +287,14 @@ final class ConnectionKernel private (
         remaining = deadline - System.nanoTime()
       }
       val drained = complete
-      val cancelled =
-        if (drained) Nil
-        else registry.shutdown()
+      val prepared =
+        if (drained) None
+        else Some(registry.prepareShutdown())
       cancelAllDeadlines()
       terminalLock.notifyAll()
-      ConnectionKernel.DrainResult(drained, cancelled)
+      (ConnectionKernel.DrainResult(drained, prepared.toList.flatMap(_.result)), prepared)
     }
+    shutdown.foreach(_.deliver())
     closeOutput()
     abortBatches()
     scheduler.shutdown()
@@ -331,11 +340,16 @@ final class ConnectionKernel private (
           scheduler.start(permit, () => executeWorker(request, operation, sink)) match {
             case RequestScheduler.Started => accepted
             case RequestScheduler.StartRejected =>
-              terminalLock.synchronized {
+              val shutdown = terminalLock.synchronized {
                 cancelDeadline(request.id)
-                if (registry.snapshot.activeIds.contains(request.id)) registry.shutdown(request.token)
+                val prepared =
+                  if (registry.snapshot.activeIds.contains(request.id))
+                    Some(registry.prepareShutdown(request.token))
+                  else None
                 terminalLock.notifyAll()
+                prepared
               }
+              shutdown.foreach(_.deliver())
               error("reserved scheduler permit could not start")
           }
         }
@@ -572,16 +586,18 @@ final class ConnectionKernel private (
   }
 
   private def timeout(request: RequestRegistry.Admitted): Unit = {
-    val result = terminalLock.synchronized {
+    val prepared = terminalLock.synchronized {
       deadlineHandles -= request.id
-      val completed = registry.timeout(request.token)
-      completed match {
+      val result = registry.prepareTimeout(request.token)
+      result.result match {
         case _: RequestRegistry.Completed => responseWrites += 1
         case _ => ()
       }
       terminalLock.notifyAll()
-      completed
+      result
     }
+    prepared.deliver()
+    val result = prepared.result
     result match {
       case _: RequestRegistry.Completed =>
         try completionSink(request.id, DirectSink).response(timeoutResponse(request.id))

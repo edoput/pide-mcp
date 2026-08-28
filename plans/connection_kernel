@@ -94,8 +94,8 @@ claims:
   - id: T4
     kind: test
     state: active
-    statement: Cancellation during saturation reaches cooperative Scala and ML work, emits no response when cancellation wins, releases capacity once, and suppresses a result already racing toward completion.
-    layers: [scala-unit, e2e]
+    statement: Cancellation during saturation reaches cooperative Scala and ML work, promptly removes and resolves the Scala bridge route, emits no response when cancellation wins, releases capacity once, and suppresses a result already racing toward completion.
+    layers: [scala-unit, ml-unit, bridge, e2e]
   - id: T5
     kind: test
     state: active
@@ -157,6 +157,11 @@ spec_refinements:
     folded_on: "2026-08-28"
     statement: Define the previously unspecified client-visible result when the configured per-request deadline wins the terminal race.
     spec_ids: [D-2026-08-20-concurrent-serve-loop]
+  - id: R7
+    state: folded
+    folded_on: "2026-08-28"
+    statement: Replace the stale IR-only cancellation note with one shared internal bridge command, Scala-owned terminal linearization, prompt bridge-promise removal, and cooperative Isabelle future-group interruption.
+    spec_ids: [S-out-scope, D-2026-07-13-mcp-tools]
 done_command:
   - tools/planning-gate
   - done

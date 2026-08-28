@@ -468,12 +468,15 @@ fun register group =
        cat_lines (rev (Synchronized.value buffer)))
   end;
 
-(*synchronous capture: fork f into a fresh registered group and join.
-  Interrupts are NOT swallowed here — callers inspect the Exn.result.*)
+(*Synchronous capture: fork f into a fresh registered subgroup and join.
+  Outside a future this still has no parent; inside MCP.run_tool it inherits
+  the bridge group, so client cancellation reaches the actual user tool rather
+  than merely interrupting the outer worker that is waiting for it. Interrupts
+  are NOT swallowed here — callers inspect the Exn.result.*)
 fun captured f =
   let
     val _ = install_wrappers ();
-    val group = Future.new_group NONE;
+    val group = Future.worker_subgroup ();
     val finish = register group;
     val res =
       Future.join_result
@@ -1688,6 +1691,68 @@ end;
 
 section \<open>Protocol commands for Isabelle/Scala\<close>
 
+text \<open>Cooperative bridge cancellation is routed by the internal UUID that
+Scala assigns to one prover call.  The Scala request registry remains the
+client-visible race owner; this table only retains the Isabelle future group
+long enough for \<^verbatim>\<open>MCP.cancel\<close> to request an interrupt and for the
+dependent result task to decide whether its protocol message must be
+suppressed.  Callbacks never use the client JSON-RPC id.\<close>
+
+ML \<open>
+signature MCP_CANCELLATION =
+sig
+  val register: string -> Future.group -> unit
+  val cancel: string -> bool
+  val finish: string -> bool option
+end;
+
+structure MCP_Cancellation: MCP_CANCELLATION =
+struct
+
+datatype entry = Running of Future.group | Cancelled of Future.group;
+
+val requests: (string * entry) list Synchronized.var =
+  Synchronized.var "MCP_Cancellation.requests" [];
+
+fun register id group =
+  Synchronized.change requests (fn entries =>
+    if AList.defined (op =) entries id
+    then error ("Duplicate MCP bridge id " ^ quote id)
+    else (id, Running group) :: entries);
+
+fun cancel id =
+  let
+    val group =
+      Synchronized.change_result requests (fn entries =>
+        (case AList.lookup (op =) entries id of
+          SOME (Running group) =>
+            (SOME group, AList.update (op =) (id, Cancelled group) entries)
+        | SOME (Cancelled _) => (NONE, entries)
+        | NONE => (NONE, entries)));
+    val _ = Option.app Future.cancel_group group;
+  in is_some group end;
+
+(*SOME true means cancellation won before result publication; SOME false is
+  normal completion; NONE exposes an internal route-ownership error.*)
+fun finish id =
+  Synchronized.change_result requests (fn entries =>
+    let
+      val result =
+        (case AList.lookup (op =) entries id of
+          SOME (Cancelled _) => SOME true
+        | SOME (Running _) => SOME false
+        | NONE => NONE);
+    in (result, AList.delete (op =) id entries) end);
+
+end;
+\<close>
+
+ML \<open>
+val _ =
+  Protocol_Command.define "MCP.cancel"
+    (fn [id] => ignore (MCP_Cancellation.cancel id));
+\<close>
+
 ML \<open>
 val _ =
   Protocol_Command.define "MCP.tools"
@@ -1725,9 +1790,12 @@ val _ =
   Protocol_Command.define "MCP.run_tool"
     (fn [id, designation, bundles_yxml, name, args_yxml] =>
       let
+        val group = Future.new_group NONE;
+        val _ = MCP_Cancellation.register id group;
         val result =
           (singleton o Future.forks)
-            {name = "MCP.run_tool." ^ name, group = NONE, deps = [], pri = ~1, interrupts = true}
+            {name = "MCP.run_tool." ^ name, group = SOME group,
+             deps = [], pri = ~1, interrupts = true}
             (fn () =>
               case Exn.capture_body (fn () =>
                   MCP_Protocol.designated_context designation
@@ -1743,14 +1811,21 @@ val _ =
              deps = [Future.task_of result], pri = ~1, interrupts = false}
             (fn () =>
               let
+                val joined = Future.join_result result;
+                val cancelled =
+                  (case MCP_Cancellation.finish id of
+                    SOME value => value
+                  | NONE => error ("Missing MCP.run_tool cancellation route " ^ quote id));
                 val (status, output) =
-                  (case Future.join_result result of
+                  (case joined of
                     Exn.Res res => res
                   | Exn.Exn exn => ("error", Runtime.exn_message exn));
               in
-                Output.protocol_message
-                  [Markup.function "MCP.run_tool_result", ("id", id), ("status", status)]
-                  [[XML.Text output]]
+                if cancelled then ()
+                else
+                  Output.protocol_message
+                    [Markup.function "MCP.run_tool_result", ("id", id), ("status", status)]
+                    [[XML.Text output]]
               end);
       in () end);
 \<close>
