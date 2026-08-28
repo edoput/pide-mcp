@@ -20,6 +20,7 @@ object MCP_Test {
       classOf[MCP_Connection_Protocol_Tests],
       classOf[MCP_Application_Tests],
       classOf[MCP_Connection_Kernel_Tests],
+      classOf[MCP_Connection_Runtime_Tests],
       classOf[MCP_Protocol_Tests],
       classOf[MCP_Readiness_Tests],
       classOf[MCP_Tools_Tests],

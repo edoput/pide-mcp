@@ -237,8 +237,9 @@ responsibilities to `mcp_server.scala`:
     mcp_request_scheduler.scala bounded and deterministic schedulers
     mcp_connection_kernel.scala lifecycle, registry, batches, and shutdown
     mcp_application.scala        neutral application port and Isabelle adapter
-    mcp_server.scala             catalog/handler code pending later extraction
-    mcp-main.scala               composition root
+    mcp_connection_runtime.scala one-shot composition root and connection loop
+    mcp_server.scala             catalog/handler and backend-startup orchestration
+    mcp-main.scala               command-line launcher
 
 The protocol, connection, and application types use corresponding nested Scala
 packages below `isabelle.mcp`.  A private constructor plus a public factory
