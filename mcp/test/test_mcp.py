@@ -34,7 +34,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -730,14 +729,8 @@ def test_repl_builtins():
         finally:
             shutil.rmtree(fixture_dir, ignore_errors=True)
 
-        client.proc.stdin.close()
-        try:
-            client.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            client.proc.kill()
     finally:
-        if client.proc.poll() is None:
-            client.proc.kill()
+        client.close()
 
 
 def test_builtin_activation():
@@ -820,14 +813,8 @@ def test_builtin_activation():
 
         client.request("tools/call", {"name": "repl_remove", "arguments": {"repl": "BA"}})
 
-        client.proc.stdin.close()
-        try:
-            client.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            client.proc.kill()
     finally:
-        if client.proc.poll() is None:
-            client.proc.kill()
+        client.close()
 
 
 def main():
@@ -909,15 +896,10 @@ def main():
                 json.dumps(reply))
 
         # clean shutdown on stdin close
-        client.proc.stdin.close()
-        try:
-            rc = client.proc.wait(timeout=30)
-            verdict("exit on stdin close", rc == 0, "rc=%d" % rc)
-        except subprocess.TimeoutExpired:
-            verdict("exit on stdin close", False, "still running after 30s")
+        rc = client.close()
+        verdict("exit on stdin close", rc == 0, "rc=%d" % rc)
     finally:
-        if client.proc.poll() is None:
-            client.proc.kill()
+        client.close()
 
     test_repl_builtins()
     test_builtin_activation()

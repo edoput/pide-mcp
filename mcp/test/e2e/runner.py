@@ -4,17 +4,15 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import threading
-import time
 import traceback
 from typing import Callable, Iterable, TextIO
 
 from .registry import CaseDefinition, RegistryError, load_runtime_case
+from .processes import terminate_process_session
 
 
 @dataclass(frozen=True)
@@ -48,21 +46,7 @@ class ProcessSupervisor:
 
 
 def _terminate_group(process: subprocess.Popen[str], grace_seconds: float = 2) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    deadline = time.monotonic() + grace_seconds
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            return
-        time.sleep(0.02)
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    terminate_process_session(process.pid, grace_seconds)
 
 
 def run_process(
@@ -97,6 +81,13 @@ def run_process(
             except KeyboardInterrupt:
                 _terminate_group(process)
                 process.communicate()
+                raise
+            except BaseException:
+                _terminate_group(process)
+                try:
+                    process.communicate()
+                except BaseException:
+                    pass
                 raise
 
         stdout_lines: list[str] = []

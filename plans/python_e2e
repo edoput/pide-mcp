@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: python_e2e
 title: Register deterministic procedural end-to-end tests
-status: done
+status: in_progress
 depends_on:
   - verification_matrix
 allowed_modules:
@@ -12,7 +12,7 @@ invariants:
   - id: INV1
     statement: End-to-end discovery executes no test body and starts no Isabelle or MCP process.
   - id: INV2
-    statement: Every registered end-to-end process is reaped on success, failure, timeout, or interruption.
+    statement: Every registered end-to-end worker, client process group, and descendant is reaped on success, failure, timeout, or interruption.
 claims:
   - id: A1
     kind: assumption
@@ -32,6 +32,10 @@ claims:
   - id: D1
     kind: design
     statement: Agent usability is a separate evaluation concern; process-test links certify only deterministic procedural behavior.
+    category: design
+  - id: D2
+    kind: design
+    statement: Each worker owns a process session and each JSON-RPC client owns a process group inside that session, so client teardown is local while runner timeout cleanup remains transitive.
     category: design
   - id: T1
     kind: test
@@ -62,6 +66,11 @@ claims:
     kind: test
     state: active
     statement: A fixture proves that filtered runs remain diagnostic only and cannot become completion evidence.
+    layers: [tooling-unit]
+  - id: T7
+    kind: test
+    state: active
+    statement: Client close and timeout reap the complete client process group while its identity remains pinned, unsafe cleanup after external reap is refused, and runner timeout reaps a client-owned subgroup within the worker session.
     layers: [tooling-unit]
 spec_refinements: []
 done_command:

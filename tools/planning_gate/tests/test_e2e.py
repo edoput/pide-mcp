@@ -224,6 +224,76 @@ print(json.dumps([{"jsonrpc":"2.0","id":value["id"],"result":{}} for value in ba
         assert client.close() == 0
 
 
+@spec_test(covers=("python_e2e#T7",))
+def test_shared_e2e_client_close_reaps_its_server_descendants(tmp_path: Path) -> None:
+    child_pid = tmp_path / "client-child.pid"
+    server = f'''import pathlib, subprocess, sys
+p = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+pathlib.Path({str(child_pid)!r}).write_text(str(p.pid), encoding="utf-8")
+for _ in sys.stdin:
+    pass
+'''
+    client = Client([sys.executable, "-c", server])
+    assert os.getpgid(client.proc.pid) == client.proc.pid
+    assert os.getsid(client.proc.pid) == os.getsid(0)
+    deadline = time.monotonic() + 2
+    while not child_pid.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert child_pid.exists(), "fixture server did not start its descendant"
+    pid = int(child_pid.read_text(encoding="utf-8"))
+
+    assert client.close() == 0
+    await_gone(pid)
+
+
+@spec_test(covers=("python_e2e#T7",))
+def test_shared_e2e_client_timeout_reaps_its_process_group(tmp_path: Path) -> None:
+    child_pid = tmp_path / "timed-out-client-child.pid"
+    server = f'''import pathlib, subprocess, sys, time
+p = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+pathlib.Path({str(child_pid)!r}).write_text(str(p.pid), encoding="utf-8")
+time.sleep(60)
+'''
+    client = Client([sys.executable, "-c", server])
+    deadline = time.monotonic() + 2
+    while not child_pid.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert child_pid.exists(), "fixture server did not start its descendant"
+    pid = int(child_pid.read_text(encoding="utf-8"))
+
+    assert client.close(timeout=0.05) != 0
+    await_gone(pid)
+
+
+@spec_test(covers=("python_e2e#T7",))
+def test_shared_e2e_client_refuses_an_externally_reaped_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mcp.test.e2e.client as client_module
+
+    client = Client([sys.executable, "-c", "pass"])
+    assert client.proc.wait(timeout=2) == 0
+    signals: list[int] = []
+    monkeypatch.setattr(
+        client_module, "terminate_process_group", lambda group: signals.append(group)
+    )
+
+    with pytest.raises(RuntimeError, match="reaped outside Client.close"):
+        client.close()
+    assert signals == []
+    client.reader.join(timeout=2)
+
+
 @spec_test(covers=("python_e2e#T3",))
 def test_e2e_process_runner_cleans_lingering_child_after_success(tmp_path: Path) -> None:
     script = (
@@ -235,6 +305,20 @@ def test_e2e_process_runner_cleans_lingering_child_after_success(tmp_path: Path)
     completed = run_process([sys.executable, "-c", script], tmp_path, 5)
     assert completed.returncode == 0
     await_gone(int(completed.stdout.strip()))
+
+
+@spec_test(covers=("python_e2e#T7",))
+def test_e2e_process_runner_cleans_client_subgroup_on_timeout(tmp_path: Path) -> None:
+    script = (
+        "import subprocess,sys,time; "
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL, process_group=0); "
+        "print(p.pid, flush=True); time.sleep(60)"
+    )
+    timed_out = run_process([sys.executable, "-c", script], tmp_path, 0.2)
+    assert timed_out.timed_out
+    await_gone(int(timed_out.stdout.strip()))
 
 
 @spec_test(covers=("python_e2e#T3",))
@@ -257,6 +341,30 @@ def test_e2e_process_runner_propagates_interrupt(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(runner, "_terminate_group", lambda process: events.append("terminate"))
 
     with pytest.raises(KeyboardInterrupt):
+        runner.run_process(["fixture"], Path("."), 1)
+    assert events == ["communicate:1", "terminate", "communicate:None"]
+
+
+@spec_test(covers=("python_e2e#T3", "python_e2e#T7"))
+def test_e2e_process_runner_cleans_up_after_communication_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mcp.test.e2e.runner as runner
+
+    events: list[str] = []
+
+    class FailingProcess:
+        pid = 12345
+        returncode = None
+
+        def communicate(self, timeout=None):
+            events.append(f"communicate:{timeout}")
+            raise OSError("fixture pipe failure")
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: FailingProcess())
+    monkeypatch.setattr(runner, "_terminate_group", lambda process: events.append("terminate"))
+
+    with pytest.raises(OSError, match="fixture pipe failure"):
         runner.run_process(["fixture"], Path("."), 1)
     assert events == ["communicate:1", "terminate", "communicate:None"]
 

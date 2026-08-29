@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any
 
+from .processes import terminate_process_group, wait_for_process_exit
+
 
 DEFAULT_TIMEOUT = float(os.environ.get("MCP_TEST_TIMEOUT", "600"))
 
@@ -28,11 +30,14 @@ class Client:
             stderr=sys.stderr.fileno() if stderr is None else stderr,
             text=True,
             bufsize=1,
+            process_group=0,
         )
         self.replies: queue.Queue[str] = queue.Queue()
         self.notifications: list[dict[str, Any]] = []
         self.pending_replies: dict[str, dict[str, Any]] = {}
         self.next_id = 0
+        self.close_lock = threading.Lock()
+        self.closed_returncode: int | None = None
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
 
@@ -167,19 +172,34 @@ class Client:
                 return result
 
     def close(self, timeout: float = 30) -> int:
-        if self.proc.stdin is not None and not self.proc.stdin.closed:
-            self.proc.stdin.close()
-        try:
-            result = self.proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            self.proc.terminate()
+        with self.close_lock:
+            if self.closed_returncode is not None:
+                return self.closed_returncode
+            if self.proc.returncode is not None:
+                raise RuntimeError(
+                    "client process was reaped outside Client.close; safe group cleanup "
+                    "is no longer possible"
+                )
+            if self.proc.stdin is not None and not self.proc.stdin.closed:
+                self.proc.stdin.close()
             try:
-                result = self.proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+                # Do not reap first: the exited group leader pins its numeric
+                # PID/PGID until every lingering descendant has been signalled.
+                wait_for_process_exit(self.proc.pid, timeout)
+                terminate_process_group(self.proc.pid)
                 result = self.proc.wait()
-        self.reader.join(timeout=2)
-        return result
+            except RuntimeError:
+                # Another waiter released the PID/PGID identity.  Refuse to
+                # signal a numeric group that may now belong to another owner.
+                raise
+            except BaseException:
+                terminate_process_group(self.proc.pid)
+                self.proc.wait()
+                raise
+            finally:
+                self.reader.join(timeout=2)
+            self.closed_returncode = result
+            return result
 
     def __enter__(self) -> "Client":
         return self

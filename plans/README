@@ -112,7 +112,7 @@ delivery and verification infrastructure (independent of feature waves):
   - [x] verification_matrix   plans/verification_matrix (static verifies/covers
         relationships across MUnit, Isabelle theory, tooling, and Python e2e
         producers; depends on plan_label_schema)
-  - [x] python_e2e             plans/python_e2e (registered deterministic
+  - [ ] python_e2e             plans/python_e2e (registered deterministic
         real-process Python client tests; depends on verification_matrix)
   - [x] planning_gate         plans/planning_gate (importable gate package and
         the single project done command; depends on all four plans above)
