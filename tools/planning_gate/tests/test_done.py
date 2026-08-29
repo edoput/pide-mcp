@@ -7,10 +7,15 @@ import pytest
 
 from tools.planning_gate.commands import CommandStep, StepResult, layer_step_ids
 from tools.planning_gate.done import (
+    DoneError,
     RepositorySnapshot,
     StaticReport,
+    check_static_closure,
     run_done,
 )
+from tools.planning_gate.document import load_repository
+from tools.planning_gate.labels import generate_audit
+from tools.planning_gate.tests.test_document import repository, valid_plan, write_plan
 from tools.planning_gate.tooling import spec_test
 
 
@@ -36,6 +41,36 @@ def snapshot(
 
 def static_ok(_: Path) -> StaticReport:
     return StaticReport(5, 400, 100)
+
+
+@pytest.mark.parametrize("audit_state", ("missing", "stale"))
+@spec_test(covers=("planning_gate#T9",))
+def test_static_closure_rejects_a_missing_or_stale_legacy_label_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audit_state: str
+) -> None:
+    import tools.planning_gate.done as done_module
+
+    root = repository(tmp_path)
+    write_plan(root, "canonical", valid_plan("canonical"))
+    legacy = write_plan(
+        root,
+        "legacy",
+        "status: planned\n\nA1. A historical assumption requiring review.\n",
+    )
+    assert generate_audit(load_repository(root), root) == 1
+    if audit_state == "missing":
+        (root / "plans/migration/label-audit.json").unlink()
+    else:
+        legacy.write_text(
+            legacy.read_text(encoding="utf-8")
+            + "\nD1. A newly discovered historical design decision.\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(done_module, "validate_labels", lambda *args, **kwargs: None)
+    monkeypatch.setattr(done_module, "validate_refinements", lambda *args, **kwargs: None)
+
+    with pytest.raises(DoneError, match="legacy label migration audit is missing or stale"):
+        check_static_closure(root)
 
 
 @spec_test(

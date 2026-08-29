@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: planning_gate
 title: Enforce plan evidence and provide one done command
-status: done
+status: in_progress
 depends_on:
   - plan_format
   - plan_label_schema
@@ -82,6 +82,11 @@ claims:
     state: active
     statement: An orchestration fixture requires every registered layer;
     layers: [tooling-unit, scala-unit, scala-performance, ml-unit, heap, bridge, e2e]
+  - id: T9
+    kind: test
+    state: active
+    statement: Static completion rejects a missing or stale legacy label-migration audit and reports the exact regeneration command.
+    layers: [tooling-unit]
 spec_refinements: []
 done_command:
   - tools/planning-gate

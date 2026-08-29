@@ -19,7 +19,7 @@ from .commands import (
     run_step,
 )
 from .document import PlanFormat, load_repository
-from .labels import validate_labels
+from .labels import audit_is_fresh, validate_labels
 from .legacy import compare, read_baseline, require_accepted
 from .matrix import discover
 from .refinements import validate_refinements
@@ -136,6 +136,13 @@ def check_static_closure(root: Path) -> StaticReport:
     documents = load_repository(root)
     validate_labels(documents, require_completion=True)
     validate_refinements(documents, root, require_completion=True)
+
+    audit_fresh, _ = audit_is_fresh(documents, root)
+    if not audit_fresh:
+        raise DoneError(
+            "legacy label migration audit is missing or stale: "
+            "run tools/planning-gate labels audit generate"
+        )
 
     wrong_done_commands = [
         document.id

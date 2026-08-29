@@ -140,6 +140,7 @@ planning_gate#T5          tooling-unit              Dirty paths are printed; a c
 planning_gate#T6          scala-unit                The shutdown-drain regression fixture is always selected by the full Scala suite; while red it blocks `done` through the layer-failure rule, and after
 planning_gate#T7          scala-performance,scala-unit,tooling-unit  Documentation TOC classification fixtures distinguish functional and performance checks;
 planning_gate#T8          bridge,e2e,heap,ml-unit,scala-performance,scala-unit,tooling-unit  An orchestration fixture requires every registered layer;
+planning_gate#T9          tooling-unit              Static completion rejects a missing or stale legacy label-migration audit and reports the exact regeneration command.
 python_e2e#A1             e2e                       A procedural process test exercises the shipped process and public protocol, not an in-process fake or an LLM agent.
 python_e2e#A2             tooling-unit              Metadata discovery is deterministic and has no process, network, prover, or test-body side effects.
 python_e2e#I1             tooling-unit              All cases share one client, timeout, teardown, metadata, and result-reporting implementation instead of copying process code between scripts.

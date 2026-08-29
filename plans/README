@@ -114,7 +114,7 @@ delivery and verification infrastructure (independent of feature waves):
         producers; depends on plan_label_schema)
   - [ ] python_e2e             plans/python_e2e (registered deterministic
         real-process Python client tests; depends on verification_matrix)
-  - [x] planning_gate         plans/planning_gate (importable gate package and
+  - [ ] planning_gate         plans/planning_gate (importable gate package and
         the single project done command; depends on all four plans above)
 
 boundary remediation (dependency-ordered architecture work packages):

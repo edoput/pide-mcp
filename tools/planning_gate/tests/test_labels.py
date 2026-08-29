@@ -52,7 +52,7 @@ def test_current_canonical_labels_are_semantically_valid() -> None:
     report = validate_labels(load_repository(root))
 
     assert report.v1_plans == 6
-    assert report.claims == 82
+    assert report.claims == 83
     assert report.blockers == ()
 
 
