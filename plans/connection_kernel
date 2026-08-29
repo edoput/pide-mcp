@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: connection_kernel
 title: Replaceable MCP connection kernel with bounded request ownership
-status: in_progress
+status: done
 depends_on:
   - planning_gate
   - readiness

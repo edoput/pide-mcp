@@ -2,7 +2,7 @@
 schema: isabelle-mcp.plan/v1
 id: python_e2e
 title: Register deterministic procedural end-to-end tests
-status: in_progress
+status: done
 depends_on:
   - verification_matrix
 allowed_modules:

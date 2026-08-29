@@ -112,13 +112,13 @@ delivery and verification infrastructure (independent of feature waves):
   - [x] verification_matrix   plans/verification_matrix (static verifies/covers
         relationships across MUnit, Isabelle theory, tooling, and Python e2e
         producers; depends on plan_label_schema)
-  - [ ] python_e2e             plans/python_e2e (registered deterministic
+  - [x] python_e2e             plans/python_e2e (registered deterministic
         real-process Python client tests; depends on verification_matrix)
-  - [ ] planning_gate         plans/planning_gate (importable gate package and
+  - [x] planning_gate         plans/planning_gate (importable gate package and
         the single project done command; depends on all four plans above)
 
 boundary remediation (dependency-ordered architecture work packages):
-  - [ ] connection_kernel    plans/connection_kernel (replaceable stdio/scripted
+  - [x] connection_kernel    plans/connection_kernel (replaceable stdio/scripted
         data planes, MCP 2025-03-26 lifecycle, bounded request ownership,
         cancellation, batching conformance, and shutdown drain; depends on
         planning_gate and readiness)
