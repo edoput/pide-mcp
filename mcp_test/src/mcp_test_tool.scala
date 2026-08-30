@@ -21,6 +21,7 @@ object MCP_Test {
       classOf[MCP_Connection_Protocol_Tests],
       classOf[MCP_Application_Tests],
       classOf[MCP_Bridge_Routes_Tests],
+      classOf[pide.MCP_Pide_Bridge_Tests],
       classOf[MCP_Connection_Kernel_Tests],
       classOf[MCP_Connection_Runtime_Tests],
       classOf[MCP_Protocol_Tests],

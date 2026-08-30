@@ -11,6 +11,7 @@ promises created by ml_tools()/ml_run().
 package isabelle.mcp
 
 import isabelle._
+import isabelle.mcp.pide.LegacyWire
 import isabelle.mcp.application.McpApplication
 
 import scala.util.control.NonFatal
@@ -563,6 +564,14 @@ class MCP_Session private(
   private val read_resource_routes = new BridgeRoutes[MCP_Session.Result]
   private val check_designation_routes = new BridgeRoutes[MCP_Session.Result]
 
+  private val tools_wire = LegacyWire.Tools
+  private val theories_wire = LegacyWire.Theories
+  private val run_tool_wire = LegacyWire.RunTool
+  private val check_designation_wire = LegacyWire.CheckDesignation
+  private val ir_wire = LegacyWire.Ir
+  private val resources_wire = LegacyWire.Resources
+  private val read_resource_wire = LegacyWire.ReadResource
+
   private val bridge_cancelled = MCP_Session.Error("Request cancelled")
   private def bridge_interrupted[A]: Exn.Result[A] = Exn.Exn(Exn.Interrupt())
 
@@ -624,8 +633,9 @@ class MCP_Session private(
     private def tools_result(msg: Prover.Protocol_Output): Boolean = {
       Properties.get(msg.properties, "id") match {
         case Some(id) =>
+          LegacyWire.expectReply(tools_wire, LegacyWire.ReplyShape.ToolsYxml)
           val tools = MCP_Session.decode_tools_reply(YXML.parse_body(msg.chunk))
-          complete_bridge(tools_routes, id, tools, "MCP.tools")
+          complete_bridge(tools_routes, id, tools, tools_wire.command)
           true
         case None => false
       }
@@ -634,8 +644,9 @@ class MCP_Session private(
     private def theories_result(msg: Prover.Protocol_Output): Boolean =
       Properties.get(msg.properties, "id") match {
         case Some(id) =>
+          LegacyWire.expectReply(theories_wire, LegacyWire.ReplyShape.TheoriesYxml)
           val theories = MCP_Session.decode_theories(YXML.parse_body(msg.chunk))
-          complete_bridge(theories_routes, id, theories, "MCP.theories")
+          complete_bridge(theories_routes, id, theories, theories_wire.command)
           true
         case None => false
       }
@@ -643,12 +654,13 @@ class MCP_Session private(
     private def run_tool_result(msg: Prover.Protocol_Output): Boolean =
       Properties.get(msg.properties, "id") match {
         case Some(id) =>
+          LegacyWire.expectReply(run_tool_wire, LegacyWire.ReplyShape.StatusText)
           val result =
             if (Properties.get(msg.properties, "status") == Some("ok")) {
               MCP_Session.Ok(msg.text)
             }
             else MCP_Session.Error(msg.text)
-          complete_bridge(run_routes, id, result, "MCP.run_tool")
+          complete_bridge(run_routes, id, result, run_tool_wire.command)
           true
         case None => false
       }
@@ -656,11 +668,12 @@ class MCP_Session private(
     private def ir_result(msg: Prover.Protocol_Output): Boolean =
       Properties.get(msg.properties, "id") match {
         case Some(id) =>
+          LegacyWire.expectReply(ir_wire, LegacyWire.ReplyShape.StatusYxml)
           val text = XML.content(YXML.parse_body(YXML.Source(msg.text)))
           val result =
             if (Properties.get(msg.properties, "status") == Some("ok")) MCP_Session.Ok(text)
             else MCP_Session.Error(text)
-          complete_bridge(ir_routes, id, result, "MCP.ir")
+          complete_bridge(ir_routes, id, result, ir_wire.command)
           true
         case None => false
       }
@@ -668,8 +681,9 @@ class MCP_Session private(
     private def named_resources_result(msg: Prover.Protocol_Output): Boolean =
       Properties.get(msg.properties, "id") match {
         case Some(id) =>
+          LegacyWire.expectReply(resources_wire, LegacyWire.ReplyShape.ResourcesYxml)
           val resources = MCP_Session.decode_resources(YXML.parse_body(msg.chunk))
-          complete_bridge(named_resources_routes, id, resources, "MCP.resources")
+          complete_bridge(named_resources_routes, id, resources, resources_wire.command)
           true
         case None => false
       }
@@ -677,12 +691,13 @@ class MCP_Session private(
     private def read_resource_result(msg: Prover.Protocol_Output): Boolean =
       Properties.get(msg.properties, "id") match {
         case Some(id) =>
+          LegacyWire.expectReply(read_resource_wire, LegacyWire.ReplyShape.StatusText)
           val result =
             if (Properties.get(msg.properties, "status") == Some("ok")) {
               MCP_Session.Ok(msg.text)
             }
             else MCP_Session.Error(msg.text)
-          complete_bridge(read_resource_routes, id, result, "MCP.read_resource")
+          complete_bridge(read_resource_routes, id, result, read_resource_wire.command)
           true
         case None => false
       }
@@ -690,35 +705,37 @@ class MCP_Session private(
     private def check_designation_result(msg: Prover.Protocol_Output): Boolean =
       Properties.get(msg.properties, "id") match {
         case Some(id) =>
+          LegacyWire.expectReply(check_designation_wire, LegacyWire.ReplyShape.StatusText)
           val result =
             if (Properties.get(msg.properties, "status") == Some("ok")) MCP_Session.Ok(msg.text)
             else MCP_Session.Error(msg.text)
-          complete_bridge(check_designation_routes, id, result, "MCP.check_designation")
+          complete_bridge(check_designation_routes, id, result, check_designation_wire.command)
           true
         case None => false
       }
 
-    private def tools_changed(msg: Prover.Protocol_Output): Boolean = {
-      changed_handler.value("tools")
+    private def changed(change: LegacyWire.Change)(msg: Prover.Protocol_Output): Boolean = {
+      changed_handler.value(change.event)
       true
     }
 
-    private def resources_changed(msg: Prover.Protocol_Output): Boolean = {
-      changed_handler.value("resources")
-      true
-    }
+    private def tools_changed(msg: Prover.Protocol_Output): Boolean =
+      changed(LegacyWire.ToolsChanged)(msg)
+
+    private def resources_changed(msg: Prover.Protocol_Output): Boolean =
+      changed(LegacyWire.ResourcesChanged)(msg)
 
     override val functions: Session.Protocol_Functions =
       List(
-        "MCP.tools_changed" -> tools_changed,
-        "MCP.resources_changed" -> resources_changed,
-        "MCP.tools_result" -> tools_result,
-        "MCP.theories_result" -> theories_result,
-        "MCP.run_tool_result" -> run_tool_result,
-        "MCP.ir_result" -> ir_result,
-        "MCP.resources_result" -> named_resources_result,
-        "MCP.read_resource_result" -> read_resource_result,
-        "MCP.check_designation_result" -> check_designation_result)
+        LegacyWire.ToolsChanged.function -> tools_changed,
+        LegacyWire.ResourcesChanged.function -> resources_changed,
+        tools_wire.resultFunction -> tools_result,
+        theories_wire.resultFunction -> theories_result,
+        run_tool_wire.resultFunction -> run_tool_result,
+        ir_wire.resultFunction -> ir_result,
+        resources_wire.resultFunction -> named_resources_result,
+        read_resource_wire.resultFunction -> read_resource_result,
+        check_designation_wire.resultFunction -> check_designation_result)
   }
 
   session.init_protocol_handler(Handler)
@@ -745,9 +762,11 @@ class MCP_Session private(
       cancellation: McpApplication.Cancellation): MCP_Session.Tools_Reply =
     bridge_call(
       tools_routes,
-      "MCP.tools",
-      id => List(
-        Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles))),
+      tools_wire.command,
+      id => LegacyWire.arguments(tools_wire,
+        "id" -> Bytes(id),
+        "designation" -> Bytes(designation),
+        "bundles_yxml" -> Bytes(MCP_Session.encode_names(bundles))),
       cancellation,
       bridge_interrupted)
 
@@ -758,8 +777,8 @@ class MCP_Session private(
       cancellation: McpApplication.Cancellation): List[String] =
     bridge_call(
       theories_routes,
-      "MCP.theories",
-      id => List(Bytes(id)),
+      theories_wire.command,
+      id => LegacyWire.arguments(theories_wire, "id" -> Bytes(id)),
       cancellation,
       bridge_interrupted)
 
@@ -772,10 +791,13 @@ class MCP_Session private(
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
     bridge_call(
       run_routes,
-      "MCP.run_tool",
-      id => List(
-        Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles)), Bytes(name),
-        Bytes(MCP_Session.encode_args(args))),
+      run_tool_wire.command,
+      id => LegacyWire.arguments(run_tool_wire,
+        "id" -> Bytes(id),
+        "designation" -> Bytes(designation),
+        "bundles_yxml" -> Bytes(MCP_Session.encode_names(bundles)),
+        "name" -> Bytes(name),
+        "args_yxml" -> Bytes(MCP_Session.encode_args(args))),
       cancellation,
       Exn.Res(bridge_cancelled))
 
@@ -792,8 +814,11 @@ class MCP_Session private(
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
     bridge_call(
       check_designation_routes,
-      "MCP.check_designation",
-      id => List(Bytes(id), Bytes(designation), Bytes(MCP_Session.encode_names(bundles))),
+      check_designation_wire.command,
+      id => LegacyWire.arguments(check_designation_wire,
+        "id" -> Bytes(id),
+        "designation" -> Bytes(designation),
+        "bundles_yxml" -> Bytes(MCP_Session.encode_names(bundles))),
       cancellation,
       Exn.Res(bridge_cancelled))
 
@@ -806,8 +831,11 @@ class MCP_Session private(
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
     bridge_call(
       ir_routes,
-      "MCP.ir",
-      id => List(Bytes(id), Bytes(fname), Bytes(MCP_Session.encode_args(args))),
+      ir_wire.command,
+      id => LegacyWire.arguments(ir_wire,
+        "id" -> Bytes(id),
+        "fname" -> Bytes(fname),
+        "args_yxml" -> Bytes(MCP_Session.encode_args(args))),
       cancellation,
       Exn.Res(bridge_cancelled))
 
@@ -821,8 +849,10 @@ class MCP_Session private(
       cancellation: McpApplication.Cancellation): List[(String, String)] =
     bridge_call(
       named_resources_routes,
-      "MCP.resources",
-      id => List(Bytes(id), Bytes(designation)),
+      resources_wire.command,
+      id => LegacyWire.arguments(resources_wire,
+        "id" -> Bytes(id),
+        "designation" -> Bytes(designation)),
       cancellation,
       bridge_interrupted)
 
@@ -833,8 +863,11 @@ class MCP_Session private(
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
     bridge_call(
       read_resource_routes,
-      "MCP.read_resource",
-      id => List(Bytes(id), Bytes(designation), Bytes(name)),
+      read_resource_wire.command,
+      id => LegacyWire.arguments(read_resource_wire,
+        "id" -> Bytes(id),
+        "designation" -> Bytes(designation),
+        "name" -> Bytes(name)),
       cancellation,
       Exn.Res(bridge_cancelled))
 

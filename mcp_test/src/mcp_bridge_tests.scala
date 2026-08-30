@@ -203,6 +203,29 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
 /* MCP.ir bridge: the dispatcher over the I/R engine (MCP-HOL/MCP_Repl) */
 
 class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
+  test("checkpoint-1 characterization executes all seven legacy routes and reply codecs") {
+    val tools = session.ml_tools()
+    assert(tools.rows.exists(_.name == "MCP_Tools.shout"))
+
+    val theories = session.ml_theories()
+    val replTheory = theories.find(Long_Name.base_name(_) == "MCP_Repl")
+      .getOrElse(fail("MCP_Repl not in " + theories.mkString(", ")))
+
+    assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> "bridge")),
+      MCP_Session.Ok("BRIDGE"))
+    assert(session.check_designation(replTheory).ok)
+    assert(session.ir("repls", Nil).ok)
+
+    val resources = session.ml_named_resources()
+    assert(resources.exists(_._1 == "MCP_Tools.greeting"))
+    assertEquals(session.ml_read_resource("MCP_Tools.greeting"),
+      MCP_Session.Ok("hello from MCP_Resource"))
+
+    assert(!session.ml_run("no_such_tool", Nil).ok)
+    assert(!session.ir("no_such_function", Nil).ok)
+    assert(!session.ml_read_resource("no_such_resource").ok)
+  }
+
   spec_test("ir bridge cancellation returns promptly, releases the claim, and leaves the session usable",
       covers = List("connection_kernel#T4")) {
     with_repl("CancelledIR") {
