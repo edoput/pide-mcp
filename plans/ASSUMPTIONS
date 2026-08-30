@@ -106,6 +106,29 @@ ml_builtin_migration#A10  bridge                    the DRIFT GATE stays green m
 ml_builtin_migration#A11  bridge,e2e                a moved tool is del'able AND uncallable (the SCOPED block: asymmetric callability dissolves for a tool whose logic is ML).
 ml_builtin_migration#A12  ml-unit                   error TEXT change is client-visible and precise: a missing/unknown/ ill-typed argument names the parameter.
 ml_builtin_migration#A13  heap                      OUTPUT ROUTING SURVIVES A FRESH PROCESS AGAINST THE SAVED HEAP. MCP_Output installs its Private_Output wrappers lazily and records \<open>wrapped\<clo
+pide_bridge#A1            scala-unit                A bridge call ID is generated independently, is never derived from or deliberately reused as a client JSON-RPC request ID, and is never exposed throug
+pide_bridge#I1            bridge,scala-unit         The same PideBridge runs over scripted and production PideTransport implementations, while application services depend only on the typed bridge port.
+pide_bridge#D1            unstated                  The internal bridge revision is independent of the negotiated public MCP protocol revision and is present in every request, cancellation, and result e
+pide_bridge#D2            unstated                  Scala sends one versioned bridge command and receives one versioned bridge-result function; ML dispatches operation names through a typed internal reg
+pide_bridge#D3            unstated                  The bridge control plane owns call IDs, admission, deadlines, pending completion, cancellation, stop, and invariant events; the transport owns only pr
+pide_bridge#D4            unstated                  Client cancellation and the connection deadline remain the public request race owners; the bridge safety deadline is a backstop for direct and non-con
+pide_bridge#D5            unstated                  MCP_Tools defines the extensible ML operation registry and its one common executor; descendant theories register additional handlers, and MCP_Repl con
+pide_bridge#D6            unstated                  Request and reply limits count the raw bytes of the sole serialized YXML envelope; request size is checked before transport send and ML decode, and re
+pide_bridge#D7            unstated                  PideTransport reports byte delivery and termination but does not own Headless.Session.stop; the composition root owns Isabelle session termination and
+pide_bridge#D8            unstated                  PideBridge.call returns Either[BridgeFailure, A]; an operation-domain error remains a successfully decoded A, while transport, protocol, remote-execut
+pide_bridge#Q1            unstated                  What separate serialized request and reply byte limits admit the committed legitimate-operation corpus while bounding accidental or hostile bridge-env
+pide_bridge#T1            bridge,scala-unit         Two distinguishable calls released in reverse order receive their own replies exactly once through the same bridge registry.
+pide_bridge#T2            scala-unit                A wrong-operation, wrong-version, malformed, or invalid-status reply with a known call ID atomically fails that matching call with ProtocolError and c
+pide_bridge#T3            bridge,ml-unit,scala-unit  Cancellation before dispatch sends no call, cancellation after dispatch sends one ordered cancel, and cancel/result races produce one Cancelled or suc
+pide_bridge#T4            bridge,scala-unit         Timeout/result races produce one TimedOut or successful outcome, interrupt admitted ML work, and leave no pending entry, deadline, or ML route.
+pide_bridge#T5            scala-unit                A transport send failure and later transport termination each fail every affected call with TransportFailed and leave no pending entry or deadline.
+pide_bridge#T6            bridge,ml-unit,scala-unit  Stop/result races and repeated stop calls admit no post-stop work; stop acknowledges only after Scala pending entries and deadlines plus ML routes and
+pide_bridge#T7            scala-unit                Saturating maxPending admits exactly the configured bound, creates no waiting queue, rejects the next call immediately, and admits a later call after
+pide_bridge#T8            bridge,ml-unit,scala-unit  Unsupported revisions, unknown operations, malformed envelopes, and invalid status or payload combinations return a correlated ProtocolError instead o
+pide_bridge#T9            bridge,ml-unit            Tools, theories, tool execution, designation checks, named-resource listing, and named-resource reads register in MCP_Tools; IR registers only in MCP_
+pide_bridge#T10           bridge,scala-unit         A bounded startup hello makes MCP-Tools Ready with only base operations and MCP-HOL Ready with IR, while an absent command, wrong revision, or missing
+pide_bridge#T11           bridge,ml-unit,scala-unit  A serialized request of exactly maxRequestBytes succeeds, a larger request returns TooLarge before transport send, and the ML decoder independently re
+pide_bridge#T12           bridge,ml-unit,scala-unit  A serialized reply of exactly maxReplyBytes succeeds, while a larger operation result becomes a small correlated TooLarge reply before protocol public
 plan_format#A1            tooling-unit              A plan has one canonical machine-readable value for every field used by a gate.  Markdown may explain a field but cannot override it.
 plan_format#A2            tooling-unit              YAML is parsed safely and duplicate keys are rejected before schema or semantic validation.
 plan_format#A3            tooling-unit              A plan remains readable without custom rendering: the frontmatter is short structured data and the body is ordinary Markdown.

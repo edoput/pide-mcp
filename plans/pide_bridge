@@ -1,0 +1,341 @@
+---
+schema: isabelle-mcp.plan/v1
+id: pide_bridge
+title: Extract a versioned bounded Scala-to-ML PIDE bridge
+status: in_progress
+depends_on:
+  - connection_kernel
+  - planning_gate
+allowed_modules:
+  - mcp/src
+  - mcp/etc
+  - mcp/Tools
+  - mcp_test/src
+  - plans
+invariants:
+  - id: INV1
+    statement: Every admitted bridge call has exactly one BridgeResult terminal outcome correlated by its internal call ID.
+  - id: INV2
+    statement: Pending calls and serialized request and reply envelopes remain within one immutable validated bridge-policy snapshot.
+  - id: INV3
+    statement: Bridge stop completes only after an ML drain acknowledgement or termination of the underlying Isabelle session proves that no call, deadline, protocol reply, route, or worker remains owned by the bridge.
+claims:
+  - id: A1
+    kind: assumption
+    state: active
+    statement: A bridge call ID is generated independently, is never derived from or deliberately reused as a client JSON-RPC request ID, and is never exposed through the public MCP protocol.
+    layers: [scala-unit]
+  - id: I1
+    kind: infrastructure
+    state: active
+    statement: The same PideBridge runs over scripted and production PideTransport implementations, while application services depend only on the typed bridge port.
+    layers: [scala-unit, bridge]
+  - id: D1
+    kind: design
+    statement: The internal bridge revision is independent of the negotiated public MCP protocol revision and is present in every request, cancellation, and result envelope.
+    category: design
+  - id: D2
+    kind: design
+    statement: Scala sends one versioned bridge command and receives one versioned bridge-result function; ML dispatches operation names through a typed internal registry rather than defining a separate wire lifecycle for each operation.
+    category: design
+  - id: D3
+    kind: design
+    statement: The bridge control plane owns call IDs, admission, deadlines, pending completion, cancellation, stop, and invariant events; the transport owns only protocol-command send and protocol-output delivery.
+    category: design
+  - id: D4
+    kind: design
+    statement: Client cancellation and the connection deadline remain the public request race owners; the bridge safety deadline is a backstop for direct and non-connection callers, and the first terminal transition wins.
+    category: design
+  - id: D5
+    kind: design
+    statement: MCP_Tools defines the extensible ML operation registry and its one common executor; descendant theories register additional handlers, and MCP_Repl contributes IR decoding, dispatch, and output capture without creating a second call route or Future group.
+    category: design
+  - id: D6
+    kind: design
+    statement: Request and reply limits count the raw bytes of the sole serialized YXML envelope; request size is checked before transport send and ML decode, and reply size is checked before ML publication and again before Scala decode.
+    category: design
+  - id: D7
+    kind: design
+    statement: PideTransport reports byte delivery and termination but does not own Headless.Session.stop; the composition root owns Isabelle session termination and uses it as the forced-stop fallback when bounded ML drain cannot acknowledge.
+    category: design
+  - id: D8
+    kind: design
+    statement: PideBridge.call returns Either[BridgeFailure, A]; an operation-domain error remains a successfully decoded A, while transport, protocol, remote-execution, timeout, cancellation, overload, and size failures are BridgeFailure values.
+    category: design
+  - id: Q1
+    kind: question
+    state: open
+    statement: What separate serialized request and reply byte limits admit the committed legitimate-operation corpus while bounding accidental or hostile bridge-envelope retention?
+  - id: T1
+    kind: test
+    state: active
+    statement: Two distinguishable calls released in reverse order receive their own replies exactly once through the same bridge registry.
+    layers: [scala-unit, bridge]
+  - id: T2
+    kind: test
+    state: active
+    statement: A wrong-operation, wrong-version, malformed, or invalid-status reply with a known call ID atomically fails that matching call with ProtocolError and cancels its ML work; an unknown, duplicate, or late ID only emits invariant evidence and cannot complete another call.
+    layers: [scala-unit]
+  - id: T3
+    kind: test
+    state: active
+    statement: Cancellation before dispatch sends no call, cancellation after dispatch sends one ordered cancel, and cancel/result races produce one Cancelled or successful outcome while leaving no pending entry, deadline, or ML route; IR uses exactly one common-executor Future group and cancellation route.
+    layers: [scala-unit, ml-unit, bridge]
+  - id: T4
+    kind: test
+    state: active
+    statement: Timeout/result races produce one TimedOut or successful outcome, interrupt admitted ML work, and leave no pending entry, deadline, or ML route.
+    layers: [scala-unit, bridge]
+  - id: T5
+    kind: test
+    state: active
+    statement: A transport send failure and later transport termination each fail every affected call with TransportFailed and leave no pending entry or deadline.
+    layers: [scala-unit]
+  - id: T6
+    kind: test
+    state: active
+    statement: Stop/result races and repeated stop calls admit no post-stop work; stop acknowledges only after Scala pending entries and deadlines plus ML routes and workers reach zero, while drain timeout requires the composition root to terminate the Isabelle session before Stopped is observed.
+    layers: [scala-unit, ml-unit, bridge]
+  - id: T7
+    kind: test
+    state: active
+    statement: Saturating maxPending admits exactly the configured bound, creates no waiting queue, rejects the next call immediately, and admits a later call after capacity returns.
+    layers: [scala-unit]
+  - id: T8
+    kind: test
+    state: active
+    statement: Unsupported revisions, unknown operations, malformed envelopes, and invalid status or payload combinations return a correlated ProtocolError instead of hanging or reaching a domain handler.
+    layers: [scala-unit, ml-unit, bridge]
+  - id: T9
+    kind: test
+    state: active
+    statement: Tools, theories, tool execution, designation checks, named-resource listing, and named-resource reads register in MCP_Tools; IR registers only in MCP_Repl; duplicate registration fails; all seven operations use the common executor and production PideBridge while list-change events remain independent fan-out notifications.
+    layers: [ml-unit, bridge]
+  - id: T10
+    kind: test
+    state: active
+    statement: A bounded startup hello makes MCP-Tools Ready with only base operations and MCP-HOL Ready with IR, while an absent command, wrong revision, or missing required operation fails backend readiness before public bridge calls are accepted.
+    layers: [scala-unit, bridge]
+  - id: T11
+    kind: test
+    state: active
+    statement: A serialized request of exactly maxRequestBytes succeeds, a larger request returns TooLarge before transport send, and the ML decoder independently rejects an oversized request without reaching its operation handler.
+    layers: [scala-unit, ml-unit, bridge]
+  - id: T12
+    kind: test
+    state: active
+    statement: A serialized reply of exactly maxReplyBytes succeeds, while a larger operation result becomes a small correlated TooLarge reply before protocol publication and Scala independently rejects an oversized received envelope before domain decoding.
+    layers: [scala-unit, ml-unit, bridge]
+spec_refinements: []
+done_command:
+  - tools/planning-gate
+  - done
+---
+
+pide_bridge — implementation plan
+=================================
+
+goal
+----
+
+Make the Scala-to-Isabelle/ML boundary one independently testable component.
+Every call must be correlated, bounded, cancellable, deadline-bound, and failed
+when the bridge stops.  Application services use typed operations and never
+own protocol promises, raw command names, or protocol-output handlers.
+
+starting point
+--------------
+
+The connection-kernel remediation already replaced FIFO promise lists with
+request-unique UUID routes, propagated connection cancellation through every
+current prover-backed path, cancelled all route tables during backend stop, and
+added live reverse/concurrent correlation and shutdown tests.  This plan keeps
+those guarantees green while removing their remaining duplication.
+
+The residual architecture is still incomplete:
+
+- `MCP_Session` owns seven `BridgeRoutes[A]` values and one protocol handler;
+- each operation defines its own positional `Bytes` request and reply shape;
+- the wire has IDs but no independent bridge revision or common validation;
+- direct callers can wait without a bridge-local deadline or admission bound;
+- reply bodies are decoded without an explicit encoded-size limit; and
+- transport delivery, pending-call ownership, and domain services compile in
+  the same class.
+
+architecture record
+-------------------
+
+The dependency direction is:
+
+    application/domain services
+              |
+              v
+      BridgeOperation[A]
+              |
+              v
+          PideBridge              control plane
+              |
+              v
+        PideTransport             data plane
+              |
+              v
+    Isabelle protocol commands and outputs
+
+`BridgeOperation[A]` owns the stable internal operation name plus typed payload
+and result codecs.  `PideBridge` owns all correctness state and exposes
+`Either[BridgeFailure, A]` to its callers.  `PideTransport` can send encoded
+bytes, install one inbound receiver, and report transport termination, but
+cannot inspect call ownership or domain values.  The production adapter uses
+`Session.protocol_command_raw` and `Session.Protocol_Handler`; scripted tests
+substitute an in-memory transport without an Isabelle process.  Transport
+close detaches bridge delivery; it does not own `Headless.Session.stop`, which
+remains a composition-root responsibility because the current backend also
+uses that session for direct PIDE operations.
+
+state and ordering
+------------------
+
+Bridge state is `Open`, `Stopping`, or `Stopped`.
+
+- `Open` admits only while `pending < maxPending`.
+- Admission allocates an unguessable internal call ID, validates and encodes
+  the request, checks its serialized size, registers one typed pending
+  completion, arms one deadline, and only then sends the envelope.  Initial
+  send is linearized before cancellation for the same ID: cancellation that
+  already won emits no call; cancellation after enqueue emits one cancel.
+- Results may arrive in any order.  Only the matching ID and operation can
+  transition the pending call; there is no global response-order guarantee.
+- `Stopping` admits nothing.  It atomically removes and fails every pending
+  caller, cancels deadlines, asks ML to interrupt every admitted worker, and
+  requests a drain acknowledgement after those ordered cancels.
+- The ML drain acknowledgement is published only when its call-route and
+  worker registry is empty.  `Stopped` is reached after that acknowledgement,
+  or after the composition root terminates the Isabelle session and the
+  transport reports termination.  A drain timeout reports failure and remains
+  `Stopping`; it cannot assert `INV3` merely because Scala promises are gone.
+- Repeated stop is idempotent and observes the same terminal stop outcome.
+
+wire and compatibility
+----------------------
+
+Use one internal v1 YXML envelope carried as the sole byte argument of
+`MCP.bridge`.  Its kind is `hello`, `call`, `cancel`, or `drain`; every kind
+contains the bridge revision and the identifiers needed for correlation.
+Calls also contain operation and typed payload.  One `MCP.bridge_result`
+function carries a sole YXML envelope containing revision, kind, call or
+control ID, operation where applicable, status, and typed payload.
+
+The bridge revision is not the MCP revision.  A public MCP revision can reuse a
+bridge revision, and a bridge representation can evolve without changing the
+client protocol.  Wrong revisions and unknown operations return correlated
+protocol failures whenever the call ID can be recovered.  Malformed envelopes
+without a usable ID are reported as internal protocol diagnostics and cannot
+complete another call.
+
+`MCP_Tools` defines `MCP_Bridge`, the command, result encoder, executor, and an
+extensible registry from stable operation name to a payload handler.  It
+registers the six base operations.  A descendant theory may add an operation;
+duplicate names fail at theory build.  `MCP_Repl` registers IR, but contributes
+only decode, dispatch, and output-capture behavior.  The common executor owns
+the sole Future group and cancellation route, so wrapping IR cannot create a
+nested route or double-register the ID.
+
+After the configured target theory is available, Scala sends a hello with a
+bounded startup deadline.  The reply contains the bridge revision and sorted
+registered operation names.  The composition root supplies the required
+operation set for its selected backend (`MCP-Tools` excludes IR; `MCP-HOL`
+requires it).  `PideBridge` is not Ready until revision and required operations
+match.  A stale heap with no `MCP.bridge` command therefore fails backend
+readiness at the hello deadline instead of deferring the problem to a public
+request.  This internal compatibility check is not a public service catalog.
+
+failure and cancellation matrix
+-------------------------------
+
+`PideBridge.call[A]` returns `BridgeResult[A]`, defined as
+`Either[BridgeFailure, A]`.  Terminal bridge failures are typed values:
+`Cancelled`, `TimedOut`, `SessionStopped`, `Overloaded`, `TooLarge`,
+`TransportFailed`, `RemoteError`, and `ProtocolError`.  Domain adapters are the
+only code that may translate them to public MCP results and may not infer a
+failure kind from display text.  An operation-domain error is part of a
+successfully decoded `A` (for example `Right(MCP_Session.Error(message))`), not
+a `RemoteError`.  `RemoteError` means the ML bridge executor itself caught a
+non-interrupt operation exception before it could produce `A`.
+
+The outer result status algebra is `ok`, `remote_error`, `protocol_error`, or
+`too_large`.  Only `ok` invokes the operation result decoder; the others carry
+a small bridge failure payload.  A malformed, wrong-operation, wrong-revision,
+or invalid-status reply with a known ID removes and fails that matching call
+with `ProtocolError` and requests cancellation of its ML worker.  Unknown,
+duplicate, and late IDs have no matching owner, so they emit invariant
+diagnostics and otherwise do nothing.
+
+The pending registry is the terminal race owner.  Normal reply, client
+cancellation, safety deadline, send failure, later transport termination, and
+stop all compete to remove the same entry; only the winner completes it.
+Losing late replies emit diagnostic invariant evidence and are discarded.
+Cancellation never reuses a client JSON-RPC ID on the internal wire.  The
+tests make the already-cancelled, cancel/result, timeout/result, stop/result,
+send-failure, post-stop, and repeated-stop races explicit.
+
+policy and resource bounds
+--------------------------
+
+`PideBridgePolicy` is immutable and validated before bridge construction.  It
+contains `maxPending`, `callTimeout`, `drainTimeout`, `maxRequestBytes`, and
+`maxReplyBytes`.  There is no waiting queue: overload is immediate.  The
+composition root derives bridge admission and deadline defaults from the
+already validated server options, while keeping the policy type independent of
+`ConnectionPolicy`.
+
+The size of an envelope is exactly the raw byte length of the sole canonical
+YXML value after serialization and before `protocol_command_raw` send or YXML
+decode; the fixed command/function name is outside the configured limit.
+Scala checks requests before send and ML checks them again before decode.  ML
+checks encoded successful replies before `Output.protocol_message` and emits a
+small correlated `too_large` envelope instead; Scala checks all received bytes
+again before envelope or domain decode.  These limits bound bridge envelopes,
+not memory allocated inside an operation before it produces its result, nor
+the fixed buffering required by Isabelle to deliver one protocol message.
+
+The envelope-size question remains open until representative tool catalogs,
+source/document reads, and large prover results are measured.  Add a reusable
+`tools/pide-bridge measure` launcher that records the serialized request and
+reply byte counts for all seven operations plus committed large tool-catalog,
+source, documentation, and prover-output fixtures in
+`plans/evidence/pide_bridge_payloads.json`.  Resolve `Q1` by setting each
+default to the next power of two at or above twice the corresponding recorded
+maximum, recording the corpus revision and chosen values in that artifact.
+Implementation must not silently pick a convenient test-only value.
+
+implementation checkpoints
+--------------------------
+
+1. Add characterization fixtures for every current operation and list-change
+   event.  Extract `PideTransport`, `PideBridgePolicy`, failure types, and a
+   generic pending registry while preserving the current wire.
+2. Move Scala operation codecs behind `BridgeOperation[A]`; migrate every
+   route to one bridge control plane and delete the seven maps from
+   `MCP_Session`.
+3. Define the extensible ML operation registry and common executor in
+   `MCP_Tools`; register base operations there, register IR from `MCP_Repl`
+   without nested call ownership, and migrate to the single versioned
+   request/result envelope.
+4. Add the bounded hello/readiness check, bridge-local admission, safety
+   deadlines, structured failures, drain acknowledgement, forced session-stop
+   fallback, and idempotent stop.
+5. Implement request/reply size validation on both sides.  Add the measurement
+   launcher and committed corpus artifact, resolve the envelope-size question,
+   and fold the derived defaults into policy and boundary tests.
+6. Run focused Scala, ML, and live bridge tests after each checkpoint.  Finish
+   with an adversarial review, all static gates, and the complete
+   `tools/planning-gate done` command.
+
+non-goals
+---------
+
+- Changing the public MCP protocol revision or JSON-RPC lifecycle.
+- Defining immutable public tool/resource catalogs; that is the later
+  `service_catalog` work package.
+- Narrowing theory, scope, or REPL mutation locks; that is operation isolation.
+- Exposing the internal bridge envelope to MCP clients.
