@@ -46,7 +46,13 @@ def _live_process_groups() -> set[int] | None:
             fields = value[value.rfind(")") + 2 :].split()
             state = fields[0]
             process_group = int(fields[2])
-        except (FileNotFoundError, PermissionError, ValueError, IndexError):
+        except (
+            FileNotFoundError,
+            ProcessLookupError,
+            PermissionError,
+            ValueError,
+            IndexError,
+        ):
             continue
         if state not in {"Z", "X"}:
             groups.add(process_group)
