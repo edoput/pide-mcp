@@ -11,7 +11,7 @@ promises created by ml_tools()/ml_run().
 package isabelle.mcp
 
 import isabelle._
-import isabelle.mcp.pide.{BridgeFailure, BridgeResult, LegacyOperations, LegacyWire,
+import isabelle.mcp.pide.{BridgeFailure, BridgeResult, LegacyWire,
   PideBridge, PideBridgePolicy, SessionPideTransport}
 import isabelle.mcp.application.McpApplication
 

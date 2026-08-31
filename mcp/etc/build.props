@@ -26,6 +26,7 @@ sources = \
   src/mcp_connection_kernel.scala \
   src/mcp_connection_runtime.scala \
   src/mcp_pide_bridge.scala \
+  src/mcp_legacy_operations.scala \
   src/mcp_session.scala \
   src/mcp_server.scala
 

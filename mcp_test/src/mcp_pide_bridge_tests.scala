@@ -40,6 +40,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     private var terminated: Option[PideTransport.Termination => Unit] = None
     private var outbound = Vector.empty[PideTransport.Outbound]
     private var sendFailure: Option[RuntimeException] = None
+    private var nextSend: Option[PideTransport.Outbound => Unit] = None
     private var closed = false
 
     def start(receive: PideTransport.Inbound => Unit,
@@ -48,11 +49,19 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       terminated = Some(onTerminated)
     }
 
-    def send(message: PideTransport.Outbound): Unit = synchronized {
-      sendFailure match {
-        case Some(exn) => sendFailure = None; throw exn
-        case None => outbound :+= message; notifyAll()
+    def send(message: PideTransport.Outbound): Unit = {
+      val run = synchronized {
+        sendFailure match {
+          case Some(exn) => sendFailure = None; throw exn
+          case None =>
+            outbound :+= message
+            val result = nextSend
+            nextSend = None
+            notifyAll()
+            result
+        }
       }
+      run.foreach(_(message))
     }
 
     def close(): Unit = {
@@ -64,6 +73,10 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
     def failNextSend(message: String): Unit = synchronized {
       sendFailure = Some(new RuntimeException(message))
+    }
+
+    def onNextSend(callback: PideTransport.Outbound => Unit): Unit = synchronized {
+      nextSend = Some(callback)
     }
 
     def failTransport(message: String): Unit =
@@ -365,5 +378,55 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     sendBridge.beginStop()
     sendBridge.sessionStopped()
     deadBridge.sessionStopped()
+  }
+
+  test("synchronous decoder rejection cancels work already handed to the transport") {
+    val transport = new ScriptedTransport
+    val control = bridge(transport)
+    transport.onNextSend { message =>
+      val id = message.arguments.head.text
+      transport.deliver("op_result", id, "bad: malformed")
+    }
+
+    control.call(TextOperation("op", "request"), NeverCancelled) match {
+      case Left(BridgeFailure.ProtocolError(message)) => assert(message.contains("malformed"))
+      case result => fail("expected synchronous ProtocolError, got " + result)
+    }
+    assertEquals(transport.sent.length, 2)
+    val id = transport.sent.head.arguments.head.text
+    assertEquals(transport.sent(1),
+      PideTransport.Outbound("cancel", List(Bytes(id))))
+    assertEquals(control.pendingCount, 0)
+    control.beginStop()
+    control.sessionStopped()
+  }
+
+  test("unknown result function fails its known owner and cancels the sent call") {
+    val diagnostics = collection.mutable.ListBuffer.empty[String]
+    val transport = new ScriptedTransport
+    val control = bridge(transport, diagnostics = message => diagnostics.synchronized {
+      diagnostics += message
+    })
+    val waiting = Future.fork(control.call(TextOperation("op", "request"), NeverCancelled))
+    transport.awaitSent(1)
+    val id = transport.sent.head.arguments.head.text
+
+    transport.deliver("bogus_result", id, "reply")
+    waiting.join match {
+      case Left(BridgeFailure.ProtocolError(message)) =>
+        assert(message.contains("unknown PIDE bridge result function"))
+      case result => fail("expected unknown-function ProtocolError, got " + result)
+    }
+    transport.awaitSent(2)
+    assertEquals(transport.sent(1),
+      PideTransport.Outbound("cancel", List(Bytes(id))))
+    assertEquals(control.pendingCount, 0)
+
+    transport.deliver("op_result", id, "late")
+    assert(diagnostics.synchronized {
+      diagnostics.exists(_.contains("Unowned PIDE bridge reply"))
+    })
+    control.beginStop()
+    control.sessionStopped()
   }
 }
