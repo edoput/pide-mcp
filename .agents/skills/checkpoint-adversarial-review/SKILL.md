@@ -1,6 +1,6 @@
 ---
 name: checkpoint-adversarial-review
-description: Run the Isabelle MCP checkpoint adversarial-review pass with fixed subagent settings and no inherited conversation context. Use after an implementation checkpoint is locally verified and before it is committed.
+description: Run the Isabelle MCP checkpoint adversarial-review pass from a detached worktree with fixed subagent settings and no inherited conversation context. Use after a locally verified checkpoint commit and before continuing implementation.
 ---
 
 # Checkpoint adversarial review
@@ -25,12 +25,30 @@ The empty turn fork is intentional: the reviewer must not inherit the primary
 agent's explanations, suspected defects, or earlier conclusions. It may inspect
 the complete repository and Git history directly.
 
+## Isolated checkpoint
+
+Review an exact checkpoint commit, not a moving dirty worktree:
+
+1. run the checkpoint's blocking local verification;
+2. commit only the checkpoint files;
+3. create a detached temporary Git worktree at that commit under a uniquely
+   named temporary directory;
+4. give the reviewer that worktree as its sole repository root; and
+5. remove the temporary worktree after the findings are captured and
+   adjudicated.
+
+Do not copy the primary working directory or reuse its build output. Do not
+include unrelated user-owned changes in the checkpoint merely to make the
+review snapshot complete. A worktree isolates repository files and generated
+artifacts; it does not claim container, process, installed-tool, or shared-cache
+isolation.
+
 ## Review packet
 
 Give the reviewer a self-contained, bounded prompt containing only:
 
-1. the repository root;
-2. the base commit or ref and the working-tree or commit range under review;
+1. the isolated worktree root;
+2. the checkpoint commit and its base commit or ref;
 3. the relevant implementation plan paths;
 4. the checkpoint's claimed outcome and explicit scope exclusions;
 5. the architectural and behavioral invariants it must derive and falsify;
@@ -49,6 +67,8 @@ The reviewer is read-only:
 - read code, plans, specifications, tests, and Git history as needed;
 - run non-destructive focused checks when useful; and
 - preserve user-owned untracked files.
+
+The reviewer must not inspect or operate on the primary working directory.
 
 ## Required output
 
