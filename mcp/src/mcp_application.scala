@@ -9,6 +9,7 @@ package isabelle.mcp.application
 
 import isabelle._
 import isabelle.mcp.{MCP_Backend, MCP_Server, MCP_Session}
+import isabelle.mcp.pide.BridgeCancellation
 
 
 object McpApplication {
@@ -38,10 +39,7 @@ object McpApplication {
      can observe the signal or register cooperative cleanup, but cannot trigger
      or complete it.  Registration is safe on either side of the cancellation
      race: a callback registered after cancellation runs immediately. */
-  trait Cancellation {
-    def isCancelled: Boolean
-    def onCancel(callback: () => Unit): Unit
-  }
+  trait Cancellation extends BridgeCancellation
 
   object Cancellation {
     val Never: Cancellation = new Cancellation {

@@ -5,11 +5,95 @@ Deterministic contracts for the extracted PIDE bridge boundary.
 
 package isabelle.mcp.pide
 
-import isabelle.Bytes
+import isabelle.{Bytes, Future}
 import isabelle.mcp.MCP_Suite
 
 
 class MCP_Pide_Bridge_Tests extends MCP_Suite {
+  private object NeverCancelled extends BridgeCancellation {
+    def isCancelled: Boolean = false
+    def onCancel(callback: () => Unit): Unit = ()
+  }
+
+  private final class TestCancellation extends BridgeCancellation {
+    private var cancelled = false
+    private var callbacks = Vector.empty[() => Unit]
+
+    def isCancelled: Boolean = synchronized { cancelled }
+    def onCancel(callback: () => Unit): Unit = {
+      val run = synchronized {
+        if (cancelled) true else { callbacks :+= callback; false }
+      }
+      if (run) callback()
+    }
+    def cancel(): Unit = {
+      val run = synchronized {
+        if (cancelled) Vector.empty
+        else { cancelled = true; val result = callbacks; callbacks = Vector.empty; result }
+      }
+      run.foreach(_())
+    }
+  }
+
+  private final class ScriptedTransport extends PideTransport {
+    private var receiver: Option[PideTransport.Inbound => Unit] = None
+    private var terminated: Option[PideTransport.Termination => Unit] = None
+    private var outbound = Vector.empty[PideTransport.Outbound]
+    private var sendFailure: Option[RuntimeException] = None
+    private var closed = false
+
+    def start(receive: PideTransport.Inbound => Unit,
+      onTerminated: PideTransport.Termination => Unit): Unit = synchronized {
+      receiver = Some(receive)
+      terminated = Some(onTerminated)
+    }
+
+    def send(message: PideTransport.Outbound): Unit = synchronized {
+      sendFailure match {
+        case Some(exn) => sendFailure = None; throw exn
+        case None => outbound :+= message; notifyAll()
+      }
+    }
+
+    def close(): Unit = {
+      val notify = synchronized {
+        if (closed) None else { closed = true; terminated }
+      }
+      notify.foreach(_(PideTransport.Closed))
+    }
+
+    def failNextSend(message: String): Unit = synchronized {
+      sendFailure = Some(new RuntimeException(message))
+    }
+
+    def failTransport(message: String): Unit =
+      terminated.foreach(_(PideTransport.Failed(message)))
+
+    def sent: Vector[PideTransport.Outbound] = synchronized { outbound }
+
+    def awaitSent(count: Int): Unit = synchronized {
+      val deadline = System.nanoTime() + 5000000000L
+      while (outbound.length < count && System.nanoTime() < deadline) wait(10L)
+      if (outbound.length < count) fail("timed out waiting for " + count + " bridge sends")
+    }
+
+    def deliver(function: String, id: String, text: String,
+      properties: List[(String, String)] = Nil): Unit = {
+      val target = synchronized { receiver.getOrElse(fail("transport not started")) }
+      target(PideTransport.Inbound(
+        function, ("id" -> id) :: properties, Bytes(text), text))
+    }
+  }
+
+  private def bridge(transport: ScriptedTransport, maxPending: Int = 4,
+    diagnostics: String => Unit = _ => ()): PideBridge =
+    new PideBridge(
+      transport,
+      policy(maxPending).maxPending,
+      Map("first_result" -> "first", "second_result" -> "second", "op_result" -> "op"),
+      id => PideTransport.Outbound("cancel", List(Bytes(id))),
+      diagnostics)
+
   private def policy(maxPending: Int = 2): PideBridgePolicy =
     PideBridgePolicy.checked(
       maxPending = maxPending,
@@ -20,11 +104,17 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
   private final case class TextOperation(name: String, request: String)
       extends BridgeOperation[String] {
-    def requestPayload: Bytes = Bytes(request)
-    def decodeReply(payload: Bytes): Either[String, String] =
-      if (payload.text.startsWith("bad:")) Left(payload.text)
-      else Right(payload.text)
+    val resultFunction = name + "_result"
+    def outbound(id: String): PideTransport.Outbound =
+      PideTransport.Outbound(name, List(Bytes(id), Bytes(request)))
+    def decodeReply(reply: PideTransport.Inbound): Either[String, String] =
+      if (reply.text.startsWith("bad:")) Left(reply.text)
+      else Right(reply.text)
   }
+
+  private def reply(operation: String, text: String): PideTransport.Inbound =
+    PideTransport.Inbound(
+      operation + "_result", List("id" -> "test"), Bytes(text), text)
 
   test("bridge policy validates all named resource bounds together") {
     val errors =
@@ -57,7 +147,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
   }
 
   spec_test("heterogeneous pending calls resolve reverse-order replies by internal id",
-      covers = List("pide_bridge#T1")) {
+      covers = List("pide_bridge#T1", "connection_kernel#T11")) {
     val registry = new PendingRegistry(policy().maxPending)
     val firstId = BridgeCallId.test("internal-first")
     val secondId = BridgeCallId.test("internal-second")
@@ -66,9 +156,9 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val second = registry.register(secondId, TextOperation("second", "request-2"))
       .fold(failure => fail(failure.message), identity)
 
-    assertEquals(registry.complete(secondId, "second", Bytes("reply-2")),
+    assertEquals(registry.complete(secondId, "second", reply("second", "reply-2")),
       PendingRegistry.Completed)
-    assertEquals(registry.complete(firstId, "first", Bytes("reply-1")),
+    assertEquals(registry.complete(firstId, "first", reply("first", "reply-1")),
       PendingRegistry.Completed)
     assertEquals(second.result, Right("reply-2"))
     assertEquals(first.result, Right("reply-1"))
@@ -86,16 +176,16 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val owned = registry.register(ownedId, TextOperation("expected", "request"))
       .fold(failure => fail(failure.message), identity)
 
-    assertEquals(registry.complete(ownedId, "wrong", Bytes("reply")),
+    assertEquals(registry.complete(ownedId, "wrong", reply("wrong", "reply")),
       PendingRegistry.Rejected)
     owned.result match {
       case Left(BridgeFailure.ProtocolError(message)) =>
         assert(message.contains("does not match"))
       case result => fail("expected ProtocolError, got " + result)
     }
-    assertEquals(registry.complete(ownedId, "expected", Bytes("late")),
+    assertEquals(registry.complete(ownedId, "expected", reply("expected", "late")),
       PendingRegistry.Unowned)
-    assertEquals(registry.complete(otherId, "expected", Bytes("unknown")),
+    assertEquals(registry.complete(otherId, "expected", reply("expected", "unknown")),
       PendingRegistry.Unowned)
     assertEquals(recorded.toList,
       List(
@@ -105,7 +195,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val rejectedId = BridgeCallId.test("rejected")
     val rejected = registry.register(rejectedId, TextOperation("decoder", "request"))
       .fold(failure => fail(failure.message), identity)
-    assertEquals(registry.complete(rejectedId, "decoder", Bytes("bad: malformed")),
+    assertEquals(registry.complete(rejectedId, "decoder", reply("decoder", "bad: malformed")),
       PendingRegistry.Rejected)
     rejected.result match {
       case Left(BridgeFailure.ProtocolError(message)) =>
@@ -116,11 +206,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val throwingId = BridgeCallId.test("throwing")
     val throwing = registry.register(throwingId, new BridgeOperation[String] {
       val name = "throwing"
-      val requestPayload = Bytes.empty
-      def decodeReply(payload: Bytes): Either[String, String] =
+      val resultFunction = "throwing_result"
+      def outbound(id: String): PideTransport.Outbound =
+        PideTransport.Outbound("throwing", List(Bytes(id)))
+      def decodeReply(reply: PideTransport.Inbound): Either[String, String] =
         throw new IllegalArgumentException("invalid body")
     }).fold(failure => fail(failure.message), identity)
-    assertEquals(registry.complete(throwingId, "throwing", Bytes("body")),
+    assertEquals(registry.complete(throwingId, "throwing", reply("throwing", "body")),
       PendingRegistry.Rejected)
     throwing.result match {
       case Left(BridgeFailure.ProtocolError(message)) =>
@@ -179,5 +271,99 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     intercept[IllegalArgumentException] {
       LegacyWire.arguments(LegacyWire.Ir, "id" -> Bytes("id"), "fname" -> Bytes("fn"))
     }
+  }
+
+  spec_test("one PideBridge over a scripted transport correlates reverse replies",
+      verifies = List("pide_bridge#A1", "pide_bridge#I1"),
+      covers = List("pide_bridge#T1")) {
+    val transport = new ScriptedTransport
+    val control = bridge(transport)
+    val first = Future.fork(control.call(TextOperation("first", "request-1"), NeverCancelled))
+    val second = Future.fork(control.call(TextOperation("second", "request-2"), NeverCancelled))
+    transport.awaitSent(2)
+
+    val sends = transport.sent
+    val firstId = sends.find(_.command == "first").get.arguments.head.text
+    val secondId = sends.find(_.command == "second").get.arguments.head.text
+    assertNotEquals(firstId, secondId)
+    transport.deliver("second_result", secondId, "reply-2")
+    transport.deliver("first_result", firstId, "reply-1")
+
+    assertEquals(second.join, Right("reply-2"))
+    assertEquals(first.join, Right("reply-1"))
+    assertEquals(control.pendingCount, 0)
+    control.beginStop()
+    control.sessionStopped()
+  }
+
+  spec_test("cancellation is ordered around dispatch and loses cleanly to a reply",
+      covers = List("pide_bridge#T3")) {
+    val preTransport = new ScriptedTransport
+    val pre = bridge(preTransport)
+    val already = new TestCancellation
+    already.cancel()
+    assertEquals(pre.call(TextOperation("op", "request"), already),
+      Left(BridgeFailure.Cancelled))
+    assertEquals(preTransport.sent, Vector.empty)
+    pre.beginStop()
+    pre.sessionStopped()
+
+    val cancelTransport = new ScriptedTransport
+    val cancelBridge = bridge(cancelTransport)
+    val cancellation = new TestCancellation
+    val cancelled = Future.fork(
+      cancelBridge.call(TextOperation("op", "request"), cancellation))
+    cancelTransport.awaitSent(1)
+    val cancelId = cancelTransport.sent.head.arguments.head.text
+    cancellation.cancel()
+    cancelTransport.awaitSent(2)
+    assertEquals(cancelTransport.sent(1),
+      PideTransport.Outbound("cancel", List(Bytes(cancelId))))
+    assertEquals(cancelled.join, Left(BridgeFailure.Cancelled))
+    assertEquals(cancelBridge.pendingCount, 0)
+
+    val replyTransport = new ScriptedTransport
+    val replyBridge = bridge(replyTransport)
+    val replyCancellation = new TestCancellation
+    val completed = Future.fork(
+      replyBridge.call(TextOperation("op", "request"), replyCancellation))
+    replyTransport.awaitSent(1)
+    val replyId = replyTransport.sent.head.arguments.head.text
+    replyTransport.deliver("op_result", replyId, "reply")
+    replyCancellation.cancel()
+    assertEquals(completed.join, Right("reply"))
+    assertEquals(replyTransport.sent.length, 1)
+    assertEquals(replyBridge.pendingCount, 0)
+    cancelBridge.beginStop()
+    cancelBridge.sessionStopped()
+    replyBridge.beginStop()
+    replyBridge.sessionStopped()
+  }
+
+  spec_test("send failure and transport termination fail owned calls without leaks",
+      covers = List("pide_bridge#T5")) {
+    val sendTransport = new ScriptedTransport
+    sendTransport.failNextSend("send boom")
+    val sendBridge = bridge(sendTransport)
+    sendBridge.call(TextOperation("op", "request"), NeverCancelled) match {
+      case Left(BridgeFailure.TransportFailed(message)) => assert(message.contains("send boom"))
+      case result => fail("expected send TransportFailed, got " + result)
+    }
+    assertEquals(sendBridge.pendingCount, 0)
+
+    val deadTransport = new ScriptedTransport
+    val deadBridge = bridge(deadTransport)
+    val waiting = Future.fork(deadBridge.call(TextOperation("op", "request"), NeverCancelled))
+    deadTransport.awaitSent(1)
+    deadTransport.failTransport("link lost")
+    waiting.join match {
+      case Left(BridgeFailure.TransportFailed(message)) =>
+        assert(message.contains("transport terminated"))
+      case result => fail("expected termination TransportFailed, got " + result)
+    }
+    assertEquals(deadBridge.pendingCount, 0)
+    sendBridge.beginStop()
+    sendBridge.sessionStopped()
+    deadBridge.sessionStopped()
   }
 }

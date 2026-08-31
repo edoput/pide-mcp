@@ -5,7 +5,7 @@ Typed control/data-plane boundary for Scala-to-Isabelle/ML calls.
 
 package isabelle.mcp.pide
 
-import isabelle.{Bytes, Future, Promise}
+import isabelle.{Bytes, Future, Headless, Output, Promise, Properties, Prover, Session}
 
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -169,8 +169,9 @@ object PideBridgePolicy {
   */
 trait BridgeOperation[A] {
   def name: String
-  def requestPayload: Bytes
-  def decodeReply(payload: Bytes): Either[String, A]
+  def resultFunction: String
+  def outbound(id: String): PideTransport.Outbound
+  def decodeReply(reply: PideTransport.Inbound): Either[String, A]
 }
 
 
@@ -178,22 +179,90 @@ trait BridgeOperation[A] {
   * the composition root retains ownership of Headless.Session.stop.
   */
 trait PideTransport {
-  def start(receive: Bytes => Unit, terminated: PideTransport.Termination => Unit): Unit
-  def send(envelope: Bytes): Unit
+  def start(receive: PideTransport.Inbound => Unit,
+    terminated: PideTransport.Termination => Unit): Unit
+  def send(outbound: PideTransport.Outbound): Unit
   def close(): Unit
 }
 
 
 object PideTransport {
+  final case class Outbound(command: String, arguments: List[Bytes])
+  final case class Inbound(
+    function: String,
+    properties: Properties.T,
+    body: Bytes,
+    text: String
+  ) {
+    def property(name: String): Option[String] = Properties.get(properties, name)
+  }
+
   sealed trait Termination
   case object Closed extends Termination
   final case class Failed(detail: String) extends Termination
 }
 
 
+/** Production data plane for a known set of protocol-result functions. */
+private[mcp] final class SessionPideTransport(
+  session: Headless.Session,
+  resultFunctions: Set[String]
+) extends PideTransport {
+  import PideTransport._
+
+  private var receiver: Option[Inbound => Unit] = None
+  private var termination: Option[Termination => Unit] = None
+  private var closed = false
+  private var started = false
+
+  private object Handler extends Session.Protocol_Handler {
+    private def deliver(function: String)(message: Prover.Protocol_Output): Boolean = {
+      val target = SessionPideTransport.this.synchronized {
+        if (closed) None else receiver
+      }
+      target.foreach(_(Inbound(function, message.properties, message.chunk, message.text)))
+      true
+    }
+
+    override val functions: Session.Protocol_Functions =
+      resultFunctions.toList.sorted.map(function => function -> deliver(function))
+  }
+
+  def start(receive: Inbound => Unit, terminated: Termination => Unit): Unit = synchronized {
+    if (started) throw new IllegalStateException("PIDE transport already started")
+    if (closed) throw new IllegalStateException("PIDE transport is closed")
+    receiver = Some(receive)
+    termination = Some(terminated)
+    started = true
+    session.init_protocol_handler(Handler)
+  }
+
+  def send(outbound: Outbound): Unit = synchronized {
+    if (!started) throw new IllegalStateException("PIDE transport is not started")
+    if (closed) throw new IllegalStateException("PIDE transport is closed")
+    session.protocol_command_raw(outbound.command, outbound.arguments)
+  }
+
+  def close(): Unit = {
+    val notify = synchronized {
+      if (closed) None
+      else {
+        closed = true
+        receiver = None
+        val result = termination
+        termination = None
+        result
+      }
+    }
+    notify.foreach(_(Closed))
+  }
+}
+
+
 private[pide] object PendingRegistry {
   sealed trait Diagnostic {
     def id: BridgeCallId
+    def operation: String
   }
 
   final case class UnownedReply(id: BridgeCallId, operation: String) extends Diagnostic
@@ -234,7 +303,7 @@ private[pide] final class PendingRegistry(
 
   private sealed trait Entry {
     def operation: String
-    def complete(payload: Bytes): Boolean
+    def complete(reply: PideTransport.Inbound): Boolean
     def fail(failure: BridgeFailure): Unit
   }
 
@@ -244,9 +313,9 @@ private[pide] final class PendingRegistry(
   ) extends Entry {
     val operation: String = descriptor.name
 
-    def complete(payload: Bytes): Boolean =
+    def complete(reply: PideTransport.Inbound): Boolean =
       try {
-        descriptor.decodeReply(payload) match {
+        descriptor.decodeReply(reply) match {
           case Right(value) => promise.fulfill(Right(value)); true
           case Left(error) => promise.fulfill(Left(ProtocolError(error))); false
         }
@@ -277,7 +346,8 @@ private[pide] final class PendingRegistry(
     }
   }
 
-  def complete(id: BridgeCallId, operation: String, payload: Bytes): Completion = {
+  def complete(id: BridgeCallId, operation: String,
+    reply: PideTransport.Inbound): Completion = {
     val owner = synchronized {
       pending.get(id) match {
         case Some(entry) => pending -= id; Some(entry)
@@ -286,7 +356,7 @@ private[pide] final class PendingRegistry(
     }
     owner match {
       case Some(entry) if entry.operation == operation =>
-        if (entry.complete(payload)) Completed else Rejected
+        if (entry.complete(reply)) Completed else Rejected
       case Some(entry) =>
         entry.fail(ProtocolError(
           "reply operation " + operation + " does not match pending " + entry.operation))
@@ -318,6 +388,144 @@ private[pide] final class PendingRegistry(
   }
 
   def size: Int = synchronized { pending.size }
+
+  def contains(id: BridgeCallId): Boolean = synchronized { pending.contains(id) }
+}
+
+
+/** Cancellation is a lower-level port than the MCP application. */
+trait BridgeCancellation {
+  def isCancelled: Boolean
+  def onCancel(callback: () => Unit): Unit
+}
+
+
+/** One terminal-race owner over typed operations and replaceable delivery.
+  * This checkpoint deliberately preserves the legacy command/result wire;
+  * the next checkpoint changes only the operation and transport codecs.
+  */
+private[mcp] final class PideBridge(
+  transport: PideTransport,
+  maxPending: PideBridgePolicy.MaxPending,
+  resultOperations: Map[String, String],
+  cancelOutbound: String => PideTransport.Outbound,
+  diagnostics: String => Unit = message => Output.error_message(message)
+) {
+  import BridgeFailure._
+  import PendingRegistry._
+
+  private enum State { case Open, Stopping, Stopped }
+
+  private val ids = BridgeCallIdGenerator.random()
+  private val pending = new PendingRegistry(maxPending, new Diagnostics {
+    def report(diagnostic: Diagnostic): Unit =
+      diagnostics("Unowned PIDE bridge reply for " + diagnostic.operation +
+        " id " + BridgeCallId.value(diagnostic.id))
+  })
+  private var state: State = State.Open
+  private var sent = Set.empty[BridgeCallId]
+
+  transport.start(receive, transportTerminated)
+
+  def call[A](operation: BridgeOperation[A], cancellation: BridgeCancellation): BridgeResult[A] = {
+    if (cancellation.isCancelled) Left(Cancelled)
+    else {
+      val id = ids.next()
+      val admitted = synchronized {
+        if (state != State.Open) Left(SessionStopped)
+        else if (resultOperations.get(operation.resultFunction) != Some(operation.name))
+          Left(ProtocolError(
+            "operation " + operation.name + " is not registered for " +
+              operation.resultFunction))
+        else pending.register(id, operation)
+      }
+
+      admitted match {
+        case Left(failure) => Left(failure)
+        case Right(call) =>
+          cancellation.onCancel(() => cancel(id))
+          dispatch(id, operation)
+          call.result
+      }
+    }
+  }
+
+  private def dispatch[A](id: BridgeCallId, operation: BridgeOperation[A]): Unit = synchronized {
+    if (state != State.Open) pending.fail(id, SessionStopped)
+    else if (pending.contains(id)) {
+      try {
+        transport.send(operation.outbound(BridgeCallId.value(id)))
+        if (pending.contains(id)) sent += id
+      }
+      catch {
+        case NonFatal(exn) =>
+          pending.fail(id, TransportFailed(
+            Option(exn.getMessage).getOrElse(exn.getClass.getName)))
+      }
+    }
+  }
+
+  private def cancel(id: BridgeCallId): Unit = synchronized {
+    val owned = pending.fail(id, Cancelled)
+    val wasSent = sent.contains(id)
+    sent -= id
+    if (owned && wasSent) sendCancel(id)
+  }
+
+  private def sendCancel(id: BridgeCallId): Unit =
+    try transport.send(cancelOutbound(BridgeCallId.value(id)))
+    catch {
+      case NonFatal(exn) =>
+        diagnostics("Failed to send PIDE bridge cancellation for " +
+          BridgeCallId.value(id) + ": " +
+          Option(exn.getMessage).getOrElse(exn.getClass.getName))
+    }
+
+  private def receive(reply: PideTransport.Inbound): Unit = synchronized {
+    (reply.property("id"), resultOperations.get(reply.function)) match {
+      case (Some(rawId), Some(operation)) =>
+        val id = BridgeCallId.test(rawId)
+        val result = pending.complete(id, operation, reply)
+        val wasSent = sent.contains(id)
+        sent -= id
+        if (result == Rejected && wasSent) sendCancel(id)
+      case (None, _) =>
+        diagnostics("PIDE bridge reply " + reply.function + " has no id")
+      case (_, None) =>
+        diagnostics("Unknown PIDE bridge result function " + reply.function)
+    }
+  }
+
+  def beginStop(): Unit = synchronized {
+    if (state == State.Open) {
+      state = State.Stopping
+      val sentToCancel = sent
+      pending.drain(SessionStopped)
+      sent = Set.empty
+      sentToCancel.foreach(sendCancel)
+      transport.close()
+    }
+  }
+
+  def sessionStopped(): Unit = synchronized {
+    beginStop()
+    state = State.Stopped
+  }
+
+  private def transportTerminated(termination: PideTransport.Termination): Unit = synchronized {
+    termination match {
+      case PideTransport.Closed => ()
+      case PideTransport.Failed(detail) =>
+        diagnostics("PIDE bridge transport terminated: " + detail)
+    }
+    if (state == State.Open) {
+      state = State.Stopping
+      pending.drain(TransportFailed("transport terminated"))
+      sent = Set.empty
+    }
+  }
+
+  private[mcp] def pendingCount: Int = pending.size
 }
 
 
@@ -386,4 +594,110 @@ private[mcp] object LegacyWire {
       throw new IllegalStateException(
         operation.resultFunction + " is declared as " + operation.replyShape +
           "; decoder expects " + expected)
+}
+
+
+/** Typed operation adapters over the characterized legacy wire. */
+private[mcp] object LegacyOperations {
+  import isabelle.{XML, YXML}
+  import isabelle.mcp.MCP_Session
+  import PideTransport.{Inbound, Outbound}
+
+  private abstract class Operation[A](wire: LegacyWire.Operation,
+    expectedReply: LegacyWire.ReplyShape)
+      extends BridgeOperation[A] {
+    val name: String = wire.name
+    val resultFunction: String = wire.resultFunction
+    protected def arguments(id: String): List[(String, Bytes)]
+    protected def decode(reply: Inbound): A
+
+    final def outbound(id: String): Outbound =
+      Outbound(wire.command, LegacyWire.arguments(wire, arguments(id)*))
+
+    final def decodeReply(reply: Inbound): Either[String, A] = {
+      LegacyWire.expectReply(wire, expectedReply)
+      Right(decode(reply))
+    }
+  }
+
+  def tools(designation: String, bundles: List[String]): BridgeOperation[MCP_Session.Tools_Reply] =
+    new Operation[MCP_Session.Tools_Reply](LegacyWire.Tools, LegacyWire.ReplyShape.ToolsYxml) {
+      protected def arguments(id: String): List[(String, Bytes)] =
+        List(
+          "id" -> Bytes(id),
+          "designation" -> Bytes(designation),
+          "bundles_yxml" -> Bytes(MCP_Session.encode_names(bundles)))
+      protected def decode(reply: Inbound): MCP_Session.Tools_Reply =
+        MCP_Session.decode_tools_reply(YXML.parse_body(reply.body))
+    }
+
+  def theories: BridgeOperation[List[String]] =
+    new Operation[List[String]](LegacyWire.Theories, LegacyWire.ReplyShape.TheoriesYxml) {
+      protected def arguments(id: String): List[(String, Bytes)] = List("id" -> Bytes(id))
+      protected def decode(reply: Inbound): List[String] =
+        MCP_Session.decode_theories(YXML.parse_body(reply.body))
+    }
+
+  def runTool(designation: String, bundles: List[String], name: String,
+    args: List[(String, String)]): BridgeOperation[MCP_Session.Result] =
+    statusText(LegacyWire.RunTool,
+      id => List(
+        "id" -> Bytes(id),
+        "designation" -> Bytes(designation),
+        "bundles_yxml" -> Bytes(MCP_Session.encode_names(bundles)),
+        "name" -> Bytes(name),
+        "args_yxml" -> Bytes(MCP_Session.encode_args(args))))
+
+  def checkDesignation(designation: String,
+    bundles: List[String]): BridgeOperation[MCP_Session.Result] =
+    statusText(LegacyWire.CheckDesignation,
+      id => List(
+        "id" -> Bytes(id),
+        "designation" -> Bytes(designation),
+        "bundles_yxml" -> Bytes(MCP_Session.encode_names(bundles))))
+
+  def ir(fname: String, args: List[(String, String)]): BridgeOperation[MCP_Session.Result] =
+    new Operation[MCP_Session.Result](LegacyWire.Ir, LegacyWire.ReplyShape.StatusYxml) {
+      protected def arguments(id: String): List[(String, Bytes)] =
+        List(
+          "id" -> Bytes(id),
+          "fname" -> Bytes(fname),
+          "args_yxml" -> Bytes(MCP_Session.encode_args(args)))
+      protected def decode(reply: Inbound): MCP_Session.Result = {
+        val text = XML.content(YXML.parse_body(YXML.Source(reply.text)))
+        statusResult(reply, text)
+      }
+    }
+
+  def resources(designation: String): BridgeOperation[List[(String, String)]] =
+    new Operation[List[(String, String)]](
+      LegacyWire.Resources, LegacyWire.ReplyShape.ResourcesYxml) {
+      protected def arguments(id: String): List[(String, Bytes)] =
+        List("id" -> Bytes(id), "designation" -> Bytes(designation))
+      protected def decode(reply: Inbound): List[(String, String)] =
+        MCP_Session.decode_resources(YXML.parse_body(reply.body))
+    }
+
+  def readResource(name: String, designation: String): BridgeOperation[MCP_Session.Result] =
+    statusText(LegacyWire.ReadResource,
+      id => List(
+        "id" -> Bytes(id),
+        "designation" -> Bytes(designation),
+        "name" -> Bytes(name)))
+
+  private def statusText(wire: LegacyWire.Operation,
+    request: String => List[(String, Bytes)]): BridgeOperation[MCP_Session.Result] =
+    new Operation[MCP_Session.Result](wire, LegacyWire.ReplyShape.StatusText) {
+      protected def arguments(id: String): List[(String, Bytes)] = request(id)
+      protected def decode(reply: Inbound): MCP_Session.Result = statusResult(reply, reply.text)
+    }
+
+  private def statusResult(reply: Inbound, text: String): MCP_Session.Result =
+    if (reply.property("status") == Some("ok")) MCP_Session.Ok(text)
+    else MCP_Session.Error(text)
+
+  val resultOperations: Map[String, String] =
+    LegacyWire.operations.map(operation => operation.resultFunction -> operation.name).toMap
+
+  def cancel(id: String): Outbound = Outbound("MCP.cancel", List(Bytes(id)))
 }

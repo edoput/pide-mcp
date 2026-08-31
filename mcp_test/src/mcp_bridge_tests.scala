@@ -203,7 +203,8 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
 /* MCP.ir bridge: the dispatcher over the I/R engine (MCP-HOL/MCP_Repl) */
 
 class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
-  test("checkpoint-1 characterization executes all seven legacy routes and reply codecs") {
+  spec_test("checkpoint-1 characterization executes all seven legacy routes and reply codecs",
+      verifies = List("pide_bridge#I1")) {
     val tools = session.ml_tools()
     assert(tools.rows.exists(_.name == "MCP_Tools.shout"))
 
@@ -1390,8 +1391,23 @@ class MCP_Run_Tool_Async_Tests
     session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
       .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
 
+  spec_test("single bridge registry correlates a fast reply before an earlier slow reply",
+      covers = List("pide_bridge#T1")) {
+    val slow = Future.fork(
+      session.ml_read_resource("MCP_Tools_Tests.slow_resource", test_theory))
+    Thread.sleep(100)
+    assert(!slow.is_finished, "slow resource completed before the fast call")
+
+    val fast = session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory)
+    assert(fast.ok, "fast resource failed while the earlier call remained pending")
+    assert(!slow.is_finished, "earlier slow call completed before the later fast reply")
+    assert(slow.join.ok, "slow resource did not receive its own eventual reply")
+  }
+
   spec_test("bridge routes correlate concurrent distinguishable catalogs and resources",
       covers = List("connection_kernel#T11")) {
+    /* Keep this correlation probe at the configured default maxPending (8).
+       Immediate overload beyond the bound has its own deterministic test. */
     val probes: List[(String, () => Boolean)] = List(
       "valid tools" -> (() =>
         session.ml_tools(test_theory).rows.exists(_.name == "MCP_Tools_Tests.capture_ok")),
@@ -1407,9 +1423,7 @@ class MCP_Run_Tool_Async_Tests
       "valid resource read" -> (() =>
         session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory).ok),
       "invalid resource read" -> (() =>
-        !session.ml_read_resource("MCP_Tools_Tests.no_such_resource", test_theory).ok),
-      "theory catalog A" -> (() => session.ml_theories().contains(test_theory)),
-      "theory catalog B" -> (() => session.ml_theories().contains(test_theory)))
+        !session.ml_read_resource("MCP_Tools_Tests.no_such_resource", test_theory).ok))
 
     val ready = new CountDownLatch(probes.length)
     val release = new CountDownLatch(1)
@@ -1635,7 +1649,7 @@ class MCP_Bridge_Shutdown_Tests
     stopped = true
     assert(resource.is_finished && direct.is_finished,
       "backend stop returned before pending work terminated")
-    expect_error(resource.join, containing = "cancelled")
+    expect_error(resource.join, containing = "session stopped")
     assert(Exn.is_exn(direct.join_result), "direct work escaped backend stop")
   }
 }
