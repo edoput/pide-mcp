@@ -5,7 +5,7 @@ Deterministic contracts for the extracted PIDE bridge boundary.
 
 package isabelle.mcp.pide
 
-import isabelle.{Bytes, Future}
+import isabelle.{Bytes, Future, Markup}
 import isabelle.mcp.MCP_Suite
 
 
@@ -33,6 +33,15 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       }
       run.foreach(_())
     }
+  }
+
+  /* Models RequestRegistry.prepareCancel(): the state is marked before its
+     returned callback thunk gets a chance to acquire the bridge monitor. */
+  private final class MarkedBeforeDispatchCancellation extends BridgeCancellation {
+    private var registered = false
+
+    def isCancelled: Boolean = synchronized { registered }
+    def onCancel(callback: () => Unit): Unit = synchronized { registered = true }
   }
 
   private final class ScriptedTransport extends PideTransport {
@@ -286,6 +295,29 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     }
   }
 
+  test("production transport recognizes only unknown correlated MCP results") {
+    val known = Set("MCP.op_result")
+    def properties(function: String, id: Option[String]) =
+      List(Markup.FUNCTION -> function) ::: id.toList.map("id" -> _)
+
+    assertEquals(
+      SessionPideTransport.unknownResultFunction(
+        known, properties("MCP.bogus_result", Some("call"))),
+      Some("MCP.bogus_result"))
+    assertEquals(
+      SessionPideTransport.unknownResultFunction(
+        known, properties("MCP.op_result", Some("call"))),
+      None)
+    assertEquals(
+      SessionPideTransport.unknownResultFunction(
+        known, properties("MCP.bogus_result", None)),
+      None)
+    assertEquals(
+      SessionPideTransport.unknownResultFunction(
+        known, properties("PIDE.bogus_result", Some("call"))),
+      None)
+  }
+
   spec_test("one PideBridge over a scripted transport correlates reverse replies",
       verifies = List("pide_bridge#A1", "pide_bridge#I1"),
       covers = List("pide_bridge#T1")) {
@@ -320,6 +352,17 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assertEquals(preTransport.sent, Vector.empty)
     pre.beginStop()
     pre.sessionStopped()
+
+    val markedTransport = new ScriptedTransport
+    val markedBridge = bridge(markedTransport)
+    assertEquals(
+      markedBridge.call(
+        TextOperation("op", "request"), new MarkedBeforeDispatchCancellation),
+      Left(BridgeFailure.Cancelled))
+    assertEquals(markedTransport.sent, Vector.empty)
+    assertEquals(markedBridge.pendingCount, 0)
+    markedBridge.beginStop()
+    markedBridge.sessionStopped()
 
     val cancelTransport = new ScriptedTransport
     val cancelBridge = bridge(cancelTransport)

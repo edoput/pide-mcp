@@ -5,7 +5,7 @@ Typed control/data-plane boundary for Scala-to-Isabelle/ML calls.
 
 package isabelle.mcp.pide
 
-import isabelle.{Bytes, Future, Headless, Output, Promise, Properties, Prover, Session}
+import isabelle.{Bytes, Future, Headless, Markup, Output, Promise, Properties, Prover, Session}
 
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -203,6 +203,20 @@ object PideTransport {
 }
 
 
+private[mcp] object SessionPideTransport {
+  def unknownResultFunction(
+    resultFunctions: Set[String],
+    properties: Properties.T
+  ): Option[String] =
+    for {
+      function <- Properties.get(properties, Markup.FUNCTION)
+      if function.startsWith("MCP.")
+      if !resultFunctions.contains(function)
+      if Properties.get(properties, "id").isDefined
+    } yield function
+}
+
+
 /** Production data plane for a known set of protocol-result functions. */
 private[mcp] final class SessionPideTransport(
   session: Headless.Session,
@@ -215,17 +229,49 @@ private[mcp] final class SessionPideTransport(
   private var closed = false
   private var started = false
 
+  private def deliver(function: String, message: Prover.Protocol_Output): Unit = {
+    val target = synchronized {
+      if (closed) None else receiver
+    }
+    target.foreach(_(Inbound(function, message.properties, message.chunk, message.text)))
+  }
+
   private object Handler extends Session.Protocol_Handler {
-    private def deliver(function: String)(message: Prover.Protocol_Output): Boolean = {
-      val target = SessionPideTransport.this.synchronized {
-        if (closed) None else receiver
-      }
-      target.foreach(_(Inbound(function, message.properties, message.chunk, message.text)))
+    private def handle(function: String)(message: Prover.Protocol_Output): Boolean = {
+      deliver(function, message)
       true
     }
 
     override val functions: Session.Protocol_Functions =
-      resultFunctions.toList.sorted.map(function => function -> deliver(function))
+      resultFunctions.toList.sorted.map(function => function -> handle(function))
+  }
+
+  /* Protocol handlers are exact-name maps.  Observe only unknown correlated
+     MCP outputs here; known results stay on Handler and unrelated PIDE traffic
+     never enters the bridge. */
+  private val unknownResults =
+    Session.Consumer[Prover.Message]("MCP PIDE bridge unknown results") {
+      case message: Prover.Protocol_Output =>
+        SessionPideTransport.unknownResultFunction(resultFunctions, message.properties)
+          .foreach(deliver(_, message))
+      case _ => ()
+    }
+
+  private def detachUnknownResults(): Unit =
+    session.all_messages -= unknownResults
+
+  private def attachUnknownResults(): Unit =
+    session.all_messages += unknownResults
+
+  private def notifyClosed(): Option[Termination => Unit] = synchronized {
+    if (closed) None
+    else {
+      closed = true
+      receiver = None
+      val result = termination
+      termination = None
+      result
+    }
   }
 
   def start(receive: Inbound => Unit, terminated: Termination => Unit): Unit = synchronized {
@@ -235,6 +281,7 @@ private[mcp] final class SessionPideTransport(
     termination = Some(terminated)
     started = true
     session.init_protocol_handler(Handler)
+    attachUnknownResults()
   }
 
   def send(outbound: Outbound): Unit = synchronized {
@@ -244,16 +291,8 @@ private[mcp] final class SessionPideTransport(
   }
 
   def close(): Unit = {
-    val notify = synchronized {
-      if (closed) None
-      else {
-        closed = true
-        receiver = None
-        val result = termination
-        termination = None
-        result
-      }
-    }
+    val notify = notifyClosed()
+    if (notify.isDefined) detachUnknownResults()
     notify.foreach(_(Closed))
   }
 }
@@ -444,14 +483,16 @@ private[mcp] final class PideBridge(
         case Left(failure) => Left(failure)
         case Right(call) =>
           cancellation.onCancel(() => cancel(id))
-          dispatch(id, operation)
+          dispatch(id, operation, cancellation)
           call.result
       }
     }
   }
 
-  private def dispatch[A](id: BridgeCallId, operation: BridgeOperation[A]): Unit = synchronized {
+  private def dispatch[A](id: BridgeCallId, operation: BridgeOperation[A],
+    cancellation: BridgeCancellation): Unit = synchronized {
     if (state != State.Open) pending.fail(id, SessionStopped)
+    else if (cancellation.isCancelled) pending.fail(id, Cancelled)
     else if (pending.contains(id)) {
       try {
         /* A replaceable transport may deliver synchronously from send().  Mark
