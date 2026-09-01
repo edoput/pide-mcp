@@ -16,14 +16,14 @@ itself. Must run here, right after the \<open>ML_file "ir.ML"\<close> above, so 
 captured theory value already includes Ir -- see Ir.the_self_theory.\<close>
 ML \<open>Ir.set_self_theory \<^theory>\<close>
 
-text \<open>Install the repl branch of MCP_Protocol.designated_context
-(plans/tool_scope): the base layer (MCP_Tools.thy) has no notion of
-repls, so it exposes a hook that only the HOL layer -- the one that
-loads \<^ML_structure>\<open>Ir\<close> -- can fill in. \<^ML>\<open>Ir.context_of\<close> reaches
-the repl's LATEST state (mirroring \<^ML>\<open>Ir.find_theorems\<close>'s own
-\<open>last_state (the_repl id)\<close>), so a designation tracks repl_step calls
-made after \<open>tool_scope_set\<close> without re-resolving anything scala-side.\<close>
-ML \<open>MCP_Protocol.set_repl_context_hook Ir.context_of\<close>
+text \<open>Register the repl context-locator kind as theory data.  The base
+MCP_Tools theory has no notion of repls; importing this theory contributes the
+resolver through ordinary theory inheritance.  \<^ML>\<open>Ir.context_of\<close> reaches the
+repl's latest state, so resolving the same locator after repl_step observes the
+new Proof.context without any Scala-side repl branch.\<close>
+
+setup \<open>MCP_Context_Locator.register \<^binding>\<open>repl\<close>
+  (fn _ => fn id => (id, Ir.context_of id))\<close>
 
 section \<open>Output routing and dispatcher\<close>
 
@@ -51,8 +51,7 @@ sig
   val decode_args: string -> (string * string) list
   val dispatch: string -> (string * string) list -> unit
   val fork_run: string -> (string * string) list -> (string * string) future
-  val fork_run_cancellable:
-    string -> string -> (string * string) list -> unit future * (unit -> string)
+  val bridge_handler: MCP_Bridge.handler
   val run: string -> (string * string) list -> string * string
   val reset: unit -> unit
   val set_self_theory: theory -> unit
@@ -445,27 +444,48 @@ fun fork_run fname args =
               in ("error", if output = "" then msg else output ^ "\n" ^ msg) end))
   end;
 
-(*Protocol calls expose their group through MCP_Cancellation and leave output
-  cleanup to the non-interruptible dependent task.  Thus cancellation before
-  the worker starts cannot leak the registered output route.*)
-fun fork_run_cancellable id fname args =
+(*The common bridge supplies the request-owned future group.  IR registers its
+  PIDE output buffer on that same group, so cancellation reaches both the
+  Isabelle work and the output route; no nested protocol-specific future owns
+  a second cancellation lifecycle.*)
+fun bridge_handler group root payload =
   let
+    val (fname, args) =
+      XML.Decode.pair XML.Decode.string
+        (XML.Decode.list (XML.Decode.pair XML.Decode.string XML.Decode.string)) payload;
     val _ = MCP_Output.install_wrappers ();
-    val group = Future.new_group NONE;
-    val finish0 = MCP_Output.register group;
-    val finished = Synchronized.var "MCP_Repl.finished_output" (NONE: string option);
-    fun finish () =
-      Synchronized.change_result finished (fn state =>
-        (case state of
-          SOME output => (output, state)
-        | NONE => let val output = finish0 () in (output, SOME output) end));
-    val _ = MCP_Cancellation.register id group;
+    val finish = MCP_Output.register group;
     val result =
-      (singleton o Future.forks)
-        {name = "MCP.ir." ^ fname, group = SOME group, deps = [],
-         pri = ir_pri, interrupts = true}
-        (fn () => Print_Mode.with_modes [Print_Mode.PIDE] (fn () => dispatch fname args) ());
-  in (result, finish) end;
+      Exn.capture_body
+        (fn () => Print_Mode.with_modes [Print_Mode.PIDE]
+          (fn () => dispatch fname args) ());
+    val captured = finish ();
+    fun created_repl () =
+      if member (op =) ["init", "init_from_document", "init_from_segment"] fname
+      then AList.lookup (op =) args "repl"
+      else if fname = "fork" then AList.lookup (op =) args "new_repl"
+      else NONE;
+    fun append_context output =
+      (case created_repl () of
+        NONE => output
+      | SOME id =>
+          let
+            val (locator, _) =
+              MCP_Context_Locator.resolve root (MCP_Context_Locator.make "repl" id);
+            val line = "Context: " ^ MCP_Context_Locator.print locator;
+          in if output = "" then line else output ^ "\n" ^ line end);
+    fun output_body text = YXML.parse_body text;
+    val status_body =
+      (case result of
+        Exn.Res () => ("ok", output_body (append_context captured))
+      | Exn.Exn exn =>
+          if Exn.is_interrupt exn then Exn.reraise exn
+          else
+            let
+              val message = Runtime.exn_message exn;
+              val output = if captured = "" then message else captured ^ "\n" ^ message;
+            in ("error", output_body output) end);
+  in XML.Encode.pair XML.Encode.string XML.Encode.self status_body end;
 
 fun run fname args = Future.join (fork_run fname args);
 
@@ -477,51 +497,13 @@ context (neither repl nor theory given), right after the structure closes
 -- same positioning and rationale as \<open>Ir.set_self_theory \<^theory>\<close> above.\<close>
 ML \<open>MCP_Repl.set_self_theory \<^theory>\<close>
 
-section \<open>Async protocol command for Isabelle/Scala\<close>
+section \<open>IR bridge operation\<close>
 
-text \<open>Unlike the synchronous \<open>MCP.run_tool\<close>, evaluation is forked so the ML
-protocol loop stays responsive (a 30s sledgehammer must not stall the
-session); the reply is a dependent future so nothing ever blocks here. The
-Scala side resolves its pending promise by id on \<open>MCP.ir_result\<close> — same
-pattern as \<open>MCP.run_tool_result\<close>. Output is YXML (PIDE print mode); Scala
-strips or interprets the markup.\<close>
+text \<open>The IR dispatcher is an inherited operation of the common bridge.
+The base MCP_Tools theory does not know about it; importing MCP_Repl adds it to
+the registry-root theory together with the repl context-locator resolver.\<close>
 
-ML \<open>
-val _ =
-  Protocol_Command.define "MCP.ir"
-    (fn [id, fname, args_yxml] =>
-      let
-        val (result, finish_output) =
-          MCP_Repl.fork_run_cancellable id fname (MCP_Repl.decode_args args_yxml);
-        val _ =
-          (singleton o Future.forks)
-            {name = "MCP.ir_result", group = NONE,
-             deps = [Future.task_of result], pri = ~1, interrupts = false}
-            (fn () =>
-              let
-                val joined = Future.join_result result;
-                val captured = finish_output ();
-                val cancelled =
-                  (case MCP_Cancellation.finish id of
-                    SOME value => value
-                  | NONE => error ("Missing MCP.ir cancellation route " ^ quote id));
-                val (status, output) =
-                  (case joined of
-                    Exn.Res () => ("ok", captured)
-                  | Exn.Exn exn =>
-                      let val message = Runtime.exn_message exn
-                      in
-                        ("error", if captured = "" then message else captured ^ "\n" ^ message)
-                      end);
-              in
-                if cancelled then ()
-                else
-                  Output.protocol_message
-                    [Markup.function "MCP.ir_result", ("id", id), ("status", status)]
-                    [[XML.Text output]]
-              end);
-      in () end);
-\<close>
+setup \<open>MCP_Bridge.register \<^binding>\<open>ir\<close> MCP_Repl.bridge_handler\<close>
 
 section \<open>Self-test\<close>
 
@@ -570,8 +552,6 @@ val _ = \<^assert> (MCP_Repl.decode_args "" = []);
 end;
 \<close>
 
-section \<open>Default designation\<close>
-
 section \<open>Wave 1: single-\<open>repl\<close> read/destructive tools (plans/ml_builtin_migration)\<close>
 
 text \<open>The minimum shape: one \<open>repl :: string\<close> param, no defaults, no
@@ -618,22 +598,10 @@ mcp_tool "repl_back" = capture \<open>fn _ => fn args => Ir.back (MCP_Combinator
   (params repl :: string \<open>the REPL id\<close>)
   (annotations destructive)
 
-text \<open>Widen the out-of-the-box designation ("") from MCP_Tools to this
-theory: MCP_Protocol.default_theory (MCP_Tools.thy) otherwise hardcodes
-MCP_Tools, an ANCESTOR of MCP_Repl, so a tool declared anywhere in this
-theory (the moves below) would be invisible at the default designation.
-Captured here, at the END of the file, so \<^ML>\<open>\<^theory>\<close> already includes
-every mcp_tool declaration above -- placing this any earlier would miss
-them. Strictly widens: MCP_Repl imports MCP_Tools, so every tool visible
-at the old default stays visible.\<close>
-ML \<open>MCP_Protocol.set_default_theory \<^theory>\<close>
-
-text \<open>A7: the default designation now sees a tool declared in THIS
-theory, not just MCP_Tools -- the whole point of step 1. \<open>repl_show\<close>
-(wave 1, declared above) stands in for the probe this assert used to
-check before wave 1 supplied a real moved tool. Also checks that the
-pre-existing MCP_Tools-resident demo tool ("shout") is still reachable,
-i.e. the widening is strict, not a replacement.\<close>
+text \<open>A7: the registry-root theory's canonical context sees a tool
+declared in this theory and an inherited tool from MCP_Tools.  The root is
+selected by the connection and encoded by ML as a context locator; there is no
+process-global default-theory hook.\<close>
 ML \<open>
 val _ =
   let
@@ -642,7 +610,9 @@ val _ =
       side (mcp_server.scala:108) -- compare on the base name.*)
     val bases =
       map (Long_Name.base_name o #1)
-        (MCP_Tool.list (Context.Proof (MCP_Protocol.designated_context "" [])));
+        (MCP_Tool.list (Context.Proof
+          (#2 (MCP_Context_Locator.resolve \<^theory>
+            (MCP_Context_Locator.theory \<^theory>)))));
   in
     \<^assert> (member (op =) bases "repl_show");
     \<^assert> (member (op =) bases "shout")

@@ -122,9 +122,14 @@ boundary remediation (dependency-ordered architecture work packages):
         data planes, MCP 2025-03-26 lifecycle, bounded request ownership,
         cancellation, batching conformance, and shutdown drain; depends on
         planning_gate and readiness)
+  - [ ] context_locator      plans/context_locator (ML-owned canonical context
+        locators, inherited Theory_Data resolver registry, opaque Scala tool
+        scope, and removal of network-controlled bundles; supersedes the
+        designation portion of plans/tool_scope)
   - [ ] pide_bridge          plans/pide_bridge (versioned typed Scala/ML
         transport, bounded pending-call ownership, deadlines, cancellation,
-        stop, and reply-size limits; depends on connection_kernel)
+        stop, and reply-size limits; depends on connection_kernel and
+        context_locator)
 
 wave 0 — shared infrastructure (prerequisites, not tools):
   MCP_Session.ir promise-by-id bridge; named-args yxml encoding on

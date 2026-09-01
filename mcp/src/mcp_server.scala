@@ -949,28 +949,23 @@ object MCP_Server {
       scope_add_tool, scope_remove_tool, scope_show_tool,
       doc_list_tool, doc_read_tool)
 
-  /* tool_scope_show/set/include are per-connection Builtin_Tool values in
+  /* tool_scope_show/set are per-connection Builtin_Tool values in
      IsabelleMcpApplication, so their names are listed here
      separately -- the one authoritative name list beyond `builtins`,
-     kept in sync BY HAND with the three name = "..." literals below.
+     kept in sync BY HAND with the two name = "..." literals below.
      Used for the exposure() reserved set (application tools/list)
      and as the drift-gate target (plans/builtin_activation, tested over
      the live bridge: mirror name set in MCP_Tools.thy == this list ++
      builtins.map(_.name), both directions). */
   val tool_scope_builtin_names: List[String] =
-    List("tool_scope_show", "tool_scope_set", "tool_scope_include")
+    List("tool_scope_show", "tool_scope_set")
 
   val all_builtin_names: List[String] = builtins.map(_.name) ++ tool_scope_builtin_names
 
-  /* tool_scope_show/set/include (plans/tool_scope, spec "the agent
-     context") live in the concrete per-connection application. Unlike
+  /* tool_scope_show/set (plans/context_locator, spec "context locators")
+     live in the concrete per-connection application. Unlike
      every static builtin above, they close over that application's tool
      scope rather than backend/prover state. */
-  def format_designation(designation: String): String =
-    if (designation == "") "default (the base registry theory)"
-    else if (designation.startsWith("repl:")) "repl " + quote(designation.stripPrefix("repl:"))
-    else "theory " + quote(designation)
-
   /* json arguments object -> the named yxml pair list MCP.ir expects;
      a string property becomes one pair, a json array of strings becomes
      repeated (key, element) pairs IN ARRAY ORDER (repl_init.theories);
@@ -1010,8 +1005,8 @@ object MCP_Server {
      (==>); Isabelle/Scala enforces it in Pure/PIDE/prover.scala, but
      ONLY on the non-protocol channel -- message_output decodes ordinary
      output chunks and deliberately skips PROTOCOL ones. The mcp bridge
-     rides the protocol channel exclusively (protocol_command_raw for
-     MCP.ir/MCP.tools/MCP.run_tool/MCP.read_resource), so nothing
+     rides the protocol channel exclusively (protocol_command_raw for the
+     common MCP.bridge envelope), so nothing
      upstream ever decodes for us and the client would otherwise see raw
      \<open>...\<close>.
 
@@ -1323,7 +1318,9 @@ object MCP_Server {
       Exn.capture {
         MCP_Session.build(options, session_name, session_dirs, progress)
         cell.change(s => s.copy(readiness = Not_Ready("starting session " + session_name)))
-        MCP_Session.boot(options, session_name, session_dirs, theory, progress)
+        /* The production MCP application exposes IR operations. */
+        MCP_Session.boot(options, session_name, session_dirs, theory,
+          McpBridgeProfile.hol, progress)
       } match {
         case Exn.Res(session) =>
           /* publish Ready and wire list_changed under the SAME lock

@@ -1,8 +1,8 @@
 /*  Title:      mcp_test/src/mcp_bridge_tests.scala
 
 Bridge suites against real headless PIDE sessions (isabelle mcp_test
--b): MCP.run_tool and resources over MCP-Tools, and the MCP.ir
-dispatcher over the I/R engine (MCP-HOL/MCP_Repl) -- the one layer
+-L bridge): typed operations over MCP-Tools and the IR dispatcher over
+MCP-HOL/MCP_Repl -- the one layer
 Fake_Backend cannot cover.
 */
 
@@ -16,9 +16,15 @@ import isabelle.mcp.transport.ScriptedDataPlane
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 
-/* protocol-command bridge: MCP.run_tool + resources over MCP-Tools */
+/* Common protocol bridge: typed tool and resource operations over MCP-Tools. */
 
-class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
+class MCP_Bridge_Tests extends MCP_Session_Suite(
+  "MCP-Tools", "MCP_Tools", McpBridgeProfile.base) {
+  spec_test("startup hello advertises precisely MCP-Tools base bridge operations",
+      covers = List("pide_bridge#T10")) {
+    assertEquals(session.bridge_operation_names, McpBridgeOperations.baseOperationNames)
+  }
+
   /* the bridge carries FULL INTERNAL names + the form tag; exposed
      (shortened) names exist only in the scala layer above
      (MCP_Server.exposure, unit-tested in mcp_handler_tests.scala) */
@@ -73,33 +79,30 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
       containing = "no_such_tool")
   }
 
-  test("bridge: explicit theory designation equals the default") {
+  test("bridge: canonical root context equals an explicitly validated locator") {
     /* Thy_Info keying mixes qualified and unqualified names, so take the
        canonical spelling from the session itself */
     val thy_name =
       session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools")
         .getOrElse(fail("MCP_Tools not in ml_theories"))
-    assertEquals(session.ml_tools(designation = thy_name), session.ml_tools())
+    val locator = "isabelle://context/theory/" + thy_name
+    assertEquals(session.check_context(locator), MCP_Session.Ok(locator))
+    assertEquals(session.ml_tools(locator), session.ml_tools())
   }
 
-  test("bridge: unknown designation is a typed error, not an exception") {
+  test("bridge: unknown context is a typed error, not an exception") {
     expect_error(
-      session.ml_run("MCP_Tools.shout", List("input" -> "x"), designation = "No_Such_Theory"),
+      session.ml_run("MCP_Tools.shout", List("input" -> "x"),
+        "isabelle://context/theory/No_Such_Theory"),
       containing = "No_Such_Theory")
   }
 
-  /* plans/tool_scope: probing whether MCP.tools' resolution (unlike
-     MCP.run_tool's, which already catches) is crash-safe against a bad
-     designation -- tools_body has no (status, output) wrapper today, so
-     an uncaught ML exception there could leave the "MCP.tools_result"
-     promise unfulfilled forever instead of erroring gracefully. */
-  /* AVAILABILITY FLOOR (plans/builtin_activation): a designation
-     resolution failure degrades to the empty pair on the wire (both
+  /* AVAILABILITY FLOOR (plans/builtin_activation): context resolution
+     failure degrades to the empty pair in the operation payload (both
      sections empty), not the bare "[]" the old flat shape used --
-     otherwise decoding an empty chunk as a pair would throw inside the
-     promise-completing message handler and hang tools/list forever. */
-  test("bridge: ml_tools on an unknown designation does not hang") {
-    val tools = session.ml_tools(designation = "No_Such_Theory")
+     decoding remains total and tools/list cannot hang. */
+  test("bridge: ml_tools on an unknown context does not hang") {
+    val tools = session.ml_tools("isabelle://context/theory/No_Such_Theory")
     assertEquals(tools.rows, Nil)
     assertEquals(tools.builtin_activation, Nil)
   }
@@ -202,8 +205,13 @@ class MCP_Bridge_Tests extends MCP_Session_Suite("MCP-Tools", "MCP_Tools") {
 
 /* MCP.ir bridge: the dispatcher over the I/R engine (MCP-HOL/MCP_Repl) */
 
-class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
-  spec_test("checkpoint-1 characterization executes all seven legacy routes and reply codecs",
+class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
+  "MCP-HOL", "MCP_Repl", McpBridgeProfile.hol) {
+  test("startup hello advertises inherited base operations plus ir for MCP-HOL") {
+    assertEquals(session.bridge_operation_names, McpBridgeOperations.holOperationNames)
+  }
+
+  spec_test("common v1 envelope executes all seven typed operations and reply codecs",
       verifies = List("pide_bridge#I1")) {
     val tools = session.ml_tools()
     assert(tools.rows.exists(_.name == "MCP_Tools.shout"))
@@ -214,7 +222,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
 
     assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> "bridge")),
       MCP_Session.Ok("BRIDGE"))
-    assert(session.check_designation(replTheory).ok)
+    assert(session.check_context("isabelle://context/theory/" + replTheory).ok)
     assert(session.ir("repls", Nil).ok)
 
     val resources = session.ml_named_resources()
@@ -225,6 +233,22 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     assert(!session.ml_run("no_such_tool", Nil).ok)
     assert(!session.ir("no_such_function", Nil).ok)
     assert(!session.ml_read_resource("no_such_resource").ok)
+  }
+
+  spec_test("REPL creation returns an ML-generated canonical context locator",
+      covers = List("context_locator#T3", "context_locator#T7")) {
+    val repl = "Locator_Result"
+    val main = session.ml_theories().find(Long_Name.base_name(_) == "Main")
+      .getOrElse(fail("Main not present in loaded theories"))
+    val expected = "isabelle://context/repl/Locator_Result"
+    try {
+      session.ir("init", List("repl" -> repl, "theories" -> main)) match {
+        case MCP_Session.Ok(text) => assert(text.contains("Context: " + expected), text)
+        case error => fail("REPL creation failed: " + error)
+      }
+      assertEquals(session.check_context(expected), MCP_Session.Ok(expected))
+    }
+    finally session.ir("remove", List("repl" -> repl))
   }
 
   spec_test("ir bridge cancellation returns promptly, releases the claim, and leaves the session usable",
@@ -1005,7 +1029,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
      the connection's tool scope is pointed at that repl. Exercised
      through MCP_Server.Handler (the JSON-RPC layer), not session.ir
      directly, since the scope is Handler-owned connection state. */
-  test("tool_scope bridge: a repl-registered tool becomes servable after tool_scope_set{repl}") {
+  test("tool_scope bridge: a repl-registered tool becomes servable through its context locator") {
     /* the mcp_tool command keyword is only active in theories that
        (transitively) import MCP_Tools -- Main does not, so this repl is
        rooted in MCP_Repl itself (the session's own base theory) rather
@@ -1019,7 +1043,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
         "registering scoped_tool via repl_step")
 
       val handler = new MCP_Server.Handler(session)
-      assert_no_error(call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "ScopeSelf")))
+      assert_no_error(call_tool_on(handler, "tool_scope_set",
+        JSON.Object("context" -> "isabelle://context/repl/ScopeSelf")))
 
       val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
       assert(tools.exists(t => get_string(t, "name") == "scoped_tool"),
@@ -1031,12 +1056,10 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
     }
   }
 
-  /* plans/tool_scope: bundle scoping -- a tool registered inactive
-     (declare [[mcp_tools del: ...]]) is absent from tools/list until
-     tool_scope_include opens the bundle that reactivates it, and absent
-     again after the NEXT tool_scope_set (set replaces the designation
-     AND clears included bundles). */
-  test("tool_scope bridge: tool_scope_include opens a bundle-scoped repl tool; tool_scope_set clears it again") {
+  /* Bundles remain an Isabelle/Isar mechanism. The network scope contains
+     only a locator; changing the REPL's Isar context changes what that same
+     locator resolves to. */
+  test("tool_scope bridge: bundle activation comes from Isar text, not a network mutation") {
     with_repl("ScopeBundle", theories = List("MCP-HOL.MCP_Repl")) {
       expect_ok(
         session.ir("step",
@@ -1052,27 +1075,28 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
           List("repl" -> "ScopeBundle",
             "isar_text" -> "bundle exploration = [[mcp_tools add: bundle_tool]]")),
         "defining the exploration bundle")
+      expect_ok(
+        session.ir("step",
+          List("repl" -> "ScopeBundle",
+            "isar_text" -> "context includes exploration begin")),
+        "opening the bundle in Isar text")
 
       val handler = new MCP_Server.Handler(session)
       assert_no_error(
-        call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "ScopeBundle")))
+        call_tool_on(handler, "tool_scope_set",
+          JSON.Object("context" -> "isabelle://context/repl/ScopeBundle")))
 
       def tool_names(): List[String] =
         get_list(rpc_on(handler, "tools/list"), "result", "tools").map(get_string(_, "name"))
 
-      assert(!tool_names().contains("bundle_tool"),
-        "bundle_tool visible before tool_scope_include: " + tool_names())
-
-      assert_no_error(
-        call_tool_on(handler, "tool_scope_include",
-          JSON.Object("bundles" -> List("exploration"))))
       assert(tool_names().contains("bundle_tool"),
-        "bundle_tool missing after tool_scope_include: " + tool_names())
+        "bundle_tool missing from the Isar context: " + tool_names())
 
-      assert_no_error(
-        call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "ScopeBundle")))
+      expect_ok(
+        session.ir("step", List("repl" -> "ScopeBundle", "isar_text" -> "end")),
+        "closing the Isar context")
       assert(!tool_names().contains("bundle_tool"),
-        "bundle_tool still visible after a re-set cleared the bundles: " + tool_names())
+        "bundle_tool remained active after leaving the Isar context: " + tool_names())
     }
   }
 
@@ -1092,7 +1116,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
 
       val handler = new MCP_Server.Handler(session)
       assert_no_error(
-        call_tool_on(handler, "tool_scope_set", JSON.Object("repl" -> "ScopeBuiltinDel")))
+        call_tool_on(handler, "tool_scope_set",
+          JSON.Object("context" -> "isabelle://context/repl/ScopeBuiltinDel")))
 
       val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
       assert(!tools.exists(t => get_string(t, "name") == "repl_list"),
@@ -1368,38 +1393,35 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite("MCP-HOL", "MCP_Repl") {
 }
 
 
-/* MCP.run_tool async (plans/ml_builtin_migration step 5, A4/A5): the same
+/* run_tool async (plans/ml_builtin_migration step 5, A4/A5): the same
    two-future shape as MCP.ir above, over the capture-form test tools
    declared in MCP_Tools_Tests.thy (MCP-Tools has no genuinely slow tool of
    its own to exercise this with). A6's own bridge case -- two capture
    tools concurrently against two DIFFERENT repls -- needs a real
    repl-designated capture tool, which does not exist until wave 1 lands
-   (and wave 1 is blocked on the S1 repl-designation decision); this suite
+   (and wave 1 was blocked on the S1 context decision); this suite
    is the adjacent claim available today: two DIFFERENT capture tools
-   running concurrently under one designation do not cross outputs. */
+   running concurrently under one context do not cross outputs. */
 class MCP_Run_Tool_Async_Tests
-  extends MCP_Session_Suite("MCP-Tools-Tests", "MCP_Tools_Tests") {
+  extends MCP_Session_Suite(
+    "MCP-Tools-Tests", "MCP_Tools_Tests", McpBridgeProfile.base) {
 
-  /* the default designation ("") resolves to MCP_Tools (MCP_Protocol.
-     default_theory, unaffected by this session's own theory since no
-     MCP_Repl hook runs in this process) -- name these test tools by their
-     own theory explicitly. Thy_Info keying mixes qualified and
-     unqualified spellings and designated_context tries no fallback
-     itself, so resolve the canonical name the same way "explicit theory
-     designation equals the default" does elsewhere in this file. */
+  /* These test tools live in the test theory, so select its explicit context
+     rather than the connection's MCP_Tools registry-root context. */
   lazy val test_theory: String =
-    session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
-      .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+    "isabelle://context/theory/" +
+      session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
+        .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
 
   spec_test("single bridge registry correlates a fast reply before an earlier slow reply",
-      covers = List("pide_bridge#T1")) {
+      covers = List("pide_bridge#T1", "pide_bridge#T8")) {
     val slow = Future.fork(
       session.ml_read_resource("MCP_Tools_Tests.slow_resource", test_theory))
     Thread.sleep(100)
     assert(!slow.is_finished, "slow resource completed before the fast call")
 
     val fast = session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory)
-    assert(fast.ok, "fast resource failed while the earlier call remained pending")
+    assert(fast.ok, "fast resource failed while the earlier call remained pending: " + fast)
     assert(!slow.is_finished, "earlier slow call completed before the later fast reply")
     assert(slow.join.ok, "slow resource did not receive its own eventual reply")
   }
@@ -1416,10 +1438,11 @@ class MCP_Run_Tool_Async_Tests
         session.ml_named_resources(test_theory)
           .exists(_._1 == "MCP_Tools_Tests.slow_resource")),
       "invalid resources" -> (() => session.ml_named_resources("No_Such_Theory").isEmpty),
-      "valid designation" -> (() =>
-        session.check_designation(test_theory).isInstanceOf[MCP_Session.Ok]),
-      "invalid designation" -> (() =>
-        session.check_designation("No_Such_Theory").isInstanceOf[MCP_Session.Error]),
+      "valid context" -> (() =>
+        session.check_context(test_theory).isInstanceOf[MCP_Session.Ok]),
+      "invalid context" -> (() =>
+        session.check_context("isabelle://context/theory/No_Such_Theory")
+          .isInstanceOf[MCP_Session.Error]),
       "valid resource read" -> (() =>
         session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory).ok),
       "invalid resource read" -> (() =>
@@ -1563,7 +1586,7 @@ class MCP_Run_Tool_Async_Tests
   }
 
   def run(name: String, args: List[(String, String)] = Nil): MCP_Session.Result =
-    session.ml_run("MCP_Tools_Tests." + name, args, designation = test_theory)
+    session.ml_run("MCP_Tools_Tests." + name, args, test_theory)
 
   spec_test("run-tool bridge cancellation unblocks Scala and leaves later calls usable",
       covers = List("connection_kernel#T4")) {
@@ -1574,7 +1597,7 @@ class MCP_Run_Tool_Async_Tests
       case other => fail("could not admit live run-tool cancellation fixture: " + other)
     }
     val slow = Future.fork(session.ml_run_cancellable(
-      "MCP_Tools_Tests.capture_slow", Nil, test_theory, Nil, admitted.cancellation))
+      "MCP_Tools_Tests.capture_slow", Nil, test_theory, admitted.cancellation))
     assertEquals(run("capture_ok", List("x" -> "before-cancel")),
       MCP_Session.Ok("got:before-cancel"))
     assert(!slow.is_finished, "slow run-tool fixture completed before cancellation")
@@ -1625,7 +1648,8 @@ class MCP_Run_Tool_Async_Tests
 
 
 class MCP_Bridge_Shutdown_Tests
-  extends MCP_Session_Suite("MCP-Tools-Tests", "MCP_Tools_Tests") {
+  extends MCP_Session_Suite(
+    "MCP-Tools-Tests", "MCP_Tools_Tests", McpBridgeProfile.base) {
   private var stopped = false
 
   override def afterAll(): Unit = if (!stopped) super.afterAll()
@@ -1633,8 +1657,9 @@ class MCP_Bridge_Shutdown_Tests
   spec_test("backend stop cancels every pending bridge and joins direct Scala work",
       covers = List("connection_kernel#T4", "connection_kernel#T11", "connection_kernel#T12")) {
     val testTheory =
-      session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
-        .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+      "isabelle://context/theory/" +
+        session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
+          .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
     val resource = Future.fork(session.ml_read_resource_cancellable(
       "MCP_Tools_Tests.slow_resource", testTheory, McpApplication.Cancellation.Never))
     val direct = Future.fork(session.direct_cancellable(McpApplication.Cancellation.Never) {

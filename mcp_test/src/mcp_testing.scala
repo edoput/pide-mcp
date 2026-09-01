@@ -33,6 +33,8 @@ object MCP_Test_Config {
 /* fake backend */
 
 class Fake_Backend extends MCP_Backend {
+  val fake_root_context = "isabelle://context/theory/MCP_Tools"
+  def root_context(): MCP_Session.Result = MCP_Session.Ok(fake_root_context)
   var stopped = false
   var extra_ml_tools: List[MCP_Session.Tool_Row] = Nil
   /* (plans/builtin_activation) settable builtin activation section --
@@ -48,7 +50,7 @@ class Fake_Backend extends MCP_Backend {
      Handler's exposure() shortens "MCP_Tools.shout" to "shout" and
      resolves tools/call back to the internal name; the params expand
      into the mvp {input :: string} schema */
-  def ml_tools(designation: String, bundles: List[String]): MCP_Session.Tools_Reply =
+  def ml_tools(context: String): MCP_Session.Tools_Reply =
     MCP_Session.Tools_Reply(
       MCP_Session.Tool_Row("MCP_Tools.shout", "uppercase the input", "string_fun",
         List(MCP_Session.Tool_Param(
@@ -57,7 +59,7 @@ class Fake_Backend extends MCP_Backend {
       extra_ml_tools,
       builtin_activation)
   def ml_run(name: String, args: List[(String, String)],
-      designation: String, bundles: List[String]): MCP_Session.Result =
+      context: String): MCP_Session.Result =
     if (name == "MCP_Tools.shout") {
       args.collectFirst({ case ("input", v) => v }) match {
         case Some(input) => MCP_Session.Ok(input.toUpperCase)
@@ -65,28 +67,17 @@ class Fake_Backend extends MCP_Backend {
       }
     }
     else MCP_Session.Error("Unknown MCP tool " + quote(name))
-  /* tool_scope_set{repl}/tool_scope_include: settable fake repl/bundle
-     universes, good enough for the scala-unit "unknown X errors naming
-     X, connection state unchanged" tests -- real repl/bundle resolution
-     is a bridge-suite claim (MCP_Protocol.designated_context). Bare
-     theory designations are always ok here: the theory case is
-     validated scala-side via resolve_context_theory before it ever
-     reaches check_designation (plans/tool_scope). */
+  /* Settable fake repl universe for context-locator application tests. */
   var known_repls: Set[String] = Set("R")
-  var known_bundles: Set[String] = Set("scoped_tools")
-  def check_designation(designation: String, bundles: List[String]): MCP_Session.Result = {
-    val repl_ok =
-      if (designation.startsWith("repl:")) known_repls(designation.stripPrefix("repl:")) else true
-    if (!repl_ok) {
-      MCP_Session.Error("Unknown repl " + quote(designation.stripPrefix("repl:")))
+  private val repl_context = "isabelle://context/repl/([^/]+)".r
+  private val theory_context = "isabelle://context/theory/([^/]+)".r
+  def check_context(context: String): MCP_Session.Result =
+    context match {
+      case repl_context(id) if known_repls(id) => MCP_Session.Ok(context)
+      case repl_context(id) => MCP_Session.Error("Unknown repl " + quote(id))
+      case theory_context(_) => MCP_Session.Ok(context)
+      case _ => MCP_Session.Error("Malformed MCP context locator " + quote(context))
     }
-    else {
-      bundles.find(!known_bundles(_)) match {
-        case Some(bad) => MCP_Session.Error("Unknown bundle " + quote(bad))
-        case None => MCP_Session.Ok("")
-      }
-    }
-  }
   def ir(fname: String, args: List[(String, String)]): MCP_Session.Result = {
     last_ir = Some((fname, args))
     (fname, args) match {
@@ -387,10 +378,11 @@ class Fake_Backend extends MCP_Backend {
    Not_Ready/Failed carry no backend field. */
 class Throwing_Backend extends MCP_Backend {
   private def boom: Nothing = throw new RuntimeException("backend touched unexpectedly")
-  def ml_tools(designation: String, bundles: List[String]): MCP_Session.Tools_Reply = boom
+  def root_context(): MCP_Session.Result = boom
+  def ml_tools(context: String): MCP_Session.Tools_Reply = boom
   def ml_run(name: String, args: List[(String, String)],
-      designation: String, bundles: List[String]): MCP_Session.Result = boom
-  def check_designation(designation: String, bundles: List[String]): MCP_Session.Result = boom
+      context: String): MCP_Session.Result = boom
+  def check_context(context: String): MCP_Session.Result = boom
   def ir(fname: String, args: List[(String, String)]): MCP_Session.Result = boom
   def resolve_context_theory(name: String): Either[String, String] = boom
   def init_from_source(repl: String, theory: String,
@@ -458,11 +450,8 @@ abstract class MCP_Suite extends munit.FunSuite with MCP_Spec_Tests {
       backend: MCP_Backend = new Fake_Backend): Option[JSON.T] =
     new MCP_Server.Handler(backend).handle(request(None, method, Option(params)))
 
-  /* like rpc(), but against a HANDLER THE CALLER OWNS instead of a fresh
-     one per call -- every other request in this suite is stateless from
-     Handler's point of view, but tool_scope_* (plans/tool_scope) mutates
-     per-connection state (the designation, included bundles), so tests
-     of it need calls to land on the SAME Handler instance. */
+  /* Like rpc(), but against a handler the caller owns. Context-locator
+     selection is per-connection state, so its tests must reuse one handler. */
   def rpc_on(handler: MCP_Server.Handler, method: String, params: JSON.Object.T = null)
       (implicit loc: munit.Location): JSON.T = {
     next_id += 1
@@ -530,7 +519,8 @@ abstract class MCP_Suite extends munit.FunSuite with MCP_Spec_Tests {
    suite (started in beforeAll, stopped in afterAll), plus the
    recurring repl-lifecycle patterns */
 
-abstract class MCP_Session_Suite(session_name: String, theory: String) extends MCP_Suite {
+abstract class MCP_Session_Suite(session_name: String, theory: String,
+  bridgeProfile: McpBridgeProfile) extends MCP_Suite {
   override def munitTimeout: Duration = 10.minutes
 
   private var session0: MCP_Session = null
@@ -543,7 +533,8 @@ abstract class MCP_Session_Suite(session_name: String, theory: String) extends M
       "Starting PIDE session " + session_name + " for " + getClass.getSimpleName + " ...")
     session0 =
       MCP_Session.start(MCP_Test_Config.options, session_name,
-        MCP_Test_Config.session_dirs, theory, progress = MCP_Test_Config.progress)
+        MCP_Test_Config.session_dirs, theory, bridgeProfile,
+        progress = MCP_Test_Config.progress)
   }
 
   override def afterAll(): Unit = if (session0 != null) session0.stop()

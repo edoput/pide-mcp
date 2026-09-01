@@ -31,6 +31,46 @@ fun count_substring pat s =
   in go 0 0 end;
 \<close>
 
+section \<open>REPL context locators\<close>
+
+spec_test \<open>repl context locators are inherited, current, and become stale\<close>
+  verifies \<open>context_locator#A2\<close> and \<open>context_locator#I1\<close>
+  covers \<open>context_locator#T2\<close> and \<open>context_locator#T3\<close>
+
+ML \<open>
+val locator_root = \<^theory>;
+\<^assert> (member (op =) (MCP_Context_Locator.registered locator_root) "repl");
+
+val (locator_init_status, _) =
+  MCP_Repl.run "init" [("repl", "ContextLocator"), ("theories", main)];
+\<^assert> (locator_init_status = "ok");
+
+val context_locator = "isabelle://context/repl/ContextLocator";
+val (canonical_locator, initial_context) =
+  MCP_Context_Locator.resolve_string locator_root context_locator;
+\<^assert> (canonical_locator = context_locator);
+\<^assert> (Context.eq_thy
+  (Proof_Context.theory_of initial_context,
+   Proof_Context.theory_of (Ir.context_of "ContextLocator")));
+
+val (locator_step_status, _) =
+  MCP_Repl.run "step"
+    [("repl", "ContextLocator"),
+     ("isar_text", "lemma context_locator_latest: True by simp")];
+\<^assert> (locator_step_status = "ok");
+
+val (_, latest_context) =
+  MCP_Context_Locator.resolve_string locator_root context_locator;
+val _ = Proof_Context.get_fact latest_context
+  (Facts.Named (("context_locator_latest", Position.none), NONE));
+
+val (locator_remove_status, _) =
+  MCP_Repl.run "remove" [("repl", "ContextLocator")];
+\<^assert> (locator_remove_status = "ok");
+\<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
+  MCP_Context_Locator.resolve_string locator_root context_locator)));
+\<close>
+
 section \<open>T2: fresh state, before any repl exists\<close>
 
 spec_test \<open>repl_list: fresh state before any repl exists\<close>
@@ -1844,10 +1884,17 @@ val _ =
     val id = "ir-cancellation-route";
     val (s_init, _) = MCP_Repl.run "init" [("repl", "Cancel_IR"), ("theories", main)];
     val _ = \<^assert> (s_init = "ok");
-    val (work, finish_output) =
-      MCP_Repl.fork_run_cancellable id "step"
-        [("repl", "Cancel_IR"),
-         ("isar_text", "ML_command \<open>OS.Process.sleep (seconds 5.0)\<close>")];
+    val payload =
+      XML.Encode.pair XML.Encode.string
+        (XML.Encode.list (XML.Encode.pair XML.Encode.string XML.Encode.string))
+        ("step",
+          [("repl", "Cancel_IR"),
+           ("isar_text", "ML_command \<open>OS.Process.sleep (seconds 5.0)\<close>")]);
+    val published = Synchronized.var "MCP_Repl.bridge_cancel_published" 0;
+    val _ =
+      MCP_Cancellation.fork_group id "MCP.bridge.ir.test"
+        (fn group => MCP_Repl.bridge_handler group \<^theory> payload)
+        (fn _ => Synchronized.change published (fn n => n + 1));
     fun await_busy 0 = false
       | await_busy attempts =
           let val (_, listing) = MCP_Repl.run "repls" [] in
@@ -1858,13 +1905,13 @@ val _ =
           end;
     val _ = \<^assert> (await_busy 200);
     val _ = \<^assert> (MCP_Cancellation.cancel id);
-    val joined = Future.join_result work;
-    val output1 = finish_output ();
-    val output2 = finish_output ();
-    val _ = \<^assert> (Exn.is_exn joined);
-    val _ = \<^assert> (output1 = output2);
-    val _ = \<^assert> (MCP_Cancellation.finish id = SOME true);
-    val _ = \<^assert> (MCP_Cancellation.finish id = NONE);
+    fun await_finished 0 = false
+      | await_finished attempts =
+          if MCP_Cancellation.member id
+          then (OS.Process.sleep (seconds 0.01); await_finished (attempts - 1))
+          else true;
+    val _ = \<^assert> (await_finished 200);
+    val _ = \<^assert> (Synchronized.value published = 0);
     val (s_remove, _) = MCP_Repl.run "remove" [("repl", "Cancel_IR")];
     val _ = \<^assert> (s_remove = "ok");
   in () end;

@@ -2,17 +2,16 @@
 
 Headless PIDE session serving MCP tools registered in Isabelle/ML.
 
-The ML side (mcp/Tools/MCP_Tools.thy) defines protocol commands
-"MCP.tools" and "MCP.run_tool"; their replies arrive as protocol
-messages "MCP.tools_result" and "MCP.run_tool_result" and complete
-promises created by ml_tools()/ml_run().
+The ML side (mcp/Tools/mcp_bridge.ML) defines one versioned protocol command.
+Typed operations select a context locator and complete promises by internal
+string request id.
 */
 
 package isabelle.mcp
 
 import isabelle._
-import isabelle.mcp.pide.{BridgeFailure, BridgeResult, LegacyWire,
-  PideBridge, PideBridgePolicy, SessionPideTransport}
+import isabelle.mcp.pide.{BridgeFailure, BridgeResult,
+  PideBridge, PideBridgePolicy, PideBridgeV1, SessionPideTransport}
 import isabelle.mcp.application.McpApplication
 
 import scala.util.control.NonFatal
@@ -26,31 +25,29 @@ trait MCP_Backend {
      an admitted connection worker.  The real backend makes their blocking
      work interruptible; test backends may retain the direct default. */
   def direct_cancellable[A](cancellation: McpApplication.Cancellation)(body: => A): A = body
-  /* rows carry full internal names, form tags and declared params,
-     relative to the DESIGNATION: "" = the ML side's default (the
-     MCP_Tools theory); a bare canonical theory long name selects that
-     theory; "repl:ID" selects a repl's current context
-     (plans/mcp_tool_registry, plans/tool_scope). bundles names are
-     folded onto the resolved context via Bundle.includes_cmd
-     (tool_scope_include) before the tool set is read. Exposed
-     (client-visible) names are computed scala-side (MCP_Server.exposure)
-     and params expand into JSON schemas at tools/list time. */
-  def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply
-  def ml_tools_cancellable(designation: String, bundles: List[String],
+  /* ML creates and canonicalizes context locators; Scala stores them as
+     opaque strings. root_context obtains the locator selected by the
+     connection's registry-root theory. */
+  def root_context(): MCP_Session.Result
+  def root_context_cancellable(
+    cancellation: McpApplication.Cancellation): MCP_Session.Result = root_context()
+  /* Rows carry full internal names, form tags and declared params relative to
+     the selected context. Exposed client names remain a Scala concern. */
+  def ml_tools(context: String): MCP_Session.Tools_Reply
+  def ml_tools_cancellable(context: String,
     cancellation: McpApplication.Cancellation): MCP_Session.Tools_Reply =
-    ml_tools(designation, bundles)
+    ml_tools(context)
   def ml_run(name: String, args: List[(String, String)],
-    designation: String = "", bundles: List[String] = Nil): MCP_Session.Result
+    context: String): MCP_Session.Result
   def ml_run_cancellable(name: String, args: List[(String, String)],
-    designation: String, bundles: List[String],
+    context: String,
     cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    ml_run(name, args, designation, bundles)
-  /* validate a candidate designation without committing to it
-     (tool_scope_set/tool_scope_include, plans/tool_scope) */
-  def check_designation(designation: String, bundles: List[String] = Nil): MCP_Session.Result
-  def check_designation_cancellable(designation: String, bundles: List[String],
+    ml_run(name, args, context)
+  /* Validate and canonicalize a candidate locator without committing it. */
+  def check_context(context: String): MCP_Session.Result
+  def check_context_cancellable(context: String,
     cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    check_designation(designation, bundles)
+    check_context(context)
   /* registration events (MCP.tools_changed / MCP.resources_changed from
      MCP_Tool.declare): the server loop registers a callback that pushes
      the matching notifications/{tools,resources}/list_changed line to the
@@ -210,7 +207,7 @@ object MCP_Session {
     params: List[Tool_Param],
     annotations: Tool_Annotations)
 
-  /* MCP.tools' wire shape (plans/builtin_activation): ml rows (active,
+  /* The tools operation payload (plans/builtin_activation): ML rows (active,
      non-builtin ML tools) plus a builtins section -- (base name, active)
      for EVERY registered Builtin-form mirror in MCP_Tools.thy, inactive
      included, so an empty section is distinguishable from "every mirror
@@ -267,13 +264,6 @@ object MCP_Session {
   def encode_args(args: List[(String, String)]): String = {
     import XML.Encode._
     YXML.string_of_body(list(pair(string, string))(args), recode = Symbol.encode)
-  }
-
-  /* bundle names for tool_scope_include, mirroring MCP_Protocol.decode_names
-     (a flat yxml list of strings, distinct from encode_args's pairs) */
-  def encode_names(names: List[String]): String = {
-    import XML.Encode._
-    YXML.string_of_body(list(string)(names), recode = Symbol.encode)
   }
 
   def decode_args(body: XML.Body): List[(String, String)] = {
@@ -363,6 +353,7 @@ object MCP_Session {
     session_name: String,
     session_dirs: List[Path],
     theory: String,
+    bridgeProfile: McpBridgeProfile,
     progress: Progress = new Progress
   ): MCP_Session = {
     val resources =
@@ -380,7 +371,7 @@ object MCP_Session {
       PideBridgePolicy.MaxPending.checked(options.int("mcp_max_in_flight"))
         .fold(error, identity)
     val mcp_session = new MCP_Session(session, session_name, session_dirs, theory,
-      structure, deps, store, bridgeMaxPending)
+      structure, deps, store, bridgeMaxPending, bridgeProfile)
 
     /* theories already in the session image keep their protocol commands
        (defined at build time, persisted in the heap); anything else is
@@ -406,6 +397,16 @@ object MCP_Session {
       }
     }
 
+    val startupTimeout =
+      PideBridgePolicy.PositiveSeconds.checked(
+        "mcp_request_timeout", options.real("mcp_request_timeout")).fold(error, identity)
+    mcp_session.await_bridge_ready(PideBridgePolicy.PositiveSeconds.value(startupTimeout)) match {
+      case Right(()) => ()
+      case Left(failure) =>
+        mcp_session.stop()
+        error("PIDE bridge startup hello failed: " + failure.message)
+    }
+
     mcp_session
   }
 
@@ -414,10 +415,11 @@ object MCP_Session {
     session_name: String,
     session_dirs: List[Path],
     theory: String,
+    bridgeProfile: McpBridgeProfile,
     progress: Progress = new Progress
   ): MCP_Session = {
     build(options, session_name, session_dirs, progress)
-    boot(options, session_name, session_dirs, theory, progress)
+    boot(options, session_name, session_dirs, theory, bridgeProfile, progress)
   }
 }
 
@@ -429,7 +431,8 @@ class MCP_Session private(
   val structure: Sessions.Structure,
   val deps: Sessions.Deps,
   val store: Store,
-  bridgeMaxPending: PideBridgePolicy.MaxPending
+  bridgeMaxPending: PideBridgePolicy.MaxPending,
+  bridgeProfile: McpBridgeProfile
 ) extends MCP_Backend {
   private final class DirectOperation {
     val id: String = UUID.random().toString
@@ -561,32 +564,44 @@ class MCP_Session private(
 
   private val changed_handler: Synchronized[String => Unit] =
     Synchronized(_ => ())
+  private object RegistryChange {
+    final case class Entry(function: String, event: String)
+    val Tools = Entry("MCP.tools_changed", "tools")
+    val Resources = Entry("MCP.resources_changed", "resources")
+  }
   private object ChangeHandler extends Session.Protocol_Handler {
-    private def changed(change: LegacyWire.Change)(msg: Prover.Protocol_Output): Boolean = {
+    private def changed(change: RegistryChange.Entry)(msg: Prover.Protocol_Output): Boolean = {
       changed_handler.value(change.event)
       true
     }
 
     private def tools_changed(msg: Prover.Protocol_Output): Boolean =
-      changed(LegacyWire.ToolsChanged)(msg)
+      changed(RegistryChange.Tools)(msg)
 
     private def resources_changed(msg: Prover.Protocol_Output): Boolean =
-      changed(LegacyWire.ResourcesChanged)(msg)
+      changed(RegistryChange.Resources)(msg)
 
     override val functions: Session.Protocol_Functions =
       List(
-        LegacyWire.ToolsChanged.function -> tools_changed,
-        LegacyWire.ResourcesChanged.function -> resources_changed)
+        RegistryChange.Tools.function -> tools_changed,
+        RegistryChange.Resources.function -> resources_changed)
   }
 
   session.init_protocol_handler(ChangeHandler)
 
   private val bridge =
     new PideBridge(
-      new SessionPideTransport(session, LegacyOperations.resultOperations.keySet),
+      new SessionPideTransport(session, PideBridgeV1.resultFunctions),
       bridgeMaxPending,
-      LegacyOperations.resultOperations,
-      LegacyOperations.cancel)
+      theory,
+      McpBridgeOperations.operationNames,
+      bridgeProfile,
+      PideBridgeV1)
+
+  private[mcp] def await_bridge_ready(timeoutSeconds: Double): BridgeResult[Unit] =
+    bridge.awaitReady(timeoutSeconds)
+
+  private[mcp] def bridge_operation_names: Set[String] = bridge.advertisedOperationNames
 
   private def bridge_value[A](result: BridgeResult[A]): A =
     result match {
@@ -605,55 +620,62 @@ class MCP_Session private(
   override def set_changed_handler(handler: String => Unit): Unit =
     changed_handler.change(_ => handler)
 
-  /* inbound symbol encoding, per call site (spec: "symbol recoding at the
-     client edge"): the yxml payloads go through MCP_Session.encode_args /
-     encode_names, which carry recode = Symbol.encode. The bare Bytes(...)
-     arguments below are deliberately NOT encoded -- request ids are
-     UUIDs, designations are repl ids / theory long names / bundle names,
-     and tool and resource names are the exposed mcp names, which the
-     mcp name charset already restricts to [A-Za-z0-9_-]. All ascii by
-     construction, so Symbol.encode would be a no-op on them; the one
-     argument that can carry model-authored term text is the run_tool /
-     ir argument payload, and that IS encoded because it rides
-     encode_args. */
+  /* PideBridgeV1 serializes the entire typed envelope with Symbol.encode as
+     the client-edge recoding step. Operation codecs therefore manipulate XML
+     values and never recode an already assembled YXML string. */
 
-  def ml_tools(designation: String = "", bundles: List[String] = Nil): MCP_Session.Tools_Reply =
-    ml_tools_cancellable(designation, bundles, McpApplication.Cancellation.Never)
+  def root_context(): MCP_Session.Result =
+    root_context_cancellable(McpApplication.Cancellation.Never)
 
-  override def ml_tools_cancellable(designation: String, bundles: List[String],
+  override def root_context_cancellable(
+      cancellation: McpApplication.Cancellation): MCP_Session.Result =
+    bridge_result(bridge.call(McpBridgeOperations.checkContext(None), cancellation))
+
+  private def root_context_value(cancellation: McpApplication.Cancellation): String =
+    root_context_cancellable(cancellation) match {
+      case MCP_Session.Ok(context) => context
+      case MCP_Session.Error(message) => error(message)
+    }
+
+  def ml_tools(): MCP_Session.Tools_Reply =
+    ml_tools(root_context_value(McpApplication.Cancellation.Never))
+
+  def ml_tools(context: String): MCP_Session.Tools_Reply =
+    ml_tools_cancellable(context, McpApplication.Cancellation.Never)
+
+  override def ml_tools_cancellable(context: String,
       cancellation: McpApplication.Cancellation): MCP_Session.Tools_Reply =
-    bridge_value(bridge.call(LegacyOperations.tools(designation, bundles), cancellation))
+    bridge_value(bridge.call(McpBridgeOperations.tools(context), cancellation))
 
   def ml_theories(): List[String] =
     ml_theories_cancellable(McpApplication.Cancellation.Never)
 
   private[mcp] def ml_theories_cancellable(
       cancellation: McpApplication.Cancellation): List[String] =
-    bridge_value(bridge.call(LegacyOperations.theories, cancellation))
+    bridge_value(bridge.call(McpBridgeOperations.theories, cancellation))
 
   def ml_run(name: String, args: List[(String, String)],
-      designation: String = "", bundles: List[String] = Nil): MCP_Session.Result =
-    ml_run_cancellable(name, args, designation, bundles, McpApplication.Cancellation.Never)
+      context: String): MCP_Session.Result =
+    ml_run_cancellable(name, args, context, McpApplication.Cancellation.Never)
+
+  def ml_run(name: String, args: List[(String, String)]): MCP_Session.Result =
+    ml_run(name, args, root_context_value(McpApplication.Cancellation.Never))
 
   override def ml_run_cancellable(name: String, args: List[(String, String)],
-      designation: String, bundles: List[String],
+      context: String,
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
     bridge_result(bridge.call(
-      LegacyOperations.runTool(designation, bundles, name, args), cancellation))
+      McpBridgeOperations.runTool(context, name, args), cancellation))
 
-  /* tool_scope_set/tool_scope_include (plans/tool_scope): validate a
-     candidate repl/bundle designation against the prover BEFORE the
-     Handler commits it as connection state, mirroring ml_run's own
-     resolution phase but discarding the context -- only ok/error and
-     the message matter here. The theory case needs no round trip
-     (resolve_context_theory already validates + normalizes it). */
-  def check_designation(designation: String, bundles: List[String] = Nil): MCP_Session.Result =
-    check_designation_cancellable(designation, bundles, McpApplication.Cancellation.Never)
+  /* Validate and canonicalize a context locator before the application
+     commits it as per-connection state. */
+  def check_context(context: String): MCP_Session.Result =
+    check_context_cancellable(context, McpApplication.Cancellation.Never)
 
-  override def check_designation_cancellable(designation: String, bundles: List[String],
+  override def check_context_cancellable(context: String,
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
     bridge_result(bridge.call(
-      LegacyOperations.checkDesignation(designation, bundles), cancellation))
+      McpBridgeOperations.checkContext(Some(context)), cancellation))
 
   /* MCP.ir: the I/R engine dispatcher (MCP_Repl.thy), named args, async
      (a slow call must not block a concurrent fast one) */
@@ -662,24 +684,30 @@ class MCP_Session private(
 
   override def ir_cancellable(fname: String, args: List[(String, String)],
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    bridge_result(bridge.call(LegacyOperations.ir(fname, args), cancellation))
+    bridge_result(bridge.call(McpBridgeOperations.ir(fname, args), cancellation))
 
   /* isabelle://named/{name}: user-registered resources from MCP_Resource
      (MCP_Tools.thy), the mcp_tool/mcp_resource ML registry -- mirrors
      ml_tools()/ml_run() exactly (MCP_Resource is MCP_Tool's sibling). */
-  def ml_named_resources(designation: String = ""): List[(String, String)] =
-    ml_named_resources_cancellable(designation, McpApplication.Cancellation.Never)
+  def ml_named_resources(context: String): List[(String, String)] =
+    ml_named_resources_cancellable(context, McpApplication.Cancellation.Never)
 
-  private[mcp] def ml_named_resources_cancellable(designation: String,
+  def ml_named_resources(): List[(String, String)] =
+    ml_named_resources(root_context_value(McpApplication.Cancellation.Never))
+
+  private[mcp] def ml_named_resources_cancellable(context: String,
       cancellation: McpApplication.Cancellation): List[(String, String)] =
-    bridge_value(bridge.call(LegacyOperations.resources(designation), cancellation))
+    bridge_value(bridge.call(McpBridgeOperations.resources(context), cancellation))
 
-  def ml_read_resource(name: String, designation: String = ""): MCP_Session.Result =
-    ml_read_resource_cancellable(name, designation, McpApplication.Cancellation.Never)
+  def ml_read_resource(name: String, context: String): MCP_Session.Result =
+    ml_read_resource_cancellable(name, context, McpApplication.Cancellation.Never)
 
-  private[mcp] def ml_read_resource_cancellable(name: String, designation: String,
+  def ml_read_resource(name: String): MCP_Session.Result =
+    ml_read_resource(name, root_context_value(McpApplication.Cancellation.Never))
+
+  private[mcp] def ml_read_resource_cancellable(name: String, context: String,
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    bridge_result(bridge.call(LegacyOperations.readResource(name, designation), cancellation))
+    bridge_result(bridge.call(McpBridgeOperations.readResource(context, name), cancellation))
 
   /* isabelle://session: the cheap always-there overview (name, dirs, loaded
      theory, loaded theories via Thy_Info.get_names()) */
@@ -688,7 +716,7 @@ class MCP_Session private(
 
   override def mcp_resources_cancellable(
       cancellation: McpApplication.Cancellation): List[(String, String, String)] = {
-    val rows = ml_named_resources_cancellable("", cancellation)
+    val rows = ml_named_resources_cancellable(root_context_value(cancellation), cancellation)
     val exposed = MCP_Server.exposure(rows.map(_._1))
     val universe = known_theory_tiers()
     val regexes = scope_patterns.value.map(MCP_Session.glob_to_regex)
@@ -771,10 +799,11 @@ class MCP_Session private(
          the EXPOSED name; resolve it back to the full internal name
          through the same exposure map resources/list used. */
       case named_uri(name) =>
+        val context = root_context_value(cancellation)
         val exposed =
-          MCP_Server.exposure(ml_named_resources_cancellable("", cancellation).map(_._1))
+          MCP_Server.exposure(ml_named_resources_cancellable(context, cancellation).map(_._1))
         val internal = exposed.collectFirst({ case (i, x) if x == name => i }).getOrElse(name)
-        ml_read_resource_cancellable(internal, "", cancellation)
+        ml_read_resource_cancellable(internal, context, cancellation)
       /* isabelle://theory/{name}/diagnostics: unblocked by wave 2
          (load_theory/check_theory), per the plans' gating chain. */
       case theory_diagnostics_uri(name) => theory_diagnostics(name)
@@ -1176,7 +1205,7 @@ class MCP_Session private(
     val repl_lines =
       if (repl_ids.isEmpty) List("repls: (none)")
       else "repls:" :: repl_ids.map("  " + _)
-    val rows = ml_named_resources_cancellable("", cancellation)
+    val rows = ml_named_resources_cancellable(root_context_value(cancellation), cancellation)
     val exposed = MCP_Server.exposure(rows.map(_._1))
     val named_names = rows.flatMap { case (name, _) => exposed.get(name) }
     val named_lines =

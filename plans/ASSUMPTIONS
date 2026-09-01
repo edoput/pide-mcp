@@ -38,6 +38,24 @@ connection_kernel#T9      e2e,scala-unit            MCP Ready can coexist with I
 connection_kernel#T10     e2e,scala-unit            Batch fixtures cover mixed requests and notifications, notification-only and empty batches, initialize-in-batch rejection, per-element admission limit
 connection_kernel#T11     bridge,scala-unit         Concurrent tool catalogs, theory catalogs, named-resource catalogs, resource reads, and designation checks retain request-unique routes; distinguishab
 connection_kernel#T12     bridge                    Concurrent load, check, and unload operations are serialized around PIDE document mutation, cancellation while waiting is interruptible, and backend s
+context_locator#A1        ml-unit                   Theory_Data attached to a registry-root theory inherits resolver declarations from its theory imports and can safely store the resolver functions need
+context_locator#A2        bridge,ml-unit            A loaded theory can produce a global Proof.context, while a live REPL can expose its latest Proof.context each time its locator is resolved.
+context_locator#A3        bridge                    The server can select and, when necessary, load its configured registry-root theory at startup without rebuilding the Scala implementation.
+context_locator#I1        bridge,ml-unit            MCP_Context_Locator is the sole owner of locator parsing, canonical printing, resolver registration, and resolution to Proof.context.
+context_locator#D1        unstated                  A context locator is an address for an existing Isabelle context, not a third context kind beside theory, Proof.context, and Context.generic.
+context_locator#D2        unstated                  The canonical external form is isabelle://context/KIND/TARGET; Isabelle/ML owns its parser and printer, while Scala may wrap but never interpret the s
+context_locator#D3        unstated                  MCP_Context_Locator stores named resolver functions in Theory_Data on the registry-root theory; MCP_Tools registers theory and MCP_Repl registers repl
+context_locator#D4        unstated                  The -T option selects the registry-root theory at server startup. One active connection captures that root, and changing it after Ready is separate co
+context_locator#D5        unstated                  Tool scope contains exactly one context locator. Network-controlled bundle lists and tool_scope_include are removed; theory authors retain Isabelle-na
+context_locator#D6        unstated                  tool_scope_set accepts one context field, tool_scope_show returns its canonical locator, and REPL creation returns a canonical repl locator that clien
+context_locator#Q1        unstated                  May an MCP client change the registry-root theory after the connection becomes Ready?
+context_locator#T1        ml-unit                   Canonical theory, repl, and extension locators round-trip through the ML parser and printer; malformed scheme, authority, kind, target, and escaping f
+context_locator#T2        ml-unit                   A resolver registered in an imported theory is available in its descendant, an unrelated theory cannot use it, and duplicate resolver-kind registratio
+context_locator#T3        bridge,ml-unit            A theory locator resolves to its global Proof.context; a repl locator observes the latest REPL state on every execution; unknown kinds, unknown theori
+context_locator#T4        bridge,scala-unit         Scala round-trips an extension-defined locator without parsing its kind, and tool_scope_set commits only the canonical ML-validated value while a fail
+context_locator#T5        bridge,e2e,ml-unit,scala-unit  tools/list and tools/call use the current context locator without any bundle payload; tool_scope_include is absent, and no public schema or bridge ope
+context_locator#T6        bridge,e2e                Starting with -T Scratch uses Scratch's inherited resolver and tool registries, while selecting another agent context does not change the registry roo
+context_locator#T7        bridge,e2e                REPL creation returns a canonical context locator and an agent can set it, register a tool through REPL work, observe that tool in tools/list, and cal
 doc_list#D1               unstated                  document_variants parsing: the option value is a ":"-separated variant list, each variant "name" or "name=tags" (see Document_Build in Pure). the doc
 doc_list#Q1               unstated                  where the catalog struct lives: mcp_session.scala already owns the startup structure/deps; a small Doc_Catalog object in mcp/src (own file or inside m
 doc_list#D2               unstated                  Doc.contents needs ML_Settings (the examples section expands $ML_SOURCES): ML_Settings.init() at startup, once. if init proves awkward in the server c
@@ -112,7 +130,7 @@ pide_bridge#D1            unstated                  The internal bridge revision
 pide_bridge#D2            unstated                  Scala sends one versioned bridge command and receives one versioned bridge-result function; ML dispatches operation names through a typed internal reg
 pide_bridge#D3            unstated                  The bridge control plane owns call IDs, admission, deadlines, pending completion, cancellation, stop, and invariant events; the transport owns only pr
 pide_bridge#D4            unstated                  Client cancellation and the connection deadline remain the public request race owners; the bridge safety deadline is a backstop for direct and non-con
-pide_bridge#D5            unstated                  MCP_Tools defines the extensible ML operation registry and its one common executor; descendant theories register additional handlers, and MCP_Repl con
+pide_bridge#D5            unstated                  MCP_Tools defines the extensible ML operation registry and its one common executor; handlers are inherited through the configured registry-root theory
 pide_bridge#D6            unstated                  Request and reply limits count the raw bytes of the sole serialized YXML envelope; request size is checked before transport send and ML decode, and re
 pide_bridge#D7            unstated                  PideTransport reports byte delivery and termination but does not own Headless.Session.stop; the composition root owns Isabelle session termination and
 pide_bridge#D8            unstated                  PideBridge.call returns Either[BridgeFailure, A]; an operation-domain error remains a successfully decoded A, while transport, protocol, remote-execut
@@ -125,7 +143,7 @@ pide_bridge#T5            scala-unit                A transport send failure and
 pide_bridge#T6            bridge,ml-unit,scala-unit  Stop/result races and repeated stop calls admit no post-stop work; stop acknowledges only after Scala pending entries and deadlines plus ML routes and
 pide_bridge#T7            scala-unit                Saturating maxPending admits exactly the configured bound, creates no waiting queue, rejects the next call immediately, and admits a later call after
 pide_bridge#T8            bridge,ml-unit,scala-unit  Unsupported revisions, unknown operations, malformed envelopes, and invalid status or payload combinations return a correlated ProtocolError instead o
-pide_bridge#T9            bridge,ml-unit            Tools, theories, tool execution, designation checks, named-resource listing, and named-resource reads register in MCP_Tools; IR registers only in MCP_
+pide_bridge#T9            bridge,ml-unit            Tools, theories, tool execution, context checks, named-resource listing, and named-resource reads register in MCP_Tools; IR registers only in MCP_Repl
 pide_bridge#T10           bridge,scala-unit         A bounded startup hello makes MCP-Tools Ready with only base operations and MCP-HOL Ready with IR, while an absent command, wrong revision, or missing
 pide_bridge#T11           bridge,ml-unit,scala-unit  A serialized request of exactly maxRequestBytes succeeds, a larger request returns TooLarge before transport send, and the ML decoder independently re
 pide_bridge#T12           bridge,ml-unit,scala-unit  A serialized reply of exactly maxReplyBytes succeeds, while a larger operation result becomes a small correlated TooLarge reply before protocol public

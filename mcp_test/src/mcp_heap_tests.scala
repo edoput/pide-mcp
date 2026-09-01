@@ -26,7 +26,11 @@ class MCP_Registry_Heap_Tests extends MCP_Heap_Suite("MCP-Tools") {
     val probe =
       """
       let
-        val ctxt = MCP_Protocol.designated_context \"\" [];
+        val thy =
+          (case try Thy_Info.get_theory \"MCP-Tools.MCP_Tools\" of
+            SOME thy => thy
+          | NONE => Thy_Info.get_theory \"MCP_Tools\");
+        val ctxt = #2 (MCP_Context_Locator.resolve thy (MCP_Context_Locator.theory thy));
         val context = Context.Proof ctxt;
         fun check b msg = if b then () else error msg;
       in
@@ -56,38 +60,33 @@ class MCP_Registry_Heap_Tests extends MCP_Heap_Suite("MCP-Tools") {
   }
 }
 
-/* plans/tool_scope A1: repl states expose readable contexts mid-proof.
-   MCP_Protocol.designated_context's "repl:ID" branch goes through a
-   hook (MCP_Protocol.set_repl_context_hook) installed from MCP_Repl.thy
-   as Ir.context_of, itself the same last_state (the_repl id) |>
-   Toplevel.context_of shape Ir.find_theorems already relies on
-   (verified durable there) -- this pins the SAME claim for the tool
-   registry's generic dispatcher path, on a fresh process against the
-   real MCP-HOL heap (a repl's Toplevel.state cannot be faked). */
+/* plans/context_locator A2: repl states expose readable contexts mid-proof.
+   MCP_Repl contributes the repl resolver through inherited Theory_Data; this
+   pins that registration and its evolving Proof.context in a fresh process
+   against the real MCP-HOL heap. */
 class MCP_Tool_Scope_Heap_Tests extends MCP_Heap_Suite("MCP-HOL") {
-  test("heap: repl designation resolves mid-proof, unknown repl/bundle error naming the offender") {
+  test("heap: repl context locator resolves its latest state and names an unknown repl") {
     val probe =
       """
       let
         fun check b msg = if b then () else error msg;
+        val root =
+          (case try Thy_Info.get_theory \"MCP-HOL.MCP_Repl\" of
+            SOME thy => thy
+          | NONE => Thy_Info.get_theory \"MCP_Repl\");
         val _ = Ir.init \"R\" [\"Main\"];
         val _ = Ir.step \"R\" \"lemma \\\"True\\\"\";
-        val ctxt = MCP_Protocol.designated_context \"repl:R\" [];
+        val ctxt = #2 (MCP_Context_Locator.resolve_string root \"isabelle://context/repl/R\");
         val _ = check (length (MCP_Tool.active (Context.Proof ctxt)) >= 0) \"active tools not readable mid-proof\";
         val _ = Ir.step \"R\" \"by simp\";
-        val ctxt2 = MCP_Protocol.designated_context \"repl:R\" [];
+        val ctxt2 = #2 (MCP_Context_Locator.resolve_string root \"isabelle://context/repl/R\");
         val _ = check (length (MCP_Tool.active (Context.Proof ctxt2)) >= 0) \"active tools not readable after proof close\";
         val unknown_repl_msg =
-          (case Exn.capture_body (fn () => MCP_Protocol.designated_context \"repl:NOPE\" []) of
+          (case Exn.capture_body (fn () => MCP_Context_Locator.resolve_string root
+              \"isabelle://context/repl/NOPE\") of
             Exn.Exn exn => Runtime.exn_message exn
           | Exn.Res _ => error \"expected unknown repl to fail\");
         val _ = check (String.isSubstring \"NOPE\" unknown_repl_msg) (\"unknown repl message missing id: \" ^ unknown_repl_msg);
-        val unknown_bundle_msg =
-          (case Exn.capture_body (fn () => MCP_Protocol.designated_context \"repl:R\" [\"No_Such_Bundle\"]) of
-            Exn.Exn exn => Runtime.exn_message exn
-          | Exn.Res _ => error \"expected unknown bundle to fail\");
-        val _ = check (String.isSubstring \"No_Such_Bundle\" unknown_bundle_msg)
-          (\"unknown bundle message missing name: \" ^ unknown_bundle_msg);
       in () end;
       """
     val probe_literal = quote(probe.linesIterator.map(_.trim).mkString(" "))

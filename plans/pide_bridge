@@ -6,6 +6,7 @@ status: in_progress
 depends_on:
   - connection_kernel
   - planning_gate
+  - context_locator
 allowed_modules:
   - mcp/src
   - mcp/etc
@@ -48,7 +49,7 @@ claims:
     category: design
   - id: D5
     kind: design
-    statement: MCP_Tools defines the extensible ML operation registry and its one common executor; descendant theories register additional handlers, and MCP_Repl contributes IR decoding, dispatch, and output capture without creating a second call route or Future group.
+    statement: MCP_Tools defines the extensible ML operation registry and its one common executor; handlers are inherited through the configured registry-root theory, descendant theories register additional handlers, and MCP_Repl contributes IR decoding, dispatch, and output capture without creating a second call route or Future group.
     category: design
   - id: D6
     kind: design
@@ -104,12 +105,12 @@ claims:
   - id: T8
     kind: test
     state: active
-    statement: Unsupported revisions, unknown operations, malformed envelopes, and invalid status or payload combinations return a correlated ProtocolError instead of hanging or reaching a domain handler.
+    statement: Unsupported revisions, unknown operations, malformed envelopes, and invalid status or payload combinations return a correlated ProtocolError instead of hanging or reaching a domain handler; valid structured PIDE markup crosses status results as XML bodies rather than nested YXML strings.
     layers: [scala-unit, ml-unit, bridge]
   - id: T9
     kind: test
     state: active
-    statement: Tools, theories, tool execution, designation checks, named-resource listing, and named-resource reads register in MCP_Tools; IR registers only in MCP_Repl; duplicate registration fails; all seven operations use the common executor and production PideBridge while list-change events remain independent fan-out notifications.
+    statement: Tools, theories, tool execution, context checks, named-resource listing, and named-resource reads register in MCP_Tools; IR registers only in MCP_Repl; duplicate registration fails; all seven operations use the common executor and production PideBridge while list-change events remain independent fan-out notifications.
     layers: [ml-unit, bridge]
   - id: T10
     kind: test
@@ -239,6 +240,12 @@ duplicate names fail at theory build.  `MCP_Repl` registers IR, but contributes
 only decode, dispatch, and output-capture behavior.  The common executor owns
 the sole Future group and cancellation route, so wrapping IR cannot create a
 nested route or double-register the ID.
+
+The configured theory is the immutable registry-root theory defined by
+`plans/context_locator`, not the connection's agent context.  Operation
+payloads carry opaque context locators where domain behavior needs a
+Proof.context.  They never carry designation variants or bundle lists; ML owns
+context-locator resolution before invoking the registered domain handler.
 
 After the configured target theory is available, Scala sends a hello with a
 bounded startup deadline.  The reply contains the bridge revision and sorted

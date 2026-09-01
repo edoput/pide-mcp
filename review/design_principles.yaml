@@ -1,0 +1,342 @@
+schema: isabelle-mcp.design-principles/v1
+updated_on: "2026-09-01"
+canonical: true
+review_usage:
+  finding_fields: [principle_ids, mismatch, observable_consequence, smallest_repair, verification]
+  rule: A finding cites stable principle IDs and demonstrates an implementation outcome that contradicts the intended outcome.
+principles:
+  - id: ARC-001
+    title: Separate control, data, and application planes
+    category: architecture
+    status: active
+    intent: Byte transport, lifecycle ownership, and Isabelle behavior evolve independently behind narrow ports.
+    review_checks:
+      - Data-plane code owns framing, parsing, byte delivery, and complete writes only.
+      - Control-plane code owns lifecycle, request state, cancellation, admission, deadlines, and shutdown.
+      - Application code cannot write transport bytes or mutate lifecycle registries.
+    mismatch_examples:
+      - A transport decides whether an MCP request is legal.
+      - An application service writes directly to stdout.
+    decision_examples:
+      - PideTransport moves commands and bytes; PideBridge owns call state; BridgeOperation owns typed codecs.
+    anchors: [plans/connection_kernel, plans/pide_bridge]
+
+  - id: ARC-002
+    title: Wire replaceable parts only at the composition root
+    category: architecture
+    status: active
+    intent: Runtime implementations and policies are explicit choices at one assembly boundary.
+    review_checks:
+      - Ports are passed into kernels instead of constructed inside them.
+      - Backend capability profiles are selected explicitly.
+      - Forbidden dependency directions produce compile-time errors through package/API boundaries.
+    mismatch_examples:
+      - Selecting HOL behavior with sessionName == MCP-HOL inside MCP_Session.
+      - A production scheduler instantiated inside request handling.
+    decision_examples:
+      - The composition root selects stdio versus scripted data planes and bounded versus sequential schedulers.
+      - Base and HOL bridge profiles replace a literal session-name heuristic.
+    anchors: [plans/connection_kernel, plans/pide_bridge]
+
+  - id: ARC-003
+    title: Model lifecycle as an explicit state machine
+    category: architecture
+    status: active
+    intent: Legal messages and work admission are defined for Fresh, AwaitingInitialized, Ready, Closing, and Closed states.
+    review_checks:
+      - Fresh accepts initialize only.
+      - AwaitingInitialized accepts the initialized notification and protocol control messages only.
+      - Closing and Closed admit no new ordinary work.
+      - Isabelle readiness is not conflated with MCP connection lifecycle.
+    mismatch_examples:
+      - Pre-initialize tools/call succeeds.
+      - A non-null backend reference is the only readiness representation.
+    anchors: [plans/connection_kernel]
+
+  - id: ARC-004
+    title: Bound admission without an implicit waiting queue
+    category: architecture
+    status: active
+    intent: Memory and work are bounded; saturation returns immediate structured overload.
+    review_checks:
+      - Both running and queued work have explicit finite bounds.
+      - Capacity is returned by the terminal transition.
+      - Configuration is validated and immutable for a connection.
+    mismatch_examples:
+      - A fixed worker pool backed by an unbounded executor queue.
+      - Waiting indefinitely for a semaphore slot.
+    anchors: [plans/connection_kernel, plans/pide_bridge]
+
+  - id: ARC-005
+    title: Give every asynchronous operation one terminal owner
+    category: architecture
+    status: active
+    intent: Response, cancellation, timeout, transport failure, and shutdown compete for exactly one terminal transition.
+    review_checks:
+      - A single registry entry owns completion and cleanup.
+      - Late or duplicate results cannot complete another request.
+      - Cancellation interrupts cooperative ML work and suppresses escaped late results.
+    mismatch_examples:
+      - Separate promise maps broadcast a reply to several callers.
+      - Duplicate completion is silently treated as normal success.
+    anchors: [plans/connection_kernel, plans/pide_bridge]
+
+  - id: ARC-006
+    title: Represent evolving policy as typed immutable values
+    category: architecture
+    status: active
+    intent: Named validated fields and explicit profiles make policy evolution visible at compile time.
+    review_checks:
+      - Constructors validate bounds and mutually dependent settings.
+      - Call sites use named case-class fields or typed profiles.
+      - Policy is read once rather than dynamically mutated through MCP.
+    mismatch_examples:
+      - Positional tuples for timeout and capacity.
+      - String modes whose spelling selects semantic behavior.
+    decision_examples:
+      - ConnectionPolicy and PideBridgePolicy use checked value types.
+      - McpBridgeProfile makes base versus HOL readiness explicit.
+    anchors: [plans/connection_kernel, plans/pide_bridge]
+
+  - id: PRO-001
+    title: Use one versioned internal bridge protocol
+    category: protocol
+    status: active
+    intent: Cross-language operations share one envelope, executor, cancellation route, and result function.
+    review_checks:
+      - New operations register a handler and typed codec only.
+      - Every envelope carries the independent bridge revision and internal ID.
+      - List-change notifications remain separate fan-out events, not request replies.
+    mismatch_examples:
+      - Adding a new MCP.operation protocol command and promise map.
+      - Giving IR a nested Future group and cancellation registry.
+    decision_examples:
+      - Seven miniature Scala-ML protocols were replaced by MCP.bridge and MCP.bridge_result.
+    anchors: [plans/pide_bridge]
+
+  - id: PRO-002
+    title: Correlate with internal string IDs
+    category: protocol
+    status: active
+    intent: Every call and cancellation is correlated without numeric precision loss or public-ID coupling.
+    review_checks:
+      - Internal IDs are strings generated independently from JSON-RPC IDs.
+      - Replies always carry the owning ID.
+      - No FIFO response-order assumption exists.
+    mismatch_examples:
+      - Decoding IDs as floating-point numbers.
+      - Keying pending work only by operation name.
+    anchors: [plans/pide_bridge, plans/connection_kernel]
+
+  - id: PRO-003
+    title: Separate protocol failures from operation failures
+    category: protocol
+    status: active
+    intent: Envelope incompatibility, executor failure, and domain rejection remain distinct outcomes.
+    review_checks:
+      - Only ok payloads reach operation decoders.
+      - ProtocolError, RemoteError, and domain Result values are not inferred from message text.
+      - Correlated malformed replies fail only their owner.
+    mismatch_examples:
+      - Mapping every ML error to Error(String).
+      - Treating an unknown operation as a successful domain result.
+    anchors: [plans/pide_bridge]
+
+  - id: PRO-004
+    title: Keep structured PIDE values structured
+    category: protocol
+    status: active
+    intent: Markup-bearing results cross nested envelopes as XML bodies rather than scalar strings.
+    review_checks:
+      - ML and Scala codecs are symmetrical.
+      - XML.Encode.self pairs with XML.Decode.self for structured bodies.
+      - Symbol recoding occurs at the client edge, not over assembled YXML control bytes.
+    mismatch_examples:
+      - XML.Encode.string around a YXML serialization containing markup.
+      - Applying Symbol.encode to an already assembled YXML envelope.
+    decision_examples:
+      - Resource markup exposed the XML_Body failure and established the self/body codec rule.
+    anchors: [plans/pide_bridge, mcp/Tools/mcp_bridge.ML, mcp/src/mcp_bridge_operations.scala]
+
+  - id: CAP-001
+    title: Make readiness prove the advertised capability surface
+    category: capability
+    status: active
+    intent: Ready means the selected application profile is supported by the loaded registry-root theory.
+    review_checks:
+      - A bounded hello checks bridge revision and required operation names.
+      - Extra theory-contributed operations are allowed.
+      - Calls are admitted only for operations actually advertised by ML.
+      - Required profiles are composition-root choices.
+    mismatch_examples:
+      - Declaring Ready immediately after the heap starts.
+      - Checking a static Scala catalog but not the ML registry.
+      - Selecting requirements from a literal session-name comparison.
+    anchors: [plans/pide_bridge]
+
+  - id: ISA-001
+    title: Prefer Isabelle-native conventions at the Isabelle boundary
+    category: isabelle
+    status: active
+    intent: Isabelle data and extension mechanisms remain authoritative inside the prover boundary.
+    review_checks:
+      - PIDE uses XML/YXML rather than nested JSON.
+      - Contextual declarations use Theory_Data and theory imports.
+      - User-visible activation remains Isar text.
+    mismatch_examples:
+      - A process-global JSON dispatcher for theory-local operations.
+      - Reconstructing Proof.context semantics in Scala.
+    anchors: [plans/context_locator, plans/pide_bridge]
+
+  - id: ISA-002
+    title: Make Isabelle extensions theory-local and inherited
+    category: isabelle
+    status: active
+    intent: Imports compose tools, operations, and resolvers while unrelated theories remain isolated.
+    review_checks:
+      - Registries are Theory_Data owned by the selected root.
+      - Duplicate registration fails with source positions.
+      - Descendant theories can extend without editing a central dispatcher.
+    mismatch_examples:
+      - A mutable callback installed by MCP_Repl into MCP_Tools.
+      - A process-global registry visible to unrelated theories.
+    anchors: [plans/context_locator, plans/pide_bridge]
+
+  - id: ISA-003
+    title: Treat a context locator as an address, not a context
+    category: isabelle
+    status: active
+    intent: Scala carries an opaque address and ML resolves an ordinary Proof.context at execution time.
+    review_checks:
+      - ML owns parsing, canonicalization, resolver registration, and resolution.
+      - Live REPL locators resolve their latest state on every operation.
+      - Scala does not branch on resolver kind.
+    mismatch_examples:
+      - Scala parses repl prefixes or theory variants.
+      - A serialized Proof.context crosses the bridge.
+    decision_examples:
+      - isabelle://context/KIND/TARGET replaced historical designations.
+    anchors: [plans/context_locator]
+
+  - id: ISA-004
+    title: Keep registry root separate from agent working context
+    category: isabelle
+    status: active
+    intent: Implementation availability is immutable per connection while execution context may change.
+    review_checks:
+      - The startup root owns inherited operation and resolver registries.
+      - Tool-scope changes affect only the locator.
+      - Loading or selecting a context cannot switch the registry root implicitly.
+    mismatch_examples:
+      - Looking up bridge handlers in the current REPL theory.
+      - Changing tool scope changes server capabilities.
+    anchors: [plans/context_locator, plans/pide_bridge]
+
+  - id: ISA-005
+    title: Keep bundle activation in Isar text
+    category: isabelle
+    status: active
+    intent: Theory authors control bundle activation through Isabelle syntax, not an MCP mutation API.
+    review_checks:
+      - No public schema or bridge payload contains bundle names.
+      - tool_scope_include is absent.
+      - Isar bundle tests remain as user-owned activation evidence.
+    mismatch_examples:
+      - Request-time Bundle.includes_cmd.
+      - A Scala bundle list stored per connection.
+    anchors: [plans/context_locator, plans/tool_scope]
+
+  - id: ISA-006
+    title: Put reusable ML implementations in standalone ML files
+    category: implementation
+    status: active
+    intent: Reusable structures have signatures and are loaded declaratively with ML_file.
+    review_checks:
+      - Large reusable structures are not embedded in theory command blocks.
+      - Theory files retain imports, setup, registration, and tests.
+    decision_examples:
+      - MCP_Context_Locator and MCP_Bridge live in mcp_context_locator.ML and mcp_bridge.ML.
+    anchors: [mcp/Tools/MCP_Tools.thy, mcp/Tools/mcp_context_locator.ML, mcp/Tools/mcp_bridge.ML]
+
+  - id: TST-001
+    title: Test contracts against replaceable deterministic implementations
+    category: testing
+    status: active
+    intent: Correctness is testable without production I/O or nondeterministic scheduling.
+    review_checks:
+      - Contract suites run against stdio and scripted data planes.
+      - Sequential scheduling is available for deterministic replay.
+      - Concurrency tests use barriers or controlled release points.
+    mismatch_examples:
+      - Sleeps are the sole race oracle.
+      - Protocol behavior can be tested only with a live Isabelle process.
+    anchors: [plans/connection_kernel, plans/pide_bridge]
+
+  - id: TST-002
+    title: Separate functional correctness from performance measurement
+    category: testing
+    status: active
+    intent: Correctness gates remain deterministic while performance has purpose-built measurement and budgets.
+    review_checks:
+      - Functional suites do not contain fragile wall-clock benchmarks.
+      - Performance runs use explicit warmup, repetition, and reporting.
+      - A performance regression cannot hide a functional failure.
+    mismatch_examples:
+      - Treating MUnit timing output as a benchmark framework.
+      - Mixing latency thresholds into ordinary bridge correctness tests.
+    anchors: [plans/verification_matrix]
+
+  - id: VER-001
+    title: Distinguish static coverage from executed evidence
+    category: verification
+    status: active
+    intent: Coverage declarations answer what should test a requirement; execution evidence answers what passed.
+    review_checks:
+      - covers tags and verification-matrix rows are treated as static metadata.
+      - Completion requires a current successful full run.
+      - Failed linked tests cannot close a requirement.
+    mismatch_examples:
+      - Marking a plan done because every T label has a registered test.
+    anchors: [plans/verification_matrix, plans/planning_gate]
+
+  - id: VER-002
+    title: Require every declared test layer for completion
+    category: verification
+    status: active
+    intent: A multilayer requirement is proven independently at every declared layer.
+    review_checks:
+      - Every layer has a linked test case that executed and passed.
+      - Filtered runs close only the requirements fully exercised by that run.
+      - Scala, ML theory, bridge, and e2e layers all block when declared.
+    mismatch_examples:
+      - A bridge test substitutes for a required e2e script.
+      - Relabelling a requirement to clear the matrix.
+    anchors: [plans/verification_matrix, plans/planning_gate]
+
+  - id: VER-003
+    title: Feed implementation discoveries back through spec and plan
+    category: verification
+    status: active
+    intent: Semantic discoveries keep specification, plan, tests, and code synchronized.
+    review_checks:
+      - Behavior-changing discoveries open a spec refinement.
+      - Folded refinements update both specification and plan before completion.
+      - Plans record unresolved design questions explicitly.
+    mismatch_examples:
+      - Code and comments adopt context locators while the spec still promises designations.
+      - An implementation shortcut silently resolves an open question.
+    anchors: [plans/planning_gate, plans/context_locator, plans/pide_bridge]
+
+  - id: OPS-001
+    title: Let the composition root own irreversible shutdown
+    category: operations
+    status: active
+    intent: Lower layers drain and report; only the session owner may force-stop Isabelle.
+    review_checks:
+      - PideTransport never owns Headless.Session.stop.
+      - Stopped follows ML drain acknowledgement or proven session termination.
+      - Forced termination is an explicit bounded fallback.
+    mismatch_examples:
+      - Transport closes the Isabelle session directly.
+      - The bridge reports Stopped after clearing Scala promises while ML work remains.
+    anchors: [plans/pide_bridge]

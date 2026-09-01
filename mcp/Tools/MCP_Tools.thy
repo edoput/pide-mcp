@@ -5,6 +5,13 @@ theory MCP_Tools
     and "description" "params" "format" "run" "capture" "isar"
 begin
 
+section \<open>Context locators\<close>
+
+ML_file "mcp_context_locator.ML"
+
+setup \<open>MCP_Context_Locator.register \<^binding>\<open>theory\<close>
+  MCP_Context_Locator.theory_resolver\<close>
+
 text \<open>The header reserves \<^verbatim>\<open>mcp_test\<close> now so it never changes again;
 the command itself arrives with its own phase-3 wave (see
 plans/mcp_tool_command).\<close>
@@ -963,7 +970,7 @@ fun ml_run description params annotations constraints f : MCP_Tool.tool =
 (*wrap a diagnostic command: registration-time checks here (position
   report -> ctrl+click on the command; keyword-class restriction), the
   run function validates + assembles + executes against the RUN
-  context's theory (the designation decides, not the registration site)*)
+  context's theory (the resolved context locator decides, not the registration site)*)
 fun diag ctxt (cmd, pos) {description, params, format = fmt, constraints} : MCP_Tool.tool =
   let
     val _ = Outer_Syntax.check_command ctxt (cmd, pos);
@@ -1447,30 +1454,15 @@ in end;
 
 section \<open>Protocol payloads\<close>
 
-text \<open>Pure functions, kept apart from the protocol-command wrappers below so
-they can be unit-tested (session MCP-Tools-Tests) without a PIDE context.
-All context-relative now: the DESIGNATION argument picks the context
-whose registered-AND-active entries are served (plans/mcp_tool_registry).
-"" = this theory, MCP_Tools, the guaranteed-present default; a bare
-canonical theory long name selects that theory (unchanged, shipped
-contract — kept bare rather than growing a "theory:" prefix, a
-deliberate deviation from the plan's literal wire format so the
-already-shipped bridge tests keep working; see plans/tool_scope,
-"spec refinement"); "repl:ID" selects a repl's current context
-(plans/tool_scope) via a hook the HOL layer installs (this theory has
-no notion of repls). A second argument, bundle_names, is folded onto
-the resolved context via \<^ML>\<open>Bundle.includes_cmd\<close> (Isar's "context
-includes"), left-to-right, first unresolvable name wins.\<close>
+text \<open>Pure domain codecs and operations, kept apart from the common
+bridge so they can be unit-tested without a PIDE transport.  The bridge
+resolves an opaque context locator first and supplies the resulting
+<^ML_type>\<open>Proof.context\<close>; these functions have no URL, registry-root, or
+connection-state knowledge.\<close>
 
 ML \<open>
 signature MCP_PROTOCOL =
 sig
-  val set_repl_context_hook: (string -> Proof.context) -> unit
-  val set_default_theory: theory -> unit
-  val designated_context: string -> string list -> Proof.context
-  val designated_context_safe: string -> string list -> Proof.context option
-  val decode_args: string -> (string * string) list
-  val decode_names: string -> string list
   val tools_body: Proof.context -> XML.body
   val empty_tools_body: XML.body
   val theories_body: unit -> XML.body
@@ -1481,80 +1473,6 @@ end;
 
 structure MCP_Protocol: MCP_PROTOCOL =
 struct
-
-(*default theory hook: NONE means fall back to MCP_Tools itself (the
-  Pure-based MCP-Tools test image, where nothing sets it). installed by
-  MCP_Repl.thy, mirroring repl_context_hook below, so this base layer
-  never names the HOL layer's theory -- widens the out-of-the-box
-  default strictly, since MCP_Repl imports MCP_Tools.*)
-val default_theory_hook : theory option Synchronized.var =
-  Synchronized.var "MCP_Protocol.default_theory_hook" NONE;
-
-fun set_default_theory thy = Synchronized.change default_theory_hook (K (SOME thy));
-
-(*"" = the registry's own theory: deterministic, in every server heap,
-  and it sees exactly the tools declared below (today's default view)
-  when no hook is set. Thy_Info keying mixes qualified and unqualified
-  names, so try both.*)
-fun default_theory () =
-  (case Synchronized.value default_theory_hook of
-    SOME thy => thy
-  | NONE =>
-      (case try Thy_Info.get_theory "MCP-Tools.MCP_Tools" of
-        SOME thy => thy
-      | NONE => Thy_Info.get_theory "MCP_Tools"));
-
-(*installed by MCP_Repl.thy (the HOL layer, which owns the repl
-  registry); NONE = no repl support in this session (e.g. the plain
-  MCP-Tools test image) -- repl designations then fail with a message
-  saying so, rather than a missing-hook internal error.*)
-val repl_context_hook : (string -> Proof.context) option Synchronized.var =
-  Synchronized.var "MCP_Protocol.repl_context_hook" NONE;
-
-fun set_repl_context_hook f = Synchronized.change repl_context_hook (K (SOME f));
-
-fun repl_context id =
-  (case Synchronized.value repl_context_hook of
-    SOME f => f id
-  | NONE =>
-      error ("Unknown repl " ^ quote id ^
-        " in MCP designation (no repl support in this session)"));
-
-fun resolve_designation "" = Proof_Context.init_global (default_theory ())
-  | resolve_designation designation =
-      (case try (unprefix "repl:") designation of
-        SOME id => repl_context id
-      | NONE =>
-          (case try Thy_Info.get_theory designation of
-            SOME thy => Proof_Context.init_global thy
-          | NONE => error ("Unknown theory " ^ quote designation ^ " in MCP designation")));
-
-fun designated_context designation bundle_names =
-  fold (fn name => fn ctxt =>
-      Bundle.includes_cmd [((true, Position.none), (name, Position.none))] ctxt
-        handle ERROR msg => error (msg ^ " (bundle " ^ quote name ^ " in MCP designation)"))
-    bundle_names (resolve_designation designation);
-
-(*crash-safe variant for wire commands with no (status, output) shape of
-  their own (tools_body/resources_body, unlike run_tool/read_resource):
-  a stale or bad designation (e.g. a repl removed after tool_scope_set)
-  must not leave the client's tools/list request unanswered -- degrade
-  to NONE (the caller serves the empty-payload floor) rather than
-  letting the exception escape the protocol command uncaught, which
-  would leave the promise on the Scala side unfulfilled forever.*)
-fun designated_context_safe designation bundle_names =
-  (case Exn.capture_body (fn () => designated_context designation bundle_names) of
-    Exn.Res ctxt => SOME ctxt
-  | Exn.Exn exn => if Exn.is_interrupt exn then Exn.reraise exn else NONE);
-
-(*named args cross as one yxml chunk holding an association list — the
-  same encoding as MCP.ir's arguments (MCP_Session.encode_args)*)
-fun decode_args yxml =
-  let open XML.Decode in list (pair string string) (YXML.parse_body yxml) end;
-
-(*bundle names cross the same way, as a flat yxml list of strings*)
-fun decode_names yxml =
-  let open XML.Decode in list string (YXML.parse_body yxml) end;
 
 (*rows are (full internal name, description, form tag, params);
   Isabelle/Scala computes the exposed (shortened, sanitized) names —
@@ -1634,8 +1552,8 @@ fun tools_body ctxt =
     let open XML.Encode in pair (list encode_row) (list encode_builtin) (ml_rows, builtin_rows) end
   end;
 
-(*the availability floor's empty shape (MCP.tools, designation
-  resolution failure, MCP_Protocol.designated_context_safe = NONE):
+(*The availability floor's empty shape (tools operation, context-locator
+  resolution failure):
   still a PAIR -- the wire shape scala always expects -- with both
   sections empty, so scala's decoder degrades to the full builtin
   table (and zero ML tools) without a special-cased wire shape.*)
@@ -1694,7 +1612,7 @@ section \<open>Protocol commands for Isabelle/Scala\<close>
 text \<open>Cooperative bridge cancellation is routed by the internal UUID that
 Scala assigns to one prover call.  The Scala request registry remains the
 client-visible race owner; this table only retains the Isabelle future group
-long enough for \<^verbatim>\<open>MCP.cancel\<close> to request an interrupt and for the
+long enough for a \<open>kind = cancel\<close> bridge envelope to request an interrupt and for the
 dependent result task to decide whether its protocol message must be
 suppressed.  Callbacks never use the client JSON-RPC id.\<close>
 
@@ -1702,8 +1620,11 @@ ML \<open>
 signature MCP_CANCELLATION =
 sig
   val register: string -> Future.group -> unit
+  val member: string -> bool
   val cancel: string -> bool
   val finish: string -> bool option
+  val fork_group:
+    string -> string -> (Future.group -> 'a) -> ('a Exn.result -> unit) -> unit
   val fork: string -> string -> (unit -> 'a) -> ('a Exn.result -> unit) -> unit
 end;
 
@@ -1720,6 +1641,8 @@ fun register id group =
     if AList.defined (op =) entries id
     then error ("Duplicate MCP bridge id " ^ quote id)
     else (id, Running group) :: entries);
+
+fun member id = AList.defined (op =) (Synchronized.value requests) id;
 
 fun cancel id =
   let
@@ -1749,14 +1672,14 @@ fun finish id =
   request-owned future group, an id-indexed cancellation entry, and a
   non-interruptible publisher.  The publisher is skipped when cancellation
   wins, so Scala can remove its promise immediately without a late result.*)
-fun fork id name body publish =
+fun fork_group id name body publish =
   let
     val group = Future.new_group NONE;
     val _ = register id group;
     val result =
       (singleton o Future.forks)
         {name = name, group = SOME group, deps = [], pri = ~1, interrupts = true}
-        body;
+        (fn () => body group);
     val _ =
       (singleton o Future.forks)
         {name = name ^ "_result", group = NONE,
@@ -1771,188 +1694,91 @@ fun fork id name body publish =
           in if cancelled then () else publish joined end);
   in () end;
 
+fun fork id name body publish = fork_group id name (fn _ => body ()) publish;
+
 end;
 \<close>
 
-ML \<open>
-val _ =
-  Protocol_Command.define "MCP.cancel"
-    (fn [id] => ignore (MCP_Cancellation.cancel id));
-\<close>
+text \<open>The common bridge owns the versioned envelope, request id,
+cancellation route, operation lookup, and exactly-one result publication.  A
+registered operation owns only its typed payload and domain result.  The
+registry is inherited theory data, so an importing theory may add operations
+without changing this dispatcher.\<close>
+
+ML_file "mcp_bridge.ML"
 
 ML \<open>
-val _ =
-  Protocol_Command.define "MCP.tools"
-    (fn [id, designation, bundles_yxml] =>
-      MCP_Cancellation.fork id "MCP.tools"
-        (fn () =>
-          (case MCP_Protocol.designated_context_safe designation
-              (MCP_Protocol.decode_names bundles_yxml) of
-             SOME ctxt => MCP_Protocol.tools_body ctxt
-           | NONE => MCP_Protocol.empty_tools_body))
-        (fn joined =>
-          let
-            val body =
-              (case joined of
-                Exn.Res value => value
-              | Exn.Exn exn =>
-                  (Output.error_message (Runtime.exn_message exn);
-                   MCP_Protocol.empty_tools_body));
-          in
-            Output.protocol_message
-              [Markup.function "MCP.tools_result", ("id", id)] [body]
-          end));
+structure MCP_Bridge_Base =
+struct
 
-val _ =
-  Protocol_Command.define "MCP.theories"
-    (fn [id] =>
-      MCP_Cancellation.fork id "MCP.theories"
-        MCP_Protocol.theories_body
-        (fn joined =>
-          let
-            val body =
-              (case joined of
-                Exn.Res value => value
-              | Exn.Exn exn =>
-                  (Output.error_message (Runtime.exn_message exn);
-                   let open XML.Encode in list string [] end));
-          in
-            Output.protocol_message
-              [Markup.function "MCP.theories_result", ("id", id)] [body]
-          end));
+val decode_args = XML.Decode.list (XML.Decode.pair XML.Decode.string XML.Decode.string);
+fun encode_status (status, output) =
+  XML.Encode.pair XML.Encode.string XML.Encode.self
+    (status, YXML.parse_body output);
+
+fun resolve root locator = #2 (MCP_Context_Locator.resolve_string root locator);
+
+fun resolve_result root locator f =
+  (case Exn.capture_body (fn () => f (resolve root locator)) of
+    Exn.Res result => result
+  | Exn.Exn exn =>
+      if Exn.is_interrupt exn then Exn.reraise exn
+      else ("error", Runtime.exn_message exn));
+
+fun tools _ root payload =
+  let val locator = XML.Decode.string payload in
+    (case Exn.capture_body (fn () => MCP_Protocol.tools_body (resolve root locator)) of
+      Exn.Res body => body
+    | Exn.Exn exn =>
+        if Exn.is_interrupt exn then Exn.reraise exn
+        else MCP_Protocol.empty_tools_body)
+  end;
+
+fun theories _ _ payload =
+  (XML.Decode.unit payload; MCP_Protocol.theories_body ());
+
+fun run_tool _ root payload =
+  let
+    val (locator, (name, args)) =
+      XML.Decode.pair XML.Decode.string
+        (XML.Decode.pair XML.Decode.string decode_args) payload;
+  in encode_status (resolve_result root locator (fn ctxt => MCP_Protocol.run_tool ctxt name args)) end;
+
+fun check_context _ root payload =
+  let
+    val candidate = XML.Decode.option XML.Decode.string payload;
+    val result =
+      (case Exn.capture_body (fn () =>
+          (case candidate of
+            SOME locator => #1 (MCP_Context_Locator.resolve_string root locator)
+          | NONE => MCP_Context_Locator.print (MCP_Context_Locator.theory root))) of
+        Exn.Res canonical => ("ok", canonical)
+      | Exn.Exn exn =>
+          if Exn.is_interrupt exn then Exn.reraise exn
+          else ("error", Runtime.exn_message exn));
+  in encode_status result end;
+
+fun resources _ root payload =
+  let val locator = XML.Decode.string payload in
+    (case Exn.capture_body (fn () => MCP_Protocol.resources_body (resolve root locator)) of
+      Exn.Res body => body
+    | Exn.Exn exn => if Exn.is_interrupt exn then Exn.reraise exn else [])
+  end;
+
+fun read_resource _ root payload =
+  let
+    val (locator, name) = XML.Decode.pair XML.Decode.string XML.Decode.string payload;
+  in encode_status (resolve_result root locator (fn ctxt => MCP_Protocol.read_resource ctxt name)) end;
+
+end;
 \<close>
 
-text \<open>ASYNC (plans/ml_builtin_migration step 5): the same two-future shape
-as \<open>MCP.ir\<close> above (MCP_Repl.thy) -- fork the work, then fork a SECOND,
-non-interruptible future depending on it that posts \<open>(status, output)\<close> by
-id. Posting must happen from that dependent future, never from inside the
-worker: if the worker were interrupted, posting from within it would never
-run and the Scala promise would hang forever (the same failure mode
-\<open>designated_context_safe\<close>'s comment records). Unlike \<open>MCP.ir\<close>'s
-\<open>fork_run\<close>, this registers NO output buffer -- \<^verbatim>\<open>run_tool\<close> below returns
-its result as a plain string, and any capture-form tool it reaches captures
-its own output via \<^verbatim>\<open>MCP_Output.captured\<close>; registering a second buffer
-here would make that capture ambiguous (\<open>find_buffer\<close>'s group-ancestry walk
-takes the first match found, MCP_Tools.thy above). Plain print mode
-throughout, unlike \<open>MCP.ir\<close>'s PIDE mode -- \<open>run_tool_result\<close> on the Scala
-side does not strip yxml markup.\<close>
-
-ML \<open>
-val _ =
-  Protocol_Command.define "MCP.run_tool"
-    (fn [id, designation, bundles_yxml, name, args_yxml] =>
-      let
-        val group = Future.new_group NONE;
-        val _ = MCP_Cancellation.register id group;
-        val result =
-          (singleton o Future.forks)
-            {name = "MCP.run_tool." ^ name, group = SOME group,
-             deps = [], pri = ~1, interrupts = true}
-            (fn () =>
-              case Exn.capture_body (fn () =>
-                  MCP_Protocol.designated_context designation
-                    (MCP_Protocol.decode_names bundles_yxml)) of
-                Exn.Res ctxt =>
-                  MCP_Protocol.run_tool ctxt name (MCP_Protocol.decode_args args_yxml)
-              | Exn.Exn exn =>
-                  if Exn.is_interrupt exn then Exn.reraise exn
-                  else ("error", Runtime.exn_message exn));
-        val _ =
-          (singleton o Future.forks)
-            {name = "MCP.run_tool_result", group = NONE,
-             deps = [Future.task_of result], pri = ~1, interrupts = false}
-            (fn () =>
-              let
-                val joined = Future.join_result result;
-                val cancelled =
-                  (case MCP_Cancellation.finish id of
-                    SOME value => value
-                  | NONE => error ("Missing MCP.run_tool cancellation route " ^ quote id));
-                val (status, output) =
-                  (case joined of
-                    Exn.Res res => res
-                  | Exn.Exn exn => ("error", Runtime.exn_message exn));
-              in
-                if cancelled then ()
-                else
-                  Output.protocol_message
-                    [Markup.function "MCP.run_tool_result", ("id", id), ("status", status)]
-                    [[XML.Text output]]
-              end);
-      in () end);
-\<close>
-
-text \<open>tool_scope_set/tool_scope_include (plans/tool_scope) validate a
-candidate designation BEFORE committing it as connection state ("unknown
-theory/repl/bundle in scope calls -> isError, connection state
-unchanged"). The theory case validates scala-side for free (via
-resolve_context_theory, the same normalization that must run before
-storing anyway); the repl and bundle cases need the prover, hence this
-command -- it mirrors run_tool's own resolution phase, discarding the
-context (only success/failure and the message matter here).\<close>
-
-ML \<open>
-val _ =
-  Protocol_Command.define "MCP.check_designation"
-    (fn [id, designation, bundles_yxml] =>
-      MCP_Cancellation.fork id "MCP.check_designation"
-        (fn () =>
-          MCP_Protocol.designated_context designation
-            (MCP_Protocol.decode_names bundles_yxml))
-        (fn joined =>
-          let
-            val (status, output) =
-              (case joined of
-                Exn.Res _ => ("ok", "")
-              | Exn.Exn exn => ("error", Runtime.exn_message exn));
-          in
-            Output.protocol_message
-              [Markup.function "MCP.check_designation_result", ("id", id),
-               ("status", status)]
-              [[XML.Text output]]
-          end));
-\<close>
-
-ML \<open>
-val _ =
-  Protocol_Command.define "MCP.resources"
-    (fn [id, designation] =>
-      MCP_Cancellation.fork id "MCP.resources"
-        (fn () =>
-          (case MCP_Protocol.designated_context_safe designation [] of
-             SOME ctxt => MCP_Protocol.resources_body ctxt
-           | NONE => []))
-        (fn joined =>
-          let
-            val body =
-              (case joined of
-                Exn.Res value => value
-              | Exn.Exn exn =>
-                  (Output.error_message (Runtime.exn_message exn); []));
-          in
-            Output.protocol_message
-              [Markup.function "MCP.resources_result", ("id", id)] [body]
-          end));
-
-val _ =
-  Protocol_Command.define "MCP.read_resource"
-    (fn [id, designation, name] =>
-      MCP_Cancellation.fork id "MCP.read_resource"
-        (fn () =>
-          let val ctxt = MCP_Protocol.designated_context designation []
-          in MCP_Protocol.read_resource ctxt name end)
-        (fn joined =>
-          let
-            val (status, output) =
-              (case joined of
-                Exn.Res value => value
-              | Exn.Exn exn => ("error", Runtime.exn_message exn));
-          in
-            Output.protocol_message
-              [Markup.function "MCP.read_resource_result", ("id", id), ("status", status)]
-              [[XML.Text output]]
-          end));
-\<close>
+setup \<open>MCP_Bridge.register \<^binding>\<open>tools\<close> MCP_Bridge_Base.tools\<close>
+setup \<open>MCP_Bridge.register \<^binding>\<open>theories\<close> MCP_Bridge_Base.theories\<close>
+setup \<open>MCP_Bridge.register \<^binding>\<open>run_tool\<close> MCP_Bridge_Base.run_tool\<close>
+setup \<open>MCP_Bridge.register \<^binding>\<open>check_context\<close> MCP_Bridge_Base.check_context\<close>
+setup \<open>MCP_Bridge.register \<^binding>\<open>resources\<close> MCP_Bridge_Base.resources\<close>
+setup \<open>MCP_Bridge.register \<^binding>\<open>read_resource\<close> MCP_Bridge_Base.read_resource\<close>
 
 section \<open>Demo tool and resource\<close>
 
@@ -2051,8 +1877,7 @@ val _ =
        ("doc_list", "List the Isabelle documentation catalog."),
        ("doc_read", "Read Isabelle documentation from its plain-text sources."),
        ("tool_scope_show", "Show the current tool scope (agent context)."),
-       ("tool_scope_set", "Set the tool scope to a theory or a repl."),
-       ("tool_scope_include", "Open bundles in the current tool scope.")])));
+       ("tool_scope_set", "Set the tool scope to a context locator.")])));
 \<close>
 
 end

@@ -5,8 +5,8 @@ Deterministic contracts for the extracted PIDE bridge boundary.
 
 package isabelle.mcp.pide
 
-import isabelle.{Bytes, Future, Markup}
-import isabelle.mcp.MCP_Suite
+import isabelle.{Bytes, Future, Markup, Properties, XML, YXML}
+import isabelle.mcp.{MCP_Session, MCP_Suite, McpBridgeOperations, McpBridgeProfile}
 
 
 class MCP_Pide_Bridge_Tests extends MCP_Suite {
@@ -93,6 +93,9 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
     def sent: Vector[PideTransport.Outbound] = synchronized { outbound }
 
+    /** Start a new observation window after control-plane setup. */
+    def clearOutbound(): Unit = synchronized { outbound = Vector.empty }
+
     def awaitSent(count: Int): Unit = synchronized {
       val deadline = System.nanoTime() + 5000000000L
       while (outbound.length < count && System.nanoTime() < deadline) wait(10L)
@@ -108,13 +111,33 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
   }
 
   private def bridge(transport: ScriptedTransport, maxPending: Int = 4,
-    diagnostics: String => Unit = _ => ()): PideBridge =
-    new PideBridge(
+    diagnostics: String => Unit = _ => ()): PideBridge = {
+    val control = new PideBridge(
       transport,
       policy(maxPending).maxPending,
-      Map("first_result" -> "first", "second_result" -> "second", "op_result" -> "op"),
-      id => PideTransport.Outbound("cancel", List(Bytes(id))),
+      "MCP_Tools",
+      McpBridgeOperations.baseOperationNames ++ Set("first", "second", "op"),
+      McpBridgeProfile.base,
+      PideBridgeV1,
       diagnostics)
+    transport.onNextSend(message =>
+      deliverHello(transport, requestProperty(message, "id"),
+        operations = (McpBridgeOperations.baseOperationNames ++
+          Set("first", "second", "op")).toList.sorted))
+    assertEquals(control.awaitReady(1.0), Right(()))
+    transport.clearOutbound()
+    control
+  }
+
+  private def startupBridge(transport: ScriptedTransport,
+    bridgeProfile: McpBridgeProfile): PideBridge =
+    new PideBridge(
+      transport,
+      policy().maxPending,
+      "MCP_Tools",
+      McpBridgeOperations.operationNames,
+      bridgeProfile,
+      PideBridgeV1)
 
   private def policy(maxPending: Int = 2): PideBridgePolicy =
     PideBridgePolicy.checked(
@@ -126,17 +149,40 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
   private final case class TextOperation(name: String, request: String)
       extends BridgeOperation[String] {
-    val resultFunction = name + "_result"
-    def outbound(id: String): PideTransport.Outbound =
-      PideTransport.Outbound(name, List(Bytes(id), Bytes(request)))
-    def decodeReply(reply: PideTransport.Inbound): Either[String, String] =
-      if (reply.text.startsWith("bad:")) Left(reply.text)
-      else Right(reply.text)
+    val requestPayload: XML.Body = XML.Encode.string(request)
+    def decodeReply(payload: XML.Body): Either[String, String] = {
+      val text = XML.Decode.string(payload)
+      if (text.startsWith("bad:")) Left(text) else Right(text)
+    }
   }
 
-  private def reply(operation: String, text: String): PideTransport.Inbound =
-    PideTransport.Inbound(
-      operation + "_result", List("id" -> "test"), Bytes(text), text)
+  private def reply(text: String): XML.Body = XML.Encode.string(text)
+
+  private def requestProperties(message: PideTransport.Outbound): Properties.T =
+    YXML.parse_body(YXML.Source(message.arguments.head.text)) match {
+      case List(XML.Elem(markup, _)) if markup.name == "mcp_bridge" => markup.properties
+      case body => fail("invalid bridge request envelope: " + body)
+    }
+
+  private def requestProperty(message: PideTransport.Outbound, name: String): String =
+    Properties.get(requestProperties(message), name)
+      .getOrElse(fail("bridge request has no " + name))
+
+  private def deliverResult(transport: ScriptedTransport, id: String,
+    operation: String, text: String): Unit = {
+    val message = PideBridgeV1.result(
+      id, operation, "ok", XML.Encode.string(text))
+    transport.deliver(message.function, id, message.body.text, message.properties)
+  }
+
+  private def deliverHello(transport: ScriptedTransport, id: String,
+    revision: String = PideBridgeV1.revision,
+    operations: List[String] = McpBridgeOperations.baseOperationNames.toList.sorted): Unit = {
+    val message = PideBridgeV1.result(id, "hello", "ok",
+      XML.Encode.pair(XML.Encode.string, XML.Encode.list(XML.Encode.string))(
+        (revision, operations)))
+    transport.deliver(message.function, id, message.body.text, message.properties)
+  }
 
   test("bridge policy validates all named resource bounds together") {
     val errors =
@@ -178,9 +224,9 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val second = registry.register(secondId, TextOperation("second", "request-2"))
       .fold(failure => fail(failure.message), identity)
 
-    assertEquals(registry.complete(secondId, "second", reply("second", "reply-2")),
+    assertEquals(registry.complete(secondId, "second", reply("reply-2")),
       PendingRegistry.Completed)
-    assertEquals(registry.complete(firstId, "first", reply("first", "reply-1")),
+    assertEquals(registry.complete(firstId, "first", reply("reply-1")),
       PendingRegistry.Completed)
     assertEquals(second.result, Right("reply-2"))
     assertEquals(first.result, Right("reply-1"))
@@ -198,16 +244,16 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val owned = registry.register(ownedId, TextOperation("expected", "request"))
       .fold(failure => fail(failure.message), identity)
 
-    assertEquals(registry.complete(ownedId, "wrong", reply("wrong", "reply")),
+    assertEquals(registry.complete(ownedId, "wrong", reply("reply")),
       PendingRegistry.Rejected)
     owned.result match {
       case Left(BridgeFailure.ProtocolError(message)) =>
         assert(message.contains("does not match"))
       case result => fail("expected ProtocolError, got " + result)
     }
-    assertEquals(registry.complete(ownedId, "expected", reply("expected", "late")),
+    assertEquals(registry.complete(ownedId, "expected", reply("late")),
       PendingRegistry.Unowned)
-    assertEquals(registry.complete(otherId, "expected", reply("expected", "unknown")),
+    assertEquals(registry.complete(otherId, "expected", reply("unknown")),
       PendingRegistry.Unowned)
     assertEquals(recorded.toList,
       List(
@@ -217,7 +263,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val rejectedId = BridgeCallId.test("rejected")
     val rejected = registry.register(rejectedId, TextOperation("decoder", "request"))
       .fold(failure => fail(failure.message), identity)
-    assertEquals(registry.complete(rejectedId, "decoder", reply("decoder", "bad: malformed")),
+    assertEquals(registry.complete(rejectedId, "decoder", reply("bad: malformed")),
       PendingRegistry.Rejected)
     rejected.result match {
       case Left(BridgeFailure.ProtocolError(message)) =>
@@ -228,13 +274,11 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val throwingId = BridgeCallId.test("throwing")
     val throwing = registry.register(throwingId, new BridgeOperation[String] {
       val name = "throwing"
-      val resultFunction = "throwing_result"
-      def outbound(id: String): PideTransport.Outbound =
-        PideTransport.Outbound("throwing", List(Bytes(id)))
-      def decodeReply(reply: PideTransport.Inbound): Either[String, String] =
+      val requestPayload: XML.Body = XML.Encode.unit(())
+      def decodeReply(payload: XML.Body): Either[String, String] =
         throw new IllegalArgumentException("invalid body")
     }).fold(failure => fail(failure.message), identity)
-    assertEquals(registry.complete(throwingId, "throwing", reply("throwing", "body")),
+    assertEquals(registry.complete(throwingId, "throwing", reply("body")),
       PendingRegistry.Rejected)
     throwing.result match {
       case Left(BridgeFailure.ProtocolError(message)) =>
@@ -260,39 +304,129 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assert(registry.register(secondId, TextOperation("op", "request")).isRight)
   }
 
-  test("checkpoint-1 characterization names all legacy operations and change events") {
-    assertEquals(
-      LegacyWire.operations.map(operation =>
-        (operation.name, operation.command, operation.resultFunction,
-          operation.argumentNames, operation.replyShape)),
-      List(
-        ("tools", "MCP.tools", "MCP.tools_result",
-          List("id", "designation", "bundles_yxml"), LegacyWire.ReplyShape.ToolsYxml),
-        ("theories", "MCP.theories", "MCP.theories_result",
-          List("id"), LegacyWire.ReplyShape.TheoriesYxml),
-        ("run_tool", "MCP.run_tool", "MCP.run_tool_result",
-          List("id", "designation", "bundles_yxml", "name", "args_yxml"),
-          LegacyWire.ReplyShape.StatusText),
-        ("check_designation", "MCP.check_designation", "MCP.check_designation_result",
-          List("id", "designation", "bundles_yxml"), LegacyWire.ReplyShape.StatusText),
-        ("ir", "MCP.ir", "MCP.ir_result",
-          List("id", "fname", "args_yxml"), LegacyWire.ReplyShape.StatusYxml),
-        ("resources", "MCP.resources", "MCP.resources_result",
-          List("id", "designation"), LegacyWire.ReplyShape.ResourcesYxml),
-        ("read_resource", "MCP.read_resource", "MCP.read_resource_result",
-          List("id", "designation", "name"), LegacyWire.ReplyShape.StatusText)))
-    assertEquals(LegacyWire.changes.map(change => (change.function, change.event)),
-      List(("MCP.tools_changed", "tools"), ("MCP.resources_changed", "resources")))
-    assertEquals(LegacyWire.operations.map(_.name).distinct.size, 7)
+  test("all seven domain operations use the single v1 command and result function") {
+    assertEquals(McpBridgeOperations.operationNames,
+      Set("tools", "theories", "run_tool", "check_context", "ir",
+        "resources", "read_resource"))
+    assertEquals(PideBridgeV1.Command, "MCP.bridge")
+    assertEquals(PideBridgeV1.resultFunctions, Set("MCP.bridge_result"))
 
-    assertEquals(
-      LegacyWire.arguments(LegacyWire.Ir,
-        "args_yxml" -> Bytes("args"), "id" -> Bytes("id"), "fname" -> Bytes("fn"))
-        .map(_.text),
-      List("id", "fn", "args"))
-    intercept[IllegalArgumentException] {
-      LegacyWire.arguments(LegacyWire.Ir, "id" -> Bytes("id"), "fname" -> Bytes("fn"))
+    val outbound = PideBridgeV1.call(
+      "string-id", "MCP_Repl", "tools",
+      McpBridgeOperations.tools("isabelle://context/theory/HOL.Main").requestPayload)
+    assertEquals(outbound.command, PideBridgeV1.Command)
+    assertEquals(requestProperty(outbound, "id"), "string-id")
+    assertEquals(requestProperty(outbound, "operation"), "tools")
+  }
+
+  spec_test("base-profile hello gates ordinary calls and accepts extra operations",
+      covers = List("pide_bridge#T10")) {
+    val transport = new ScriptedTransport
+    val control = startupBridge(transport, McpBridgeProfile.base)
+    assertEquals(control.call(TextOperation("tools", "request"), NeverCancelled),
+      Left(BridgeFailure.ProtocolError("PIDE bridge is not ready")))
+
+    val ready = Future.fork(control.awaitReady(1.0))
+    transport.awaitSent(1)
+    val hello = transport.sent.head
+    assertEquals(requestProperty(hello, "kind"), "hello")
+    assertEquals(requestProperty(hello, "theory"), "MCP_Tools")
+    deliverHello(transport, requestProperty(hello, "id"), operations =
+      (McpBridgeOperations.baseOperationNames + "extension").toList.sorted)
+    assertEquals(ready.join, Right(()))
+    assertEquals(control.advertisedOperationNames,
+      McpBridgeOperations.baseOperationNames + "extension")
+    control.beginStop()
+    control.sessionStopped()
+  }
+
+  test("bridge profiles explicitly select the base or HOL startup requirements") {
+    assertEquals(McpBridgeProfile.base.name, "base")
+    assertEquals(McpBridgeProfile.base.requiredOperationNames,
+      McpBridgeOperations.baseOperationNames)
+    assertEquals(McpBridgeProfile.hol.name, "hol")
+    assertEquals(McpBridgeProfile.hol.requiredOperationNames,
+      McpBridgeOperations.holOperationNames)
+
+    val transport = new ScriptedTransport
+    val control = startupBridge(transport, McpBridgeProfile.hol)
+    val ready = Future.fork(control.awaitReady(1.0))
+    transport.awaitSent(1)
+    deliverHello(transport, requestProperty(transport.sent.head, "id"),
+      operations = McpBridgeOperations.baseOperationNames.toList.sorted)
+    assert(ready.join.left.exists(_.message.contains("ir")))
+    control.sessionStopped()
+  }
+
+  test("an operation omitted from hello is rejected locally without a call envelope") {
+    val transport = new ScriptedTransport
+    val control = startupBridge(transport, McpBridgeProfile.base)
+    val ready = Future.fork(control.awaitReady(1.0))
+    transport.awaitSent(1)
+    deliverHello(transport, requestProperty(transport.sent.head, "id"),
+      operations = McpBridgeOperations.baseOperationNames.toList.sorted)
+    assertEquals(ready.join, Right(()))
+
+    assertEquals(control.call(TextOperation("ir", "request"), NeverCancelled),
+      Left(BridgeFailure.ProtocolError("bridge operation was not advertised by ML: ir")))
+    assertEquals(transport.sent.length, 1)
+    control.beginStop()
+    control.sessionStopped()
+  }
+
+  test("startup hello rejects a wrong revision, missing operation, and malformed reply") {
+    def rejected(deliver: (ScriptedTransport, String) => Unit): BridgeResult[Unit] = {
+      val transport = new ScriptedTransport
+      val control = startupBridge(transport, McpBridgeProfile.base)
+      val ready = Future.fork(control.awaitReady(1.0))
+      transport.awaitSent(1)
+      deliver(transport, requestProperty(transport.sent.head, "id"))
+      val result = ready.join
+      control.sessionStopped()
+      result
     }
+
+    assert(rejected((transport, id) => deliverHello(transport, id, revision = "wrong"))
+      .left.exists(_.message.contains("unsupported bridge revision")))
+    assert(rejected((transport, id) => deliverHello(transport, id,
+      operations = List("tools"))).left.exists(_.message.contains("missing required")))
+    assert(rejected((transport, id) => {
+      val malformed = PideBridgeV1.result(id, "hello", "ok", XML.Encode.string("not a pair"))
+      transport.deliver(malformed.function, id, malformed.body.text, malformed.properties)
+    }).left.exists(_.message.contains("malformed hello reply")))
+  }
+
+  test("startup hello fails on transport failure and bounded no-reply timeout") {
+    val sendFailureTransport = new ScriptedTransport
+    sendFailureTransport.failNextSend("cannot send hello")
+    val sendFailure = startupBridge(sendFailureTransport, McpBridgeProfile.base)
+    assertEquals(sendFailure.awaitReady(1.0),
+      Left(BridgeFailure.TransportFailed("cannot send hello")))
+    sendFailure.sessionStopped()
+
+    val failedTransport = new ScriptedTransport
+    val failed = startupBridge(failedTransport, McpBridgeProfile.base)
+    val failedReady = Future.fork(failed.awaitReady(1.0))
+    failedTransport.awaitSent(1)
+    failedTransport.failTransport("lost")
+    assertEquals(failedReady.join, Left(BridgeFailure.TransportFailed("transport terminated")))
+    failed.sessionStopped()
+
+    val silentTransport = new ScriptedTransport
+    val silent = startupBridge(silentTransport, McpBridgeProfile.base)
+    assertEquals(silent.awaitReady(0.01), Left(BridgeFailure.TimedOut(0.01)))
+    silent.sessionStopped()
+  }
+
+  spec_test("status operation payloads preserve structured PIDE markup as XML bodies",
+      covers = List("pide_bridge#T8")) {
+    val marked = List(XML.Elem(Markup("block", Nil), List(XML.Text("marked text"))))
+    val payload =
+      XML.Encode.pair(XML.Encode.string, XML.Encode.self)(("ok", marked))
+    val operation = McpBridgeOperations.readResource(
+      "isabelle://context/theory/HOL.Main", "marked")
+
+    assertEquals(operation.decodeReply(payload), Right(MCP_Session.Ok("marked text")))
   }
 
   test("production transport recognizes only unknown correlated MCP results") {
@@ -328,11 +462,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     transport.awaitSent(2)
 
     val sends = transport.sent
-    val firstId = sends.find(_.command == "first").get.arguments.head.text
-    val secondId = sends.find(_.command == "second").get.arguments.head.text
+    val firstSend = sends.find(message => requestProperty(message, "operation") == "first").get
+    val secondSend = sends.find(message => requestProperty(message, "operation") == "second").get
+    val firstId = requestProperty(firstSend, "id")
+    val secondId = requestProperty(secondSend, "id")
     assertNotEquals(firstId, secondId)
-    transport.deliver("second_result", secondId, "reply-2")
-    transport.deliver("first_result", firstId, "reply-1")
+    deliverResult(transport, secondId, "second", "reply-2")
+    deliverResult(transport, firstId, "first", "reply-1")
 
     assertEquals(second.join, Right("reply-2"))
     assertEquals(first.join, Right("reply-1"))
@@ -370,11 +506,11 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val cancelled = Future.fork(
       cancelBridge.call(TextOperation("op", "request"), cancellation))
     cancelTransport.awaitSent(1)
-    val cancelId = cancelTransport.sent.head.arguments.head.text
+    val cancelId = requestProperty(cancelTransport.sent.head, "id")
     cancellation.cancel()
     cancelTransport.awaitSent(2)
-    assertEquals(cancelTransport.sent(1),
-      PideTransport.Outbound("cancel", List(Bytes(cancelId))))
+    assertEquals(requestProperty(cancelTransport.sent(1), "kind"), "cancel")
+    assertEquals(requestProperty(cancelTransport.sent(1), "id"), cancelId)
     assertEquals(cancelled.join, Left(BridgeFailure.Cancelled))
     assertEquals(cancelBridge.pendingCount, 0)
 
@@ -384,8 +520,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val completed = Future.fork(
       replyBridge.call(TextOperation("op", "request"), replyCancellation))
     replyTransport.awaitSent(1)
-    val replyId = replyTransport.sent.head.arguments.head.text
-    replyTransport.deliver("op_result", replyId, "reply")
+    val replyId = requestProperty(replyTransport.sent.head, "id")
+    deliverResult(replyTransport, replyId, "op", "reply")
     replyCancellation.cancel()
     assertEquals(completed.join, Right("reply"))
     assertEquals(replyTransport.sent.length, 1)
@@ -399,8 +535,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
   spec_test("send failure and transport termination fail owned calls without leaks",
       covers = List("pide_bridge#T5")) {
     val sendTransport = new ScriptedTransport
-    sendTransport.failNextSend("send boom")
     val sendBridge = bridge(sendTransport)
+    sendTransport.failNextSend("send boom")
     sendBridge.call(TextOperation("op", "request"), NeverCancelled) match {
       case Left(BridgeFailure.TransportFailed(message)) => assert(message.contains("send boom"))
       case result => fail("expected send TransportFailed, got " + result)
@@ -427,8 +563,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val transport = new ScriptedTransport
     val control = bridge(transport)
     transport.onNextSend { message =>
-      val id = message.arguments.head.text
-      transport.deliver("op_result", id, "bad: malformed")
+      val id = requestProperty(message, "id")
+      deliverResult(transport, id, "op", "bad: malformed")
     }
 
     control.call(TextOperation("op", "request"), NeverCancelled) match {
@@ -436,9 +572,9 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       case result => fail("expected synchronous ProtocolError, got " + result)
     }
     assertEquals(transport.sent.length, 2)
-    val id = transport.sent.head.arguments.head.text
-    assertEquals(transport.sent(1),
-      PideTransport.Outbound("cancel", List(Bytes(id))))
+    val id = requestProperty(transport.sent.head, "id")
+    assertEquals(requestProperty(transport.sent(1), "kind"), "cancel")
+    assertEquals(requestProperty(transport.sent(1), "id"), id)
     assertEquals(control.pendingCount, 0)
     control.beginStop()
     control.sessionStopped()
@@ -452,20 +588,20 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     })
     val waiting = Future.fork(control.call(TextOperation("op", "request"), NeverCancelled))
     transport.awaitSent(1)
-    val id = transport.sent.head.arguments.head.text
+    val id = requestProperty(transport.sent.head, "id")
 
-    transport.deliver("bogus_result", id, "reply")
+    transport.deliver("MCP.bogus_result", id, "reply")
     waiting.join match {
       case Left(BridgeFailure.ProtocolError(message)) =>
         assert(message.contains("unknown PIDE bridge result function"))
       case result => fail("expected unknown-function ProtocolError, got " + result)
     }
     transport.awaitSent(2)
-    assertEquals(transport.sent(1),
-      PideTransport.Outbound("cancel", List(Bytes(id))))
+    assertEquals(requestProperty(transport.sent(1), "kind"), "cancel")
+    assertEquals(requestProperty(transport.sent(1), "id"), id)
     assertEquals(control.pendingCount, 0)
 
-    transport.deliver("op_result", id, "late")
+    deliverResult(transport, id, "op", "late")
     assert(diagnostics.synchronized {
       diagnostics.exists(_.contains("Unowned PIDE bridge reply"))
     })

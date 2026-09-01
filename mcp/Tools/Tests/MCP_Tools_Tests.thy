@@ -11,6 +11,75 @@ land in the production heap the server loads. Importing both fixture
 arms (B: del, C: none) makes this theory the merge point of the
 activation diamond.\<close>
 
+section \<open>Context locators\<close>
+
+spec_test \<open>context locator codec is canonical and rejects malformed addresses\<close>
+  verifies \<open>context_locator#I1\<close>
+  covers \<open>context_locator#T1\<close>
+
+ML \<open>
+val theory_locator = MCP_Context_Locator.parse "isabelle://context/theory/HOL.List";
+\<^assert> (MCP_Context_Locator.kind_of theory_locator = "theory");
+\<^assert> (MCP_Context_Locator.target_of theory_locator = "HOL.List");
+\<^assert> (MCP_Context_Locator.print theory_locator =
+  "isabelle://context/theory/HOL.List");
+
+val escaped = MCP_Context_Locator.parse "isabelle://context/fixture/a%2Fb%25c";
+\<^assert> (MCP_Context_Locator.target_of escaped = "a/b%c");
+\<^assert> (MCP_Context_Locator.print escaped =
+  "isabelle://context/fixture/a%2Fb%25c");
+
+fun locator_fails source =
+  Exn.is_exn (Exn.capture_body (fn () => MCP_Context_Locator.parse source));
+\<^assert> (locator_fails "https://context/theory/HOL.List");
+\<^assert> (locator_fails "isabelle://context//HOL.List");
+\<^assert> (locator_fails "isabelle://context/Theory/HOL.List");
+\<^assert> (locator_fails "isabelle://context/theory/");
+\<^assert> (locator_fails "isabelle://context/theory/HOL/List");
+\<^assert> (locator_fails "isabelle://context/theory/HOL%2fList");
+\<^assert> (locator_fails "isabelle://context/theory/%41");
+\<close>
+
+spec_test \<open>context resolver kinds follow theory imports and reject duplicates\<close>
+  verifies \<open>context_locator#A1\<close>
+  covers \<open>context_locator#T2\<close>
+
+ML \<open>
+val fixture = \<^theory>\<open>MCP_Fixture_C\<close>;
+val sibling = \<^theory>\<open>MCP_Fixture_Sibling\<close>;
+\<^assert> (member (op =) (MCP_Context_Locator.registered fixture) "fixture");
+\<^assert> (not (member (op =) (MCP_Context_Locator.registered sibling) "fixture"));
+
+val (fixture_canonical, fixture_context) =
+  MCP_Context_Locator.resolve_string fixture "isabelle://context/fixture/self";
+\<^assert> (fixture_canonical = "isabelle://context/fixture/self");
+\<^assert> (Context.eq_thy
+  (Proof_Context.theory_of fixture_context, fixture));
+
+\<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
+  MCP_Context_Locator.resolve_string sibling "isabelle://context/fixture/self")));
+\<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
+  MCP_Context_Locator.register (Binding.name "fixture")
+    (fn thy => fn target => (target, Proof_Context.init_global thy)) \<^theory>)));
+\<close>
+
+spec_test \<open>theory context locators resolve to ordinary global proof contexts\<close>
+  verifies \<open>context_locator#A2\<close>
+  covers \<open>context_locator#T3\<close>
+
+ML \<open>
+val root = \<^theory>;
+val root_name = Context.theory_long_name root;
+val (canonical, resolved) =
+  MCP_Context_Locator.resolve_string root
+    ("isabelle://context/theory/" ^ root_name);
+\<^assert> (canonical = "isabelle://context/theory/" ^ root_name);
+\<^assert> (Context.eq_thy (Proof_Context.theory_of resolved, root));
+\<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
+  MCP_Context_Locator.resolve_string root
+    "isabelle://context/theory/No_Such_Theory")));
+\<close>
+
 section \<open>Registration: name space entities\<close>
 
 ML \<open>
@@ -182,7 +251,7 @@ val (_, (_, (_, (_, ptyp_fixture_annot)))) =
   never reach exposure-name computation.*)
 \<^assert> (not (exists (fn (n, _, _) => n = "MCP_Tools.repl_list") rows));
 \<^assert> (member (op =) builtin_rows ("repl_list", true));
-\<^assert> (member (op =) builtin_rows ("tool_scope_include", true));
+\<^assert> (member (op =) builtin_rows ("tool_scope_set", true));
 \<^assert> (MCP_Tool.is_active (Context.Proof \<^context>) "MCP_Tools.repl_list");
 \<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
   MCP_Tool.run \<^context> "MCP_Tools.repl_list" [])));
@@ -224,44 +293,42 @@ in
 end;
 \<close>
 
-section \<open>Designation\<close>
+section \<open>Context-relative payloads\<close>
+
+spec_test \<open>bridge status payload preserves structured PIDE markup as XML\<close>
+  covers \<open>pide_bridge#T8\<close>
 
 ML \<open>
-(*"" designates the MCP_Tools theory itself: sees shout, not fixtures*)
-val rows0 = decode_tools (MCP_Protocol.tools_body (MCP_Protocol.designated_context "" []));
-\<^assert> (exists (fn (n, _, _) => n = "MCP_Tools.shout") rows0);
-\<^assert> (not (exists (fn (n, _, _) => n = "MCP_Fixture_A.alpha") rows0));
+val marked = [XML.Elem (("block", []), [XML.Text "marked text"])];
+val marked_yxml = YXML.string_of_body marked;
+val (status, decoded) =
+  XML.Decode.pair XML.Decode.string XML.Decode.self
+    (MCP_Bridge_Base.encode_status ("ok", marked_yxml));
+\<^assert> (status = "ok" andalso decoded = marked);
+\<close>
 
-(*an explicit theory designation resolves via Thy_Info (canonical key);
-  only ancestor-heap theories are in Thy_Info during a batch build, so
-  the fixture theories cannot be designated here -- live-designation
-  coverage is the bridge suite's job*)
+ML \<open>
 val tools_name =
   the (find_first (fn n => Long_Name.base_name n = "MCP_Tools") (Thy_Info.get_names ()));
-val rows_t = decode_tools (MCP_Protocol.tools_body (MCP_Protocol.designated_context tools_name []));
-\<^assert> (rows_t = rows0);
+val tools_locator = "isabelle://context/theory/" ^ tools_name;
+val (canonical, tools_ctxt) = MCP_Context_Locator.resolve_string \<^theory> tools_locator;
+val rows = decode_tools (MCP_Protocol.tools_body tools_ctxt);
+\<^assert> (canonical = tools_locator);
+\<^assert> (exists (fn (n, _, _) => n = "MCP_Tools.shout") rows);
+\<^assert> (not (exists (fn (n, _, _) => n = "MCP_Fixture_A.alpha") rows));
 
-(*unknown designations error with the offending name*)
+(*Unknown locator targets and kinds error with the offending value.*)
 \<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
-  MCP_Protocol.designated_context "No_Such_Theory" [])));
+  MCP_Context_Locator.resolve_string \<^theory>
+    "isabelle://context/theory/No_Such_Theory")));
 
-(*unknown repl designations error with the offending id, distinct from
-  an unknown theory (no repl support in the base MCP-Tools-Tests image)*)
+(*No repl resolver is inherited by the base MCP-Tools-Tests image.*)
 val repl_err =
-  (case Exn.capture_body (fn () => MCP_Protocol.designated_context "repl:R1" []) of
+  (case Exn.capture_body (fn () => MCP_Context_Locator.resolve_string \<^theory>
+      "isabelle://context/repl/R1") of
     Exn.Exn exn => Runtime.exn_message exn
   | Exn.Res _ => "");
-\<^assert> (String.isSubstring "R1" repl_err andalso String.isSubstring "repl" repl_err);
-
-(*bundle includes fold onto the resolved context; an unresolvable bundle
-  name errors naming the bundle, before or after other bundles*)
-\<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
-  MCP_Protocol.designated_context "" ["No_Such_Bundle"])));
-val bundle_err =
-  (case Exn.capture_body (fn () => MCP_Protocol.designated_context "" ["No_Such_Bundle"]) of
-    Exn.Exn exn => Runtime.exn_message exn
-  | Exn.Res _ => "");
-\<^assert> (String.isSubstring "No_Such_Bundle" bundle_err);
+\<^assert> (String.isSubstring "repl" repl_err);
 \<close>
 
 section \<open>Resources (exact mirror of tools)\<close>

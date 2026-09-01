@@ -2774,31 +2774,62 @@ bundle IS a list of (thms, attributes)):
    activation declaration must be routed into the bundle content).
 
 the server's viewpoint — the AGENT CONTEXT: context data needs a
-context to be read from. the server designates one theory (or repl)
-as the agent's standpoint; tools/list = registered-and-active tools
-of that context, run against it by default.
+context to be read from. tools/list serves the registered-and-active
+tools of one resolved Proof.context and tools/call runs against it.
 
-- default designation: the -T theory of the running session (MCP_Repl
-  for MCP-HOL); load_theory does NOT auto-switch it (implicit scope
-  jumps would be surprising; rejected alternative: union over all
-  loaded theories — violates import semantics and makes tool sets
-  non-reproducible).
-- builtin tools (scala, new; sibling family of the phase-2 resource
-  scope_* — resource scope filters *listing*, tool scope decides
-  *which context defines the tool set*; keep the names distinct):
+context locators replace designations (decided 2026-08-31)
+----------------------------------------------------------
+id: D-2026-08-31-context-locators
+refines: D-undated-visibility-registration-vs-activation-bundles
 
-    tool_scope_show     {}          current designation + active tools
-    tool_scope_set      {theory | repl}
-    tool_scope_include  {bundles: [string]}   Bundle.includes applied
-                                              to the agent context
+the protocol never serializes an Isabelle context. it carries a
+CONTEXT LOCATOR: a canonical address that Isabelle/ML resolves to an
+ordinary Proof.context when an operation executes.
 
-  tool_scope_set {repl: R} is the self-extension hinge: tools the
-  agent registers via repl_step land in R's context data, and
-  designating R makes the server serve them (see "the self-extension
-  loop" below).
-- bridge change: MCP.tools / MCP.run_tool take the designation as an
-  argument (theory name or repl id); the scala side owns the current
-  designation as connection state, like the resource scope.
+- canonical surface: isabelle://context/KIND/TARGET. MCP_Tools
+  registers the `theory` kind; MCP_Repl inherits it and registers
+  `repl`; imported theories may register more kinds. current theory
+  names and repl ids need no escaping; extension targets use the one
+  canonical percent encoding defined and tested by the locator codec.
+- MCP_Context_Locator owns the locator value, parser, printer,
+  Theory_Data resolver registry, and resolution. this is NOT a third
+  Isabelle context kind: theory locators produce
+  Proof_Context.init_global, repl locators produce the repl's current
+  Proof.context, and operations continue to use Proof.context.
+- scala treats the locator as opaque. tool_scope_set takes
+  {context: string}; ML validates and returns the canonical spelling
+  before scala commits it. tool_scope_show returns that spelling.
+  repl creation returns its canonical locator. tools/list and
+  tools/call use the connection's stored locator without repeating it
+  in every public request.
+- the REGISTRY-ROOT THEORY is separate from the agent context. `-T`
+  selects it at server startup; its theory imports determine the
+  inherited bridge-operation, context-resolver, tool, and resource
+  registries. ROOT makes a theory available, but only a theory import
+  inherits Theory_Data. `-s My-Session -T Scratch` is runtime startup
+  configuration and does not require changing scala. one active
+  connection keeps one root; loading a theory or changing agent
+  context never switches it implicitly. post-Ready root switching is
+  deferred to an explicit control-plane design with per-call snapshot,
+  readiness, and catalog-change rules.
+- tool scope contains exactly one locator. tool_scope_include and all
+  bundle-list fields are removed from the public schema, scala state,
+  and scala/ML bridge. MCP requests cannot apply Bundle.includes.
+  bundles remain Isabelle-native author controls in theory and proof
+  text: declarations, unbundle, context includes, and including still
+  affect the Proof.context that a locator later resolves.
+- the repl self-extension hinge is unchanged in purpose: tools the
+  agent registers through repl work land in that repl's context data;
+  selecting the returned repl locator makes the server serve them.
+  the difference is that MCP_Repl contributes a Theory_Data resolver
+  instead of filling one global hook, and scala never recognizes a
+  `repl:` prefix.
+
+historical sections and completed plans use `designation`, bare theory
+names, `repl:ID`, and request-time bundle lists to describe the behavior
+shipped in July 2026. those terms remain as implementation history but
+are superseded as the current contract by this decision and
+plans/context_locator.
 
 builtin tools in the activation layer (decided 2026-07-13)
 -----------------------------------------------------------

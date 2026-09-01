@@ -5,7 +5,8 @@ Typed control/data-plane boundary for Scala-to-Isabelle/ML calls.
 
 package isabelle.mcp.pide
 
-import isabelle.{Bytes, Future, Headless, Markup, Output, Promise, Properties, Prover, Session}
+import isabelle.{Bytes, Future, Headless, Markup, Output, Promise, Properties, Prover, Session, XML}
+import isabelle.mcp.McpBridgeProfile
 
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -169,9 +170,8 @@ object PideBridgePolicy {
   */
 trait BridgeOperation[A] {
   def name: String
-  def resultFunction: String
-  def outbound(id: String): PideTransport.Outbound
-  def decodeReply(reply: PideTransport.Inbound): Either[String, A]
+  def requestPayload: XML.Body
+  def decodeReply(payload: XML.Body): Either[String, A]
 }
 
 
@@ -342,7 +342,7 @@ private[pide] final class PendingRegistry(
 
   private sealed trait Entry {
     def operation: String
-    def complete(reply: PideTransport.Inbound): Boolean
+    def complete(payload: XML.Body): Boolean
     def fail(failure: BridgeFailure): Unit
   }
 
@@ -352,9 +352,9 @@ private[pide] final class PendingRegistry(
   ) extends Entry {
     val operation: String = descriptor.name
 
-    def complete(reply: PideTransport.Inbound): Boolean =
+    def complete(payload: XML.Body): Boolean =
       try {
-        descriptor.decodeReply(reply) match {
+        descriptor.decodeReply(payload) match {
           case Right(value) => promise.fulfill(Right(value)); true
           case Left(error) => promise.fulfill(Left(ProtocolError(error))); false
         }
@@ -385,17 +385,18 @@ private[pide] final class PendingRegistry(
     }
   }
 
+  private def remove(id: BridgeCallId): Option[Entry] = synchronized {
+    val result = pending.get(id)
+    pending -= id
+    result
+  }
+
   def complete(id: BridgeCallId, operation: String,
-    reply: PideTransport.Inbound): Completion = {
-    val owner = synchronized {
-      pending.get(id) match {
-        case Some(entry) => pending -= id; Some(entry)
-        case None => None
-      }
-    }
+    payload: XML.Body): Completion = {
+    val owner = remove(id)
     owner match {
       case Some(entry) if entry.operation == operation =>
-        if (entry.complete(reply)) Completed else Rejected
+        if (entry.complete(payload)) Completed else Rejected
       case Some(entry) =>
         entry.fail(ProtocolError(
           "reply operation " + operation + " does not match pending " + entry.operation))
@@ -405,6 +406,21 @@ private[pide] final class PendingRegistry(
         Unowned
     }
   }
+
+  def reject(id: BridgeCallId, operation: String,
+    failure: BridgeFailure): Completion =
+    remove(id) match {
+      case Some(entry) if entry.operation == operation =>
+        entry.fail(failure)
+        Completed
+      case Some(entry) =>
+        entry.fail(ProtocolError(
+          "reply operation " + operation + " does not match pending " + entry.operation))
+        Rejected
+      case None =>
+        diagnostics.report(UnownedReply(id, operation))
+        Unowned
+    }
 
   def fail(id: BridgeCallId, failure: BridgeFailure): Boolean = {
     val owner = synchronized {
@@ -439,21 +455,23 @@ trait BridgeCancellation {
 }
 
 
-/** One terminal-race owner over typed operations and replaceable delivery.
-  * This checkpoint deliberately preserves the legacy command/result wire;
-  * the next checkpoint changes only the operation and transport codecs.
+/** One terminal-race owner over typed operations, the versioned protocol,
+  * and replaceable byte delivery.
   */
 private[mcp] final class PideBridge(
   transport: PideTransport,
   maxPending: PideBridgePolicy.MaxPending,
-  resultOperations: Map[String, String],
-  cancelOutbound: String => PideTransport.Outbound,
+  theory: String,
+  operationNames: Set[String],
+  bridgeProfile: McpBridgeProfile,
+  protocol: PideBridgeProtocol,
   diagnostics: String => Unit = message => Output.error_message(message)
 ) {
   import BridgeFailure._
   import PendingRegistry._
 
-  private enum State { case Open, Stopping, Stopped }
+  private enum State { case Starting, Open, Stopping, Stopped }
+  private final case class Hello(id: BridgeCallId, var result: Option[BridgeResult[Unit]])
 
   private val ids = BridgeCallIdGenerator.random()
   private val pending = new PendingRegistry(maxPending, new Diagnostics {
@@ -461,21 +479,58 @@ private[mcp] final class PideBridge(
       diagnostics("Unowned PIDE bridge reply for " + diagnostic.operation +
         " id " + BridgeCallId.value(diagnostic.id))
   })
-  private var state: State = State.Open
+  private var state: State = State.Starting
   private var sent = Set.empty[BridgeCallId]
+  private var hello: Option[Hello] = None
+  private var advertisedOperations = Set.empty[String]
 
   transport.start(receive, transportTerminated)
+
+  /** The single startup control-plane exchange.  It deliberately does not
+    * consume ordinary pending-call capacity or use a public operation name.
+    */
+  def awaitReady(timeoutSeconds: Double): BridgeResult[Unit] = {
+    val timeoutMillis = math.max(1L, math.ceil(timeoutSeconds * 1000.0).toLong)
+    val waiting = synchronized {
+      if (state == State.Open) return Right(())
+      if (state != State.Starting) return Left(SessionStopped)
+      val entry = Hello(ids.next(), None)
+      hello = Some(entry)
+      try transport.send(protocol.hello(BridgeCallId.value(entry.id), theory))
+      catch {
+        case NonFatal(exn) =>
+          entry.result = Some(Left(TransportFailed(
+            Option(exn.getMessage).getOrElse(exn.getClass.getName))))
+          state = State.Stopping
+      }
+      entry
+    }
+
+    val deadline = System.nanoTime() + timeoutMillis * 1000000L
+    synchronized {
+      while (waiting.result.isEmpty && state == State.Starting) {
+        val remaining = deadline - System.nanoTime()
+        if (remaining <= 0L) {
+          waiting.result = Some(Left(TimedOut(timeoutSeconds)))
+          state = State.Stopping
+        }
+        else wait(math.max(1L, remaining / 1000000L))
+      }
+      waiting.result.getOrElse(Left(SessionStopped))
+    }
+  }
 
   def call[A](operation: BridgeOperation[A], cancellation: BridgeCancellation): BridgeResult[A] = {
     if (cancellation.isCancelled) Left(Cancelled)
     else {
       val id = ids.next()
       val admitted = synchronized {
-        if (state != State.Open) Left(SessionStopped)
-        else if (resultOperations.get(operation.resultFunction) != Some(operation.name))
-          Left(ProtocolError(
-            "operation " + operation.name + " is not registered for " +
-              operation.resultFunction))
+        if (state == State.Starting) Left(ProtocolError("PIDE bridge is not ready"))
+        else if (state != State.Open) Left(SessionStopped)
+        else if (!operationNames.contains(operation.name))
+          Left(ProtocolError("unknown bridge operation " + operation.name))
+        else if (!advertisedOperations.contains(operation.name))
+          Left(ProtocolError("bridge operation was not advertised by ML: " + operation.name))
         else pending.register(id, operation)
       }
 
@@ -499,7 +554,8 @@ private[mcp] final class PideBridge(
            the call as sent first so a rejected reply can order its cancel
            after the call even before send returns. */
         sent += id
-        transport.send(operation.outbound(BridgeCallId.value(id)))
+        transport.send(protocol.call(
+          BridgeCallId.value(id), theory, operation.name, operation.requestPayload))
       }
       catch {
         case NonFatal(exn) =>
@@ -518,7 +574,7 @@ private[mcp] final class PideBridge(
   }
 
   private def sendCancel(id: BridgeCallId): Unit =
-    try transport.send(cancelOutbound(BridgeCallId.value(id)))
+    try transport.send(protocol.cancel(BridgeCallId.value(id)))
     catch {
       case NonFatal(exn) =>
         diagnostics("Failed to send PIDE bridge cancellation for " +
@@ -527,30 +583,48 @@ private[mcp] final class PideBridge(
     }
 
   private def receive(reply: PideTransport.Inbound): Unit = synchronized {
-    (reply.property("id"), resultOperations.get(reply.function)) match {
-      case (Some(rawId), Some(operation)) =>
+    protocol.decode(reply) match {
+      case PideBridgeReply.Success(rawId, operation, payload) =>
         val id = BridgeCallId.test(rawId)
-        val result = pending.complete(id, operation, reply)
-        val wasSent = sent.contains(id)
-        sent -= id
-        if (result == Rejected && wasSent) sendCancel(id)
-      case (None, _) =>
-        diagnostics("PIDE bridge reply " + reply.function + " has no id")
-      case (Some(rawId), None) =>
+        if (hello.exists(_.id == id)) completeHello(operation, payload)
+        else {
+          val result = pending.complete(id, operation, payload)
+          val wasSent = sent.contains(id)
+          sent -= id
+          if (result == Rejected && wasSent) sendCancel(id)
+        }
+      case PideBridgeReply.Failure(rawId, operation, failure) =>
         val id = BridgeCallId.test(rawId)
-        val owned = pending.fail(id, ProtocolError(
-          "unknown PIDE bridge result function " + reply.function))
-        val wasSent = sent.contains(id)
-        sent -= id
-        if (owned && wasSent) sendCancel(id)
-        else diagnostics("Unknown PIDE bridge result function " + reply.function +
-          " for unowned id " + rawId)
+        if (hello.exists(_.id == id)) failHello(ProtocolError(failure.message))
+        else {
+          val result = pending.reject(id, operation, failure)
+          val wasSent = sent.contains(id)
+          sent -= id
+          if (result == Rejected && wasSent) sendCancel(id)
+        }
+      case PideBridgeReply.Malformed(Some(rawId), operation, detail) =>
+        val id = BridgeCallId.test(rawId)
+        if (hello.exists(_.id == id)) failHello(ProtocolError(detail))
+        else {
+          val owned = operation match {
+            case Some(name) => pending.reject(id, name, ProtocolError(detail)) != Unowned
+            case None => pending.fail(id, ProtocolError(detail))
+          }
+          val wasSent = sent.contains(id)
+          sent -= id
+          if (owned && wasSent) sendCancel(id)
+        }
+      case PideBridgeReply.Malformed(None, _, detail) =>
+        diagnostics("Uncorrelated PIDE bridge result: " + detail)
     }
   }
 
   def beginStop(): Unit = synchronized {
-    if (state == State.Open) {
+    if (state == State.Starting || state == State.Open) {
       state = State.Stopping
+      hello.foreach(_.result = Some(Left(SessionStopped)))
+      hello = None
+      notifyAll()
       val sentToCancel = sent
       pending.drain(SessionStopped)
       sent = Set.empty
@@ -570,80 +644,56 @@ private[mcp] final class PideBridge(
       case PideTransport.Failed(detail) =>
         diagnostics("PIDE bridge transport terminated: " + detail)
     }
-    if (state == State.Open) {
+    if (state == State.Starting || state == State.Open) {
       state = State.Stopping
+      hello.foreach(_.result = Some(Left(TransportFailed("transport terminated"))))
+      hello = None
+      notifyAll()
       pending.drain(TransportFailed("transport terminated"))
       sent = Set.empty
     }
   }
 
   private[mcp] def pendingCount: Int = pending.size
-}
 
-
-/** Temporary characterization of the wire that checkpoint 1 must preserve.
-  * It is deleted when every operation moves to the single v1 envelope.
-  */
-private[mcp] object LegacyWire {
-  enum ReplyShape {
-    case ToolsYxml, TheoriesYxml, StatusText, StatusYxml, ResourcesYxml
+  private def completeHello(operation: String, payload: XML.Body): Unit = {
+    if (operation != "hello") failHello(ProtocolError("invalid hello operation " + operation))
+    else {
+      val result =
+        try {
+          val (actualRevision, advertised) =
+            XML.Decode.pair(XML.Decode.string, XML.Decode.list(XML.Decode.string))(payload)
+          if (actualRevision != protocol.revision)
+            Left(ProtocolError("unsupported bridge revision " + actualRevision))
+          else if (!bridgeProfile.requiredOperationNames.subsetOf(advertised.toSet))
+            Left(ProtocolError("hello is missing required bridge operations: " +
+              (bridgeProfile.requiredOperationNames -- advertised.toSet).toList.sorted.mkString(", ")))
+          else Right(advertised.toSet)
+        }
+        catch {
+          case NonFatal(exn) => Left(ProtocolError("malformed hello reply: " +
+            Option(exn.getMessage).getOrElse(exn.getClass.getName)))
+        }
+      result match {
+        case Right(advertised) =>
+          advertisedOperations = advertised
+          hello.foreach(_.result = Some(Right(())))
+          hello = None
+          state = State.Open
+          notifyAll()
+        case Left(failure) => failHello(failure)
+      }
+    }
   }
 
-  final case class Operation(
-    name: String,
-    command: String,
-    resultFunction: String,
-    argumentNames: List[String],
-    replyShape: ReplyShape
-  )
-
-  final case class Change(function: String, event: String)
-
-  val Tools = Operation(
-    "tools", "MCP.tools", "MCP.tools_result",
-    List("id", "designation", "bundles_yxml"), ReplyShape.ToolsYxml)
-  val Theories = Operation(
-    "theories", "MCP.theories", "MCP.theories_result",
-    List("id"), ReplyShape.TheoriesYxml)
-  val RunTool = Operation(
-    "run_tool", "MCP.run_tool", "MCP.run_tool_result",
-    List("id", "designation", "bundles_yxml", "name", "args_yxml"),
-    ReplyShape.StatusText)
-  val CheckDesignation =
-    Operation(
-      "check_designation", "MCP.check_designation", "MCP.check_designation_result",
-      List("id", "designation", "bundles_yxml"), ReplyShape.StatusText)
-  val Ir = Operation(
-    "ir", "MCP.ir", "MCP.ir_result",
-    List("id", "fname", "args_yxml"), ReplyShape.StatusYxml)
-  val Resources = Operation(
-    "resources", "MCP.resources", "MCP.resources_result",
-    List("id", "designation"), ReplyShape.ResourcesYxml)
-  val ReadResource =
-    Operation(
-      "read_resource", "MCP.read_resource", "MCP.read_resource_result",
-      List("id", "designation", "name"), ReplyShape.StatusText)
-
-  val operations: List[Operation] =
-    List(Tools, Theories, RunTool, CheckDesignation, Ir, Resources, ReadResource)
-
-  val ToolsChanged = Change("MCP.tools_changed", "tools")
-  val ResourcesChanged = Change("MCP.resources_changed", "resources")
-  val changes: List[Change] = List(ToolsChanged, ResourcesChanged)
-
-  def arguments(operation: Operation, values: (String, Bytes)*): List[Bytes] = {
-    val names = values.map(_._1).toList
-    if (names.distinct != names || names.toSet != operation.argumentNames.toSet)
-      throw new IllegalArgumentException(
-        operation.command + " expects arguments " + operation.argumentNames.mkString(", ") +
-          "; received " + names.mkString(", "))
-    val byName = values.toMap
-    operation.argumentNames.map(byName)
+  private def failHello(failure: BridgeFailure): Unit = {
+    hello.foreach(_.result = Some(Left(failure)))
+    hello = None
+    state = State.Stopping
+    notifyAll()
   }
 
-  def expectReply(operation: Operation, expected: ReplyShape): Unit =
-    if (operation.replyShape != expected)
-      throw new IllegalStateException(
-        operation.resultFunction + " is declared as " + operation.replyShape +
-          "; decoder expects " + expected)
+  private[mcp] def advertisedOperationNames: Set[String] = synchronized {
+    advertisedOperations
+  }
 }

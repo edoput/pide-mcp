@@ -2,6 +2,10 @@ tool_scope_show / tool_scope_set / tool_scope_include — implementation plan
 ============================================================================
 
 status: done (2026-07-13)
+superseded in part (2026-08-31): plans/context_locator replaces the current
+designation, repl-hook, request-time bundle, and tool_scope_set/include
+contracts.  This file remains the as-built historical plan and is not the
+current interface specification.
 section, "agent context on the scala side" implementation-order item
 flipped; see CHANGELOG same date). UNBLOCKED 2026-07-13: the
 mcp_tool_registry dependency below landed 2026-07-11 (see

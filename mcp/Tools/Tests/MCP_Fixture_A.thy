@@ -2,6 +2,11 @@ theory MCP_Fixture_A
   imports "MCP-Tools.MCP_Tools"
 begin
 
+setup \<open>MCP_Context_Locator.register \<^binding>\<open>fixture\<close>
+  (fn root => fn target =>
+    if target = "self" then (target, Proof_Context.init_global root)
+    else error ("Unknown fixture context " ^ quote target))\<close>
+
 text \<open>Registration site for the visibility fixtures: \<open>alpha\<close> stays
 active, \<open>beta\<close> is deactivated here and re-activated only by the bundle
 (the phase-3 bundle-scoping shape: registration is unconditional,

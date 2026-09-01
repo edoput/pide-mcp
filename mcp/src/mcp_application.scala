@@ -77,8 +77,27 @@ private[application] final class IsabelleMcpApplication(
 ) extends McpApplication {
   import McpApplication.{Cancellation, Operation, Outcome}
 
-  private case class Scope(designation: String = "", bundles: List[String] = Nil)
-  private val scope = Synchronized(Scope())
+  /* None lasts only until the prover is ready. ML supplies the canonical
+     registry-root locator; Scala never manufactures or parses locator URLs. */
+  private val scope = Synchronized(Option.empty[String])
+
+  private def current_context(
+    backend: MCP_Backend,
+    cancellation: Cancellation
+  ): MCP_Session.Result =
+    scope.value match {
+      case Some(context) => MCP_Session.Ok(context)
+      case None =>
+        backend.root_context_cancellable(cancellation) match {
+          case MCP_Session.Ok(root) =>
+            val selected = scope.change_result {
+              case Some(current) => (current, Some(current))
+              case None => (root, Some(root))
+            }
+            MCP_Session.Ok(selected)
+          case error @ MCP_Session.Error(_) => error
+        }
+    }
 
   private def not_ready_text(progress: String): String =
     "session " + session_name + " is not ready: " + progress + ". This tool needs " +
@@ -106,31 +125,30 @@ private[application] final class IsabelleMcpApplication(
       name = "tool_scope_show",
       fname = "",
       description =
-        "Show the current tool scope: which theory or repl context " +
-        "the server reads user-registered tools from, the bundles " +
-        "included in it, and the tools registered and active there. " +
+        "Show the current context locator and the tools registered and " +
+        "active in the resolved Isabelle proof context. " +
         "Tools are context entities in Isabelle: a tool is visible " +
         "when the scope's context (transitively) imports its " +
-        "registering theory and it has not been deactivated " +
-        "(declare [[mcp_tools del: ...]] or a closed bundle).",
+        "registering theory and it has not been deactivated.",
       input_schema = JSON.Object("type" -> "object"),
       annotations = MCP_Server.read_only_annotations,
       handler_fn = Some((backend, _, cancellation) => {
-        val sc = scope.value
-        val bundles_text = if (sc.bundles.isEmpty) "none" else sc.bundles.mkString(", ")
-        backend.check_designation_cancellable(sc.designation, sc.bundles, cancellation) match {
+        current_context(backend, cancellation) match {
           case MCP_Session.Error(msg) =>
-            MCP_Session.Ok(
-              "Tool scope: " + MCP_Server.format_designation(sc.designation) + " (BROKEN: " + msg +
-                ") -- use tool_scope_set to point it at a valid theory or repl\n" +
-                "Included bundles: " + bundles_text)
-          case MCP_Session.Ok(_) =>
-            val rows = backend.ml_tools_cancellable(sc.designation, sc.bundles, cancellation).rows
-            MCP_Session.Ok(
-              "Tool scope: " + MCP_Server.format_designation(sc.designation) + "\n" +
-                "Included bundles: " + bundles_text + "\n" +
-                "Active tools (" + rows.length + "): " +
-                (if (rows.isEmpty) "none" else rows.map(_.name).mkString(", ")))
+            MCP_Session.Error("Cannot resolve the tool scope: " + msg)
+          case MCP_Session.Ok(context) =>
+            backend.check_context_cancellable(context, cancellation) match {
+              case MCP_Session.Error(msg) =>
+                MCP_Session.Ok(
+                  "Context: " + context + " (BROKEN: " + msg +
+                    ") -- use tool_scope_set with a valid context locator")
+              case MCP_Session.Ok(canonical) =>
+                val rows = backend.ml_tools_cancellable(canonical, cancellation).rows
+                MCP_Session.Ok(
+                  "Context: " + canonical + "\n" +
+                    "Active tools (" + rows.length + "): " +
+                    (if (rows.isEmpty) "none" else rows.map(_.name).mkString(", ")))
+            }
         }
       }))
 
@@ -139,86 +157,31 @@ private[application] final class IsabelleMcpApplication(
       name = "tool_scope_set",
       fname = "",
       description =
-        "Set the tool scope to a theory (by name, any known spelling) " +
-        "or to a repl (by id). Repl scope serves the tools of the " +
-        "repl's CURRENT state -- use this after registering a tool " +
-        "via repl_step to call it without persisting the theory " +
-        "first. Replaces the designation AND clears any bundles " +
-        "included with tool_scope_include (fresh context, no " +
-        "accumulated soup).",
+        "Set the tool scope to an Isabelle context locator. Theory locators " +
+        "select a global proof context; repl locators resolve the repl's " +
+        "current evolving proof context each time an operation executes.",
       input_schema =
         JSON.Object(
           "type" -> "object",
           "properties" -> JSON.Object(
-            "theory" -> JSON.Object("type" -> "string"),
-            "repl" -> JSON.Object("type" -> "string")),
-          "required" -> List()),
+            "context" -> JSON.Object("type" -> "string")),
+          "required" -> List("context")),
       annotations = MCP_Server.mutating_annotations,
       handler_fn = Some((backend, args, cancellation) => {
-        val theory = args.collectFirst({ case ("theory", v) => v })
-        val repl = args.collectFirst({ case ("repl", v) => v })
-        (theory, repl) match {
-          case (Some(t), Some(r)) =>
-            MCP_Session.Error(
-              "tool_scope_set: theory and repl are mutually exclusive (got theory=" +
-                quote(t) + ", repl=" + quote(r) + ")")
-          case (None, None) =>
-            MCP_Session.Error("tool_scope_set: exactly one of theory or repl is required")
-          case (Some(t), None) =>
-            backend.resolve_context_theory(t) match {
-              case Right(canonical) =>
-                scope.change(_ => Scope(canonical, Nil))
-                MCP_Session.Ok("Tool scope set to theory " + quote(canonical))
-              case Left(msg) => MCP_Session.Error(msg)
-            }
-          case (None, Some(r)) =>
-            val candidate = "repl:" + r
-            backend.check_designation_cancellable(candidate, Nil, cancellation) match {
-              case MCP_Session.Ok(_) =>
-                scope.change(_ => Scope(candidate, Nil))
-                MCP_Session.Ok("Tool scope set to repl " + quote(r))
+        args.collectFirst({ case ("context", value) => value }) match {
+          case None => MCP_Session.Error("tool_scope_set: context is required")
+          case Some(candidate) =>
+            backend.check_context_cancellable(candidate, cancellation) match {
+              case MCP_Session.Ok(canonical) =>
+                scope.change(_ => Some(canonical))
+                MCP_Session.Ok("Tool scope set to " + canonical)
               case error @ MCP_Session.Error(_) => error
             }
         }
       }))
 
-  private val tool_scope_include_tool: MCP_Server.Builtin_Tool =
-    MCP_Server.Builtin_Tool(
-      name = "tool_scope_include",
-      fname = "",
-      description =
-        "Open bundles in the current tool scope (like Isar's `context " +
-        "includes`): tools activated by those bundles become servable " +
-        "until the scope changes (tool_scope_set). Bundle names " +
-        "resolve in the scope's context.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" -> JSON.Object(
-            "bundles" ->
-              JSON.Object("type" -> "array", "items" -> JSON.Object("type" -> "string"))),
-          "required" -> List("bundles")),
-      annotations = MCP_Server.mutating_annotations,
-      handler_fn = Some((backend, args, cancellation) => {
-        val bundles = args.collect({ case ("bundles", v) => v })
-        val sc = scope.value
-        val candidate = sc.bundles ++ bundles
-        backend.check_designation_cancellable(sc.designation, candidate, cancellation) match {
-          case MCP_Session.Ok(_) =>
-            val applied =
-              scope.change_result(cur =>
-                if (cur == sc) (true, Scope(sc.designation, candidate)) else (false, cur))
-            if (applied) MCP_Session.Ok("Included bundle(s): " + bundles.mkString(", "))
-            else
-              MCP_Session.Error(
-                "tool_scope_include: the tool scope changed while this call was " +
-                  "validating; re-issue it against the new scope")
-          case error @ MCP_Session.Error(_) => error
-        }
-      }))
-
   private val tool_scope_builtins: List[MCP_Server.Builtin_Tool] =
-    List(tool_scope_show_tool, tool_scope_set_tool, tool_scope_include_tool)
+    List(tool_scope_show_tool, tool_scope_set_tool)
 
   private def all_builtins: List[MCP_Server.Builtin_Tool] =
     MCP_Server.builtins ++ tool_scope_builtins
@@ -231,21 +194,25 @@ private[application] final class IsabelleMcpApplication(
         Outcome.Result(JSON.Object("tools" -> builtin_json))
       case McpApplication.Ready(backend) =>
         val builtin_names = builtins.map(_.name).toSet
-        val sc = scope.value
-        val reply = backend.ml_tools_cancellable(sc.designation, sc.bundles, cancellation)
-        val hidden = reply.builtin_activation.collect({ case (name, false) => name }).toSet
-        val builtin_json = builtins.filterNot(tool => hidden(tool.name)).map(tool_json)
-        val exposed = MCP_Server.exposure(reply.rows.map(_.name), builtin_names)
-        val ml_json =
-          reply.rows.flatMap(row =>
-            exposed.get(row.name).map(name =>
-              JSON.Object(
-                "name" -> name,
-                "description" -> row.description,
-                "inputSchema" -> MCP_Server.ml_tool_schema(row.params)) ++
-              JSON.Object.apply(
-                MCP_Server.ml_tool_annotations(row.annotations).toList.map("annotations" -> _)*)))
-        Outcome.Result(JSON.Object("tools" -> (builtin_json ++ ml_json)))
+        current_context(backend, cancellation) match {
+          case MCP_Session.Error(_) =>
+            Outcome.Result(JSON.Object("tools" -> builtins.map(tool_json)))
+          case MCP_Session.Ok(context) =>
+            val reply = backend.ml_tools_cancellable(context, cancellation)
+            val hidden = reply.builtin_activation.collect({ case (name, false) => name }).toSet
+            val builtin_json = builtins.filterNot(tool => hidden(tool.name)).map(tool_json)
+            val exposed = MCP_Server.exposure(reply.rows.map(_.name), builtin_names)
+            val ml_json =
+              reply.rows.flatMap(row =>
+                exposed.get(row.name).map(name =>
+                  JSON.Object(
+                    "name" -> name,
+                    "description" -> row.description,
+                    "inputSchema" -> MCP_Server.ml_tool_schema(row.params)) ++
+                  JSON.Object.apply(
+                    MCP_Server.ml_tool_annotations(row.annotations).toList.map("annotations" -> _)*)))
+            Outcome.Result(JSON.Object("tools" -> (builtin_json ++ ml_json)))
+        }
     }
   }
 
@@ -271,17 +238,19 @@ private[application] final class IsabelleMcpApplication(
           case Some(tool) =>
             text_outcome(tool.handler(backend, MCP_Server.json_args(arguments), cancellation))
           case None =>
-            val sc = scope.value
-            val exposed =
-              MCP_Server.exposure(
-                backend.ml_tools_cancellable(sc.designation, sc.bundles, cancellation).rows.map(_.name),
-                all_builtins.map(_.name).toSet)
-            val internal = exposed.collectFirst({ case (full, visible) if visible == name => full })
-              .getOrElse(name)
-            text_outcome(
-              backend.ml_run_cancellable(
-                internal, MCP_Server.json_args(arguments), sc.designation, sc.bundles,
-                cancellation))
+            current_context(backend, cancellation) match {
+              case error @ MCP_Session.Error(_) => text_outcome(error)
+              case MCP_Session.Ok(context) =>
+                val exposed =
+                  MCP_Server.exposure(
+                    backend.ml_tools_cancellable(context, cancellation).rows.map(_.name),
+                    all_builtins.map(_.name).toSet)
+                val internal = exposed.collectFirst({ case (full, visible) if visible == name => full })
+                  .getOrElse(name)
+                text_outcome(
+                  backend.ml_run_cancellable(
+                    internal, MCP_Server.json_args(arguments), context, cancellation))
+            }
         }
     }
 
