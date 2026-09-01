@@ -142,7 +142,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
   }
 
   private def startupBridge(transport: ScriptedTransport,
-    bridgeProfile: McpBridgeProfile): PideBridge =
+    bridgeProfile: McpBridgeProfile,
+    diagnostics: String => Unit = _ => ()): PideBridge =
     new PideBridge(
       transport,
       policy().maxPending,
@@ -152,7 +153,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       "MCP_Tools",
       McpBridgeOperations.operationNames,
       bridgeProfile,
-      PideBridgeV1)
+      PideBridgeV1,
+      diagnostics)
 
   private def policy(maxPending: Int = 2, drainTimeoutSeconds: Double = 0.0): PideBridgePolicy =
     PideBridgePolicy.checked(
@@ -203,7 +205,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     status: String = "ok", payload: XML.Body = Nil,
     properties: Properties.T = Nil): Unit = {
     val message = PideBridgeV1.drainResult(id, status, payload, properties)
-    transport.deliver(message.function, id, message.body.text, message.properties)
+    transport.deliver(message.function, id, message.body.text,
+      message.properties.filterNot(_._1 == "id"))
   }
 
   test("bridge policy validates all named resource bounds together") {
@@ -394,6 +397,16 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
           ", got " + other)
       }
     }
+
+    val conflicting = PideBridgeV1.result(
+      "inner-id", "inner-operation", "ok", XML.Encode.string("result"))
+    PideBridgeV1.decode(conflicting.copy(properties =
+      List(Markup.FUNCTION -> PideBridgeV1.ResultFunction,
+        "id" -> "outer-id", "operation" -> "outer-operation"))) match {
+      case PideBridgeReply.Malformed(Some("outer-id"), Some("outer-operation"), detail) =>
+        assert(detail.contains("does not match"))
+      case other => fail("expected conflicting correlation to retain the outer owner, got " + other)
+    }
   }
 
   spec_test("outer correlation terminalizes malformed bodies without crossing owners",
@@ -404,13 +417,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       drainTimeoutSeconds = 1.0)
 
     val first = Future.fork(control.call(TextOperation("op", "first"), NeverCancelled))
+    transport.awaitSent(1)
+    val firstId = requestProperty(transport.sent(0), "id")
     val second = Future.fork(control.call(TextOperation("op", "second"), NeverCancelled))
     transport.awaitSent(2)
-    val firstId = requestProperty(transport.sent(0), "id")
     val secondId = requestProperty(transport.sent(1), "id")
 
-    val ambiguous = PideBridgeV1.result(firstId, "op", "ok", XML.Encode.string("wrong"),
-      properties = List("id" -> secondId))
+    val ambiguous = PideBridgeV1.result(secondId, "op", "ok", XML.Encode.string("wrong"))
     transport.deliver(ambiguous.function, firstId, ambiguous.body.text,
       List("operation" -> "op"))
 
@@ -429,8 +442,24 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assertEquals(control.deadlineCount, 0)
     assertEquals(deadlines.pendingCount, 0)
 
-    val stopping = Future.fork(control.beginStop())
+    val emptyInner = Future.fork(
+      control.call(TextOperation("op", "empty-inner"), NeverCancelled))
     transport.awaitSent(4)
+    val emptyInnerId = requestProperty(transport.sent.last, "id")
+    val emptyInnerReply = PideBridgeV1.result("", "op", "ok", XML.Encode.string("wrong"))
+    transport.deliver(emptyInnerReply.function, emptyInnerId, emptyInnerReply.body.text,
+      List("operation" -> "op"))
+    emptyInner.join match {
+      case Left(BridgeFailure.ProtocolError(_)) => ()
+      case other => fail("expected empty inner id to fail the outer owner, got " + other)
+    }
+    transport.awaitSent(5)
+    assertEquals(control.pendingCount, 0)
+    assertEquals(control.deadlineCount, 0)
+    assertEquals(deadlines.pendingCount, 0)
+
+    val stopping = Future.fork(control.beginStop())
+    transport.awaitSent(6)
     val drainId = requestProperty(transport.sent.last, "id")
     deliverDrain(transport, drainId)
     assertEquals(stopping.join, BridgeDrainOutcome.Acknowledged)
@@ -507,6 +536,27 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       operations = McpBridgeOperations.baseOperationNames.toList.sorted)
     assertEquals(first.join, Right(()))
     assert(!control.startupHelloPending)
+    control.sessionStopped()
+  }
+
+  spec_test("a re-entrant successful hello remains first after send throws",
+      covers = List("pide_bridge#T10")) {
+    val diagnostics = collection.mutable.ListBuffer.empty[String]
+    val transport = new ScriptedTransport
+    val control = startupBridge(transport, McpBridgeProfile.base,
+      message => diagnostics.synchronized { diagnostics += message })
+    transport.onNextSend { message =>
+      deliverHello(transport, requestProperty(message, "id"),
+        operations = McpBridgeOperations.baseOperationNames.toList.sorted)
+      throw new RuntimeException("send returned an error after hello")
+    }
+
+    assertEquals(control.awaitReady(positiveDuration(1.0)), Right(()))
+    assertEquals(control.awaitReady(positiveDuration(1.0)), Right(()))
+    assert(!control.startupHelloPending)
+    assert(diagnostics.synchronized {
+      diagnostics.exists(_.contains("Ignored PIDE bridge hello send failure after terminal outcome"))
+    })
     control.sessionStopped()
   }
 
@@ -838,6 +888,23 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     control.sessionStopped()
   }
 
+  spec_test("session termination is reported only after session stop succeeds",
+      covers = List("pide_bridge#T6")) {
+    var reported = false
+    interceptMessage[RuntimeException]("session stop failed") {
+      MCP_Session.stopAndReportSessionTermination(
+        () => throw new RuntimeException("session stop failed"),
+        () => reported = true)
+    }
+    assert(!reported, "failed session termination was reported as proof of Stopped")
+
+    var order = List.empty[String]
+    MCP_Session.stopAndReportSessionTermination(
+      () => order :+= "session-stop",
+      () => order :+= "bridge-stopped")
+    assertEquals(order, List("session-stop", "bridge-stopped"))
+  }
+
   spec_test("drain timeout requires session termination before Stopped",
       covers = List("pide_bridge#T6")) {
     val diagnostics = collection.mutable.ListBuffer.empty[String]
@@ -898,6 +965,33 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     rejected((transport, id) =>
       deliverDrain(transport, id, properties = List("extra" -> "invalid")))
     rejected((transport, id) => deliverResult(transport, id, "op", "wrong kind"))
+  }
+
+  spec_test("drain-shaped replies immediately reject an ordinary owner",
+      covers = List("pide_bridge#T2")) {
+    def rejected(deliver: (ScriptedTransport, String) => Unit): Unit = {
+      val deadlines = new ManualDeadlineScheduler
+      val transport = new ScriptedTransport
+      val control = bridge(transport, deadlines = deadlines)
+      val call = Future.fork(control.call(TextOperation("op", "request"), NeverCancelled))
+      transport.awaitSent(1)
+      val id = requestProperty(transport.sent.head, "id")
+      deliver(transport, id)
+      call.join match {
+        case Left(BridgeFailure.ProtocolError(_)) => ()
+        case other => fail("expected wrong-kind ProtocolError, got " + other)
+      }
+      transport.awaitSent(2)
+      assertEquals(transport.sent.map(requestProperty(_, "kind")), Vector("call", "cancel"))
+      assertEquals(control.pendingCount, 0)
+      assertEquals(control.deadlineCount, 0)
+      assertEquals(deadlines.pendingCount, 0)
+      control.sessionStopped()
+    }
+
+    rejected((transport, id) => deliverDrain(transport, id))
+    rejected((transport, id) => deliverDrain(transport, id, status = "protocol_error",
+      payload = XML.Encode.string("wrong control kind")))
   }
 
   test("drain send and transport failures require the forced-stop fallback") {

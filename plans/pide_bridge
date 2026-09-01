@@ -216,6 +216,10 @@ Bridge state is `Starting`, `Open`, `Stopping`, or `Stopped`.
   or after the composition root terminates the Isabelle session and the
   transport reports termination.  A drain timeout reports failure and remains
   `Stopping`; it cannot assert `INV3` merely because Scala promises are gone.
+- The composition root reports the session-termination fallback only after
+  `Headless.Session.stop` returns successfully.  If session termination raises,
+  the bridge remains `Stopping` so an unproven termination cannot satisfy
+  `INV3`; a later stop attempt may retry the termination step.
 - Repeated stop is idempotent and observes the same terminal stop outcome.
 
 wire and compatibility

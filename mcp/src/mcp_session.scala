@@ -128,6 +128,14 @@ trait MCP_Backend {
 }
 
 object MCP_Session {
+  private[mcp] def stopAndReportSessionTermination(
+    stopSession: () => Unit,
+    reportStopped: () => Unit
+  ): Unit = {
+    stopSession()
+    reportStopped()
+  }
+
   /* A bridge-local safety deadline is not a prover/tool error.  It crosses
      the application boundary as a typed signal so ConnectionKernel retains
      public JSON-RPC timeout ownership. */
@@ -1455,26 +1463,27 @@ class MCP_Session private(
   def stop(): Unit = {
     val direct_operations = begin_direct_shutdown()
     try {
+      direct_operations.foreach(_.interrupt())
       try {
-        direct_operations.foreach(_.interrupt())
-        try {
-          bridge.beginStop() match {
-            case BridgeDrainOutcome.Failed(failure) =>
-              Output.warning("PIDE bridge drain failed: " + failure.message +
-                "; forcing Isabelle session stop")
-            case BridgeDrainOutcome.Acknowledged | BridgeDrainOutcome.SessionTerminated => ()
-          }
-        }
-        catch {
-          case NonFatal(exn) =>
-            Output.warning("PIDE bridge drain raised " + Exn.message(exn) +
+        bridge.beginStop() match {
+          case BridgeDrainOutcome.Failed(failure) =>
+            Output.warning("PIDE bridge drain failed: " + failure.message +
               "; forcing Isabelle session stop")
+          case BridgeDrainOutcome.Acknowledged | BridgeDrainOutcome.SessionTerminated => ()
         }
-        direct_operations.foreach(_.done.join)
       }
-      finally session.stop()
+      catch {
+        case NonFatal(exn) =>
+          Output.warning("PIDE bridge drain raised " + Exn.message(exn) +
+            "; forcing Isabelle session stop")
+      }
+      direct_operations.foreach(_.done.join)
     }
-    finally bridge.sessionStopped()
+    finally {
+      MCP_Session.stopAndReportSessionTermination(
+        () => session.stop(),
+        () => bridge.sessionStopped())
+    }
     ()
   }
 }

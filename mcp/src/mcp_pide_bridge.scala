@@ -531,10 +531,15 @@ private[mcp] final class PideBridge(
       try transport.send(protocol.hello(BridgeCallId.value(entry.id), theory))
       catch {
         case NonFatal(exn) =>
-          entry.result = Some(Left(TransportFailed(
-            Option(exn.getMessage).getOrElse(exn.getClass.getName))))
-          hello = None
-          state = State.Stopping
+          val failure = TransportFailed(
+            Option(exn.getMessage).getOrElse(exn.getClass.getName))
+          if (entry.result.isEmpty && hello.contains(entry) && state == State.Starting) {
+            entry.result = Some(Left(failure))
+            hello = None
+            state = State.Stopping
+          }
+          else diagnostics("Ignored PIDE bridge hello send failure after terminal outcome: " +
+            failure.message)
       }
       entry
     }
@@ -657,16 +662,30 @@ private[mcp] final class PideBridge(
           Option(exn.getMessage).getOrElse(exn.getClass.getName))
     }
 
+  private def rejectOrdinaryControl(rawId: String, detail: String): Boolean = {
+    val id = BridgeCallId.test(rawId)
+    val owned = pending.fail(id, ProtocolError(detail))
+    clearDeadline(id)
+    val wasSent = sent.contains(id)
+    sent -= id
+    if (owned && wasSent) sendCancel(id)
+    owned
+  }
+
   private def receive(reply: PideTransport.Inbound): Unit = synchronized {
     protocol.decode(reply) match {
       case PideBridgeReply.DrainAck(id) =>
         if (hello.exists(_.id == BridgeCallId.test(id)))
           failHello(ProtocolError("received drain acknowledgement for startup hello"))
-        else completeDrain(id)
+        else if (drain.exists(_.id == BridgeCallId.test(id))) completeDrain(id)
+        else if (!rejectOrdinaryControl(id,
+          "received drain acknowledgement for ordinary call")) completeDrain(id)
       case PideBridgeReply.DrainFailure(id, failure) =>
         if (hello.exists(_.id == BridgeCallId.test(id)))
           failHello(ProtocolError("received drain failure for startup hello: " + failure.message))
-        else failDrain(id, failure)
+        else if (drain.exists(_.id == BridgeCallId.test(id))) failDrain(id, failure)
+        else if (!rejectOrdinaryControl(id,
+          "received drain failure for ordinary call: " + failure.message)) failDrain(id, failure)
       case PideBridgeReply.Success(rawId, operation, payload) =>
         val id = BridgeCallId.test(rawId)
         if (drain.exists(_.id == id))
@@ -696,15 +715,14 @@ private[mcp] final class PideBridge(
         val id = BridgeCallId.test(rawId)
         if (drain.exists(_.id == id)) failDrain(rawId, ProtocolError(detail))
         else if (hello.exists(_.id == id)) failHello(ProtocolError(detail))
-        else {
-          val owned = operation match {
-            case Some(name) => pending.reject(id, name, ProtocolError(detail)) != Unowned
-            case None => pending.fail(id, ProtocolError(detail))
-          }
-          clearDeadline(id)
-          val wasSent = sent.contains(id)
-          sent -= id
-          if (owned && wasSent) sendCancel(id)
+        else operation match {
+          case Some(name) =>
+            val owned = pending.reject(id, name, ProtocolError(detail)) != Unowned
+            clearDeadline(id)
+            val wasSent = sent.contains(id)
+            sent -= id
+            if (owned && wasSent) sendCancel(id)
+          case None => rejectOrdinaryControl(rawId, detail)
         }
       case PideBridgeReply.Malformed(None, _, detail) =>
         diagnostics("Uncorrelated PIDE bridge result: " + detail)

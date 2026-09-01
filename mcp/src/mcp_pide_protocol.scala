@@ -52,9 +52,12 @@ object PideBridgeV1 extends PideBridgeProtocol {
   private val RequestElement = "mcp_bridge"
   private val ResultElement = "mcp_bridge_result"
 
+  private def propertyValues(properties: Properties.T, name: String): List[String] =
+    properties.collect { case (`name`, value) => value }
+
   private def uniqueProperty(properties: Properties.T, name: String): Option[String] =
-    properties.filter(_._1 == name) match {
-      case List((_, value)) => Some(value)
+    propertyValues(properties, name) match {
+      case List(value) => Some(value)
       case _ => None
     }
 
@@ -90,13 +93,23 @@ object PideBridgeV1 extends PideBridgeProtocol {
   }
 
   def decode(reply: PideTransport.Inbound): PideBridgeReply = {
-    val outerId = uniqueProperty(reply.properties, "id")
-    val outerOperation = uniqueProperty(reply.properties, "operation")
+    val outerIdValues = propertyValues(reply.properties, "id")
+    val outerOperationValues = propertyValues(reply.properties, "operation")
+    val outerId = uniqueProperty(reply.properties, "id").filter(_.nonEmpty)
+    val outerOperation = uniqueProperty(reply.properties, "operation").filter(_.nonEmpty)
+    val outerProblem =
+      if (outerIdValues.lengthCompare(1) > 0) Some("duplicate outer id")
+      else if (outerIdValues.contains("")) Some("empty outer id")
+      else if (outerOperationValues.lengthCompare(1) > 0) Some("duplicate outer operation")
+      else if (outerOperationValues.contains("")) Some("empty outer operation")
+      else None
     def malformed(detail: String): PideBridgeReply =
       Malformed(outerId, outerOperation, detail)
 
     if (reply.function != ResultFunction)
       malformed("unknown PIDE bridge result function " + reply.function)
+    else if (outerProblem.isDefined)
+      malformed(outerProblem.get)
     else {
       try {
         YXML.parse_body(reply.body) match {
@@ -117,13 +130,16 @@ object PideBridgeV1 extends PideBridgeProtocol {
     payload: XML.Body,
     outerId: Option[String],
     outerOperation: Option[String]): PideBridgeReply = {
-    val id = uniqueProperty(properties, "id").orElse(outerId)
-    val operation = uniqueProperty(properties, "operation").orElse(outerOperation)
+    val innerId = uniqueProperty(properties, "id").filter(_.nonEmpty)
+    val innerOperation = uniqueProperty(properties, "operation").filter(_.nonEmpty)
+    val id = outerId.orElse(innerId)
+    val operation = outerOperation.orElse(innerOperation)
 
     def malformed(detail: String): PideBridgeReply = Malformed(id, operation, detail)
     def required(name: String): Either[String, String] =
       properties.filter(_._1 == name) match {
-        case List((_, value)) => Right(value)
+        case List((_, value)) if value.nonEmpty => Right(value)
+        case List(_) => Left("empty " + name)
         case Nil => Left("missing " + name)
         case _ => Left("duplicate " + name)
       }
@@ -139,7 +155,21 @@ object PideBridgeV1 extends PideBridgeProtocol {
         status <- required("status")
       } yield (callId, kind, status)
 
-    decoded match {
+    val correlationConflict =
+      (outerId, innerId) match {
+        case (Some(outer), Some(inner)) if outer != inner =>
+          Some("inner id " + inner + " does not match outer id " + outer)
+        case _ =>
+          (outerOperation, innerOperation) match {
+            case (Some(outer), Some(inner)) if outer != inner =>
+              Some("inner operation " + inner + " does not match outer operation " + outer)
+            case _ => None
+          }
+      }
+
+    correlationConflict match {
+      case Some(detail) => malformed(detail)
+      case None => decoded match {
       case Left(detail) => malformed(detail)
       case Right((callId, "drain", "ok"))
           if List("revision", "kind", "id", "status").forall(exactlyOnce) &&
@@ -155,9 +185,9 @@ object PideBridgeV1 extends PideBridgeProtocol {
       case Right((callId, "result", status))
           if List("revision", "kind", "id", "operation", "status").forall(exactlyOnce) &&
             properties.length == 5 =>
-        operation match {
-          case None => malformed("missing operation")
-          case Some(op) => status match {
+        required("operation") match {
+          case Left(detail) => malformed(detail)
+          case Right(op) => status match {
             case "ok" => Success(callId, op, payload)
             case "remote_error" => decodeDetail(payload).fold(
               detail => malformed("invalid remote_error payload: " + detail),
@@ -170,6 +200,7 @@ object PideBridgeV1 extends PideBridgeProtocol {
         }
       case Right((_, "result", _)) => malformed("invalid ordinary result properties")
       case Right((_, kind, _)) => malformed("invalid bridge result kind " + kind)
+      }
     }
   }
 
