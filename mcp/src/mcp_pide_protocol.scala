@@ -52,6 +52,12 @@ object PideBridgeV1 extends PideBridgeProtocol {
   private val RequestElement = "mcp_bridge"
   private val ResultElement = "mcp_bridge_result"
 
+  private def uniqueProperty(properties: Properties.T, name: String): Option[String] =
+    properties.filter(_._1 == name) match {
+      case List((_, value)) => Some(value)
+      case _ => None
+    }
+
   def hello(id: String, theory: String): PideTransport.Outbound =
     outbound(List(
       "revision" -> revision,
@@ -84,34 +90,43 @@ object PideBridgeV1 extends PideBridgeProtocol {
   }
 
   def decode(reply: PideTransport.Inbound): PideBridgeReply = {
+    val outerId = uniqueProperty(reply.properties, "id")
+    val outerOperation = uniqueProperty(reply.properties, "operation")
+    def malformed(detail: String): PideBridgeReply =
+      Malformed(outerId, outerOperation, detail)
+
     if (reply.function != ResultFunction)
-      Malformed(reply.property("id"), None,
-        "unknown PIDE bridge result function " + reply.function)
+      malformed("unknown PIDE bridge result function " + reply.function)
     else {
       try {
         YXML.parse_body(reply.body) match {
           case List(XML.Elem(Markup(ResultElement, properties), payload)) =>
-            decodeResult(properties, payload)
-          case _ => Malformed(None, None, "expected one " + ResultElement + " element")
+            decodeResult(properties, payload, outerId, outerOperation)
+          case _ => malformed("expected one " + ResultElement + " element")
         }
       }
       catch {
         case NonFatal(exn) =>
-          Malformed(None, None,
-            "cannot decode bridge result envelope: " +
-              Option(exn.getMessage).getOrElse(exn.getClass.getName))
+          malformed("cannot decode bridge result envelope: " +
+            Option(exn.getMessage).getOrElse(exn.getClass.getName))
       }
     }
   }
 
   private def decodeResult(properties: Properties.T,
-    payload: XML.Body): PideBridgeReply = {
-    val id = Properties.get(properties, "id")
-    val operation = Properties.get(properties, "operation")
+    payload: XML.Body,
+    outerId: Option[String],
+    outerOperation: Option[String]): PideBridgeReply = {
+    val id = uniqueProperty(properties, "id").orElse(outerId)
+    val operation = uniqueProperty(properties, "operation").orElse(outerOperation)
 
     def malformed(detail: String): PideBridgeReply = Malformed(id, operation, detail)
     def required(name: String): Either[String, String] =
-      Properties.get(properties, name).toRight("missing " + name)
+      properties.filter(_._1 == name) match {
+        case List((_, value)) => Right(value)
+        case Nil => Left("missing " + name)
+        case _ => Left("duplicate " + name)
+      }
     def exactlyOnce(name: String): Boolean = properties.count(_._1 == name) == 1
 
     val decoded =
@@ -137,7 +152,9 @@ object PideBridgeV1 extends PideBridgeProtocol {
           detail => malformed("invalid drain protocol_error payload: " + detail),
           detail => DrainFailure(callId, ProtocolError(detail)))
       case Right((_, "drain", status)) => malformed("invalid drain acknowledgement status " + status)
-      case Right((callId, "result", status)) =>
+      case Right((callId, "result", status))
+          if List("revision", "kind", "id", "operation", "status").forall(exactlyOnce) &&
+            properties.length == 5 =>
         operation match {
           case None => malformed("missing operation")
           case Some(op) => status match {
@@ -151,6 +168,7 @@ object PideBridgeV1 extends PideBridgeProtocol {
             case _ => malformed("invalid bridge result status " + status)
           }
         }
+      case Right((_, "result", _)) => malformed("invalid ordinary result properties")
       case Right((_, kind, _)) => malformed("invalid bridge result kind " + kind)
     }
   }
@@ -167,7 +185,8 @@ object PideBridgeV1 extends PideBridgeProtocol {
     operation: String,
     status: String,
     payload: XML.Body,
-    actualRevision: String = revision
+    actualRevision: String = revision,
+    properties: Properties.T = Nil
   ): PideTransport.Inbound = {
     val body = List(XML.Elem(
       Markup(ResultElement, List(
@@ -175,7 +194,7 @@ object PideBridgeV1 extends PideBridgeProtocol {
         "kind" -> "result",
         "id" -> id,
         "operation" -> operation,
-        "status" -> status)),
+        "status" -> status) ::: properties),
       payload))
     PideTransport.Inbound(
       ResultFunction,

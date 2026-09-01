@@ -838,10 +838,14 @@ private[mcp] final class PideBridge(
     }
 
   private def settleDrainFailure(entry: Drain, failure: BridgeFailure): Unit = {
-    val outcome = Failed(failure)
-    entry.result = Some(outcome)
-    stopOutcome = Some(outcome)
-    notifyAll()
+    if (entry.result.isEmpty && stopOutcome.isEmpty && state == State.Stopping) {
+      val outcome = Failed(failure)
+      entry.result = Some(outcome)
+      stopOutcome = Some(outcome)
+      notifyAll()
+    }
+    else
+      diagnostics("Ignored PIDE bridge drain failure after terminal outcome: " + failure.message)
   }
 
   private[mcp] def pendingCount: Int = pending.size

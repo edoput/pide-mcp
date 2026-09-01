@@ -369,7 +369,105 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assert(malformed(PideBridgeV1.drainResult(
       "drain-id", status = "remote_error")).contains("invalid drain acknowledgement status"))
     assert(malformed(PideBridgeV1.drainResult(
-      "drain-id", properties = List("id" -> "duplicate"))).contains("invalid drain"))
+      "drain-id", properties = List("id" -> "duplicate"))).contains("duplicate id"))
+  }
+
+  spec_test("ordinary result envelopes reject every duplicate and extra property",
+      covers = List("pide_bridge#T2")) {
+    val invalidProperties = List(
+      List("revision" -> PideBridgeV1.revision),
+      List("kind" -> "result"),
+      List("id" -> "other-id"),
+      List("operation" -> "other-operation"),
+      List("status" -> "remote_error"),
+      List("extra" -> "value"))
+
+    invalidProperties.foreach { extra =>
+      val message = PideBridgeV1.result(
+        "owned-id", "op", "ok", XML.Encode.string("result"), properties = extra)
+      val decoded = PideBridgeV1.decode(message.copy(properties =
+        List(Markup.FUNCTION -> PideBridgeV1.ResultFunction,
+          "id" -> "owned-id", "operation" -> "op")))
+      decoded match {
+        case PideBridgeReply.Malformed(Some("owned-id"), Some("op"), _) => ()
+        case other => fail("expected a correlated malformed ordinary result for " + extra +
+          ", got " + other)
+      }
+    }
+  }
+
+  spec_test("outer correlation terminalizes malformed bodies without crossing owners",
+      covers = List("pide_bridge#T2")) {
+    val deadlines = new ManualDeadlineScheduler
+    val transport = new ScriptedTransport
+    val control = bridge(transport, maxPending = 2, deadlines = deadlines,
+      drainTimeoutSeconds = 1.0)
+
+    val first = Future.fork(control.call(TextOperation("op", "first"), NeverCancelled))
+    val second = Future.fork(control.call(TextOperation("op", "second"), NeverCancelled))
+    transport.awaitSent(2)
+    val firstId = requestProperty(transport.sent(0), "id")
+    val secondId = requestProperty(transport.sent(1), "id")
+
+    val ambiguous = PideBridgeV1.result(firstId, "op", "ok", XML.Encode.string("wrong"),
+      properties = List("id" -> secondId))
+    transport.deliver(ambiguous.function, firstId, ambiguous.body.text,
+      List("operation" -> "op"))
+
+    first.join match {
+      case Left(BridgeFailure.ProtocolError(_)) => ()
+      case other => fail("expected duplicate-id ProtocolError for the outer owner, got " + other)
+    }
+    assert(!second.is_finished, "ambiguous inner id completed the other bridge owner")
+    assertEquals(control.pendingCount, 1)
+    assertEquals(control.deadlineCount, 1)
+    assertEquals(deadlines.pendingCount, 1)
+
+    deliverResult(transport, secondId, "op", "second-result")
+    assertEquals(second.join, Right("second-result"))
+    assertEquals(control.pendingCount, 0)
+    assertEquals(control.deadlineCount, 0)
+    assertEquals(deadlines.pendingCount, 0)
+
+    val stopping = Future.fork(control.beginStop())
+    transport.awaitSent(4)
+    val drainId = requestProperty(transport.sent.last, "id")
+    deliverDrain(transport, drainId)
+    assertEquals(stopping.join, BridgeDrainOutcome.Acknowledged)
+
+    val bodyDeadlines = new ManualDeadlineScheduler
+    val bodyTransport = new ScriptedTransport
+    val bodyControl = bridge(bodyTransport, deadlines = bodyDeadlines)
+    val malformedBody = Future.fork(
+      bodyControl.call(TextOperation("op", "body"), NeverCancelled))
+    bodyTransport.awaitSent(1)
+    val malformedBodyId = requestProperty(bodyTransport.sent.head, "id")
+    bodyTransport.deliver(PideBridgeV1.ResultFunction, malformedBodyId, "not an envelope",
+      List("operation" -> "op"))
+    malformedBody.join match {
+      case Left(BridgeFailure.ProtocolError(_)) => ()
+      case other => fail("expected correlated malformed-body ProtocolError, got " + other)
+    }
+    bodyTransport.awaitSent(2)
+    assertEquals(bodyTransport.sent.map(requestProperty(_, "kind")), Vector("call", "cancel"))
+    assertEquals(bodyControl.pendingCount, 0)
+    assertEquals(bodyControl.deadlineCount, 0)
+    assertEquals(bodyDeadlines.pendingCount, 0)
+    bodyControl.sessionStopped()
+
+    val drainTransport = new ScriptedTransport
+    val drainControl = bridge(drainTransport, drainTimeoutSeconds = 1.0)
+    val malformedDrain = Future.fork(drainControl.beginStop())
+    drainTransport.awaitSent(1)
+    val malformedDrainId = requestProperty(drainTransport.sent.head, "id")
+    drainTransport.deliver(PideBridgeV1.ResultFunction, malformedDrainId, "not an envelope")
+    malformedDrain.join match {
+      case BridgeDrainOutcome.Failed(BridgeFailure.ProtocolError(_)) => ()
+      case other => fail("expected correlated malformed-drain ProtocolError, got " + other)
+    }
+    assert(drainControl.isStopping)
+    assert(!drainControl.isStopped)
+    drainControl.sessionStopped()
   }
 
   spec_test("base-profile hello gates ordinary calls and accepts extra operations",
@@ -712,6 +810,30 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assert(diagnostics.synchronized {
       diagnostics.exists(_.contains("Unowned PIDE bridge drain acknowledgement foreign-drain")) &&
         diagnostics.exists(_.contains("Unowned PIDE bridge reply"))
+    })
+    control.sessionStopped()
+  }
+
+  spec_test("a re-entrant drain acknowledgement remains first after send throws",
+      covers = List("pide_bridge#T6")) {
+    val diagnostics = collection.mutable.ListBuffer.empty[String]
+    val transport = new ScriptedTransport
+    val control = bridge(transport, drainTimeoutSeconds = 1.0,
+      diagnostics = message => diagnostics.synchronized { diagnostics += message })
+
+    transport.onNextSend { message =>
+      assertEquals(requestProperty(message, "kind"), "drain")
+      deliverDrain(transport, requestProperty(message, "id"))
+      throw new RuntimeException("send returned an error after acknowledgement")
+    }
+
+    assertEquals(control.beginStop(), BridgeDrainOutcome.Acknowledged)
+    assertEquals(control.beginStop(), BridgeDrainOutcome.Acknowledged)
+    assert(control.isStopped)
+    assert(transport.isClosed)
+    assertEquals(transport.sent.count(requestProperty(_, "kind") == "drain"), 1)
+    assert(diagnostics.synchronized {
+      diagnostics.exists(_.contains("Ignored PIDE bridge drain failure after terminal outcome"))
     })
     control.sessionStopped()
   }
