@@ -7,7 +7,8 @@ package isabelle.mcp.pide
 
 import isabelle.{Bytes, Future, Headless, Markup, Output, Promise, Properties, Prover, Session, XML}
 import isabelle.mcp.McpBridgeProfile
-import isabelle.mcp.control.{DeadlineScheduler, PositiveDuration => ControlPositiveDuration}
+import isabelle.mcp.control.{DeadlineScheduler, NonNegativeDuration => ControlNonNegativeDuration,
+  PositiveDuration => ControlPositiveDuration}
 
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -100,6 +101,16 @@ object BridgeFailure {
 type BridgeResult[+A] = Either[BridgeFailure, A]
 
 
+sealed trait BridgeDrainOutcome
+
+
+object BridgeDrainOutcome {
+  case object Acknowledged extends BridgeDrainOutcome
+  case object SessionTerminated extends BridgeDrainOutcome
+  final case class Failed(failure: BridgeFailure) extends BridgeDrainOutcome
+}
+
+
 final case class PideBridgePolicy(
   maxPending: PideBridgePolicy.MaxPending,
   timing: PideBridgePolicy.Timing,
@@ -110,6 +121,7 @@ final case class PideBridgePolicy(
 object PideBridgePolicy {
   opaque type MaxPending = Int
   type PositiveDuration = ControlPositiveDuration
+  type NonNegativeDuration = ControlNonNegativeDuration
   opaque type PositiveBytes = Long
 
   object MaxPending {
@@ -120,6 +132,7 @@ object PideBridgePolicy {
   }
 
   val PositiveDuration: ControlPositiveDuration.type = ControlPositiveDuration
+  val NonNegativeDuration: ControlNonNegativeDuration.type = ControlNonNegativeDuration
 
   object PositiveBytes {
     def checked(field: String, value: Long): Either[String, PositiveBytes] =
@@ -130,7 +143,7 @@ object PideBridgePolicy {
 
   final case class Timing(
     callTimeout: PositiveDuration,
-    drainTimeout: PositiveDuration
+    drainTimeout: NonNegativeDuration
   )
 
   final case class Envelopes(
@@ -147,7 +160,7 @@ object PideBridgePolicy {
   ): Either[List[String], PideBridgePolicy] = {
     val pending = MaxPending.checked(maxPending)
     val call = PositiveDuration.checked("callTimeout", callTimeoutSeconds)
-    val drain = PositiveDuration.checked("drainTimeout", drainTimeoutSeconds)
+    val drain = NonNegativeDuration.checked("drainTimeout", drainTimeoutSeconds)
     val request = PositiveBytes.checked("maxRequestBytes", maxRequestBytes)
     val reply = PositiveBytes.checked("maxReplyBytes", maxReplyBytes)
     val errors = List(pending, call, drain, request, reply).collect { case Left(error) => error }
@@ -463,6 +476,7 @@ private[mcp] final class PideBridge(
   transport: PideTransport,
   maxPending: PideBridgePolicy.MaxPending,
   callTimeout: PideBridgePolicy.PositiveDuration,
+  drainTimeout: PideBridgePolicy.NonNegativeDuration,
   deadlineScheduler: DeadlineScheduler,
   theory: String,
   operationNames: Set[String],
@@ -471,10 +485,16 @@ private[mcp] final class PideBridge(
   diagnostics: String => Unit = message => Output.error_message(message)
 ) {
   import BridgeFailure._
+  import BridgeDrainOutcome._
   import PendingRegistry._
 
   private enum State { case Starting, Open, Stopping, Stopped }
   private final case class Hello(id: BridgeCallId, var result: Option[BridgeResult[Unit]])
+  private final class Drain(
+    val id: BridgeCallId,
+    val startedAtNanos: Long,
+    var result: Option[BridgeDrainOutcome]
+  )
 
   private val ids = BridgeCallIdGenerator.random()
   private val pending = new PendingRegistry(maxPending, new Diagnostics {
@@ -488,6 +508,9 @@ private[mcp] final class PideBridge(
     * one removable deadline entry; hello retains its independent startup wait. */
   private var deadlines = Map.empty[BridgeCallId, DeadlineScheduler.Handle]
   private var hello: Option[Hello] = None
+  private var drain: Option[Drain] = None
+  private var stopOutcome: Option[BridgeDrainOutcome] = None
+  private var transportAlive = true
   private var advertisedOperations = Set.empty[String]
 
   transport.start(receive, transportTerminated)
@@ -636,9 +659,19 @@ private[mcp] final class PideBridge(
 
   private def receive(reply: PideTransport.Inbound): Unit = synchronized {
     protocol.decode(reply) match {
+      case PideBridgeReply.DrainAck(id) =>
+        if (hello.exists(_.id == BridgeCallId.test(id)))
+          failHello(ProtocolError("received drain acknowledgement for startup hello"))
+        else completeDrain(id)
+      case PideBridgeReply.DrainFailure(id, failure) =>
+        if (hello.exists(_.id == BridgeCallId.test(id)))
+          failHello(ProtocolError("received drain failure for startup hello: " + failure.message))
+        else failDrain(id, failure)
       case PideBridgeReply.Success(rawId, operation, payload) =>
         val id = BridgeCallId.test(rawId)
-        if (hello.exists(_.id == id)) completeHello(operation, payload)
+        if (drain.exists(_.id == id))
+          failDrain(rawId, ProtocolError("received operation result for drain control id"))
+        else if (hello.exists(_.id == id)) completeHello(operation, payload)
         else {
           val result = pending.complete(id, operation, payload)
           clearDeadline(id)
@@ -648,7 +681,10 @@ private[mcp] final class PideBridge(
         }
       case PideBridgeReply.Failure(rawId, operation, failure) =>
         val id = BridgeCallId.test(rawId)
-        if (hello.exists(_.id == id)) failHello(ProtocolError(failure.message))
+        if (drain.exists(_.id == id))
+          failDrain(rawId, ProtocolError("received operation failure for drain control id: " +
+            failure.message))
+        else if (hello.exists(_.id == id)) failHello(ProtocolError(failure.message))
         else {
           val result = pending.reject(id, operation, failure)
           clearDeadline(id)
@@ -658,7 +694,8 @@ private[mcp] final class PideBridge(
         }
       case PideBridgeReply.Malformed(Some(rawId), operation, detail) =>
         val id = BridgeCallId.test(rawId)
-        if (hello.exists(_.id == id)) failHello(ProtocolError(detail))
+        if (drain.exists(_.id == id)) failDrain(rawId, ProtocolError(detail))
+        else if (hello.exists(_.id == id)) failHello(ProtocolError(detail))
         else {
           val owned = operation match {
             case Some(name) => pending.reject(id, name, ProtocolError(detail)) != Unowned
@@ -674,54 +711,144 @@ private[mcp] final class PideBridge(
     }
   }
 
-  def beginStop(): Unit = synchronized {
-    if (state == State.Starting || state == State.Open) {
-      state = State.Stopping
-      hello.foreach(_.result = Some(Left(SessionStopped)))
-      hello = None
-      notifyAll()
-      val sentToCancel = sent
-      pending.drain(SessionStopped)
-      clearDeadlines()
-      sent = Set.empty
-      sentToCancel.foreach(sendCancel)
-      transport.close()
-      deadlineScheduler.shutdown()
+  /** Close admission, cancel all admitted calls, and wait for the one ML drain
+    * owner. A failed drain deliberately leaves the bridge Stopping: only the
+    * composition root can prove termination by stopping the Isabelle session
+    * and calling sessionStopped().
+    */
+  def beginStop(): BridgeDrainOutcome = {
+    val waiting = synchronized {
+      stopOutcome match {
+        case Some(outcome) => return outcome
+        case None => ()
+      }
+      drain match {
+        case Some(entry) => entry
+        case None if state == State.Stopped =>
+          val outcome = SessionTerminated
+          stopOutcome = Some(outcome)
+          return outcome
+        case None =>
+          state = State.Stopping
+          hello.foreach(_.result = Some(Left(SessionStopped)))
+          hello = None
+          notifyAll()
+
+          val sentToCancel = sent.toList.sortBy(BridgeCallId.value)
+          pending.drain(SessionStopped)
+          clearDeadlines()
+          deadlineScheduler.shutdown()
+          sent = Set.empty
+
+          val entry = new Drain(ids.next(), System.nanoTime(), None)
+          drain = Some(entry)
+          if (!transportAlive)
+            settleDrainFailure(entry, TransportFailed("transport terminated"))
+          else {
+            sentToCancel.foreach(sendCancel)
+            if (entry.result.isEmpty) {
+              try transport.send(protocol.drain(BridgeCallId.value(entry.id)))
+              catch {
+                case NonFatal(exn) =>
+                  settleDrainFailure(entry, TransportFailed(
+                    Option(exn.getMessage).getOrElse(exn.getClass.getName)))
+              }
+            }
+          }
+          entry
+      }
+    }
+
+    val timeoutNanos = PideBridgePolicy.NonNegativeDuration.duration(drainTimeout).toNanos
+    synchronized {
+      while (waiting.result.isEmpty && state == State.Stopping) {
+        val remaining = timeoutNanos - (System.nanoTime() - waiting.startedAtNanos)
+        if (remaining <= 0L)
+          settleDrainFailure(waiting,
+            TimedOut(PideBridgePolicy.NonNegativeDuration.duration(drainTimeout)))
+        else {
+          val millis = remaining / 1000000L
+          val nanos = (remaining % 1000000L).toInt
+          wait(millis, nanos)
+        }
+      }
+      waiting.result.orElse(stopOutcome).getOrElse(SessionTerminated)
     }
   }
 
   def sessionStopped(): Unit = synchronized {
-    beginStop()
-    if (state != State.Stopped) {
-      hello = None
-      state = State.Stopped
-      clearDeadlines()
-      transport.close()
-      deadlineScheduler.shutdown()
-    }
+    val outcome = stopOutcome.getOrElse(SessionTerminated)
+    stopOutcome = Some(outcome)
+    drain.foreach(entry => if (entry.result.isEmpty) entry.result = Some(outcome))
+    drain = None
+    hello = None
+    state = State.Stopped
+    clearDeadlines()
+    deadlineScheduler.shutdown()
+    notifyAll()
+    transport.close()
   }
 
   private def transportTerminated(termination: PideTransport.Termination): Unit = synchronized {
+    transportAlive = false
     termination match {
       case PideTransport.Closed => ()
       case PideTransport.Failed(detail) =>
         diagnostics("PIDE bridge transport terminated: " + detail)
     }
-    if (state == State.Starting || state == State.Open) {
+    if (state != State.Stopped) {
+      val failure = TransportFailed("transport terminated")
       state = State.Stopping
-      hello.foreach(_.result = Some(Left(TransportFailed("transport terminated"))))
+      hello.foreach(_.result = Some(Left(failure)))
       hello = None
       notifyAll()
-      pending.drain(TransportFailed("transport terminated"))
+      pending.drain(failure)
       clearDeadlines()
       sent = Set.empty
       deadlineScheduler.shutdown()
+      drain match {
+        case Some(entry) if entry.result.isEmpty => settleDrainFailure(entry, failure)
+        case None if stopOutcome.isEmpty => stopOutcome = Some(Failed(failure))
+        case _ => ()
+      }
     }
+  }
+
+  private def completeDrain(rawId: String): Unit = {
+    val owned = drain.filter(entry => BridgeCallId.value(entry.id) == rawId)
+    owned match {
+      case Some(entry) if entry.result.isEmpty && stopOutcome.isEmpty && state == State.Stopping =>
+        val outcome = Acknowledged
+        entry.result = Some(outcome)
+        stopOutcome = Some(outcome)
+        drain = None
+        state = State.Stopped
+        notifyAll()
+        transport.close()
+        deadlineScheduler.shutdown()
+      case _ => diagnostics("Unowned PIDE bridge drain acknowledgement " + rawId)
+    }
+  }
+
+  private def failDrain(rawId: String, failure: BridgeFailure): Unit =
+    drain.filter(entry => BridgeCallId.value(entry.id) == rawId) match {
+      case Some(entry) if entry.result.isEmpty && stopOutcome.isEmpty =>
+        settleDrainFailure(entry, failure)
+      case _ => diagnostics("Unowned PIDE bridge drain failure " + rawId + ": " + failure.message)
+    }
+
+  private def settleDrainFailure(entry: Drain, failure: BridgeFailure): Unit = {
+    val outcome = Failed(failure)
+    entry.result = Some(outcome)
+    stopOutcome = Some(outcome)
+    notifyAll()
   }
 
   private[mcp] def pendingCount: Int = pending.size
   private[mcp] def deadlineCount: Int = synchronized { deadlines.size }
   private[mcp] def startupHelloPending: Boolean = synchronized { hello.isDefined }
+  private[mcp] def isStopping: Boolean = synchronized { state == State.Stopping }
+  private[mcp] def isStopped: Boolean = synchronized { state == State.Stopped }
 
   private def completeHello(operation: String, payload: XML.Body): Unit = {
     if (state != State.Starting) ()

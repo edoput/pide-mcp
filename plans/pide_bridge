@@ -196,8 +196,10 @@ uses that session for direct PIDE operations.
 state and ordering
 ------------------
 
-Bridge state is `Open`, `Stopping`, or `Stopped`.
+Bridge state is `Starting`, `Open`, `Stopping`, or `Stopped`.
 
+- `Starting` owns exactly one bounded hello exchange and admits no ordinary
+  call.  A concurrent readiness waiter cannot replace that hello owner.
 - `Open` admits only while `pending < maxPending`.
 - Admission allocates an unguessable internal call ID, validates and encodes
   the request, checks its serialized size, registers one typed pending
@@ -293,7 +295,10 @@ contains `maxPending`, `callTimeout`, `drainTimeout`, `maxRequestBytes`, and
 `maxReplyBytes`.  There is no waiting queue: overload is immediate.  The
 composition root derives bridge admission and deadline defaults from the
 already validated server options, while keeping the policy type independent of
-`ConnectionPolicy`.
+`ConnectionPolicy`.  `drainTimeout` is the non-negative
+`mcp_shutdown_drain` duration: an explicitly configured zero still permits a
+synchronous acknowledgement, otherwise it selects immediate forced session
+termination; the repository default remains 10 seconds.
 
 The size of an envelope is exactly the raw byte length of the sole canonical
 YXML value after serialization and before `protocol_command_raw` send or YXML

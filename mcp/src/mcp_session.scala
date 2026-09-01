@@ -10,10 +10,11 @@ string request id.
 package isabelle.mcp
 
 import isabelle._
-import isabelle.mcp.pide.{BridgeFailure, BridgeResult,
+import isabelle.mcp.pide.{BridgeDrainOutcome, BridgeFailure, BridgeResult,
   PideBridge, PideBridgePolicy, PideBridgeV1, SessionPideTransport}
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.control.ScheduledDeadlineScheduler
+import isabelle.mcp.control.NonNegativeDuration
 
 import scala.util.control.NonFatal
 import scala.concurrent.duration.FiniteDuration
@@ -382,8 +383,11 @@ object MCP_Session {
     val bridgeCallTimeout =
       PideBridgePolicy.PositiveDuration.checked(
         "mcp_request_timeout", options.real("mcp_request_timeout")).fold(error, identity)
+    val bridgeDrainTimeout =
+      NonNegativeDuration.checked(
+        "mcp_shutdown_drain", options.real("mcp_shutdown_drain")).fold(error, identity)
     val mcp_session = new MCP_Session(session, session_name, session_dirs, theory,
-      structure, deps, store, bridgeMaxPending, bridgeCallTimeout, bridgeProfile)
+      structure, deps, store, bridgeMaxPending, bridgeCallTimeout, bridgeDrainTimeout, bridgeProfile)
 
     /* theories already in the session image keep their protocol commands
        (defined at build time, persisted in the heap); anything else is
@@ -442,6 +446,7 @@ class MCP_Session private(
   val store: Store,
   bridgeMaxPending: PideBridgePolicy.MaxPending,
   bridgeCallTimeout: PideBridgePolicy.PositiveDuration,
+  bridgeDrainTimeout: PideBridgePolicy.NonNegativeDuration,
   bridgeProfile: McpBridgeProfile
 ) extends MCP_Backend {
   private final class DirectOperation {
@@ -604,6 +609,7 @@ class MCP_Session private(
       new SessionPideTransport(session, PideBridgeV1.resultFunctions),
       bridgeMaxPending,
       bridgeCallTimeout,
+      bridgeDrainTimeout,
       new ScheduledDeadlineScheduler("mcp-pide-bridge-deadline"),
       theory,
       McpBridgeOperations.operationNames,
@@ -1448,10 +1454,26 @@ class MCP_Session private(
 
   def stop(): Unit = {
     val direct_operations = begin_direct_shutdown()
-    bridge.beginStop()
-    direct_operations.foreach(_.interrupt())
-    direct_operations.foreach(_.done.join)
-    try session.stop()
+    try {
+      try {
+        direct_operations.foreach(_.interrupt())
+        try {
+          bridge.beginStop() match {
+            case BridgeDrainOutcome.Failed(failure) =>
+              Output.warning("PIDE bridge drain failed: " + failure.message +
+                "; forcing Isabelle session stop")
+            case BridgeDrainOutcome.Acknowledged | BridgeDrainOutcome.SessionTerminated => ()
+          }
+        }
+        catch {
+          case NonFatal(exn) =>
+            Output.warning("PIDE bridge drain raised " + Exn.message(exn) +
+              "; forcing Isabelle session stop")
+        }
+        direct_operations.foreach(_.done.join)
+      }
+      finally session.stop()
+    }
     finally bridge.sessionStopped()
     ()
   }

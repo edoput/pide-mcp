@@ -14,6 +14,8 @@ sealed trait PideBridgeReply
 
 
 object PideBridgeReply {
+  final case class DrainAck(id: String) extends PideBridgeReply
+  final case class DrainFailure(id: String, failure: BridgeFailure) extends PideBridgeReply
   final case class Success(id: String, operation: String, payload: XML.Body)
     extends PideBridgeReply
   final case class Failure(id: String, operation: String, failure: BridgeFailure)
@@ -33,6 +35,7 @@ trait PideBridgeProtocol {
   def call(id: String, theory: String, operation: String,
     payload: XML.Body): PideTransport.Outbound
   def cancel(id: String): PideTransport.Outbound
+  def drain(id: String): PideTransport.Outbound
   def decode(reply: PideTransport.Inbound): PideBridgeReply
 }
 
@@ -68,6 +71,9 @@ object PideBridgeV1 extends PideBridgeProtocol {
 
   def cancel(id: String): PideTransport.Outbound =
     outbound(List("revision" -> revision, "kind" -> "cancel", "id" -> id), Nil)
+
+  def drain(id: String): PideTransport.Outbound =
+    outbound(List("revision" -> revision, "kind" -> "drain", "id" -> id), Nil)
 
   private def outbound(properties: Properties.T,
     payload: XML.Body): PideTransport.Outbound = {
@@ -106,6 +112,7 @@ object PideBridgeV1 extends PideBridgeProtocol {
     def malformed(detail: String): PideBridgeReply = Malformed(id, operation, detail)
     def required(name: String): Either[String, String] =
       Properties.get(properties, name).toRight("missing " + name)
+    def exactlyOnce(name: String): Boolean = properties.count(_._1 == name) == 1
 
     val decoded =
       for {
@@ -113,25 +120,38 @@ object PideBridgeV1 extends PideBridgeProtocol {
         _ <- Either.cond(actualRevision == revision, (),
           "unsupported bridge revision " + actualRevision)
         kind <- required("kind")
-        _ <- Either.cond(kind == "result", (), "invalid result kind " + kind)
         callId <- required("id")
-        op <- required("operation")
         status <- required("status")
-      } yield (callId, op, status)
+      } yield (callId, kind, status)
 
     decoded match {
       case Left(detail) => malformed(detail)
-      case Right((callId, op, "ok")) => Success(callId, op, payload)
-      case Right((callId, op, "remote_error")) =>
+      case Right((callId, "drain", "ok"))
+          if List("revision", "kind", "id", "status").forall(exactlyOnce) &&
+            properties.length == 4 && operation.isEmpty && payload.isEmpty => DrainAck(callId)
+      case Right((_, "drain", "ok")) => malformed("invalid drain acknowledgement")
+      case Right((callId, "drain", "protocol_error"))
+          if List("revision", "kind", "id", "status").forall(exactlyOnce) &&
+            properties.length == 4 && operation.isEmpty =>
         decodeDetail(payload).fold(
-          detail => malformed("invalid remote_error payload: " + detail),
-          detail => Failure(callId, op, RemoteError(detail)))
-      case Right((callId, op, "protocol_error")) =>
-        decodeDetail(payload).fold(
-          detail => malformed("invalid protocol_error payload: " + detail),
-          detail => Failure(callId, op, ProtocolError(detail)))
-      case Right((callId, op, status)) =>
-        malformed("invalid bridge result status " + status)
+          detail => malformed("invalid drain protocol_error payload: " + detail),
+          detail => DrainFailure(callId, ProtocolError(detail)))
+      case Right((_, "drain", status)) => malformed("invalid drain acknowledgement status " + status)
+      case Right((callId, "result", status)) =>
+        operation match {
+          case None => malformed("missing operation")
+          case Some(op) => status match {
+            case "ok" => Success(callId, op, payload)
+            case "remote_error" => decodeDetail(payload).fold(
+              detail => malformed("invalid remote_error payload: " + detail),
+              detail => Failure(callId, op, RemoteError(detail)))
+            case "protocol_error" => decodeDetail(payload).fold(
+              detail => malformed("invalid protocol_error payload: " + detail),
+              detail => Failure(callId, op, ProtocolError(detail)))
+            case _ => malformed("invalid bridge result status " + status)
+          }
+        }
+      case Right((_, kind, _)) => malformed("invalid bridge result kind " + kind)
     }
   }
 
@@ -160,6 +180,28 @@ object PideBridgeV1 extends PideBridgeProtocol {
     PideTransport.Inbound(
       ResultFunction,
       List(Markup.FUNCTION -> ResultFunction),
+      Bytes(YXML.string_of_body(body)),
+      "")
+  }
+
+  private[mcp] def drainResult(
+    id: String,
+    status: String = "ok",
+    payload: XML.Body = Nil,
+    properties: Properties.T = Nil,
+    actualRevision: String = revision
+  ): PideTransport.Inbound = {
+    val body = List(XML.Elem(
+      Markup(ResultElement,
+        List(
+          "revision" -> actualRevision,
+          "kind" -> "drain",
+          "id" -> id,
+          "status" -> status) ::: properties),
+      payload))
+    PideTransport.Inbound(
+      ResultFunction,
+      List(Markup.FUNCTION -> ResultFunction, "id" -> id),
       Bytes(YXML.string_of_body(body)),
       "")
   }

@@ -97,6 +97,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       terminated.foreach(_(PideTransport.Failed(message)))
 
     def sent: Vector[PideTransport.Outbound] = synchronized { outbound }
+    def isClosed: Boolean = synchronized { closed }
 
     /** Start a new observation window after control-plane setup. */
     def clearOutbound(): Unit = synchronized { outbound = Vector.empty }
@@ -117,11 +118,14 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
   private def bridge(transport: ScriptedTransport, maxPending: Int = 4,
     deadlines: ManualDeadlineScheduler = new ManualDeadlineScheduler,
+    drainTimeoutSeconds: Double = 0.0,
     diagnostics: String => Unit = _ => ()): PideBridge = {
+    val configured = policy(maxPending, drainTimeoutSeconds)
     val control = new PideBridge(
       transport,
-      policy(maxPending).maxPending,
-      policy(maxPending).timing.callTimeout,
+      configured.maxPending,
+      configured.timing.callTimeout,
+      configured.timing.drainTimeout,
       deadlines,
       "MCP_Tools",
       McpBridgeOperations.baseOperationNames ++ Set("first", "second", "op"),
@@ -143,17 +147,18 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       transport,
       policy().maxPending,
       policy().timing.callTimeout,
+      policy().timing.drainTimeout,
       new ManualDeadlineScheduler,
       "MCP_Tools",
       McpBridgeOperations.operationNames,
       bridgeProfile,
       PideBridgeV1)
 
-  private def policy(maxPending: Int = 2): PideBridgePolicy =
+  private def policy(maxPending: Int = 2, drainTimeoutSeconds: Double = 0.0): PideBridgePolicy =
     PideBridgePolicy.checked(
       maxPending = maxPending,
       callTimeoutSeconds = 5.0,
-      drainTimeoutSeconds = 2.0,
+      drainTimeoutSeconds = drainTimeoutSeconds,
       maxRequestBytes = 1024,
       maxReplyBytes = 4096).fold(errors => fail(errors.mkString(", ")), identity)
 
@@ -194,6 +199,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     transport.deliver(message.function, id, message.body.text, message.properties)
   }
 
+  private def deliverDrain(transport: ScriptedTransport, id: String,
+    status: String = "ok", payload: XML.Body = Nil,
+    properties: Properties.T = Nil): Unit = {
+    val message = PideBridgeV1.drainResult(id, status, payload, properties)
+    transport.deliver(message.function, id, message.body.text, message.properties)
+  }
+
   test("bridge policy validates all named resource bounds together") {
     val errors =
       PideBridgePolicy.checked(
@@ -207,7 +219,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       List(
         "maxPending must be positive",
         "callTimeout must be finite and positive",
-        "drainTimeout must be finite and positive",
+        "drainTimeout must be finite and non-negative",
         "maxRequestBytes must be positive",
         "maxReplyBytes must be positive"))
   }
@@ -327,6 +339,37 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assertEquals(outbound.command, PideBridgeV1.Command)
     assertEquals(requestProperty(outbound, "id"), "string-id")
     assertEquals(requestProperty(outbound, "operation"), "tools")
+
+    val drain = PideBridgeV1.drain("drain-id")
+    assertEquals(requestProperty(drain, "kind"), "drain")
+    assertEquals(requestProperty(drain, "id"), "drain-id")
+    assert(!requestProperties(drain).exists(_._1 == "operation"))
+  }
+
+  test("drain acknowledgements have an exact control-envelope shape") {
+    assertEquals(PideBridgeV1.decode(PideBridgeV1.drainResult("drain-id")),
+      PideBridgeReply.DrainAck("drain-id"))
+    assertEquals(
+      PideBridgeV1.decode(PideBridgeV1.drainResult(
+        "drain-id", status = "protocol_error", payload = XML.Encode.string("bad drain"))),
+      PideBridgeReply.DrainFailure("drain-id", BridgeFailure.ProtocolError("bad drain")))
+
+    def malformed(message: PideTransport.Inbound): String =
+      PideBridgeV1.decode(message) match {
+        case PideBridgeReply.Malformed(_, _, detail) => detail
+        case other => fail("expected malformed drain reply, got " + other)
+      }
+
+    assert(malformed(PideBridgeV1.drainResult(
+      "drain-id", properties = List("extra" -> "value"))).contains("invalid drain"))
+    assert(malformed(PideBridgeV1.drainResult(
+      "drain-id", properties = List("operation" -> "drain"))).contains("invalid drain"))
+    assert(malformed(PideBridgeV1.drainResult(
+      "drain-id", payload = XML.Encode.string("unexpected"))).contains("invalid drain"))
+    assert(malformed(PideBridgeV1.drainResult(
+      "drain-id", status = "remote_error")).contains("invalid drain acknowledgement status"))
+    assert(malformed(PideBridgeV1.drainResult(
+      "drain-id", properties = List("id" -> "duplicate"))).contains("invalid drain"))
   }
 
   spec_test("base-profile hello gates ordinary calls and accepts extra operations",
@@ -623,6 +666,144 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     sendBridge.beginStop()
     sendBridge.sessionStopped()
     deadBridge.sessionStopped()
+  }
+
+  spec_test("stop sends ordered cancellation then one drain and shares its acknowledgement",
+      covers = List("pide_bridge#T3", "pide_bridge#T6")) {
+    val diagnostics = collection.mutable.ListBuffer.empty[String]
+    val deadlines = new ManualDeadlineScheduler
+    val transport = new ScriptedTransport
+    val control = bridge(transport, deadlines = deadlines, drainTimeoutSeconds = 1.0,
+      diagnostics = message => diagnostics.synchronized { diagnostics += message })
+
+    val call = Future.fork(control.call(TextOperation("op", "request"), NeverCancelled))
+    transport.awaitSent(1)
+    val callId = requestProperty(transport.sent.head, "id")
+
+    val firstStop = Future.fork(control.beginStop())
+    val secondStop = Future.fork(control.beginStop())
+    transport.awaitSent(3)
+    assertEquals(transport.sent.map(requestProperty(_, "kind")),
+      Vector("call", "cancel", "drain"))
+    assertEquals(requestProperty(transport.sent(1), "id"), callId)
+    val drainId = requestProperty(transport.sent(2), "id")
+    assertNotEquals(drainId, callId)
+    assertEquals(call.join, Left(BridgeFailure.SessionStopped))
+    assertEquals(control.pendingCount, 0)
+    assertEquals(control.deadlineCount, 0)
+    assert(deadlines.isShutdown)
+    assert(control.isStopping)
+    assert(!transport.isClosed)
+
+    deliverResult(transport, callId, "op", "late")
+    deliverDrain(transport, "foreign-drain")
+    assert(control.isStopping)
+    deliverDrain(transport, drainId)
+
+    assertEquals(firstStop.join, BridgeDrainOutcome.Acknowledged)
+    assertEquals(secondStop.join, BridgeDrainOutcome.Acknowledged)
+    assert(control.isStopped)
+    assert(transport.isClosed)
+    assertEquals(transport.sent.count(requestProperty(_, "kind") == "drain"), 1)
+    assertEquals(control.call(TextOperation("op", "post-stop"), NeverCancelled),
+      Left(BridgeFailure.SessionStopped))
+    assertEquals(control.beginStop(), BridgeDrainOutcome.Acknowledged)
+    assertEquals(transport.sent.length, 3)
+    assert(diagnostics.synchronized {
+      diagnostics.exists(_.contains("Unowned PIDE bridge drain acknowledgement foreign-drain")) &&
+        diagnostics.exists(_.contains("Unowned PIDE bridge reply"))
+    })
+    control.sessionStopped()
+  }
+
+  spec_test("drain timeout requires session termination before Stopped",
+      covers = List("pide_bridge#T6")) {
+    val diagnostics = collection.mutable.ListBuffer.empty[String]
+    val deadlines = new ManualDeadlineScheduler
+    val transport = new ScriptedTransport
+    val control = bridge(transport, deadlines = deadlines, drainTimeoutSeconds = 0.01,
+      diagnostics = message => diagnostics.synchronized { diagnostics += message })
+
+    val outcome = control.beginStop()
+    outcome match {
+      case BridgeDrainOutcome.Failed(BridgeFailure.TimedOut(delay)) =>
+        assertEquals(delay.toMillis, 10L)
+      case other => fail("expected timed-out drain, got " + other)
+    }
+    assertEquals(transport.sent.map(requestProperty(_, "kind")), Vector("drain"))
+    assert(control.isStopping)
+    assert(!control.isStopped)
+    assert(!transport.isClosed)
+    assert(deadlines.isShutdown)
+    assertEquals(control.beginStop(), outcome)
+    assertEquals(transport.sent.length, 1)
+
+    deliverDrain(transport, requestProperty(transport.sent.head, "id"))
+    assert(control.isStopping)
+    assert(!transport.isClosed)
+    assert(diagnostics.synchronized {
+      diagnostics.exists(_.contains("Unowned PIDE bridge drain acknowledgement"))
+    })
+
+    control.sessionStopped()
+    assert(control.isStopped)
+    assert(transport.isClosed)
+    assertEquals(control.beginStop(), outcome)
+  }
+
+  test("correlated drain protocol failures require the forced-stop fallback") {
+    def rejected(deliver: (ScriptedTransport, String) => Unit): Unit = {
+      val transport = new ScriptedTransport
+      val control = bridge(transport, drainTimeoutSeconds = 1.0)
+      val stopping = Future.fork(control.beginStop())
+      transport.awaitSent(1)
+      val id = requestProperty(transport.sent.head, "id")
+      deliver(transport, id)
+      stopping.join match {
+        case BridgeDrainOutcome.Failed(BridgeFailure.ProtocolError(_)) => ()
+        case other => fail("expected correlated drain ProtocolError, got " + other)
+      }
+      assert(control.isStopping)
+      assert(!control.isStopped)
+      assert(!transport.isClosed)
+      control.sessionStopped()
+      assert(control.isStopped)
+    }
+
+    rejected((transport, id) =>
+      deliverDrain(transport, id, status = "protocol_error",
+        payload = XML.Encode.string("ML rejected drain")))
+    rejected((transport, id) =>
+      deliverDrain(transport, id, properties = List("extra" -> "invalid")))
+    rejected((transport, id) => deliverResult(transport, id, "op", "wrong kind"))
+  }
+
+  test("drain send and transport failures require the forced-stop fallback") {
+    val sendTransport = new ScriptedTransport
+    val sendBridge = bridge(sendTransport, drainTimeoutSeconds = 1.0)
+    sendTransport.failNextSend("cannot send drain")
+    sendBridge.beginStop() match {
+      case BridgeDrainOutcome.Failed(BridgeFailure.TransportFailed(detail)) =>
+        assert(detail.contains("cannot send drain"))
+      case other => fail("expected drain send failure, got " + other)
+    }
+    assert(sendBridge.isStopping)
+    assert(!sendTransport.isClosed)
+    sendBridge.sessionStopped()
+
+    val failedTransport = new ScriptedTransport
+    val failedBridge = bridge(failedTransport, drainTimeoutSeconds = 1.0)
+    val stopping = Future.fork(failedBridge.beginStop())
+    failedTransport.awaitSent(1)
+    failedTransport.failTransport("drain link lost")
+    stopping.join match {
+      case BridgeDrainOutcome.Failed(BridgeFailure.TransportFailed(_)) => ()
+      case other => fail("expected drain transport failure, got " + other)
+    }
+    assert(failedBridge.isStopping)
+    assert(!failedBridge.isStopped)
+    failedBridge.sessionStopped()
+    assert(failedBridge.isStopped)
   }
 
   spec_test("ordinary bridge deadline races have one winner and recover capacity",

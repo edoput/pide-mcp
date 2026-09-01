@@ -91,10 +91,23 @@ fun publish id operation status payload =
     [Markup.function result_function, ("id", id), ("operation", operation)]
     [[result_envelope id operation status payload]];
 
+fun drain_envelope id status payload =
+  XML.Elem ((result_element,
+    [("revision", revision), ("kind", "drain"), ("id", id), ("status", status)]), payload);
+
+fun publish_drain_result id status payload =
+  Output.protocol_message [Markup.function result_function, ("id", id)]
+    [[drain_envelope id status payload]];
+
+fun publish_drain id = publish_drain_result id "ok" [];
+
 fun error_payload message = XML.Encode.string message;
 
 fun protocol_error id operation message =
   publish id operation "protocol_error" (error_payload message);
+
+fun drain_protocol_error id message =
+  publish_drain_result id "protocol_error" (error_payload message);
 
 fun remote_result id operation joined =
   (case joined of
@@ -124,6 +137,7 @@ fun execute_call id theory_name operation payload =
     MCP_Cancellation.fork_group id ("MCP.bridge." ^ operation)
       (fn group => invoke root operation group payload)
       (fn joined => remote_result id operation joined)
+      (List.app publish_drain)
   end;
 
 fun execute_hello id theory_name =
@@ -136,11 +150,17 @@ fun execute_hello id theory_name =
 fun command_error properties exn =
   let
     val message = Runtime.exn_message exn;
-    val id = unique_property properties "id";
-    val operation = unique_property properties "operation";
+    fun recover name =
+      (case filter (fn (key, _) => key = name) properties of
+        [(_, value)] => SOME value
+      | _ => NONE);
+    val id = recover "id";
+    val kind = recover "kind";
+    val operation = recover "operation";
   in
-    (case (id, operation) of
-      (SOME id', SOME operation') => protocol_error id' operation' message
+    (case (id, kind, operation) of
+      (SOME id', SOME "drain", _) => drain_protocol_error id' message
+    | (SOME id', _, SOME operation') => protocol_error id' operation' message
     | _ => Output.error_message ("Uncorrelated MCP bridge envelope: " ^ message))
   end;
 
@@ -173,6 +193,13 @@ fun dispatch_properties properties payload =
         val id = required_property properties "id";
         val _ = null payload orelse error "MCP bridge cancellation has a payload";
       in ignore (MCP_Cancellation.cancel id) end
+    else if kind = "drain" then
+      let
+        val _ = check_properties ["revision", "kind", "id"] properties;
+        val id = required_property properties "id";
+        val _ = null payload orelse error "MCP bridge drain has a payload";
+        val acknowledgements = MCP_Cancellation.drain id;
+      in List.app publish_drain acknowledgements end
     else error ("Unknown MCP bridge envelope kind " ^ quote kind)
   end;
 

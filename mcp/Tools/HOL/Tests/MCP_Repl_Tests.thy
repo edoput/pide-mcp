@@ -1894,7 +1894,8 @@ val _ =
     val _ =
       MCP_Cancellation.fork_group id "MCP.bridge.ir.test"
         (fn group => MCP_Repl.bridge_handler group \<^theory> payload)
-        (fn _ => Synchronized.change published (fn n => n + 1));
+        (fn _ => Synchronized.change published (fn n => n + 1))
+        (K ());
     fun await_busy 0 = false
       | await_busy attempts =
           let val (_, listing) = MCP_Repl.run "repls" [] in

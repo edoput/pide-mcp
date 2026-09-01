@@ -1175,6 +1175,8 @@ val _ =
     val normal_group = Future.new_group NONE;
     val _ = MCP_Cancellation.register "normal-route" normal_group;
     val _ = \<^assert> (MCP_Cancellation.finish "normal-route" = SOME false);
+    val _ = \<^assert> (MCP_Cancellation.member "normal-route");
+    val _ = \<^assert> (MCP_Cancellation.cleanup "normal-route" = []);
     val _ = \<^assert> (MCP_Cancellation.finish "normal-route" = NONE);
 
     val dependency = Future.promise_name "MCP cancellation dependency" (fn () => ());
@@ -1193,6 +1195,7 @@ val _ =
     val _ = \<^assert> (Exn.is_exn result);
     val _ = \<^assert> (not (Synchronized.value ran));
     val _ = \<^assert> (MCP_Cancellation.finish "cancelled-route" = SOME true);
+    val _ = \<^assert> (MCP_Cancellation.cleanup "cancelled-route" = []);
     val _ = \<^assert> (MCP_Cancellation.finish "cancelled-route" = NONE);
   in () end;
 \<close>
@@ -1259,5 +1262,32 @@ ML \<open>MCP_Output.reset ()\<close>
 mcp_resource slow_resource = \<open>fn _ =>
   (OS.Process.sleep (Time.fromReal 2.0); "slow resource done")\<close>
   (description \<open>a cancellable bridge fixture\<close>)
+
+section \<open>Bridge drain ownership\<close>
+
+spec_test \<open>bridge drain waits through result publication and closes ML admission\<close>
+  covers \<open>pide_bridge#T6\<close>
+
+ML \<open>
+val _ =
+  let
+    val group = Future.new_group NONE;
+    val _ = MCP_Cancellation.register "drain-route" group;
+    val _ = \<^assert> (MCP_Cancellation.drain "drain-one" = []);
+    val _ = \<^assert> (MCP_Cancellation.finish "drain-route" = SOME false);
+    (*finish decides publication, but cleanup is the publication boundary: the
+      route and both drain owners must remain until cleanup follows publish.*)
+    val _ = \<^assert> (MCP_Cancellation.member "drain-route");
+    val _ = \<^assert> (MCP_Cancellation.drain "drain-two" = []);
+    val _ = \<^assert>
+      (MCP_Cancellation.cleanup "drain-route" = ["drain-one", "drain-two"]);
+    val _ = \<^assert> (not (MCP_Cancellation.member "drain-route"));
+    val _ = \<^assert> (MCP_Cancellation.drain "drain-empty" = ["drain-empty"]);
+    val rejected = Exn.capture_body
+      (fn () => MCP_Cancellation.register "post-drain-route" (Future.new_group NONE));
+    val _ = \<^assert> (Exn.is_exn rejected);
+    val _ = \<^assert> (not (MCP_Cancellation.member "post-drain-route"));
+  in () end;
+\<close>
 
 end
