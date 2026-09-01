@@ -10,6 +10,7 @@ package isabelle.mcp.application
 import isabelle._
 import isabelle.mcp.{MCP_Backend, MCP_Server, MCP_Session}
 import isabelle.mcp.pide.BridgeCancellation
+import scala.concurrent.duration.FiniteDuration
 
 
 object McpApplication {
@@ -33,7 +34,7 @@ object McpApplication {
   object Outcome {
     final case class Result(value: JSON.T) extends Outcome
     final case class InvalidParams(message: String) extends Outcome
-    final case class TimedOut(seconds: Double) extends Outcome
+    final case class TimedOut(delay: FiniteDuration) extends Outcome
   }
 
   /* The kernel supplies a connection-owned implementation.  Application code
@@ -298,6 +299,6 @@ private[application] final class IsabelleMcpApplication(
       }
     }
     catch {
-      case MCP_Session.BridgeTimedOut(seconds) => Outcome.TimedOut(seconds)
+      case MCP_Session.BridgeTimedOut(delay) => Outcome.TimedOut(delay)
     }
 }

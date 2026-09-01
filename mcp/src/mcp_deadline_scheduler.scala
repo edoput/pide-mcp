@@ -6,12 +6,55 @@ terminal races remain with the component that uses the scheduler.
 
 package isabelle.mcp.control
 
-import java.util.concurrent.{ScheduledThreadPoolExecutor, ThreadFactory, TimeUnit}
+import java.util.concurrent.{ScheduledThreadPoolExecutor, ThreadFactory}
 import java.util.concurrent.atomic.AtomicInteger
+import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration.NANOSECONDS
+
+
+/** A finite, strictly positive control-plane duration. Configuration parsing
+  * is the only seconds-to-duration conversion boundary; extreme finite input
+  * saturates at the largest representable nanosecond delay. */
+opaque type PositiveDuration = FiniteDuration
+opaque type NonNegativeDuration = FiniteDuration
+
+
+object PositiveDuration {
+  def checked(field: String, seconds: Double): Either[String, PositiveDuration] =
+    checkedFinite(field, seconds, positive = true).map[PositiveDuration](value => value)
+
+  def duration(value: PositiveDuration): FiniteDuration = value
+  def seconds(value: PositiveDuration): Double = value.toNanos.toDouble / 1000000000.0
+}
+
+
+object NonNegativeDuration {
+  def checked(field: String, seconds: Double): Either[String, NonNegativeDuration] =
+    checkedFinite(field, seconds, positive = false).map[NonNegativeDuration](value => value)
+
+  def duration(value: NonNegativeDuration): FiniteDuration = value
+  def seconds(value: NonNegativeDuration): Double = value.toNanos.toDouble / 1000000000.0
+}
+
+
+private def checkedFinite(field: String, seconds: Double, positive: Boolean)
+    : Either[String, FiniteDuration] = {
+  val valid = !seconds.isNaN && !seconds.isInfinity &&
+    (if (positive) seconds > 0.0 else seconds >= 0.0)
+  if (!valid)
+    Left(field + " must be finite and " + (if (positive) "positive" else "non-negative"))
+  else {
+    val saturation = Long.MaxValue.toDouble / 1000000000.0
+    val nanos =
+      if (seconds >= saturation) Long.MaxValue
+      else math.max(if (positive) 1L else 0L, math.ceil(seconds * 1000000000.0).toLong)
+    Right(FiniteDuration(nanos, NANOSECONDS))
+  }
+}
 
 
 trait DeadlineScheduler {
-  def schedule(seconds: Double, task: () => Unit): DeadlineScheduler.Handle
+  def schedule(delay: PositiveDuration, task: () => Unit): DeadlineScheduler.Handle
   def shutdown(): Unit
   def isShutdown: Boolean
 }
@@ -38,10 +81,10 @@ final class ScheduledDeadlineScheduler(
   private val executor = new ScheduledThreadPoolExecutor(1, threads)
   executor.setRemoveOnCancelPolicy(true)
 
-  def schedule(seconds: Double, task: () => Unit): DeadlineScheduler.Handle = {
-    val delay = Math.max(1L, Math.ceil(seconds * 1000000000.0).toLong)
+  def schedule(delay: PositiveDuration, task: () => Unit): DeadlineScheduler.Handle = {
+    val finite = PositiveDuration.duration(delay)
     val future = executor.schedule(
-      new Runnable { def run(): Unit = task() }, delay, TimeUnit.NANOSECONDS)
+      new Runnable { def run(): Unit = task() }, finite.length, finite.unit)
     new DeadlineScheduler.Handle { def cancel(): Unit = future.cancel(false) }
   }
 
@@ -75,9 +118,7 @@ final class ManualDeadlineScheduler extends DeadlineScheduler {
   private var entries = Vector.empty[Entry]
   private var closed = false
 
-  def schedule(seconds: Double, task: () => Unit): DeadlineScheduler.Handle = synchronized {
-    require(seconds > 0.0 && !seconds.isNaN && !seconds.isInfinity,
-      "deadline must be finite and positive")
+  def schedule(delay: PositiveDuration, task: () => Unit): DeadlineScheduler.Handle = synchronized {
     if (closed) throw new IllegalStateException("deadline scheduler is closed")
     val entry = new Entry(task)
     entries :+= entry

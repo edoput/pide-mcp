@@ -13,6 +13,7 @@ import isabelle.mcp.connection._
 import isabelle.mcp.control.{DeadlineScheduler, ManualDeadlineScheduler}
 import isabelle.mcp.protocol.JsonRpc
 import isabelle.mcp.transport.{DataPlane, ScriptedDataPlane, StdioDataPlane}
+import scala.concurrent.duration.DurationInt
 
 
 class MCP_Connection_Kernel_Tests extends MCP_Suite {
@@ -1158,7 +1159,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     val app = new McpApplication {
       def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
         cancellation.onCancel(() => cancellations += 1)
-        McpApplication.Outcome.TimedOut(5.0)
+        McpApplication.Outcome.TimedOut(5.seconds)
       }
     }
     val connection = kernelWith(plane, scheduler, 1, app, deadlines)
@@ -1322,6 +1323,61 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(connection.phase, ConnectionLifecycle.Closed)
     assert(scheduler.isShutdown)
     assert(deadlines.isShutdown)
+  }
+
+  test("maximum finite shutdown drain waits for admitted work instead of overflowing") {
+    import java.util.concurrent.{CountDownLatch, TimeUnit}
+    import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
+
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new BoundedConcurrentScheduler(1, "kernel-max-drain-worker")
+    val deadlines = new ManualDeadlineScheduler
+    val started = new CountDownLatch(1)
+    val release = new CountDownLatch(1)
+    val cancellations = new AtomicInteger(0)
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+        cancellation.onCancel(() => cancellations.incrementAndGet())
+        started.countDown()
+        if (!release.await(2, TimeUnit.SECONDS)) fail("drain releaser did not run")
+        McpApplication.Outcome.Result(JSON.Object("ok" -> true))
+      }
+    }
+    val connection = kernelWith(plane, scheduler, 1, app, deadlines,
+      shutdownDrain = Double.MaxValue)
+    ready(connection, 690)
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList,
+      RequestId.string("maximum-drain")))
+    assert(started.await(2, TimeUnit.SECONDS), "drain worker did not start")
+
+    val drainResult = new AtomicReference[ConnectionKernel.DrainResult](null)
+    val drainStarted = new CountDownLatch(1)
+    val draining = new Thread(new Runnable {
+      def run(): Unit = {
+        drainStarted.countDown()
+        drainResult.set(connection.drainAndClose())
+      }
+    }, "kernel-maximum-drain")
+    draining.setDaemon(true)
+    draining.start()
+    assert(drainStarted.await(1, TimeUnit.SECONDS), "drain thread did not start")
+
+    val observedBy = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+    def waiting(state: Thread.State): Boolean =
+      state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING
+    while ((connection.phase != ConnectionLifecycle.Closing ||
+        !waiting(draining.getState)) && System.nanoTime() < observedBy)
+      Thread.`yield`()
+    assertEquals(connection.phase, ConnectionLifecycle.Closing)
+    assert(waiting(draining.getState),
+      "maximum finite drain should wait for the admitted worker")
+
+    release.countDown()
+    draining.join(2000L)
+    assert(!draining.isAlive, "maximum drain did not finish after worker release")
+    assertEquals(drainResult.get(), ConnectionKernel.DrainResult(drained = true, cancelled = Nil))
+    assertEquals(cancellations.get(), 0, "overflow must not cancel admitted work")
+    assertEquals(connection.phase, ConnectionLifecycle.Closed)
   }
 
   spec_test("EOF deadline terminalizes remaining work before close and suppresses late output",

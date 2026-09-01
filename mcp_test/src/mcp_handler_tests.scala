@@ -268,7 +268,7 @@ class MCP_Tools_Tests extends MCP_Suite {
       override def ml_run_cancellable(name: String, args: List[(String, String)],
           context: String,
           cancellation: McpApplication.Cancellation): MCP_Session.Result =
-        throw MCP_Session.BridgeTimedOut(5.0)
+        throw MCP_Session.BridgeTimedOut(5.seconds)
     }
     val application = McpApplication.isabelle(
       () => McpApplication.Ready(new Timeout_Backend), "TEST", Nil, "MCP_Tools")
@@ -276,7 +276,7 @@ class MCP_Tools_Tests extends MCP_Suite {
       application.execute(
         McpApplication.Operation.ToolsCall("shout", JSON.Object("input" -> "hello")),
         McpApplication.Cancellation.Never),
-      McpApplication.Outcome.TimedOut(5.0))
+      McpApplication.Outcome.TimedOut(5.seconds))
   }
 
   spec_test("application forwards the connection cancellation handle to every prover-backed path",

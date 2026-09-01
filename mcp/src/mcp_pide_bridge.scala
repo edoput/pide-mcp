@@ -7,10 +7,11 @@ package isabelle.mcp.pide
 
 import isabelle.{Bytes, Future, Headless, Markup, Output, Promise, Properties, Prover, Session, XML}
 import isabelle.mcp.McpBridgeProfile
-import isabelle.mcp.control.DeadlineScheduler
+import isabelle.mcp.control.{DeadlineScheduler, PositiveDuration => ControlPositiveDuration}
 
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
+import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal
 
 
@@ -58,8 +59,9 @@ object BridgeFailure {
     val message = "bridge call cancelled"
   }
 
-  final case class TimedOut(seconds: Double) extends BridgeFailure {
-    val message = "bridge call timed out after " + seconds + " seconds"
+  final case class TimedOut(delay: FiniteDuration) extends BridgeFailure {
+    val message = "bridge call timed out after " +
+      (delay.toNanos.toDouble / 1000000000.0) + " seconds"
   }
 
   case object SessionStopped extends BridgeFailure {
@@ -107,7 +109,7 @@ final case class PideBridgePolicy(
 
 object PideBridgePolicy {
   opaque type MaxPending = Int
-  opaque type PositiveSeconds = Double
+  type PositiveDuration = ControlPositiveDuration
   opaque type PositiveBytes = Long
 
   object MaxPending {
@@ -117,13 +119,7 @@ object PideBridgePolicy {
     def value(value: MaxPending): Int = value
   }
 
-  object PositiveSeconds {
-    def checked(field: String, value: Double): Either[String, PositiveSeconds] =
-      if (!value.isNaN && !value.isInfinity && value > 0.0) Right(value)
-      else Left(field + " must be finite and positive")
-
-    def value(value: PositiveSeconds): Double = value
-  }
+  val PositiveDuration: ControlPositiveDuration.type = ControlPositiveDuration
 
   object PositiveBytes {
     def checked(field: String, value: Long): Either[String, PositiveBytes] =
@@ -133,8 +129,8 @@ object PideBridgePolicy {
   }
 
   final case class Timing(
-    callTimeout: PositiveSeconds,
-    drainTimeout: PositiveSeconds
+    callTimeout: PositiveDuration,
+    drainTimeout: PositiveDuration
   )
 
   final case class Envelopes(
@@ -150,8 +146,8 @@ object PideBridgePolicy {
     maxReplyBytes: Long
   ): Either[List[String], PideBridgePolicy] = {
     val pending = MaxPending.checked(maxPending)
-    val call = PositiveSeconds.checked("callTimeout", callTimeoutSeconds)
-    val drain = PositiveSeconds.checked("drainTimeout", drainTimeoutSeconds)
+    val call = PositiveDuration.checked("callTimeout", callTimeoutSeconds)
+    val drain = PositiveDuration.checked("drainTimeout", drainTimeoutSeconds)
     val request = PositiveBytes.checked("maxRequestBytes", maxRequestBytes)
     val reply = PositiveBytes.checked("maxReplyBytes", maxReplyBytes)
     val errors = List(pending, call, drain, request, reply).collect { case Left(error) => error }
@@ -466,7 +462,7 @@ trait BridgeCancellation {
 private[mcp] final class PideBridge(
   transport: PideTransport,
   maxPending: PideBridgePolicy.MaxPending,
-  callTimeout: PideBridgePolicy.PositiveSeconds,
+  callTimeout: PideBridgePolicy.PositiveDuration,
   deadlineScheduler: DeadlineScheduler,
   theory: String,
   operationNames: Set[String],
@@ -496,14 +492,17 @@ private[mcp] final class PideBridge(
 
   transport.start(receive, transportTerminated)
 
-  /** The single startup control-plane exchange.  It deliberately does not
-    * consume ordinary pending-call capacity or use a public operation name.
+  /** The single-flight startup control-plane exchange. It deliberately does
+    * not consume ordinary pending-call capacity or use a public operation
+    * name; a concurrent second waiter is rejected without replacing its owner.
     */
-  def awaitReady(timeoutSeconds: Double): BridgeResult[Unit] = {
-    val timeoutMillis = math.max(1L, math.ceil(timeoutSeconds * 1000.0).toLong)
+  def awaitReady(timeout: PideBridgePolicy.PositiveDuration): BridgeResult[Unit] = {
+    val timeoutNanos = PideBridgePolicy.PositiveDuration.duration(timeout).toNanos
     val waiting = synchronized {
       if (state == State.Open) return Right(())
       if (state != State.Starting) return Left(SessionStopped)
+      if (hello.isDefined)
+        return Left(ProtocolError("PIDE bridge startup hello is already in flight"))
       val entry = Hello(ids.next(), None)
       hello = Some(entry)
       try transport.send(protocol.hello(BridgeCallId.value(entry.id), theory))
@@ -517,12 +516,12 @@ private[mcp] final class PideBridge(
       entry
     }
 
-    val deadline = System.nanoTime() + timeoutMillis * 1000000L
+    val startedAt = System.nanoTime()
     synchronized {
       while (waiting.result.isEmpty && state == State.Starting) {
-        val remaining = deadline - System.nanoTime()
+        val remaining = timeoutNanos - (System.nanoTime() - startedAt)
         if (remaining <= 0L) {
-          waiting.result = Some(Left(TimedOut(timeoutSeconds)))
+          waiting.result = Some(Left(TimedOut(PideBridgePolicy.PositiveDuration.duration(timeout))))
           if (hello.contains(waiting)) hello = None
           state = State.Stopping
         }
@@ -562,7 +561,7 @@ private[mcp] final class PideBridge(
   }
 
   private def armDeadline(id: BridgeCallId): Unit = {
-    val handle = deadlineScheduler.schedule(PideBridgePolicy.PositiveSeconds.value(callTimeout),
+    val handle = deadlineScheduler.schedule(callTimeout,
       () => timeout(id))
     deadlines += id -> handle
   }
@@ -583,7 +582,7 @@ private[mcp] final class PideBridge(
     /* Firing removes itself from ManualDeadlineScheduler, but also remove our
       * ownership entry before settling the terminal race. */
     deadlines -= id
-    val owned = pending.fail(id, TimedOut(PideBridgePolicy.PositiveSeconds.value(callTimeout)))
+    val owned = pending.fail(id, TimedOut(PideBridgePolicy.PositiveDuration.duration(callTimeout)))
     val wasSent = sent.contains(id)
     sent -= id
     if (owned && wasSent) sendCancel(id)
@@ -722,6 +721,7 @@ private[mcp] final class PideBridge(
 
   private[mcp] def pendingCount: Int = pending.size
   private[mcp] def deadlineCount: Int = synchronized { deadlines.size }
+  private[mcp] def startupHelloPending: Boolean = synchronized { hello.isDefined }
 
   private def completeHello(operation: String, payload: XML.Body): Unit = {
     if (state != State.Starting) ()

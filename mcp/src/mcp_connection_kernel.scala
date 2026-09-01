@@ -276,16 +276,16 @@ final class ConnectionKernel private (
      that has won terminal ownership but is still inside DataPlane.send. */
   def drainAndClose(): ConnectionKernel.DrainResult = {
     beginClosing()
-    val seconds = ConnectionPolicy.ShutdownDrain.seconds(policy.timing.shutdownDrain)
-    val deadline = System.nanoTime() + Math.ceil(seconds * 1000000000.0).toLong
+    val drainNanos = ConnectionPolicy.ShutdownDrain.duration(policy.timing.shutdownDrain).toNanos
+    val startedAt = System.nanoTime()
     val (result, shutdown) = terminalLock.synchronized {
       def complete: Boolean = registry.snapshot.activeIds.isEmpty && responseWrites == 0
-      var remaining = deadline - System.nanoTime()
+      var remaining = drainNanos - (System.nanoTime() - startedAt)
       while (!complete && remaining > 0L) {
         val millis = remaining / 1000000L
         val nanos = (remaining % 1000000L).toInt
         terminalLock.wait(millis, nanos)
-        remaining = deadline - System.nanoTime()
+        remaining = drainNanos - (System.nanoTime() - startedAt)
       }
       val drained = complete
       val prepared =
@@ -581,8 +581,7 @@ final class ConnectionKernel private (
   private def scheduleDeadline(request: RequestRegistry.Admitted): Unit =
     terminalLock.synchronized {
       if (registry.snapshot.activeIds.contains(request.id)) {
-        val seconds = ConnectionPolicy.RequestTimeout.seconds(policy.timing.requestTimeout)
-        val handle = deadlineScheduler.schedule(seconds, () => timeout(request))
+        val handle = deadlineScheduler.schedule(policy.timing.requestTimeout, () => timeout(request))
         deadlineHandles += request.id -> handle
       }
     }

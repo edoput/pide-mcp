@@ -11,6 +11,10 @@ import isabelle.mcp.control.ManualDeadlineScheduler
 
 
 class MCP_Pide_Bridge_Tests extends MCP_Suite {
+  private def positiveDuration(seconds: Double): PideBridgePolicy.PositiveDuration =
+    PideBridgePolicy.PositiveDuration.checked("test timeout", seconds)
+      .fold(message => fail(message), identity)
+
   private object NeverCancelled extends BridgeCancellation {
     def isCancelled: Boolean = false
     def onCancel(callback: () => Unit): Unit = ()
@@ -128,7 +132,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       deliverHello(transport, requestProperty(message, "id"),
         operations = (McpBridgeOperations.baseOperationNames ++
           Set("first", "second", "op")).toList.sorted))
-    assertEquals(control.awaitReady(1.0), Right(()))
+    assertEquals(control.awaitReady(positiveDuration(1.0)), Right(()))
     transport.clearOutbound()
     control
   }
@@ -332,7 +336,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assertEquals(control.call(TextOperation("tools", "request"), NeverCancelled),
       Left(BridgeFailure.ProtocolError("PIDE bridge is not ready")))
 
-    val ready = Future.fork(control.awaitReady(1.0))
+    val ready = Future.fork(control.awaitReady(positiveDuration(1.0)))
     transport.awaitSent(1)
     val hello = transport.sent.head
     assertEquals(requestProperty(hello, "kind"), "hello")
@@ -346,6 +350,37 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     control.sessionStopped()
   }
 
+  test("startup hello is single-flight and keeps its first waiter as owner") {
+    val transport = new ScriptedTransport
+    val control = startupBridge(transport, McpBridgeProfile.base)
+    val first = Future.fork(control.awaitReady(positiveDuration(1.0)))
+    transport.awaitSent(1)
+    val helloId = requestProperty(transport.sent.head, "id")
+
+    assertEquals(control.awaitReady(positiveDuration(1.0)),
+      Left(BridgeFailure.ProtocolError("PIDE bridge startup hello is already in flight")))
+    assertEquals(transport.sent.length, 1)
+    assert(control.startupHelloPending)
+
+    deliverHello(transport, helloId,
+      operations = McpBridgeOperations.baseOperationNames.toList.sorted)
+    assertEquals(first.join, Right(()))
+    assert(!control.startupHelloPending)
+    control.sessionStopped()
+  }
+
+  test("largest accepted startup timeout does not overflow into immediate expiry") {
+    assert(PideBridgePolicy.PositiveDuration.checked("startup", Double.MaxValue).isRight)
+    val transport = new ScriptedTransport
+    val control = startupBridge(transport, McpBridgeProfile.base)
+    val waiting = Future.fork(control.awaitReady(positiveDuration(Double.MaxValue)))
+    transport.awaitSent(1)
+    deliverHello(transport, requestProperty(transport.sent.head, "id"),
+      operations = McpBridgeOperations.baseOperationNames.toList.sorted)
+    assertEquals(waiting.join, Right(()))
+    control.sessionStopped()
+  }
+
   test("bridge profiles explicitly select the base or HOL startup requirements") {
     assertEquals(McpBridgeProfile.base.name, "base")
     assertEquals(McpBridgeProfile.base.requiredOperationNames,
@@ -356,7 +391,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
     val transport = new ScriptedTransport
     val control = startupBridge(transport, McpBridgeProfile.hol)
-    val ready = Future.fork(control.awaitReady(1.0))
+    val ready = Future.fork(control.awaitReady(positiveDuration(1.0)))
     transport.awaitSent(1)
     deliverHello(transport, requestProperty(transport.sent.head, "id"),
       operations = McpBridgeOperations.baseOperationNames.toList.sorted)
@@ -367,7 +402,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
   test("an operation omitted from hello is rejected locally without a call envelope") {
     val transport = new ScriptedTransport
     val control = startupBridge(transport, McpBridgeProfile.base)
-    val ready = Future.fork(control.awaitReady(1.0))
+    val ready = Future.fork(control.awaitReady(positiveDuration(1.0)))
     transport.awaitSent(1)
     deliverHello(transport, requestProperty(transport.sent.head, "id"),
       operations = McpBridgeOperations.baseOperationNames.toList.sorted)
@@ -384,7 +419,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     def rejected(deliver: (ScriptedTransport, String) => Unit): BridgeResult[Unit] = {
       val transport = new ScriptedTransport
       val control = startupBridge(transport, McpBridgeProfile.base)
-      val ready = Future.fork(control.awaitReady(1.0))
+      val ready = Future.fork(control.awaitReady(positiveDuration(1.0)))
       transport.awaitSent(1)
       deliver(transport, requestProperty(transport.sent.head, "id"))
       val result = ready.join
@@ -406,13 +441,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val sendFailureTransport = new ScriptedTransport
     sendFailureTransport.failNextSend("cannot send hello")
     val sendFailure = startupBridge(sendFailureTransport, McpBridgeProfile.base)
-    assertEquals(sendFailure.awaitReady(1.0),
+    assertEquals(sendFailure.awaitReady(positiveDuration(1.0)),
       Left(BridgeFailure.TransportFailed("cannot send hello")))
     sendFailure.sessionStopped()
 
     val failedTransport = new ScriptedTransport
     val failed = startupBridge(failedTransport, McpBridgeProfile.base)
-    val failedReady = Future.fork(failed.awaitReady(1.0))
+    val failedReady = Future.fork(failed.awaitReady(positiveDuration(1.0)))
     failedTransport.awaitSent(1)
     failedTransport.failTransport("lost")
     assertEquals(failedReady.join, Left(BridgeFailure.TransportFailed("transport terminated")))
@@ -420,17 +455,19 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
     val silentTransport = new ScriptedTransport
     val silent = startupBridge(silentTransport, McpBridgeProfile.base)
-    assertEquals(silent.awaitReady(0.01), Left(BridgeFailure.TimedOut(0.01)))
+    assertEquals(silent.awaitReady(positiveDuration(0.01)),
+      Left(BridgeFailure.TimedOut(PideBridgePolicy.PositiveDuration.duration(positiveDuration(0.01)))))
     silent.sessionStopped()
   }
 
   test("a timed-out startup hello cannot reopen the bridge through a late reply") {
     val transport = new ScriptedTransport
     val control = startupBridge(transport, McpBridgeProfile.base)
-    val waiting = Future.fork(control.awaitReady(0.01))
+    val waiting = Future.fork(control.awaitReady(positiveDuration(0.01)))
     transport.awaitSent(1)
     val helloId = requestProperty(transport.sent.head, "id")
-    assertEquals(waiting.join, Left(BridgeFailure.TimedOut(0.01)))
+    assertEquals(waiting.join,
+      Left(BridgeFailure.TimedOut(PideBridgePolicy.PositiveDuration.duration(positiveDuration(0.01)))))
 
     deliverHello(transport, helloId,
       operations = McpBridgeOperations.baseOperationNames.toList.sorted)
@@ -606,7 +643,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     transport.awaitSent(2)
     assertEquals(requestProperty(transport.sent(1), "kind"), "cancel")
     assertEquals(requestProperty(transport.sent(1), "id"), firstId)
-    assertEquals(timedOut.join, Left(BridgeFailure.TimedOut(5.0)))
+    assertEquals(timedOut.join,
+      Left(BridgeFailure.TimedOut(PideBridgePolicy.PositiveDuration.duration(positiveDuration(5.0)))))
     assertEquals(control.pendingCount, 0)
     assertEquals(control.deadlineCount, 0)
     assertEquals(deadlines.pendingCount, 0)

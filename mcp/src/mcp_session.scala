@@ -16,6 +16,7 @@ import isabelle.mcp.application.McpApplication
 import isabelle.mcp.control.ScheduledDeadlineScheduler
 
 import scala.util.control.NonFatal
+import scala.concurrent.duration.FiniteDuration
 import java.util.concurrent.locks.ReentrantLock
 
 
@@ -129,8 +130,9 @@ object MCP_Session {
   /* A bridge-local safety deadline is not a prover/tool error.  It crosses
      the application boundary as a typed signal so ConnectionKernel retains
      public JSON-RPC timeout ownership. */
-  final case class BridgeTimedOut(seconds: Double)
-    extends RuntimeException("PIDE bridge call timed out after " + seconds + " seconds")
+  final case class BridgeTimedOut(delay: FiniteDuration)
+    extends RuntimeException("PIDE bridge call timed out after " +
+      (delay.toNanos.toDouble / 1000000000.0) + " seconds")
 
   sealed abstract class Result { def ok: Boolean }
   case class Ok(text: String) extends Result { def ok = true }
@@ -378,7 +380,7 @@ object MCP_Session {
       PideBridgePolicy.MaxPending.checked(options.int("mcp_max_in_flight"))
         .fold(error, identity)
     val bridgeCallTimeout =
-      PideBridgePolicy.PositiveSeconds.checked(
+      PideBridgePolicy.PositiveDuration.checked(
         "mcp_request_timeout", options.real("mcp_request_timeout")).fold(error, identity)
     val mcp_session = new MCP_Session(session, session_name, session_dirs, theory,
       structure, deps, store, bridgeMaxPending, bridgeCallTimeout, bridgeProfile)
@@ -407,7 +409,7 @@ object MCP_Session {
       }
     }
 
-    mcp_session.await_bridge_ready(PideBridgePolicy.PositiveSeconds.value(bridgeCallTimeout)) match {
+    mcp_session.await_bridge_ready(bridgeCallTimeout) match {
       case Right(()) => ()
       case Left(failure) =>
         mcp_session.stop()
@@ -439,7 +441,7 @@ class MCP_Session private(
   val deps: Sessions.Deps,
   val store: Store,
   bridgeMaxPending: PideBridgePolicy.MaxPending,
-  bridgeCallTimeout: PideBridgePolicy.PositiveSeconds,
+  bridgeCallTimeout: PideBridgePolicy.PositiveDuration,
   bridgeProfile: McpBridgeProfile
 ) extends MCP_Backend {
   private final class DirectOperation {
@@ -608,8 +610,8 @@ class MCP_Session private(
       bridgeProfile,
       PideBridgeV1)
 
-  private[mcp] def await_bridge_ready(timeoutSeconds: Double): BridgeResult[Unit] =
-    bridge.awaitReady(timeoutSeconds)
+  private[mcp] def await_bridge_ready(timeout: PideBridgePolicy.PositiveDuration): BridgeResult[Unit] =
+    bridge.awaitReady(timeout)
 
   private[mcp] def bridge_operation_names: Set[String] = bridge.advertisedOperationNames
 
@@ -617,7 +619,7 @@ class MCP_Session private(
     result match {
       case Right(value) => value
       case Left(BridgeFailure.Cancelled) => throw Exn.Interrupt()
-      case Left(BridgeFailure.TimedOut(seconds)) => throw MCP_Session.BridgeTimedOut(seconds)
+      case Left(BridgeFailure.TimedOut(delay)) => throw MCP_Session.BridgeTimedOut(delay)
       case Left(failure) => error(failure.message)
     }
 
@@ -625,7 +627,7 @@ class MCP_Session private(
     result match {
       case Right(value) => value
       case Left(BridgeFailure.Cancelled) => MCP_Session.Error("Request cancelled")
-      case Left(BridgeFailure.TimedOut(seconds)) => throw MCP_Session.BridgeTimedOut(seconds)
+      case Left(BridgeFailure.TimedOut(delay)) => throw MCP_Session.BridgeTimedOut(delay)
       case Left(failure) => MCP_Session.Error(failure.message)
     }
 

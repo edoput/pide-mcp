@@ -6,6 +6,7 @@ Immutable, validated configuration selected once for one connection.
 package isabelle.mcp.connection
 
 import isabelle.Options
+import isabelle.mcp.control.{NonNegativeDuration, PositiveDuration}
 
 
 sealed abstract class ProtocolRevision private (val value: String)
@@ -24,8 +25,8 @@ final case class ConnectionPolicy(
 
 object ConnectionPolicy {
   opaque type MaxInFlight = Int
-  opaque type RequestTimeout = Double
-  opaque type ShutdownDrain = Double
+  type RequestTimeout = PositiveDuration
+  type ShutdownDrain = NonNegativeDuration
 
   object MaxInFlight {
     def checked(value: Int): Either[String, MaxInFlight] =
@@ -36,18 +37,18 @@ object ConnectionPolicy {
 
   object RequestTimeout {
     def checked(seconds: Double): Either[String, RequestTimeout] =
-      if (finite(seconds) && seconds > 0.0) Right(seconds)
-      else Left("requestTimeout must be finite and positive")
+      PositiveDuration.checked("requestTimeout", seconds)
 
-    def seconds(value: RequestTimeout): Double = value
+    def duration(value: RequestTimeout) = PositiveDuration.duration(value)
+    def seconds(value: RequestTimeout): Double = PositiveDuration.seconds(value)
   }
 
   object ShutdownDrain {
     def checked(seconds: Double): Either[String, ShutdownDrain] =
-      if (finite(seconds) && seconds >= 0.0) Right(seconds)
-      else Left("shutdownDrain must be finite and non-negative")
+      NonNegativeDuration.checked("shutdownDrain", seconds)
 
-    def seconds(value: ShutdownDrain): Double = value
+    def duration(value: ShutdownDrain) = NonNegativeDuration.duration(value)
+    def seconds(value: ShutdownDrain): Double = NonNegativeDuration.seconds(value)
   }
 
   final case class AdmissionPolicy(maxInFlight: MaxInFlight)
@@ -63,5 +64,4 @@ object ConnectionPolicy {
       admission = AdmissionPolicy(maxInFlight = maxInFlight),
       timing = TimingPolicy(requestTimeout = requestTimeout, shutdownDrain = shutdownDrain))
 
-  private def finite(value: Double): Boolean = !value.isNaN && !value.isInfinity
 }
