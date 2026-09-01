@@ -1148,6 +1148,8 @@ object MCP_Server {
         case McpApplication.Outcome.Result(value) => Some(RPC.response(id, value))
         case McpApplication.Outcome.InvalidParams(message) =>
           Some(RPC.error(id, RPC.INVALID_PARAMS, message))
+        case McpApplication.Outcome.TimedOut(_) =>
+          Some(RPC.error(id, ConnectionKernel.RequestTimedOut, "Request timed out"))
       }
 
     private def execute(

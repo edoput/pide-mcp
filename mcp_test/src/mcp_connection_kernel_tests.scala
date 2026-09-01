@@ -1149,6 +1149,38 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     List("client", "timeout", "close").foreach(exercise)
   }
 
+  spec_test("application timeout outcome leaves the public registry as terminal owner",
+      covers = List("connection_kernel#T4")) {
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new ManualSequentialScheduler
+    val deadlines = new ManualDeadlineScheduler
+    var cancellations = 0
+    val app = new McpApplication {
+      def execute(operation: McpApplication.Operation, cancellation: McpApplication.Cancellation) = {
+        cancellation.onCancel(() => cancellations += 1)
+        McpApplication.Outcome.TimedOut(5.0)
+      }
+    }
+    val connection = kernelWith(plane, scheduler, 1, app, deadlines)
+    ready(connection, 675)
+    val id = RequestId.string("bridge-timeout")
+    connection.handle(RevisionRules.Application(McpApplication.Operation.ToolsList, id))
+    assert(scheduler.hasPending)
+    assertEquals(deadlines.pendingCount, 1,
+      "application timeout must arrive while its public deadline is still armed")
+
+    assert(scheduler.runPending())
+    assertEquals(cancellations, 1)
+    assertEquals(connection.registry.snapshot.activeCapacity, 0)
+    assertEquals(deadlines.pendingCount, 0)
+    val replies = plane.written.filter(_.contains("\"id\":\"bridge-timeout\""))
+    assertEquals(replies.length, 1)
+    val reply = JSON.Format.unapply(replies.head).getOrElse(fail("missing timeout response"))
+    assertEquals(get(reply, "error", "code"), ConnectionKernel.RequestTimedOut)
+    assert(!replies.head.contains("isError"), "bridge timeout must not become a tool result")
+    assert(!deadlines.fireNext(), "cancelled public deadline must not emit a second response")
+  }
+
   spec_test("worker errors and exceptions release capacity and emit one owned response",
       covers = List("connection_kernel#T5")) {
     val plane = new ScriptedDataPlane(Nil)

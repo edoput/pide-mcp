@@ -263,6 +263,22 @@ class MCP_Readiness_Tests extends MCP_Suite {
 /* tools: ML-registry tools, the builtin table rows, and their dispatch */
 
 class MCP_Tools_Tests extends MCP_Suite {
+  test("application preserves a typed bridge timeout as a timeout outcome") {
+    class Timeout_Backend extends Fake_Backend {
+      override def ml_run_cancellable(name: String, args: List[(String, String)],
+          context: String,
+          cancellation: McpApplication.Cancellation): MCP_Session.Result =
+        throw MCP_Session.BridgeTimedOut(5.0)
+    }
+    val application = McpApplication.isabelle(
+      () => McpApplication.Ready(new Timeout_Backend), "TEST", Nil, "MCP_Tools")
+    assertEquals(
+      application.execute(
+        McpApplication.Operation.ToolsCall("shout", JSON.Object("input" -> "hello")),
+        McpApplication.Cancellation.Never),
+      McpApplication.Outcome.TimedOut(5.0))
+  }
+
   spec_test("application forwards the connection cancellation handle to every prover-backed path",
       covers = List("connection_kernel#T4")) {
     class Cancellable_Backend extends Fake_Backend {

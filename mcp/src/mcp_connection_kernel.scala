@@ -444,6 +444,9 @@ final class ConnectionKernel private (
           case McpApplication.Outcome.InvalidParams(message) =>
             (RequestRegistry.WorkerDisposition.ApplicationError,
               errorResponse(request.id, RevisionRules.InvalidParams, message))
+          case McpApplication.Outcome.TimedOut(_) =>
+            timeout(request)
+            return
         }
       }
       catch {
@@ -596,7 +599,11 @@ final class ConnectionKernel private (
 
   private def timeout(request: RequestRegistry.Admitted): Unit = {
     val prepared = terminalLock.synchronized {
-      deadlineHandles -= request.id
+      /* This method is reached both by the scheduler callback and by a
+         bridge-originated timeout outcome.  cancelDeadline is idempotent,
+         including while the callback is already firing, and removes the
+         scheduler entry in the latter case. */
+      cancelDeadline(request.id)
       val result = registry.prepareTimeout(request.token)
       result.result match {
         case _: RequestRegistry.Completed => responseWrites += 1

@@ -33,6 +33,7 @@ object McpApplication {
   object Outcome {
     final case class Result(value: JSON.T) extends Outcome
     final case class InvalidParams(message: String) extends Outcome
+    final case class TimedOut(seconds: Double) extends Outcome
   }
 
   /* The kernel supplies a connection-owned implementation.  Application code
@@ -286,12 +287,17 @@ private[application] final class IsabelleMcpApplication(
     }
 
   def execute(operation: Operation, cancellation: Cancellation): Outcome =
-    operation match {
-      case Operation.ToolsList => tools_list(cancellation)
-      case Operation.ToolsCall(name, arguments) => tools_call(name, arguments, cancellation)
-      case Operation.ResourcesList => resources_list(cancellation)
-      case Operation.ResourceTemplatesList =>
-        Outcome.Result(JSON.Object("resourceTemplates" -> MCP_Server.resource_templates))
-      case Operation.ResourcesRead(uri) => resources_read(uri, cancellation)
+    try {
+      operation match {
+        case Operation.ToolsList => tools_list(cancellation)
+        case Operation.ToolsCall(name, arguments) => tools_call(name, arguments, cancellation)
+        case Operation.ResourcesList => resources_list(cancellation)
+        case Operation.ResourceTemplatesList =>
+          Outcome.Result(JSON.Object("resourceTemplates" -> MCP_Server.resource_templates))
+        case Operation.ResourcesRead(uri) => resources_read(uri, cancellation)
+      }
+    }
+    catch {
+      case MCP_Session.BridgeTimedOut(seconds) => Outcome.TimedOut(seconds)
     }
 }

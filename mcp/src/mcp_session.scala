@@ -126,6 +126,12 @@ trait MCP_Backend {
 }
 
 object MCP_Session {
+  /* A bridge-local safety deadline is not a prover/tool error.  It crosses
+     the application boundary as a typed signal so ConnectionKernel retains
+     public JSON-RPC timeout ownership. */
+  final case class BridgeTimedOut(seconds: Double)
+    extends RuntimeException("PIDE bridge call timed out after " + seconds + " seconds")
+
   sealed abstract class Result { def ok: Boolean }
   case class Ok(text: String) extends Result { def ok = true }
   case class Error(message: String) extends Result { def ok = false }
@@ -611,6 +617,7 @@ class MCP_Session private(
     result match {
       case Right(value) => value
       case Left(BridgeFailure.Cancelled) => throw Exn.Interrupt()
+      case Left(BridgeFailure.TimedOut(seconds)) => throw MCP_Session.BridgeTimedOut(seconds)
       case Left(failure) => error(failure.message)
     }
 
@@ -618,6 +625,7 @@ class MCP_Session private(
     result match {
       case Right(value) => value
       case Left(BridgeFailure.Cancelled) => MCP_Session.Error("Request cancelled")
+      case Left(BridgeFailure.TimedOut(seconds)) => throw MCP_Session.BridgeTimedOut(seconds)
       case Left(failure) => MCP_Session.Error(failure.message)
     }
 

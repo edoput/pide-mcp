@@ -176,7 +176,9 @@ trait BridgeOperation[A] {
 }
 
 
-/** Replaceable byte delivery only.  The bridge owns call state and codecs;
+/** Replaceable byte delivery only. send enqueues the command or fails; it
+  * never waits for remote execution, though an implementation may deliver a
+  * reply synchronously/reentrantly. The bridge owns call state and codecs;
   * the composition root retains ownership of Headless.Session.stop.
   */
 trait PideTransport {
@@ -288,6 +290,8 @@ private[mcp] final class SessionPideTransport(
   def send(outbound: Outbound): Unit = synchronized {
     if (!started) throw new IllegalStateException("PIDE transport is not started")
     if (closed) throw new IllegalStateException("PIDE transport is closed")
+    /* protocol_command_raw posts work to the Headless session manager: this
+       is enqueue-or-fail, not a wait for ML execution or its reply. */
     session.protocol_command_raw(outbound.command, outbound.arguments)
   }
 
@@ -507,6 +511,7 @@ private[mcp] final class PideBridge(
         case NonFatal(exn) =>
           entry.result = Some(Left(TransportFailed(
             Option(exn.getMessage).getOrElse(exn.getClass.getName))))
+          hello = None
           state = State.Stopping
       }
       entry
@@ -518,6 +523,7 @@ private[mcp] final class PideBridge(
         val remaining = deadline - System.nanoTime()
         if (remaining <= 0L) {
           waiting.result = Some(Left(TimedOut(timeoutSeconds)))
+          if (hello.contains(waiting)) hello = None
           state = State.Stopping
         }
         else wait(math.max(1L, remaining / 1000000L))
@@ -688,8 +694,10 @@ private[mcp] final class PideBridge(
   def sessionStopped(): Unit = synchronized {
     beginStop()
     if (state != State.Stopped) {
+      hello = None
       state = State.Stopped
       clearDeadlines()
+      transport.close()
       deadlineScheduler.shutdown()
     }
   }
@@ -716,7 +724,8 @@ private[mcp] final class PideBridge(
   private[mcp] def deadlineCount: Int = synchronized { deadlines.size }
 
   private def completeHello(operation: String, payload: XML.Body): Unit = {
-    if (operation != "hello") failHello(ProtocolError("invalid hello operation " + operation))
+    if (state != State.Starting) ()
+    else if (operation != "hello") failHello(ProtocolError("invalid hello operation " + operation))
     else {
       val result =
         try {

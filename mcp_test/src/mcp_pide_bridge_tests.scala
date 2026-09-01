@@ -424,6 +424,23 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     silent.sessionStopped()
   }
 
+  test("a timed-out startup hello cannot reopen the bridge through a late reply") {
+    val transport = new ScriptedTransport
+    val control = startupBridge(transport, McpBridgeProfile.base)
+    val waiting = Future.fork(control.awaitReady(0.01))
+    transport.awaitSent(1)
+    val helloId = requestProperty(transport.sent.head, "id")
+    assertEquals(waiting.join, Left(BridgeFailure.TimedOut(0.01)))
+
+    deliverHello(transport, helloId,
+      operations = McpBridgeOperations.baseOperationNames.toList.sorted)
+    assertEquals(control.call(TextOperation("tools", "request"), NeverCancelled),
+      Left(BridgeFailure.SessionStopped))
+    control.sessionStopped()
+    assertEquals(control.call(TextOperation("tools", "request"), NeverCancelled),
+      Left(BridgeFailure.SessionStopped))
+  }
+
   spec_test("status operation payloads preserve structured PIDE markup as XML bodies",
       covers = List("pide_bridge#T8")) {
     val marked = List(XML.Elem(Markup("block", Nil), List(XML.Text("marked text"))))
