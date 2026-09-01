@@ -9,6 +9,7 @@ package isabelle.mcp.connection
 
 import isabelle.{Exn, JSON, error}
 import isabelle.mcp.application.McpApplication
+import isabelle.mcp.control.DeadlineScheduler
 import isabelle.mcp.protocol.JsonRpc
 import isabelle.mcp.transport.DataPlane
 

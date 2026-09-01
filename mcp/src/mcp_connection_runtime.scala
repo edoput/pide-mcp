@@ -8,6 +8,7 @@ package isabelle.mcp
 import isabelle.{Exn, Path, Progress, Time, error, quote}
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.connection._
+import isabelle.mcp.control.{DeadlineScheduler, ScheduledDeadlineScheduler}
 import isabelle.mcp.transport.{BufferedDataPlane, DataPlane, StdioDataPlane}
 
 import java.io.{BufferedReader, PrintStream}

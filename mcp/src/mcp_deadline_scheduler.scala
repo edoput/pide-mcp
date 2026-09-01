@@ -1,10 +1,10 @@
 /*  Title:      mcp/src/mcp_deadline_scheduler.scala
 
-Replaceable one-shot request deadline scheduling.  This is control-plane
-timing only: request ownership and terminal races remain in ConnectionKernel.
+Replaceable one-shot control-plane deadline scheduling.  Request ownership and
+terminal races remain with the component that uses the scheduler.
 */
 
-package isabelle.mcp.connection
+package isabelle.mcp.control
 
 import java.util.concurrent.{ScheduledThreadPoolExecutor, ThreadFactory, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger

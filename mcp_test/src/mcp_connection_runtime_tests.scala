@@ -8,6 +8,7 @@ package isabelle.mcp
 import isabelle._
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.connection._
+import isabelle.mcp.control.ManualDeadlineScheduler
 import isabelle.mcp.transport.{ScriptedDataPlane, StdioDataPlane}
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}

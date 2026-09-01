@@ -7,6 +7,7 @@ package isabelle.mcp.pide
 
 import isabelle.{Bytes, Future, Markup, Properties, XML, YXML}
 import isabelle.mcp.{MCP_Session, MCP_Suite, McpBridgeOperations, McpBridgeProfile}
+import isabelle.mcp.control.ManualDeadlineScheduler
 
 
 class MCP_Pide_Bridge_Tests extends MCP_Suite {
@@ -111,10 +112,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
   }
 
   private def bridge(transport: ScriptedTransport, maxPending: Int = 4,
+    deadlines: ManualDeadlineScheduler = new ManualDeadlineScheduler,
     diagnostics: String => Unit = _ => ()): PideBridge = {
     val control = new PideBridge(
       transport,
       policy(maxPending).maxPending,
+      policy(maxPending).timing.callTimeout,
+      deadlines,
       "MCP_Tools",
       McpBridgeOperations.baseOperationNames ++ Set("first", "second", "op"),
       McpBridgeProfile.base,
@@ -134,6 +138,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     new PideBridge(
       transport,
       policy().maxPending,
+      policy().timing.callTimeout,
+      new ManualDeadlineScheduler,
       "MCP_Tools",
       McpBridgeOperations.operationNames,
       bridgeProfile,
@@ -534,17 +540,21 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
   spec_test("send failure and transport termination fail owned calls without leaks",
       covers = List("pide_bridge#T5")) {
+    val sendDeadlines = new ManualDeadlineScheduler
     val sendTransport = new ScriptedTransport
-    val sendBridge = bridge(sendTransport)
+    val sendBridge = bridge(sendTransport, deadlines = sendDeadlines)
     sendTransport.failNextSend("send boom")
     sendBridge.call(TextOperation("op", "request"), NeverCancelled) match {
       case Left(BridgeFailure.TransportFailed(message)) => assert(message.contains("send boom"))
       case result => fail("expected send TransportFailed, got " + result)
     }
     assertEquals(sendBridge.pendingCount, 0)
+    assertEquals(sendBridge.deadlineCount, 0)
+    assertEquals(sendDeadlines.pendingCount, 0)
 
+    val terminationDeadlines = new ManualDeadlineScheduler
     val deadTransport = new ScriptedTransport
-    val deadBridge = bridge(deadTransport)
+    val deadBridge = bridge(deadTransport, deadlines = terminationDeadlines)
     val waiting = Future.fork(deadBridge.call(TextOperation("op", "request"), NeverCancelled))
     deadTransport.awaitSent(1)
     deadTransport.failTransport("link lost")
@@ -554,9 +564,87 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       case result => fail("expected termination TransportFailed, got " + result)
     }
     assertEquals(deadBridge.pendingCount, 0)
+    assertEquals(deadBridge.deadlineCount, 0)
+    assertEquals(terminationDeadlines.pendingCount, 0)
     sendBridge.beginStop()
     sendBridge.sessionStopped()
     deadBridge.sessionStopped()
+  }
+
+  spec_test("ordinary bridge deadline races have one winner and recover capacity",
+      covers = List("pide_bridge#T4")) {
+    val diagnostics = collection.mutable.ListBuffer.empty[String]
+    val deadlines = new ManualDeadlineScheduler
+    val transport = new ScriptedTransport
+    val control = bridge(transport, maxPending = 1, deadlines = deadlines,
+      diagnostics = message => diagnostics.synchronized { diagnostics += message })
+
+    val timedOut = Future.fork(control.call(TextOperation("op", "first"), NeverCancelled))
+    transport.awaitSent(1)
+    val firstId = requestProperty(transport.sent.head, "id")
+    assertEquals(control.pendingCount, 1)
+    assertEquals(control.deadlineCount, 1)
+    assertEquals(deadlines.pendingCount, 1)
+    assert(deadlines.fireNext())
+    transport.awaitSent(2)
+    assertEquals(requestProperty(transport.sent(1), "kind"), "cancel")
+    assertEquals(requestProperty(transport.sent(1), "id"), firstId)
+    assertEquals(timedOut.join, Left(BridgeFailure.TimedOut(5.0)))
+    assertEquals(control.pendingCount, 0)
+    assertEquals(control.deadlineCount, 0)
+    assertEquals(deadlines.pendingCount, 0)
+
+    /* A late result has no owner and cannot settle the subsequently admitted call. */
+    deliverResult(transport, firstId, "op", "late")
+    assert(diagnostics.synchronized {
+      diagnostics.exists(_.contains("Unowned PIDE bridge reply"))
+    })
+
+    val replyWins = Future.fork(control.call(TextOperation("op", "second"), NeverCancelled))
+    transport.awaitSent(3)
+    val secondId = requestProperty(transport.sent(2), "id")
+    deliverResult(transport, secondId, "op", "reply")
+    assertEquals(replyWins.join, Right("reply"))
+    assertEquals(control.pendingCount, 0)
+    assertEquals(control.deadlineCount, 0)
+    assertEquals(deadlines.pendingCount, 0)
+    assert(!deadlines.fireNext())
+    control.beginStop()
+    assert(deadlines.isShutdown)
+    control.sessionStopped()
+  }
+
+  spec_test("cancellation and stop remove ordinary bridge deadlines",
+      covers = List("pide_bridge#T3", "pide_bridge#T4")) {
+    val cancellationDeadlines = new ManualDeadlineScheduler
+    val cancellationTransport = new ScriptedTransport
+    val cancellationBridge = bridge(cancellationTransport, deadlines = cancellationDeadlines)
+    val cancellation = new TestCancellation
+    val cancelled = Future.fork(
+      cancellationBridge.call(TextOperation("op", "request"), cancellation))
+    cancellationTransport.awaitSent(1)
+    assertEquals(cancellationDeadlines.pendingCount, 1)
+    cancellation.cancel()
+    assertEquals(cancelled.join, Left(BridgeFailure.Cancelled))
+    assertEquals(cancellationBridge.pendingCount, 0)
+    assertEquals(cancellationBridge.deadlineCount, 0)
+    assertEquals(cancellationDeadlines.pendingCount, 0)
+    cancellationBridge.beginStop()
+    cancellationBridge.sessionStopped()
+
+    val stopDeadlines = new ManualDeadlineScheduler
+    val stopTransport = new ScriptedTransport
+    val stopBridge = bridge(stopTransport, deadlines = stopDeadlines)
+    val stopped = Future.fork(stopBridge.call(TextOperation("op", "request"), NeverCancelled))
+    stopTransport.awaitSent(1)
+    assertEquals(stopDeadlines.pendingCount, 1)
+    stopBridge.beginStop()
+    assertEquals(stopped.join, Left(BridgeFailure.SessionStopped))
+    assertEquals(stopBridge.pendingCount, 0)
+    assertEquals(stopBridge.deadlineCount, 0)
+    assertEquals(stopDeadlines.pendingCount, 0)
+    assert(stopDeadlines.isShutdown)
+    stopBridge.sessionStopped()
   }
 
   test("synchronous decoder rejection cancels work already handed to the transport") {
@@ -582,14 +670,17 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
   test("unknown result function fails its known owner and cancels the sent call") {
     val diagnostics = collection.mutable.ListBuffer.empty[String]
+    val deadlines = new ManualDeadlineScheduler
     val transport = new ScriptedTransport
-    val control = bridge(transport, diagnostics = message => diagnostics.synchronized {
+    val control = bridge(transport, deadlines = deadlines, diagnostics = message => diagnostics.synchronized {
       diagnostics += message
     })
     val waiting = Future.fork(control.call(TextOperation("op", "request"), NeverCancelled))
     transport.awaitSent(1)
     val id = requestProperty(transport.sent.head, "id")
 
+    /* PideBridgeV1 decodes this correlated unknown function as
+      * Malformed(Some(id), None, ...), rather than as a normal failure. */
     transport.deliver("MCP.bogus_result", id, "reply")
     waiting.join match {
       case Left(BridgeFailure.ProtocolError(message)) =>
@@ -600,6 +691,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assertEquals(requestProperty(transport.sent(1), "kind"), "cancel")
     assertEquals(requestProperty(transport.sent(1), "id"), id)
     assertEquals(control.pendingCount, 0)
+    assertEquals(control.deadlineCount, 0)
+    assertEquals(deadlines.pendingCount, 0)
 
     deliverResult(transport, id, "op", "late")
     assert(diagnostics.synchronized {

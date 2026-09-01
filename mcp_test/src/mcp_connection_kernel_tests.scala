@@ -10,6 +10,7 @@ package isabelle.mcp
 import isabelle._
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.connection._
+import isabelle.mcp.control.{DeadlineScheduler, ManualDeadlineScheduler}
 import isabelle.mcp.protocol.JsonRpc
 import isabelle.mcp.transport.{DataPlane, ScriptedDataPlane, StdioDataPlane}
 

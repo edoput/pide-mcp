@@ -13,6 +13,7 @@ import isabelle._
 import isabelle.mcp.pide.{BridgeFailure, BridgeResult,
   PideBridge, PideBridgePolicy, PideBridgeV1, SessionPideTransport}
 import isabelle.mcp.application.McpApplication
+import isabelle.mcp.control.ScheduledDeadlineScheduler
 
 import scala.util.control.NonFatal
 import java.util.concurrent.locks.ReentrantLock
@@ -370,8 +371,11 @@ object MCP_Session {
     val bridgeMaxPending =
       PideBridgePolicy.MaxPending.checked(options.int("mcp_max_in_flight"))
         .fold(error, identity)
+    val bridgeCallTimeout =
+      PideBridgePolicy.PositiveSeconds.checked(
+        "mcp_request_timeout", options.real("mcp_request_timeout")).fold(error, identity)
     val mcp_session = new MCP_Session(session, session_name, session_dirs, theory,
-      structure, deps, store, bridgeMaxPending, bridgeProfile)
+      structure, deps, store, bridgeMaxPending, bridgeCallTimeout, bridgeProfile)
 
     /* theories already in the session image keep their protocol commands
        (defined at build time, persisted in the heap); anything else is
@@ -397,10 +401,7 @@ object MCP_Session {
       }
     }
 
-    val startupTimeout =
-      PideBridgePolicy.PositiveSeconds.checked(
-        "mcp_request_timeout", options.real("mcp_request_timeout")).fold(error, identity)
-    mcp_session.await_bridge_ready(PideBridgePolicy.PositiveSeconds.value(startupTimeout)) match {
+    mcp_session.await_bridge_ready(PideBridgePolicy.PositiveSeconds.value(bridgeCallTimeout)) match {
       case Right(()) => ()
       case Left(failure) =>
         mcp_session.stop()
@@ -432,6 +433,7 @@ class MCP_Session private(
   val deps: Sessions.Deps,
   val store: Store,
   bridgeMaxPending: PideBridgePolicy.MaxPending,
+  bridgeCallTimeout: PideBridgePolicy.PositiveSeconds,
   bridgeProfile: McpBridgeProfile
 ) extends MCP_Backend {
   private final class DirectOperation {
@@ -593,6 +595,8 @@ class MCP_Session private(
     new PideBridge(
       new SessionPideTransport(session, PideBridgeV1.resultFunctions),
       bridgeMaxPending,
+      bridgeCallTimeout,
+      new ScheduledDeadlineScheduler("mcp-pide-bridge-deadline"),
       theory,
       McpBridgeOperations.operationNames,
       bridgeProfile,

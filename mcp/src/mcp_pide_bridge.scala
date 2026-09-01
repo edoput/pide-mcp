@@ -7,6 +7,7 @@ package isabelle.mcp.pide
 
 import isabelle.{Bytes, Future, Headless, Markup, Output, Promise, Properties, Prover, Session, XML}
 import isabelle.mcp.McpBridgeProfile
+import isabelle.mcp.control.DeadlineScheduler
 
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -461,6 +462,8 @@ trait BridgeCancellation {
 private[mcp] final class PideBridge(
   transport: PideTransport,
   maxPending: PideBridgePolicy.MaxPending,
+  callTimeout: PideBridgePolicy.PositiveSeconds,
+  deadlineScheduler: DeadlineScheduler,
   theory: String,
   operationNames: Set[String],
   bridgeProfile: McpBridgeProfile,
@@ -481,6 +484,9 @@ private[mcp] final class PideBridge(
   })
   private var state: State = State.Starting
   private var sent = Set.empty[BridgeCallId]
+  /* The bridge owns its scheduler.  Each ordinary pending call owns exactly
+    * one removable deadline entry; hello retains its independent startup wait. */
+  private var deadlines = Map.empty[BridgeCallId, DeadlineScheduler.Handle]
   private var hello: Option[Hello] = None
   private var advertisedOperations = Set.empty[String]
 
@@ -538,16 +544,55 @@ private[mcp] final class PideBridge(
         case Left(failure) => Left(failure)
         case Right(call) =>
           cancellation.onCancel(() => cancel(id))
-          dispatch(id, operation, cancellation)
+          synchronized {
+            if (pending.contains(id)) {
+              armDeadline(id)
+              dispatch(id, operation, cancellation)
+            }
+          }
           call.result
       }
     }
   }
 
+  private def armDeadline(id: BridgeCallId): Unit = {
+    val handle = deadlineScheduler.schedule(PideBridgePolicy.PositiveSeconds.value(callTimeout),
+      () => timeout(id))
+    deadlines += id -> handle
+  }
+
+  private def clearDeadline(id: BridgeCallId): Unit =
+    deadlines.get(id).foreach { handle =>
+      deadlines -= id
+      handle.cancel()
+    }
+
+  private def clearDeadlines(): Unit = {
+    val handles = deadlines.values
+    deadlines = Map.empty
+    handles.foreach(_.cancel())
+  }
+
+  private def timeout(id: BridgeCallId): Unit = synchronized {
+    /* Firing removes itself from ManualDeadlineScheduler, but also remove our
+      * ownership entry before settling the terminal race. */
+    deadlines -= id
+    val owned = pending.fail(id, TimedOut(PideBridgePolicy.PositiveSeconds.value(callTimeout)))
+    val wasSent = sent.contains(id)
+    sent -= id
+    if (owned && wasSent) sendCancel(id)
+  }
+
   private def dispatch[A](id: BridgeCallId, operation: BridgeOperation[A],
     cancellation: BridgeCancellation): Unit = synchronized {
-    if (state != State.Open) pending.fail(id, SessionStopped)
-    else if (cancellation.isCancelled) pending.fail(id, Cancelled)
+    if (state != State.Open) {
+      pending.fail(id, SessionStopped)
+      clearDeadline(id)
+    }
+    else if (cancellation.isCancelled) {
+      pending.fail(id, Cancelled)
+      clearDeadline(id)
+    }
     else if (pending.contains(id)) {
       try {
         /* A replaceable transport may deliver synchronously from send().  Mark
@@ -562,12 +607,14 @@ private[mcp] final class PideBridge(
           sent -= id
           pending.fail(id, TransportFailed(
             Option(exn.getMessage).getOrElse(exn.getClass.getName)))
+          clearDeadline(id)
       }
     }
   }
 
   private def cancel(id: BridgeCallId): Unit = synchronized {
     val owned = pending.fail(id, Cancelled)
+    clearDeadline(id)
     val wasSent = sent.contains(id)
     sent -= id
     if (owned && wasSent) sendCancel(id)
@@ -589,6 +636,7 @@ private[mcp] final class PideBridge(
         if (hello.exists(_.id == id)) completeHello(operation, payload)
         else {
           val result = pending.complete(id, operation, payload)
+          clearDeadline(id)
           val wasSent = sent.contains(id)
           sent -= id
           if (result == Rejected && wasSent) sendCancel(id)
@@ -598,6 +646,7 @@ private[mcp] final class PideBridge(
         if (hello.exists(_.id == id)) failHello(ProtocolError(failure.message))
         else {
           val result = pending.reject(id, operation, failure)
+          clearDeadline(id)
           val wasSent = sent.contains(id)
           sent -= id
           if (result == Rejected && wasSent) sendCancel(id)
@@ -610,6 +659,7 @@ private[mcp] final class PideBridge(
             case Some(name) => pending.reject(id, name, ProtocolError(detail)) != Unowned
             case None => pending.fail(id, ProtocolError(detail))
           }
+          clearDeadline(id)
           val wasSent = sent.contains(id)
           sent -= id
           if (owned && wasSent) sendCancel(id)
@@ -627,15 +677,21 @@ private[mcp] final class PideBridge(
       notifyAll()
       val sentToCancel = sent
       pending.drain(SessionStopped)
+      clearDeadlines()
       sent = Set.empty
       sentToCancel.foreach(sendCancel)
       transport.close()
+      deadlineScheduler.shutdown()
     }
   }
 
   def sessionStopped(): Unit = synchronized {
     beginStop()
-    state = State.Stopped
+    if (state != State.Stopped) {
+      state = State.Stopped
+      clearDeadlines()
+      deadlineScheduler.shutdown()
+    }
   }
 
   private def transportTerminated(termination: PideTransport.Termination): Unit = synchronized {
@@ -650,11 +706,14 @@ private[mcp] final class PideBridge(
       hello = None
       notifyAll()
       pending.drain(TransportFailed("transport terminated"))
+      clearDeadlines()
       sent = Set.empty
+      deadlineScheduler.shutdown()
     }
   }
 
   private[mcp] def pendingCount: Int = pending.size
+  private[mcp] def deadlineCount: Int = synchronized { deadlines.size }
 
   private def completeHello(operation: String, payload: XML.Body): Unit = {
     if (operation != "hello") failHello(ProtocolError("invalid hello operation " + operation))
