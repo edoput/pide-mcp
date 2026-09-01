@@ -391,5 +391,8 @@ def test_theory_manifest_rejects_incomplete_stale_and_mistyped_records(
 
     manifest_path.write_text(json.dumps(original), encoding="utf-8")
     sources[0].write_text("theory Changed imports Main begin end\n", encoding="utf-8")
-    with pytest.raises(MatrixError, match="changed after its Isabelle export"):
+    with pytest.raises(
+        MatrixError,
+        match="changed after its Isabelle export was built; run tools/planning-gate theory-catalog",
+    ):
         theory_producer(root, manifest_path)

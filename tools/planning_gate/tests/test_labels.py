@@ -51,8 +51,8 @@ def test_current_canonical_labels_are_semantically_valid() -> None:
     root = Path(__file__).resolve().parents[3]
     report = validate_labels(load_repository(root))
 
-    assert report.v1_plans == 7
-    assert report.claims == 106
+    assert report.v1_plans == 8
+    assert report.claims == 124
     assert tuple(
         (blocker.plan, blocker.claim, blocker.reason) for blocker in report.blockers
     ) == (("pide_bridge", "Q1", "question is open"),)

@@ -10,7 +10,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Mapping, TextIO
+from typing import Callable, Mapping, TextIO
 
 from .matrix import load_layers
 
@@ -46,6 +46,32 @@ class StepResult:
     @property
     def ok(self) -> bool:
         return self.returncode == 0 and not self.timed_out
+
+
+StepRunner = Callable[[CommandStep, Path], StepResult]
+
+
+def run_theory_catalog(
+    root: Path,
+    *,
+    steps: Mapping[str, CommandStep],
+    runner: StepRunner | None = None,
+) -> tuple[StepResult, ...]:
+    """Build theory sessions, then export their metadata if the build passed.
+
+    The registered steps remain independently injectable: this composition is
+    deliberately in-process rather than a recursive planning-gate invocation.
+    """
+    required = ("theories", "theory-manifest")
+    absent = [step_id for step_id in required if step_id not in steps]
+    if absent:
+        raise CommandError(f"theory catalog has no registered steps: {absent}")
+
+    runner = run_step if runner is None else runner
+    build = runner(steps["theories"], root)
+    if not build.ok:
+        return (build,)
+    return (build, runner(steps["theory-manifest"], root))
 
 
 def isabelle_command(environment: Mapping[str, str] | None = None) -> tuple[str, ...]:
@@ -115,8 +141,8 @@ def registered_commands(
             7200,
             (ml,),
         ),
-        "theory-catalog": CommandStep(
-            "theory-catalog", "materialize structured theory-test exports",
+        "theory-manifest": CommandStep(
+            "theory-manifest", "materialize structured theory-test exports",
             isabelle + ("mcp_theory_metadata", "-M", theory_manifest), 600,
         ),
         "spec-gate": CommandStep(

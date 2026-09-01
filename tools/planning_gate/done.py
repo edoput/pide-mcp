@@ -17,11 +17,12 @@ from .commands import (
     layer_step_ids,
     registered_commands,
     run_step,
+    run_theory_catalog,
 )
 from .document import PlanFormat, load_repository
 from .labels import audit_is_fresh, validate_labels
 from .legacy import compare, read_baseline, require_accepted
-from .matrix import discover
+from .matrix import THEORY_MATRIX_PRODUCER, discover
 from .refinements import validate_refinements
 from .registry import stale_outputs
 
@@ -163,8 +164,15 @@ def check_static_closure(root: Path) -> StaticReport:
 
     matrix = discover(root)
     if matrix.missing_producers:
+        repair = (
+            "; run tools/planning-gate theory-catalog"
+            if THEORY_MATRIX_PRODUCER in matrix.missing_producers
+            else ""
+        )
         raise DoneError(
-            "missing verification producers: " + ", ".join(matrix.missing_producers)
+            "missing verification producers: "
+            + ", ".join(matrix.missing_producers)
+            + repair
         )
     baseline = read_baseline(root / "plans/legacy_unlinked.csv")
     ratchet = compare(matrix, baseline)
@@ -193,9 +201,16 @@ def run_done(
     root = root.resolve()
     steps = registered_commands(root) if steps is None else dict(steps)
     runner = (lambda step, cwd: run_step(step, cwd, stream=stream)) if runner is None else runner
-    preparation = ("scala-build", "munit-catalog", "theories", "theory-catalog")
+    preparation = ("scala-build", "munit-catalog", "theory-catalog")
     execution = layer_step_ids(root)
-    required = preparation + ("spec-gate",) + execution
+    required = (
+        "scala-build",
+        "munit-catalog",
+        "theories",
+        "theory-manifest",
+        "spec-gate",
+        *execution,
+    )
     absent = [step for step in required if step not in steps]
     if absent:
         raise DoneError(f"completion pipeline has no registered steps: {absent}")
@@ -219,9 +234,15 @@ def run_done(
             failures.append(step_id)
         return result.ok
 
+    def execute_theory_catalog() -> bool:
+        results = run_theory_catalog(root, steps=steps, runner=runner)
+        executed.extend(result.step for result in results)
+        failures.extend(result.step for result in results if not result.ok)
+        return all(result.ok for result in results)
+
     preparation_ok = True
     for step_id in preparation:
-        if not execute(step_id):
+        if not (execute_theory_catalog() if step_id == "theory-catalog" else execute(step_id)):
             preparation_ok = False
             break
 

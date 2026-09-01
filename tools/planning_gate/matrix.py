@@ -367,7 +367,10 @@ def theory_producer(root: Path, path: Path | None = None) -> ProducerManifest:
         raw_manifest = path.read_bytes()
         value = json.loads(raw_manifest)
     except (OSError, json.JSONDecodeError) as ex:
-        raise MatrixError(f"cannot load Isabelle manifest {path}: {ex}") from ex
+        raise MatrixError(
+            f"cannot load Isabelle manifest {path}: {ex}; "
+            "run tools/planning-gate theory-catalog"
+        ) from ex
     expected_fields = {
         "schema_version",
         "producer",
@@ -393,7 +396,8 @@ def theory_producer(root: Path, path: Path | None = None) -> ProducerManifest:
     if value["test_layers_sha256"] != layer_digest:
         raise MatrixError(
             "Isabelle manifest test-layer registry is stale: "
-            f"{value['test_layers_sha256']!r} != {layer_digest!r}"
+            f"{value['test_layers_sha256']!r} != {layer_digest!r}; "
+            "run tools/planning-gate theory-catalog"
         )
     sessions = value["sessions"]
     if not isinstance(sessions, list) or tuple(sessions) != THEORY_SESSIONS:
@@ -433,7 +437,10 @@ def theory_producer(root: Path, path: Path | None = None) -> ProducerManifest:
             raise MatrixError(f"{where}.source is unreadable: {ex}") from ex
         actual_sha1 = "sha1:" + hashlib.sha1(source_bytes).hexdigest()
         if actual_sha1 != source_sha1:
-            raise MatrixError(f"{source_path} changed after its Isabelle export was built")
+            raise MatrixError(
+                f"{source_path} changed after its Isabelle export was built; "
+                "run tools/planning-gate theory-catalog"
+            )
         theory_sources[identity] = (
             source_path,
             len(source_bytes.splitlines()),

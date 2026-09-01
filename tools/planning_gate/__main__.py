@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 from .document import DocumentError, PlanFormat, load_plan, load_repository
-from .commands import CommandError, registered_commands, run_step
+from .commands import CommandError, registered_commands, run_step, run_theory_catalog
 from .done import DoneError, check_static_closure, run_done
 from .files import write_atomic_text
 from .legacy import (
@@ -83,6 +83,9 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser("commands", help="list registered build and test steps")
     commands.add_parser("build", help="compile production and test Scala artifacts")
+    commands.add_parser(
+        "theory-catalog", help="build theory sessions and materialize their test metadata"
+    )
     catalog = commands.add_parser("catalog", help="materialize static test catalogs")
     catalog.add_argument("producer", choices=("munit", "theory", "all"))
     commands.add_parser("static", help="run static closure and compatibility spec checks")
@@ -110,6 +113,7 @@ def _main(argv: list[str] | None = None) -> int:
         if args.command in {
             "commands",
             "build",
+            "theory-catalog",
             "catalog",
             "static",
             "test-layer",
@@ -124,13 +128,22 @@ def _main(argv: list[str] | None = None) -> int:
                 return 0
             if args.command == "build":
                 return 0 if run_step(steps["scala-build"], root).ok else 1
+            if args.command == "theory-catalog":
+                return 0 if all(
+                    result.ok for result in run_theory_catalog(root, steps=steps)
+                ) else 1
             if args.command == "catalog":
                 selected = {
                     "munit": ("munit-catalog",),
-                    "theory": ("theory-catalog",),
-                    "all": ("munit-catalog", "theory-catalog"),
+                    "theory": (),
+                    "all": ("munit-catalog",),
                 }[args.producer]
-                return 0 if all(run_step(steps[value], root).ok for value in selected) else 1
+                if not all(run_step(steps[value], root).ok for value in selected):
+                    return 1
+                if args.producer == "munit":
+                    return 0
+                results = run_theory_catalog(root, steps=steps)
+                return 0 if all(result.ok for result in results) else 1
             if args.command == "static":
                 report = check_static_closure(root)
                 print(

@@ -157,10 +157,12 @@ execution closure
    registry freshness.
 3. Compile the production and test artifacts needed by registered producers,
    then generate the body-free MUnit catalog.
-4. Build every registered ml-unit test theory/session.  Isabelle theory-test
-   metadata is an export of those sessions, so on a clean checkout this step
-   necessarily executes the ML tests before the catalog can be materialized.
-5. Materialize the structured theory catalog, discover every producer, and
+4. Run `tools/planning-gate theory-catalog`, which builds every registered
+   ml-unit test theory/session and only then materializes the structured theory
+   catalog. Isabelle theory-test metadata is an export of those sessions, so
+   on a clean checkout this necessarily executes the ML tests before the
+   catalog can be materialized.
+5. Discover every producer, and
    assemble/validate the verification matrix.  The catalog remains static
    coverage metadata; the successful session build in step 4 is its separate
    execution evidence.

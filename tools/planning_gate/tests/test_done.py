@@ -20,7 +20,7 @@ from tools.planning_gate.tooling import spec_test
 
 
 ROOT = Path(__file__).resolve().parents[3]
-PREPARATION = ("scala-build", "munit-catalog", "theories", "theory-catalog")
+PREPARATION = ("scala-build", "munit-catalog", "theories", "theory-manifest")
 EXECUTION = layer_step_ids(ROOT)
 ALL_STEPS = PREPARATION + ("spec-gate",) + EXECUTION
 
@@ -96,6 +96,35 @@ def test_done_requires_every_fixed_execution_step_after_static_discovery() -> No
     assert result.ok
     assert tuple(seen) == ALL_STEPS
     assert result.executed_steps == ALL_STEPS
+
+
+@spec_test(covers=("planning_gate#T8",))
+def test_done_uses_the_shared_theory_catalog_composition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.planning_gate.done as done_module
+
+    seen: list[str] = []
+
+    def composite(
+        _: Path, *, steps: dict[str, CommandStep], runner: object
+    ) -> tuple[StepResult, ...]:
+        del steps, runner
+        seen.append("theory-catalog")
+        return (StepResult("theories", 0, 0), StepResult("theory-manifest", 0, 0))
+
+    monkeypatch.setattr(done_module, "run_theory_catalog", composite)
+    result = run_done(
+        ROOT,
+        steps=fixture_steps(),
+        runner=lambda step, _: StepResult(step.id, 0, 0),
+        snapshotter=lambda _: snapshot(),
+        static_checker=static_ok,
+        stream=io.StringIO(),
+    )
+
+    assert result.ok
+    assert seen == ["theory-catalog"]
 
 
 @pytest.mark.parametrize("failed_step", ALL_STEPS)

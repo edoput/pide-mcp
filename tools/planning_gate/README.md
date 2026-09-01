@@ -20,6 +20,7 @@ tools/planning-gate refinements check
 tools/planning-gate commands
 tools/planning-gate build
 tools/planning-gate theories
+tools/planning-gate theory-catalog
 tools/planning-gate catalog all
 tools/planning-gate static
 tools/planning-gate test-layer scala-unit
@@ -72,9 +73,15 @@ imports, and then invokes the importable module.  It does not depend on the
 caller's working directory or an activated environment, and it never installs
 packages automatically.
 
+`theory-catalog` builds every configured production and ML-unit theory session
+before exporting `mcp_test/lib/isabelle-spec.json`; it short-circuits if that
+build fails. `catalog theory` is a compatibility alias, and `catalog all` runs
+the MUnit catalog followed by this complete theory catalog.
+
 `done` accepts no filters or reduced layer set. It reports the starting HEAD
-and exact dirty paths, prepares both structured manifests, checks the static
-four-producer matrix and compatibility spec gate, and executes tooling-unit,
+and exact dirty paths, prepares both structured manifests (using the same
+`theory-catalog` orchestration), checks the static four-producer matrix and
+compatibility spec gate, and executes tooling-unit,
 scala-unit, heap, bridge, ml-unit, and e2e. A dirty tree is a visible local
 warning; a change to HEAD or any tracked file during the invocation is a hard
 failure. The named build, catalog, theory, and test-layer commands remain
