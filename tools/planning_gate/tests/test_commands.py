@@ -13,6 +13,7 @@ from tools.planning_gate.commands import (
     run_step,
     run_theory_catalog,
 )
+from tools.planning_gate.matrix import MatrixResult, THEORY_MATRIX_PRODUCER
 from tools.planning_gate.tooling import spec_test
 
 
@@ -123,3 +124,19 @@ def test_theory_catalog_cli_and_catalog_alias_use_the_same_composition(
     calls.clear()
     assert _main(["--root", str(ROOT), "catalog", "all"]) == 0
     assert calls == ["munit-catalog", "theory-catalog"]
+
+
+@spec_test(covers=("planning_gate#T4",))
+def test_missing_theory_producer_names_the_complete_repair_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import tools.planning_gate.__main__ as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "discover",
+        lambda _: MatrixResult((), (THEORY_MATRIX_PRODUCER,), ()),
+    )
+
+    assert _main(["--root", str(ROOT), "matrix", "check"]) == 1
+    assert "run tools/planning-gate theory-catalog" in capsys.readouterr().err

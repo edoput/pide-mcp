@@ -127,6 +127,26 @@ def test_done_uses_the_shared_theory_catalog_composition(
     assert seen == ["theory-catalog"]
 
 
+@spec_test(covers=("planning_gate#T3",))
+def test_done_accounts_for_the_invoked_theory_step_not_an_injected_result_label() -> None:
+    def runner(step: CommandStep, _: Path) -> StepResult:
+        if step.id == "theories":
+            return StepResult("spoofed", 9, 0)
+        return StepResult(step.id, 0, 0)
+
+    result = run_done(
+        ROOT,
+        steps=fixture_steps(),
+        runner=runner,
+        snapshotter=lambda _: snapshot(),
+        static_checker=static_ok,
+        stream=io.StringIO(),
+    )
+
+    assert result.failures == ("theories",)
+    assert result.executed_steps == ("scala-build", "munit-catalog", "theories")
+
+
 @pytest.mark.parametrize("failed_step", ALL_STEPS)
 @spec_test(covers=("planning_gate#T3",))
 def test_each_registered_step_failure_makes_done_fail_and_names_the_step(

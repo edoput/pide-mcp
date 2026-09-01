@@ -21,7 +21,7 @@ from .legacy import (
     require_accepted,
 )
 from .labels import audit_is_fresh, generate_audit, validate_labels
-from .matrix import MatrixError, discover
+from .matrix import MatrixError, THEORY_MATRIX_PRODUCER, discover
 from .refinements import RefinementError, validate_refinements
 from .registry import format_report, generate, stale_outputs
 
@@ -212,7 +212,12 @@ def _main(argv: list[str] | None = None) -> int:
 
             if result.missing_producers:
                 names = ", ".join(result.missing_producers)
-                raise MatrixError(f"missing verification producers: {names}")
+                repair = (
+                    "; run tools/planning-gate theory-catalog"
+                    if THEORY_MATRIX_PRODUCER in result.missing_producers
+                    else ""
+                )
+                raise MatrixError(f"missing verification producers: {names}{repair}")
 
             baseline = read_baseline(baseline_path)
             ratchet = compare(result, baseline)

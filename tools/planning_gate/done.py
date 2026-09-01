@@ -236,8 +236,11 @@ def run_done(
 
     def execute_theory_catalog() -> bool:
         results = run_theory_catalog(root, steps=steps, runner=runner)
-        executed.extend(result.step for result in results)
-        failures.extend(result.step for result in results if not result.ok)
+        invoked = ("theories", "theory-manifest")[: len(results)]
+        executed.extend(invoked)
+        failures.extend(
+            step_id for step_id, result in zip(invoked, results) if not result.ok
+        )
         return all(result.ok for result in results)
 
     preparation_ok = True
