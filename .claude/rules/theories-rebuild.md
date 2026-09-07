@@ -52,24 +52,38 @@ anything:
     (line 1 of "/home/edoput/repo/isabelle-mcp/mcp/Tools/ROOT")
 ```
 
-Use `tools/wt-isabelle-build.sh <name> [setup|build|clean|teardown]`,
+Use `tools/wt-isabelle-build.sh <name> [setup|build|clean|scala|test|teardown]`,
 run from the main checkout. `<name>` is the worktree's name, matching
 `.claude/worktrees/<name>`.
 
 ```
 tools/wt-isabelle-build.sh <name> build       # setup (idempotent) + build
 tools/wt-isabelle-build.sh <name> clean       # force-rebuild MCP-HOL-Tests
-tools/wt-isabelle-build.sh <name> teardown    # rm -rf the scratch user dir
+tools/wt-isabelle-build.sh <name> scala       # build this worktree's Scala jars
+tools/wt-isabelle-build.sh <name> test -L scala-unit
+tools/wt-isabelle-build.sh <name> teardown    # remove the scratch user dir
 ```
 
-`build` runs `setup` first if the scratch Isabelle user directory
-(`~/.isabelle/wt-<name>`) doesn't exist yet, then invokes
+`build`, `scala`, and `test` run `setup` first if the scratch Isabelle user
+directory (`/tmp/isabelle-mcp-worktrees/<name>/user/.isabelle/wt-<name>`)
+doesn't exist yet. Keeping the complete user directory under `/tmp` makes its
+heaps and SQLite session databases writable from an isolated agent worktree;
+the main Isabelle user directory is read only. Inherited `~/` session roots
+are materialized against the real user home during setup, so redirecting
+`USER_HOME` does not redirect AFP or other external session roots. The launcher then invokes
 `isabelle build` under `ISABELLE_IDENTIFIER=wt-<name>` against
 `.claude/worktrees/<name>/mcp/Tools`. Run it from the main checkout
 (or with an absolute path) — the script hardcodes the worktree root, so
 a stray `cd` inside the worktree itself doesn't matter, but it must
 still be invoked with `bash`/`sh` finding it via the repo path, not a
 copy.
+
+`scala` and `test` temporarily register only the worktree's `mcp` and
+`mcp_test` components, so they build and execute the worktree jars. The
+collision-safe component list is restored after success or failure. For an
+environment where the Flatpak wrapper is unavailable or unreliable, set
+`ISABELLE_TOOL` to the absolute Isabelle launcher executable; the script still
+supplies the same private `USER_HOME` and identifier.
 
 ### Confirming it built the worktree, not the main checkout
 
