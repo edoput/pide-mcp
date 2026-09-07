@@ -39,6 +39,9 @@ trait PideBridgeProtocol {
     payload: XML.Body): PideTransport.Outbound
   def cancel(id: String): PideTransport.Outbound
   def drain(id: String): PideTransport.Outbound
+  /** Size of the already-serialized request envelope that this protocol sends.
+    * A protocol must not reconstruct or reserialize it for this check. */
+  def requestBytes(outbound: PideTransport.Outbound): Either[BridgeFailure, Long]
   def oversized(reply: PideTransport.Inbound): PideBridgeReply
   def decode(reply: PideTransport.Inbound): PideBridgeReply
 }
@@ -106,6 +109,14 @@ object PideBridgeV1 extends PideBridgeProtocol {
 
   def drain(id: String): PideTransport.Outbound =
     outbound(List("revision" -> revision, "kind" -> "drain", "id" -> id), Nil)
+
+  def requestBytes(outbound: PideTransport.Outbound): Either[BridgeFailure, Long] =
+    outbound match {
+      case PideTransport.Outbound(Command, List(source)) => Right(source.size)
+      case _ => Left(ProtocolError(
+        "invalid PIDE bridge v1 outbound envelope: expected " + Command +
+          " with exactly one serialized YXML argument"))
+    }
 
   private def outbound(properties: Properties.T,
     payload: XML.Body): PideTransport.Outbound = {
@@ -281,8 +292,7 @@ object PideBridgeV1 extends PideBridgeProtocol {
     PideTransport.Inbound(
       ResultFunction,
       List(Markup.FUNCTION -> ResultFunction, "id" -> id, "operation" -> operation),
-      Bytes(YXML.string_of_body(body)),
-      "")
+      Bytes(YXML.string_of_body(body)))
   }
 
   private[mcp] def drainResult(
@@ -303,7 +313,6 @@ object PideBridgeV1 extends PideBridgeProtocol {
     PideTransport.Inbound(
       ResultFunction,
       List(Markup.FUNCTION -> ResultFunction, "id" -> id),
-      Bytes(YXML.string_of_body(body)),
-      "")
+      Bytes(YXML.string_of_body(body)))
   }
 }

@@ -6,7 +6,7 @@ One-shot composition root and serve loop for one logical MCP connection.
 package isabelle.mcp
 
 import isabelle.{Exn, Path, Progress, Time, error, quote}
-import isabelle.mcp.application.McpApplication
+import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 import isabelle.mcp.connection._
 import isabelle.mcp.control.{DeadlineScheduler, ScheduledDeadlineScheduler}
 import isabelle.mcp.transport.{BufferedDataPlane, DataPlane, StdioDataPlane}
@@ -71,9 +71,10 @@ private[mcp] object ConnectionRuntime {
     readiness: () => McpApplication.Readiness,
     sessionName: String,
     sessionDirs: List[Path],
-    theory: String
+    theory: String,
+    outputPolicy: McpOutputPolicy = McpOutputPolicy.TestDefault
   ): McpApplication =
-    McpApplication.isabelle(readiness, sessionName, sessionDirs, theory)
+    McpApplication.isabelle(readiness, sessionName, sessionDirs, theory, outputPolicy)
 
   /* This is the only production selection of concrete protocol, scheduler,
      deadline, application, and invariant-policy adapters. */
@@ -86,10 +87,11 @@ private[mcp] object ConnectionRuntime {
     installChangedSender: (String => Unit) => Unit,
     onShutdown: () => Unit,
     policy: ConnectionPolicy,
-    serverInfo: ConnectionKernel.ServerInfo
+    serverInfo: ConnectionKernel.ServerInfo,
+    outputPolicy: McpOutputPolicy = McpOutputPolicy.TestDefault
   ): ConnectionRuntime =
     production(readiness, StdioDataPlane.standard(), progress, sessionName, sessionDirs,
-      theory, installChangedSender, onShutdown, policy, serverInfo)
+      theory, installChangedSender, onShutdown, policy, serverInfo, outputPolicy)
 
   def buffered(
     readiness: () => McpApplication.Readiness,
@@ -102,10 +104,11 @@ private[mcp] object ConnectionRuntime {
     installChangedSender: (String => Unit) => Unit,
     onShutdown: () => Unit,
     policy: ConnectionPolicy,
-    serverInfo: ConnectionKernel.ServerInfo
+    serverInfo: ConnectionKernel.ServerInfo,
+    outputPolicy: McpOutputPolicy = McpOutputPolicy.TestDefault
   ): ConnectionRuntime =
     production(readiness, new BufferedDataPlane(input, output), progress, sessionName,
-      sessionDirs, theory, installChangedSender, onShutdown, policy, serverInfo)
+      sessionDirs, theory, installChangedSender, onShutdown, policy, serverInfo, outputPolicy)
 
   private def production(
     readiness: () => McpApplication.Readiness,
@@ -117,9 +120,10 @@ private[mcp] object ConnectionRuntime {
     installChangedSender: (String => Unit) => Unit,
     onShutdown: () => Unit,
     policy: ConnectionPolicy,
-    serverInfo: ConnectionKernel.ServerInfo
+    serverInfo: ConnectionKernel.ServerInfo,
+    outputPolicy: McpOutputPolicy
   ): ConnectionRuntime = {
-    val application = isabelleApplication(readiness, sessionName, sessionDirs, theory)
+    val application = isabelleApplication(readiness, sessionName, sessionDirs, theory, outputPolicy)
     val rules = new Mcp2025RevisionRules
     val scheduler = new BoundedConcurrentScheduler(
       ConnectionPolicy.MaxInFlight.value(policy.admission.maxInFlight), "mcp-worker")

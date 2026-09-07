@@ -203,8 +203,7 @@ object PideTransport {
   final case class Inbound(
     function: String,
     properties: Properties.T,
-    body: Bytes,
-    text: String
+    body: Bytes
   ) {
     def property(name: String): Option[String] = Properties.get(properties, name)
   }
@@ -245,7 +244,7 @@ private[mcp] final class SessionPideTransport(
     val target = synchronized {
       if (closed) None else receiver
     }
-    target.foreach(_(Inbound(function, message.properties, message.chunk, message.text)))
+    target.foreach(_(Inbound(function, message.properties, message.chunk)))
   }
 
   private object Handler extends Session.Protocol_Handler {
@@ -475,6 +474,7 @@ trait BridgeCancellation {
 private[mcp] final class PideBridge(
   transport: PideTransport,
   maxPending: PideBridgePolicy.MaxPending,
+  maxRequestBytes: PideBridgePolicy.PositiveBytes,
   maxReplyBytes: PideBridgePolicy.PositiveBytes,
   callTimeout: PideBridgePolicy.PositiveDuration,
   drainTimeout: PideBridgePolicy.NonNegativeDuration,
@@ -516,6 +516,13 @@ private[mcp] final class PideBridge(
 
   transport.start(receive, transportTerminated)
 
+  private def checkRequest(outbound: PideTransport.Outbound): Either[BridgeFailure, Unit] =
+    protocol.requestBytes(outbound).flatMap { actual =>
+      val limit = PideBridgePolicy.PositiveBytes.value(maxRequestBytes)
+      if (actual <= limit) Right(())
+      else Left(TooLarge(Direction.Request, actual, limit))
+    }
+
   /** The single-flight startup control-plane exchange. It deliberately does
     * not consume ordinary pending-call capacity or use a public operation
     * name; a concurrent second waiter is rejected without replacing its owner.
@@ -529,18 +536,22 @@ private[mcp] final class PideBridge(
         return Left(ProtocolError("PIDE bridge startup hello is already in flight"))
       val entry = Hello(ids.next(), None)
       hello = Some(entry)
-      try transport.send(protocol.hello(BridgeCallId.value(entry.id), theory))
+      val helloOutcome = try {
+        val outbound = protocol.hello(BridgeCallId.value(entry.id), theory)
+        checkRequest(outbound).map(_ => transport.send(outbound))
+      }
       catch {
         case NonFatal(exn) =>
-          val failure = TransportFailed(
-            Option(exn.getMessage).getOrElse(exn.getClass.getName))
-          if (entry.result.isEmpty && hello.contains(entry) && state == State.Starting) {
-            entry.result = Some(Left(failure))
-            hello = None
-            state = State.Stopping
-          }
-          else diagnostics("Ignored PIDE bridge hello send failure after terminal outcome: " +
-            failure.message)
+          Left(TransportFailed(Option(exn.getMessage).getOrElse(exn.getClass.getName)))
+      }
+      helloOutcome.left.foreach { failure =>
+        if (entry.result.isEmpty && hello.contains(entry) && state == State.Starting) {
+          entry.result = Some(Left(failure))
+          hello = None
+          state = State.Stopping
+        }
+        else diagnostics("Ignored PIDE bridge hello send failure after terminal outcome: " +
+          failure.message)
       }
       entry
     }
@@ -632,9 +643,16 @@ private[mcp] final class PideBridge(
         /* A replaceable transport may deliver synchronously from send().  Mark
            the call as sent first so a rejected reply can order its cancel
            after the call even before send returns. */
-        sent += id
-        transport.send(protocol.call(
-          BridgeCallId.value(id), theory, operation.name, operation.requestPayload))
+        val outbound = protocol.call(
+          BridgeCallId.value(id), theory, operation.name, operation.requestPayload)
+        checkRequest(outbound) match {
+          case Right(()) =>
+            sent += id
+            transport.send(outbound)
+          case Left(failure) =>
+            pending.fail(id, failure)
+            clearDeadline(id)
+        }
       }
       catch {
         case NonFatal(exn) =>
@@ -655,7 +673,13 @@ private[mcp] final class PideBridge(
   }
 
   private def sendCancel(id: BridgeCallId): Unit =
-    try transport.send(protocol.cancel(BridgeCallId.value(id)))
+    try {
+      val outbound = protocol.cancel(BridgeCallId.value(id))
+      checkRequest(outbound).fold(
+        failure => diagnostics("Failed to send PIDE bridge cancellation for " +
+          BridgeCallId.value(id) + ": " + failure.message),
+        _ => transport.send(outbound))
+    }
     catch {
       case NonFatal(exn) =>
         diagnostics("Failed to send PIDE bridge cancellation for " +
@@ -806,12 +830,15 @@ private[mcp] final class PideBridge(
           else {
             sentToCancel.foreach(sendCancel)
             if (entry.result.isEmpty) {
-              try transport.send(protocol.drain(BridgeCallId.value(entry.id)))
+              val drainOutcome = try {
+                val outbound = protocol.drain(BridgeCallId.value(entry.id))
+                checkRequest(outbound).map(_ => transport.send(outbound))
+              }
               catch {
                 case NonFatal(exn) =>
-                  settleDrainFailure(entry, TransportFailed(
-                    Option(exn.getMessage).getOrElse(exn.getClass.getName)))
+                  Left(TransportFailed(Option(exn.getMessage).getOrElse(exn.getClass.getName)))
               }
+              drainOutcome.left.foreach(settleDrainFailure(entry, _))
             }
           }
           entry

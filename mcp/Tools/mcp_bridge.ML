@@ -13,6 +13,7 @@ sig
   val registered: theory -> string list
   val invoke: theory -> string -> Future.group -> XML.body -> XML.body
   val select_result: int -> string -> string -> string -> XML.body -> XML.tree
+  val dispatch_bytes: (string -> unit) -> Bytes.T -> unit
 end;
 
 
@@ -109,6 +110,18 @@ fun max_reply_bytes () =
     else error "mcp_bridge_max_reply_bytes must be positive"
   end;
 
+fun max_request_bytes () =
+  let val limit = Options.default_int "mcp_bridge_max_request_bytes" in
+    if limit > 0 then limit
+    else error "mcp_bridge_max_request_bytes must be positive"
+  end;
+
+fun max_untrusted_output_bytes () =
+  let val limit = Options.default_int "mcp_untrusted_output_bytes" in
+    if limit >= 0 then limit
+    else error "mcp_untrusted_output_bytes must be non-negative"
+  end;
+
 fun publish id operation status payload =
   Output.protocol_message
     [Markup.function result_function, ("id", id), ("operation", operation)]
@@ -158,7 +171,8 @@ fun execute_call id theory_name operation payload =
           " in theory " ^ quote (Context.theory_long_name root));
   in
     MCP_Cancellation.fork_group id ("MCP.bridge." ^ operation)
-      (fn group => invoke root operation group payload)
+      (fn group => MCP_Output.with_limit group (max_untrusted_output_bytes ())
+        (fn () => invoke root operation group payload))
       (fn joined => remote_result id operation joined)
       (List.app publish_drain)
   end;
@@ -242,9 +256,20 @@ fun dispatch source =
   | Exn.Exn exn =>
       Output.error_message ("Cannot decode MCP bridge envelope: " ^ Runtime.exn_message exn));
 
+fun dispatch_bytes dispatch_source source =
+  let
+    val actual = Bytes.size source;
+    val limit = max_request_bytes ();
+  in
+    if actual > limit then
+      Output.error_message ("Uncorrelated oversized MCP bridge request: " ^
+        Int.toString actual ^ " bytes; limit is " ^ Int.toString limit)
+    else dispatch_source (Bytes.content source)
+  end;
+
 val _ =
-  Protocol_Command.define command
-    (fn [source] => dispatch source
+  Protocol_Command.define_bytes command
+    (fn [source] => dispatch_bytes dispatch source
       | _ => Output.error_message "MCP.bridge expects exactly one YXML envelope");
 
 end;

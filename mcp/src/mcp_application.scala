@@ -57,9 +57,31 @@ object McpApplication {
     readiness: () => Readiness,
     session_name: String,
     session_dirs: List[Path],
-    theory: String
+    theory: String,
+    outputPolicy: McpOutputPolicy = McpOutputPolicy.TestDefault
   ): McpApplication =
-    new IsabelleMcpApplication(readiness, session_name, session_dirs, theory)
+    new IsabelleMcpApplication(readiness, session_name, session_dirs, theory, outputPolicy)
+}
+
+
+/** Output captured from arbitrary Isabelle/ML code is a distinct allocation
+  * domain from a tool's typed return value. Zero is the secure default: only
+  * tools that do not depend on captured output may execute. */
+final case class McpOutputPolicy private (untrustedOutputBytes: Long) {
+  def allowsUntrustedOutput: Boolean = untrustedOutputBytes > 0L
+}
+
+
+object McpOutputPolicy {
+  val Disabled: McpOutputPolicy = new McpOutputPolicy(0L)
+  /* Package-level composition tests historically execute output-backed tools
+     without an Options value. Production always supplies the validated public
+     option explicitly. */
+  private[mcp] val TestDefault: McpOutputPolicy = new McpOutputPolicy(1048576L)
+
+  def checked(value: Long): Either[String, McpOutputPolicy] =
+    if (value < 0L) Left("mcp_untrusted_output_bytes must be non-negative")
+    else Right(new McpOutputPolicy(value))
 }
 
 
@@ -75,7 +97,8 @@ private[application] final class IsabelleMcpApplication(
   readiness: () => McpApplication.Readiness,
   session_name: String,
   session_dirs: List[Path],
-  theory: String
+  theory: String,
+  outputPolicy: McpOutputPolicy
 ) extends McpApplication {
   import McpApplication.{Cancellation, Operation, Outcome}
 
@@ -188,14 +211,29 @@ private[application] final class IsabelleMcpApplication(
   private def all_builtins: List[MCP_Server.Builtin_Tool] =
     MCP_Server.builtins ++ tool_scope_builtins
 
+  private def outputDependentForm(form: String): Boolean =
+    Set("diag_wrap", "method_wrap", "capture")(form)
+
+  private def outputDisabled(name: String): MCP_Session.Error =
+    MCP_Session.Error(
+      "Tool " + quote(name) + " requires captured Isabelle output, but " +
+        "mcp_untrusted_output_bytes is 0; restart with " +
+        "-o mcp_untrusted_output_bytes=BYTES to enable bounded output")
+
+  private def listedBuiltins: List[MCP_Server.Builtin_Tool] =
+    if (outputPolicy.allowsUntrustedOutput) all_builtins
+    else all_builtins.filterNot(_.requires_untrusted_output)
+
   private def tools_list(cancellation: Cancellation): Outcome = {
-    val builtins = all_builtins
+    val builtins = listedBuiltins
     readiness() match {
       case McpApplication.Not_Ready(_) | McpApplication.Failed(_) =>
         val builtin_json = builtins.map(tool_json)
         Outcome.Result(JSON.Object("tools" -> builtin_json))
       case McpApplication.Ready(backend) =>
-        val builtin_names = builtins.map(_.name).toSet
+        /* Disabled builtins remain reserved: an ML collision must not be
+           advertised under a name whose dispatch is owned by a gated builtin. */
+        val builtin_names = all_builtins.map(_.name).toSet
         current_context(backend, cancellation) match {
           case MCP_Session.Error(_) =>
             Outcome.Result(JSON.Object("tools" -> builtins.map(tool_json)))
@@ -204,8 +242,11 @@ private[application] final class IsabelleMcpApplication(
             val hidden = reply.builtin_activation.collect({ case (name, false) => name }).toSet
             val builtin_json = builtins.filterNot(tool => hidden(tool.name)).map(tool_json)
             val exposed = MCP_Server.exposure(reply.rows.map(_.name), builtin_names)
+            val rows =
+              if (outputPolicy.allowsUntrustedOutput) reply.rows
+              else reply.rows.filterNot(row => outputDependentForm(row.form))
             val ml_json =
-              reply.rows.flatMap(row =>
+              rows.flatMap(row =>
                 exposed.get(row.name).map(name =>
                   JSON.Object(
                     "name" -> name,
@@ -237,21 +278,30 @@ private[application] final class IsabelleMcpApplication(
         Outcome.Result(MCP_Server.text_result(failed_text(message), is_error = true))
       case McpApplication.Ready(backend) =>
         all_builtins.find(_.name == name) match {
+          case Some(tool) if tool.requires_untrusted_output &&
+              !outputPolicy.allowsUntrustedOutput =>
+            text_outcome(outputDisabled(name))
           case Some(tool) =>
             text_outcome(tool.handler(backend, MCP_Server.json_args(arguments), cancellation))
           case None =>
             current_context(backend, cancellation) match {
               case error @ MCP_Session.Error(_) => text_outcome(error)
               case MCP_Session.Ok(context) =>
-                val exposed =
-                  MCP_Server.exposure(
-                    backend.ml_tools_cancellable(context, cancellation).rows.map(_.name),
-                    all_builtins.map(_.name).toSet)
-                val internal = exposed.collectFirst({ case (full, visible) if visible == name => full })
-                  .getOrElse(name)
-                text_outcome(
-                  backend.ml_run_cancellable(
-                    internal, MCP_Server.json_args(arguments), context, cancellation))
+                val rows = backend.ml_tools_cancellable(context, cancellation).rows
+                val exposed = MCP_Server.exposure(rows.map(_.name), all_builtins.map(_.name).toSet)
+                val selected =
+                  rows.find(row => exposed.get(row.name).contains(name) || row.name == name)
+                selected match {
+                  case Some(row) if outputDependentForm(row.form) &&
+                      !outputPolicy.allowsUntrustedOutput =>
+                    text_outcome(outputDisabled(name))
+                  case Some(row) =>
+                    text_outcome(backend.ml_run_cancellable(
+                      row.name, MCP_Server.json_args(arguments), context, cancellation))
+                  case None =>
+                    text_outcome(backend.ml_run_cancellable(
+                      name, MCP_Server.json_args(arguments), context, cancellation))
+                }
             }
         }
     }

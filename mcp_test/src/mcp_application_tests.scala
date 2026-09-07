@@ -8,7 +8,7 @@ remain later checkpoints.
 package isabelle.mcp
 
 import isabelle._
-import isabelle.mcp.application.McpApplication
+import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 
 
 class MCP_Application_Tests extends MCP_Suite {
@@ -72,5 +72,59 @@ class MCP_Application_Tests extends MCP_Suite {
     assertEquals(application.operations, List(Operation.ToolsList, Operation.ToolsList))
     assertEquals(get(initialized, "result", "serverInfo", "name"), MCP_Server.server_name)
     assertEquals(get(ping, "result"), JSON.Object())
+  }
+
+  test("disabled untrusted output hides and rejects output-dependent tools before dispatch") {
+    class OutputBackend extends Fake_Backend {
+      var runs = List.empty[String]
+      override def ml_tools(context: String): MCP_Session.Tools_Reply = {
+        val reply = super.ml_tools(context)
+        reply.copy(rows = reply.rows :+
+          MCP_Session.Tool_Row(
+            "Fixture.diagnostic", "prints diagnostics", "diag_wrap", Nil,
+            MCP_Session.Tool_Annotations.default))
+      }
+      override def ml_run(name: String, args: List[(String, String)],
+          context: String): MCP_Session.Result = {
+        runs = runs :+ name
+        super.ml_run(name, args, context)
+      }
+    }
+
+    val backend = new OutputBackend
+    val application = McpApplication.isabelle(
+      () => McpApplication.Ready(backend), "TEST", Nil, "MCP_Tools",
+      McpOutputPolicy.Disabled)
+
+    val listed = application.execute(Operation.ToolsList, Cancellation.Never) match {
+      case Outcome.Result(value) => get_list(value, "tools").map(get_string(_, "name"))
+      case other => fail("unexpected tools/list outcome: " + other)
+    }
+    assert(listed.contains("shout"), "direct string result was hidden")
+    assert(!listed.contains("diagnostic"), "output-dependent ML tool was advertised")
+    assert(!listed.contains("repl_list"), "output-dependent IR builtin was advertised")
+
+    def rejected(name: String): Unit =
+      application.execute(Operation.ToolsCall(name, JSON.Object()), Cancellation.Never) match {
+        case Outcome.Result(value) =>
+          assert(JSON.Format(value).contains("mcp_untrusted_output_bytes is 0"))
+        case other => fail("unexpected tools/call outcome: " + other)
+      }
+
+    rejected("diagnostic")
+    rejected("Fixture.diagnostic")
+    rejected("repl_list")
+    assertEquals(backend.runs, Nil)
+    assertEquals(backend.last_ir, None)
+
+    application.execute(
+      Operation.ToolsCall("shout", JSON.Object("input" -> "safe")), Cancellation.Never)
+    assertEquals(backend.runs, List("MCP_Tools.shout"))
+  }
+
+  test("untrusted output policy rejects negative limits and accepts zero") {
+    assert(McpOutputPolicy.checked(-1).isLeft)
+    assertEquals(McpOutputPolicy.checked(0), Right(McpOutputPolicy.Disabled))
+    assert(McpOutputPolicy.checked(1).exists(_.allowsUntrustedOutput))
   }
 }

@@ -114,7 +114,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     def deliver(function: String, id: String, text: String,
       properties: List[(String, String)] = Nil): Unit = {
       deliverInbound(PideTransport.Inbound(
-        function, ("id" -> id) :: properties, Bytes(text), text))
+        function, ("id" -> id) :: properties, Bytes(text)))
     }
 
     def deliverInbound(message: PideTransport.Inbound): Unit = {
@@ -126,12 +126,15 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
   private def bridge(transport: ScriptedTransport, maxPending: Int = 4,
     deadlines: ManualDeadlineScheduler = new ManualDeadlineScheduler,
     drainTimeoutSeconds: Double = 0.0,
+    maxRequestBytes: Long = 1024,
     maxReplyBytes: Long = 4096,
+    protocol: PideBridgeProtocol = PideBridgeV1,
     diagnostics: String => Unit = _ => ()): PideBridge = {
-    val configured = policy(maxPending, drainTimeoutSeconds, maxReplyBytes)
+    val configured = policy(maxPending, drainTimeoutSeconds, maxRequestBytes, maxReplyBytes)
     val control = new PideBridge(
       transport,
       configured.maxPending,
+      configured.envelopes.maxRequestBytes,
       configured.envelopes.maxReplyBytes,
       configured.timing.callTimeout,
       configured.timing.drainTimeout,
@@ -139,7 +142,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       "MCP_Tools",
       McpBridgeOperations.baseOperationNames ++ Set("first", "second", "op"),
       McpBridgeProfile.base,
-      PideBridgeV1,
+      protocol,
       diagnostics)
     transport.onNextSend(message =>
       deliverHello(transport, requestProperty(message, "id"),
@@ -152,10 +155,12 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
   private def startupBridge(transport: ScriptedTransport,
     bridgeProfile: McpBridgeProfile,
+    maxRequestBytes: Long = 1024,
     diagnostics: String => Unit = _ => ()): PideBridge =
     new PideBridge(
       transport,
       policy().maxPending,
+      policy(maxRequestBytes = maxRequestBytes).envelopes.maxRequestBytes,
       policy().envelopes.maxReplyBytes,
       policy().timing.callTimeout,
       policy().timing.drainTimeout,
@@ -167,12 +172,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       diagnostics)
 
   private def policy(maxPending: Int = 2, drainTimeoutSeconds: Double = 0.0,
+    maxRequestBytes: Long = 1024,
     maxReplyBytes: Long = 4096): PideBridgePolicy =
     PideBridgePolicy.checked(
       maxPending = maxPending,
       callTimeoutSeconds = 5.0,
       drainTimeoutSeconds = drainTimeoutSeconds,
-      maxRequestBytes = 1024,
+      maxRequestBytes = maxRequestBytes,
       maxReplyBytes = maxReplyBytes).fold(errors => fail(errors.mkString(", ")), identity)
 
   private final case class TextOperation(name: String, request: String)
@@ -238,6 +244,74 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
         "drainTimeout must be finite and non-negative",
         "maxRequestBytes must be positive",
         "maxReplyBytes must be positive"))
+  }
+
+  spec_test("request size admits the exact serialized envelope and rejects one byte over",
+      covers = List("pide_bridge#T11")) {
+    val payload = "x" * 64
+    /* UUID ids have 36 characters; :1 and :2 have the same request size. */
+    val sampleId = "x" * 36 + ":1"
+    val exactBytes = PideBridgeV1.requestBytes(PideBridgeV1.call(
+      sampleId, "MCP_Tools", "op", XML.Encode.string(payload))).fold(
+        failure => fail(failure.message), identity)
+    val transport = new ScriptedTransport
+    val control = bridge(transport, maxRequestBytes = exactBytes)
+    val exact = Future.fork(control.call(TextOperation("op", payload), NeverCancelled))
+    transport.awaitSent(1)
+    deliverResult(transport, requestProperty(transport.sent.head, "id"), "op", "ok")
+    assertEquals(exact.join, Right("ok"))
+    assertEquals(control.call(TextOperation("op", payload + "x"), NeverCancelled),
+      Left(BridgeFailure.TooLarge(BridgeFailure.Direction.Request, exactBytes + 1L, exactBytes)))
+    assertEquals(transport.sent.length, 1)
+    assertEquals(control.pendingCount, 0)
+    assertEquals(control.deadlineCount, 0)
+    val small = Future.fork(control.call(TextOperation("op", "small"), NeverCancelled))
+    transport.awaitSent(2)
+    deliverResult(transport, requestProperty(transport.sent(1), "id"), "op", "small")
+    assertEquals(small.join, Right("small"))
+    assert(PideBridgeV1.requestBytes(PideTransport.Outbound(PideBridgeV1.Command, Nil)).isLeft)
+  }
+
+  spec_test("tiny request limit settles startup hello with typed TooLarge",
+      covers = List("pide_bridge#T11")) {
+    val transport = new ScriptedTransport
+    val control = startupBridge(transport, McpBridgeProfile.base, maxRequestBytes = 1)
+    control.awaitReady(positiveDuration(1.0)) match {
+      case Left(BridgeFailure.TooLarge(BridgeFailure.Direction.Request, actual, 1L)) =>
+        assert(actual > 1L)
+      case other => fail("expected request TooLarge for hello, got " + other)
+    }
+    assertEquals(transport.sent, Vector.empty)
+  }
+
+  private object PaddedDrainProtocol extends PideBridgeProtocol {
+    def revision: String = PideBridgeV1.revision
+    def resultFunctions: Set[String] = PideBridgeV1.resultFunctions
+    def hello(id: String, theory: String): PideTransport.Outbound = PideBridgeV1.hello(id, theory)
+    def call(id: String, theory: String, operation: String,
+      payload: XML.Body): PideTransport.Outbound = PideBridgeV1.call(id, theory, operation, payload)
+    def cancel(id: String): PideTransport.Outbound = PideBridgeV1.cancel(id)
+    def drain(id: String): PideTransport.Outbound = {
+      val outbound = PideBridgeV1.drain(id)
+      outbound.copy(arguments = List(Bytes(outbound.arguments.head.text + ("x" * 2048))))
+    }
+    def requestBytes(outbound: PideTransport.Outbound): Either[BridgeFailure, Long] =
+      PideBridgeV1.requestBytes(outbound)
+    def oversized(reply: PideTransport.Inbound): PideBridgeReply = PideBridgeV1.oversized(reply)
+    def decode(reply: PideTransport.Inbound): PideBridgeReply = PideBridgeV1.decode(reply)
+  }
+
+  spec_test("tiny request limit settles drain with typed TooLarge",
+      covers = List("pide_bridge#T11")) {
+    val transport = new ScriptedTransport
+    val control = bridge(transport, maxRequestBytes = 1024, protocol = PaddedDrainProtocol)
+    control.beginStop() match {
+      case BridgeDrainOutcome.Failed(
+          BridgeFailure.TooLarge(BridgeFailure.Direction.Request, actual, 1024L)) =>
+        assert(actual > 1024L)
+      case other => fail("expected request TooLarge for drain, got " + other)
+    }
+    assertEquals(transport.sent, Vector.empty)
   }
 
   test("bridge call ids come from an independent per-bridge string generator") {
@@ -519,7 +593,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     transport.awaitSent(1)
     val id = requestProperty(transport.sent.head, "id")
     transport.deliverInbound(PideTransport.Inbound(PideBridgeV1.ResultFunction,
-      List(Markup.FUNCTION -> PideBridgeV1.ResultFunction, "operation" -> "op"), Bytes("x" * 4097), ""))
+      List(Markup.FUNCTION -> PideBridgeV1.ResultFunction, "operation" -> "op"),
+      Bytes("x" * 4097)))
     assert(!call.is_finished, "uncorrelated oversized reply completed an owner")
     assert(diagnostics.synchronized {
       diagnostics.exists(_.contains("Uncorrelated oversized"))
@@ -535,7 +610,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       function: String = PideBridgeV1.ResultFunction): PideTransport.Inbound =
       PideTransport.Inbound(function,
         List(Markup.FUNCTION -> function, "id" -> id) ++ operation.map("operation" -> _),
-        Bytes("x" * 4097), "")
+        Bytes("x" * 4097))
 
     val helloTransport = new ScriptedTransport
     val hello = startupBridge(helloTransport, McpBridgeProfile.base)
@@ -750,7 +825,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val diagnostics = collection.mutable.ListBuffer.empty[String]
     val transport = new ScriptedTransport
     val control = startupBridge(transport, McpBridgeProfile.base,
-      message => diagnostics.synchronized { diagnostics += message })
+      diagnostics = message => diagnostics.synchronized { diagnostics += message })
     transport.onNextSend { message =>
       deliverHello(transport, requestProperty(message, "id"),
         operations = McpBridgeOperations.baseOperationNames.toList.sorted)

@@ -392,6 +392,7 @@ signature MCP_OUTPUT =
 sig
   val install_wrappers: unit -> unit
   val register: Future.group -> (unit -> string)
+  val with_limit: Future.group -> int -> (unit -> 'a) -> 'a
   val captured: (unit -> 'a) -> 'a Exn.result * string
   val reset: unit -> unit
 end;
@@ -399,23 +400,68 @@ end;
 structure MCP_Output: MCP_OUTPUT =
 struct
 
-(* routing table: Future group id -> output buffer *)
+(* Routing tables are keyed by Future group id.  A limit belongs to the
+   bridge request group; nested MCP_Output.captured subgroups inherit it.
+   The fixed event charge bounds the number of even empty output calls, not
+   just their concatenated payload. *)
 
-val buffers: (int * string list Synchronized.var) list Synchronized.var =
+type buffer_state = {chunks: string list, accounted: int, truncated: bool};
+type buffer = {state: buffer_state Synchronized.var, limit: int option};
+
+val output_event_charge = 16;
+
+val buffers: (int * buffer) list Synchronized.var =
   Synchronized.var "MCP_Output.buffers" [];
 
+val limits: (int * int) list Synchronized.var =
+  Synchronized.var "MCP_Output.limits" [];
+
 (*walk the worker's group ancestry, as ir/ml_repl.ML does*)
-fun find_buffer () =
+fun find_in_worker entries =
   (case Future.worker_group () of
     NONE => NONE
   | SOME group =>
       let
         val gs = Task_Queue.str_of_groups group;
         fun lookup [] = NONE
-          | lookup ((gid, buf) :: rest) =
+          | lookup ((gid, value) :: rest) =
               if String.isSubstring (string_of_int gid) gs
-              then SOME buf else lookup rest;
-      in lookup (Synchronized.value buffers) end);
+              then SOME value else lookup rest;
+      in lookup entries end);
+
+fun find_buffer () = find_in_worker (Synchronized.value buffers);
+fun find_limit () = find_in_worker (Synchronized.value limits);
+
+fun prefix_strings limit ss =
+  let
+    fun take _ [] acc = (implode (rev acc), true)
+      | take remaining (s :: rest) acc =
+          if size s <= remaining then take (remaining - size s) rest (s :: acc)
+          else
+            (implode (rev (String.substring (s, 0, Int.max (0, remaining)) :: acc)), false);
+  in take limit ss [] end;
+
+fun append_output ss ({state, limit}: buffer) =
+  (case limit of
+    NONE => Synchronized.change state (fn {chunks, accounted, ...} =>
+      {chunks = implode ss :: chunks, accounted = accounted, truncated = false})
+  | SOME bound =>
+      Synchronized.change state (fn current as {chunks, accounted, truncated} =>
+        if truncated then current
+        else
+          let
+            val separator = if null chunks then 0 else 1;
+            val available = bound - accounted - output_event_charge - separator;
+          in
+            if available < 0 then
+              {chunks = chunks, accounted = accounted, truncated = true}
+            else
+              let val (piece, complete) = prefix_strings available ss in
+                {chunks = piece :: chunks,
+                 accounted = accounted + output_event_charge + separator + size piece,
+                 truncated = not complete}
+              end
+          end));
 
 
 (* lazy Private_Output wrappers *)
@@ -431,15 +477,30 @@ fun install_wrappers () =
           let val orig = ! r in
             r := (fn ss =>
               (case find_buffer () of
-                SOME buf => Synchronized.change buf (cons (implode ss))
+                SOME buf => append_output ss buf
               | NONE => orig ss))
           end;
         fun wrap_err (r: (serial * string list -> unit) Unsynchronized.ref) =
           let val orig = ! r in
             r := (fn (i, ss) =>
               (case find_buffer () of
-                SOME buf => Synchronized.change buf (cons (implode ss))
+                SOME buf => append_output ss buf
               | NONE => orig (i, ss)))
+          end;
+        fun wrap_drop (r: (string list -> unit) Unsynchronized.ref) =
+          let val orig = ! r in
+            r := (fn ss => if is_some (find_buffer ()) then () else orig ss)
+          end;
+        fun wrap_result
+            (r: (Properties.T -> string list -> unit) Unsynchronized.ref) =
+          let val orig = ! r in
+            r := (fn props => fn ss =>
+              if is_some (find_buffer ()) then () else orig props ss)
+          end;
+        fun wrap_protocol (r: Output.protocol_message_fn Unsynchronized.ref) =
+          let val orig = ! r in
+            r := (fn props => fn body =>
+              if is_some (find_buffer ()) then () else orig props body)
           end;
       in
         wrap Private_Output.writeln_fn;
@@ -450,6 +511,11 @@ fun install_wrappers () =
         wrap Private_Output.warning_fn;
         wrap Private_Output.legacy_fn;
         wrap_err Private_Output.error_message_fn;
+        wrap_drop Private_Output.system_message_fn;
+        wrap_drop Private_Output.status_fn;
+        wrap_drop Private_Output.report_fn;
+        wrap_result Private_Output.result_fn;
+        wrap_protocol Private_Output.protocol_message_fn;
         true
       end);
 
@@ -460,20 +526,40 @@ fun install_wrappers () =
   because wrappers fall through when no buffer is registered.*)
 fun reset () =
   (Synchronized.change wrapped (K false);
-   Synchronized.change buffers (K []));
+   Synchronized.change buffers (K []);
+   Synchronized.change limits (K []));
 
 (*register a buffer for a group; the returned function unregisters it and
   yields the captured output*)
 fun register group =
   let
     val gid = Task_Queue.group_id group;
-    val buffer = Synchronized.var "MCP_Output.buffer" ([]: string list);
+    val state =
+      Synchronized.var "MCP_Output.buffer"
+        ({chunks = [], accounted = 0, truncated = false}: buffer_state);
+    val buffer = {state = state, limit = find_limit ()};
     val _ = Synchronized.change buffers (cons (gid, buffer));
   in
     fn () =>
       (Synchronized.change buffers (filter_out (fn (g, _) => g = gid));
-       cat_lines (rev (Synchronized.value buffer)))
+       cat_lines (rev (#chunks (Synchronized.value state))))
   end;
+
+fun remove_first _ [] = []
+  | remove_first gid ((entry as (candidate, _)) :: rest) =
+      if gid = candidate then rest else entry :: remove_first gid rest;
+
+(* Install a request-level bound without allocating an output buffer.  Any
+   buffer registered by the operation or a nested subgroup inherits it. *)
+fun with_limit group limit f =
+  if limit < 0 then error "MCP output limit must be non-negative"
+  else
+    let
+      val gid = Task_Queue.group_id group;
+      val _ = Synchronized.change limits (cons (gid, limit));
+      val result = Exn.capture_body f;
+      val _ = Synchronized.change limits (remove_first gid);
+    in Exn.release result end;
 
 (*Synchronous capture: fork f into a fresh registered subgroup and join.
   Outside a future this still has no parent; inside MCP.run_tool it inherits

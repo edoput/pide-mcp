@@ -20,6 +20,8 @@ invariants:
     statement: Pending calls and serialized request and reply envelopes remain within one immutable validated bridge-policy snapshot.
   - id: INV3
     statement: Bridge stop completes only after an ML drain acknowledgement or termination of the underlying Isabelle session proves that no call, deadline, protocol reply, route, or worker remains owned by the bridge.
+  - id: INV4
+    statement: Control, typed response, and untrusted output are separate accounting lanes on one PIDE connection; output may never consume control or response capacity.
 claims:
   - id: A1
     kind: assumption
@@ -63,12 +65,28 @@ claims:
     kind: design
     statement: PideBridge.call returns Either[BridgeFailure, A]; an operation-domain error remains a successfully decoded A, while transport, protocol, remote-execution, timeout, cancellation, overload, and size failures are BridgeFailure values.
     category: design
+  - id: D9
+    kind: design
+    statement: A lane is an accounting and allocation class over the one physical PIDE stream, not a separate socket or executor; the lane classes are control, typed response, and untrusted output.
+    category: design
+  - id: D10
+    kind: design
+    statement: mcp_untrusted_output_bytes is a non-negative per-call budget independent of request and reply envelopes; zero disables output-dependent tools before execution, while a positive value bounds captured output bytes and charges every output event so a stream of empty or tiny messages cannot retain an unbounded list.
+    category: design
+  - id: D11
+    kind: design
+    statement: ML output routing suppresses ordinary status, report, result, system, and user protocol messages from a captured tool group; the bridge publishes its terminal result later from its trusted publisher group under the independent reply limit.
+    category: design
+  - id: D12
+    kind: design
+    statement: The eventual Isabelle reader hook validates a bounded header, chunk count, each chunk length, and checked aggregate length before body allocation; its allocator port owns lane-specific leases so a pool can be added without changing PideBridge or application code.
+    category: design
   - id: Q1
     kind: question
     state: resolved
     resolved_on: "2026-09-07"
     statement: What separate serialized request and reply byte limits admit the committed legitimate-operation corpus while bounding accidental or hostile bridge-envelope retention?
-    resolution: The committed deterministic corpus derives separate defaults of 256 KiB (262144 bytes) for requests and 1 MiB (1048576 bytes) for replies; each is the next power of two at or above twice its measured serialized-envelope maximum. Enforcement remains the next implementation slice.
+    resolution: The committed deterministic corpus derives separate defaults of 256 KiB (262144 bytes) for requests and 1 MiB (1048576 bytes) for replies; each is the next power of two at or above twice its measured serialized-envelope maximum. Scala and ML enforce the request limit independently, while ML publication and Scala decoding enforce the reply limit.
   - id: T1
     kind: test
     state: active
@@ -129,6 +147,16 @@ claims:
     state: active
     statement: A serialized reply of exactly maxReplyBytes succeeds, while a larger operation result becomes a small correlated TooLarge reply before protocol publication and Scala independently rejects an oversized received envelope before domain decoding.
     layers: [scala-unit, ml-unit, bridge]
+  - id: T13
+    kind: test
+    state: active
+    statement: With untrusted output disabled, output-dependent ML tools and IR-backed builtins are absent from tools/list and rejected before their backend runner is called; with a positive budget, captured output and retained output-event count stay within that budget while a direct string-result tool remains governed only by the reply limit.
+    layers: [scala-unit, ml-unit, bridge]
+  - id: T14
+    kind: test
+    state: active
+    statement: The bounded Isabelle message reader rejects an overlong header, excess chunk count, any excess chunk, and aggregate-length overflow before body allocation; exact-bound frames succeed and every acquired lane lease is released on success, rejection, decode failure, and shutdown.
+    layers: [scala-unit, bridge]
 spec_refinements: []
 done_command:
   - tools/planning-gate
@@ -194,6 +222,15 @@ substitute an in-memory transport without an Isabelle process.  Transport
 close detaches bridge delivery; it does not own `Headless.Session.stop`, which
 remains a composition-root responsibility because the current backend also
 uses that session for direct PIDE operations.
+
+The three lanes share that transport.  `hello`, `cancel`, and `drain` are
+control; the single terminal `MCP.bridge_result` is a typed response; output
+produced while evaluating user ML belongs to untrusted output.  Lane identity
+controls accounting and allocation only.  The reader-facing seam is an
+allocator that acquires `(lane, declared_size)` before a body is read and
+returns a releasable lease.  Its first implementation may allocate fresh
+storage; a bounded pool can replace it later without teaching `PideBridge`
+about buffer reuse.
 
 state and ordering
 ------------------
@@ -316,12 +353,34 @@ termination; the repository default remains 10 seconds.
 The size of an envelope is exactly the raw byte length of the sole canonical
 YXML value after serialization and before `protocol_command_raw` send or YXML
 decode; the fixed command/function name is outside the configured limit.
-Scala checks requests before send and ML checks them again before decode.  ML
-checks encoded successful replies before `Output.protocol_message` and emits a
-small correlated `too_large` envelope instead; Scala checks all received bytes
-again before envelope or domain decode.  These limits bound bridge envelopes,
-not memory allocated inside an operation before it produces its result, nor
-the fixed buffering required by Isabelle to deliver one protocol message.
+Scala checks requests before send and ML checks them again before byte-to-string
+conversion and decode.  ML checks encoded successful replies before
+`Output.protocol_message` and emits a small correlated `too_large` envelope
+instead; Scala checks all received bytes again before envelope or domain
+decode.  These limits bound bridge envelopes, not memory allocated inside an
+operation before it produces its result.
+
+Untrusted output has its own public option, `mcp_untrusted_output_bytes`, and
+does not borrow the reply-envelope budget.  Its secure default is zero.  Scala
+uses the tool form already returned by the registry to omit output-dependent
+ML tools and IR-backed builtins from discovery and to reject direct calls before
+`ml_run`/`ir` dispatch.  A positive value installs an ML request-group budget:
+each captured event pays a fixed accounting charge plus its retained bytes and
+separator, so both payload memory and the number of retained tiny events are
+bounded.  After exhaustion, later output is suppressed.  Direct `string_fun`
+results remain available at zero and are governed by `maxReplyBytes`, keeping
+tool-response allocation distinct from captured-output allocation.
+
+The current Isabelle `Prover.message_output` calls the stock
+`Byte_Message.read_message` before `SessionPideTransport` sees a frame.  Thus
+the adapter's Scala reply check is defense in depth, not a pre-allocation read
+bound.  The approved reader-hook checkpoint belongs below `PideTransport`: it
+must validate the frame header and lengths before body allocation and acquire a
+lane-specific lease.  `PideBridge` continues to receive owned bytes, so a later
+pool changes only the reader/allocator implementation.  Until that Isabelle
+hook is present, supported MCP bridge results are producer-bounded and normal
+tool output is suppressed/bounded in ML, but a deliberately hand-crafted raw
+protocol message outside these routes is not consumer-bounded.
 
 The reusable `tools/pide-bridge measure` launcher records the current
 `PideBridgeV1` serialized request and reply byte counts for all seven
@@ -333,8 +392,8 @@ byte `mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy` request fixture and the reviewed
 380,170 byte `HOL/Analysis/Henstock_Kurzweil_Integration.thy` theory-source
 reply fixture.  Q1 is resolved on 2026-09-07: the corpus derives 256 KiB
 request and 1 MiB reply defaults by rounding twice each serialized maximum up
-to the next power of two.  Enforcement remains the next implementation slice;
-the measurement result does not silently introduce it.
+to the next power of two.  Both limits are now enforced on their producer and
+consumer-facing bridge boundaries.
 
 implementation checkpoints
 --------------------------
@@ -355,7 +414,14 @@ implementation checkpoints
 5. Implement request/reply size validation on both sides.  Add the measurement
    launcher and committed corpus artifact, resolve the envelope-size question,
    and fold the derived defaults into policy and boundary tests.
-6. Run focused Scala, ML, and live bridge tests after each checkpoint.  Finish
+6. Separate the untrusted-output policy from typed reply allocation.  Gate
+   output-dependent tools from their registry form before execution, install
+   per-call ML output accounting, and suppress output side channels from the
+   captured Future group.
+7. Add the small Isabelle reader hook and the lane-aware allocator/lease port;
+   first use fresh bounded buffers, then add pooling without changing the
+   bridge protocol or application surface.
+8. Run focused Scala, ML, and live bridge tests after each checkpoint.  Finish
    with an adversarial review, all static gates, and the complete
    `tools/planning-gate done` command.
 
@@ -367,3 +433,7 @@ non-goals
   `service_catalog` work package.
 - Narrowing theory, scope, or REPL mutation locks; that is operation isolation.
 - Exposing the internal bridge envelope to MCP clients.
+- Limiting arbitrary allocation inside user ML code or imposing an ML-process
+  heap limit; this plan bounds transport and captured-output retention only.
+- Changing catalog notifications in this checkpoint; declaration coalescing
+  remains a later theory-end catalog change.

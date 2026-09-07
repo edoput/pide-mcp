@@ -307,6 +307,47 @@ val (status, decoded) =
 \<^assert> (status = "ok" andalso decoded = marked);
 \<close>
 
+spec_test \<open>bridge request byte guard admits exact size and rejects oversized input before dispatch\<close>
+  covers \<open>pide_bridge#T11\<close>
+
+ML \<open>
+val request_limit = Options.default_int "mcp_bridge_max_request_bytes";
+fun request_bytes n = Bytes.string (String.implode (replicate n #"x"));
+val reached_dispatch = Unsynchronized.ref false;
+val dispatch_probe = fn _ => reached_dispatch := true;
+MCP_Bridge.dispatch_bytes dispatch_probe (request_bytes request_limit);
+\<^assert> (!reached_dispatch);
+reached_dispatch := false;
+MCP_Bridge.dispatch_bytes dispatch_probe (request_bytes (request_limit + 1));
+\<^assert> (not (!reached_dispatch));
+\<close>
+
+spec_test \<open>captured ML output is disabled at zero and bounds bytes and message count\<close>
+  covers \<open>pide_bridge#T13\<close>
+
+ML \<open>
+fun bounded_output limit messages =
+  let
+    val _ = MCP_Output.install_wrappers ();
+    val group = Future.new_group NONE;
+    val future =
+      (singleton o Future.forks)
+        {name = "MCP_Output.bounded_test", group = SOME group, deps = [],
+         pri = 0, interrupts = true}
+        (fn () => MCP_Output.with_limit group limit (fn () =>
+          let
+            val finish = MCP_Output.register group;
+            val _ = List.app writeln messages;
+          in finish () end));
+  in Future.join future end;
+
+val disabled = bounded_output 0 ["must not escape"];
+val bounded = bounded_output 64 (replicate 100 "abcdefghij");
+\<^assert> (disabled = "");
+\<^assert> (size bounded <= 64);
+\<^assert> (length (space_explode "\n" bounded) <= 4);
+\<close>
+
 spec_test \<open>bridge reply size selector preserves exact envelopes and replaces oversized statuses\<close>
   covers \<open>pide_bridge#T12\<close>
 

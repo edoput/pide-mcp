@@ -26,10 +26,11 @@ from tools.isabelle_launcher import resolve_launcher
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ISABELLE = list(resolve_launcher().argv)
 PROTOCOL = "2025-03-26"
+BOUNDED_OUTPUT = ("-o", "mcp_untrusted_output_bytes=1048576")
 
 
 def server(*arguments: str, stderr: int | None = None) -> Client:
-    return Client(ISABELLE + ["mcp_server", *arguments], stderr=stderr)
+    return Client(ISABELLE + ["mcp_server", *BOUNDED_OUTPUT, *arguments], stderr=stderr)
 
 
 def initialize(client: Client) -> dict[str, Any]:

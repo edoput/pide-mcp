@@ -153,7 +153,11 @@ Usage: isabelle mcp_test [OPTIONS]
       manifest match {
         case Some(_) =>
         case None =>
-          MCP_Test_Config.options = Options.init()
+          /* Production defaults captured ML output to disabled. Bridge tests
+             explicitly opt into a bounded 1 MiB lane because many fixtures
+             exercise diagnostic and IR output. */
+          MCP_Test_Config.options =
+            Options.init() + "mcp_untrusted_output_bytes=1048576"
           MCP_Test_Config.session_dirs =
             if (session_dirs.isEmpty) List(Path.explode("$ISABELLE_MCP_HOME/Tools"))
             else session_dirs

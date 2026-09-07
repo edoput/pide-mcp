@@ -44,6 +44,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 ISABELLE = list(resolve_launcher().argv)
 TIMEOUT = float(os.environ.get("MCP_TEST_TIMEOUT", "600"))
 HANDSHAKE_TIMEOUT = float(os.environ.get("MCP_HANDSHAKE_TIMEOUT", "60"))
+BOUNDED_OUTPUT = ["-o", "mcp_untrusted_output_bytes=1048576"]
 
 failures = 0
 
@@ -108,7 +109,8 @@ def test_repl_builtins():
     rejected edit is indistinguishable from a no-op at this level of
     the e2e test.)
     """
-    client = Client(ISABELLE + ["mcp_server", "-s", "MCP-HOL", "-T", "MCP_Repl"])
+    client = Client(ISABELLE + ["mcp_server", *BOUNDED_OUTPUT,
+                               "-s", "MCP-HOL", "-T", "MCP_Repl"])
     try:
         client.request("initialize", {
             "protocolVersion": "2025-03-26",
@@ -742,7 +744,8 @@ def test_builtin_activation():
     context rather than touching the shared MCP_Tools theory. This is the
     same style as the tool_scope bridge suite (mcp_bridge_tests.scala).
     """
-    client = Client(ISABELLE + ["mcp_server", "-s", "MCP-HOL", "-T", "MCP_Repl"])
+    client = Client(ISABELLE + ["mcp_server", *BOUNDED_OUTPUT,
+                               "-s", "MCP-HOL", "-T", "MCP_Repl"])
     try:
         client.request("initialize", {
             "protocolVersion": "2025-03-26",
@@ -853,7 +856,7 @@ def main():
         print("FAIL setup -- isabelle command not found: %s" % " ".join(ISABELLE))
         return 1
 
-    client = Client(ISABELLE + ["mcp_server"])
+    client = Client(ISABELLE + ["mcp_server", *BOUNDED_OUTPUT])
     try:
         # initialize handshake (plans/readiness, spec "server startup and
         # readiness"): must be fast NOW, regardless of session-heap state

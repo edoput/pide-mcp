@@ -9,5 +9,11 @@ public option mcp_max_in_flight : int = 8
 public option mcp_request_timeout : real = 60.0
   -- "seconds an admitted ordinary MCP request may run before timing out"
 
+public option mcp_bridge_max_request_bytes : int = 262144
+  -- "maximum serialized PIDE bridge request envelope size in bytes"
+
 public option mcp_bridge_max_reply_bytes : int = 1048576
   -- "maximum serialized PIDE bridge reply envelope size in bytes"
+
+public option mcp_untrusted_output_bytes : int = 0
+  -- "maximum accounted output bytes captured from one tool call (0 = disabled)"

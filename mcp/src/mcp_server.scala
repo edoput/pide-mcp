@@ -9,7 +9,7 @@ through the given progress (Console_Progress(stderr = true) in the tool).
 package isabelle.mcp
 
 import isabelle._
-import isabelle.mcp.application.McpApplication
+import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 import isabelle.mcp.connection._
 
 import java.io.{BufferedReader, PrintStream}
@@ -164,6 +164,8 @@ object MCP_Server {
     annotations: JSON.Object.T,
     handler_fn: Option[(MCP_Backend, List[(String, String)],
       McpApplication.Cancellation) => MCP_Session.Result] = None) {
+    def requires_untrusted_output: Boolean = handler_fn.isEmpty
+
     def handler(backend: MCP_Backend, args: List[(String, String)],
       cancellation: McpApplication.Cancellation): MCP_Session.Result =
       handler_fn match {
@@ -1232,6 +1234,12 @@ object MCP_Server {
       case Left(message) => error("mcp_server: invalid connection policy: " + message)
     }
 
+  private def validatedOutputPolicy(options: Options): McpOutputPolicy =
+    McpOutputPolicy.checked(options.int("mcp_untrusted_output_bytes").toLong) match {
+      case Right(policy) => policy
+      case Left(message) => error("mcp_server: invalid output policy: " + message)
+    }
+
   /* Injectable stream seam: the composition root selects its buffered data
      plane, so tests exercise the same connection assembly rather than a
      Handler bypass. */
@@ -1296,6 +1304,7 @@ object MCP_Server {
     val config_issues = MCP_Config.check(session_dirs)
     if (config_issues.nonEmpty) error(MCP_Config.render(config_issues))
     val policy = validatedConnectionPolicy(options)
+    val outputPolicy = validatedOutputPolicy(options)
 
     /* changed_sender: the list_changed notifier serve() installs on
        entry (3a) -- there is no backend yet to register it on until the
@@ -1361,6 +1370,7 @@ object MCP_Server {
           }
         to_stop.foreach(_.stop())
       }, policy = policy,
-      serverInfo = ConnectionKernel.ServerInfo(server_name, server_version)).serve()
+      serverInfo = ConnectionKernel.ServerInfo(server_name, server_version),
+      outputPolicy = outputPolicy).serve()
   }
 }
