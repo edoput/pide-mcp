@@ -55,6 +55,12 @@ if [ "$GIT_ROOT" != "$WT" ]; then
   echo "not a Git worktree root: $WT" >&2
   exit 1
 fi
+REPO_GIT=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)
+WT_GIT=$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir)
+if [ "$WT_GIT" != "$REPO_GIT" ]; then
+  echo "worktree does not belong to repository: $WT" >&2
+  exit 1
+fi
 
 STATE="$WT/.isabelle-worktree"
 USER_ROOT="$STATE/user"
@@ -88,7 +94,13 @@ components_worktree() {
 
 roots_worktree() {
   local next="$S/ROOTS.next.$$"
-  sed "s|^~/|$HOME/|" "$HOME/.isabelle/Isabelle2025-2/ROOTS" > "$next"
+  ISABELLE_ROOT_HOME="$HOME" awk '
+    substr($0, 1, 2) == "~/" {
+      print ENVIRON["ISABELLE_ROOT_HOME"] "/" substr($0, 3)
+      next
+    }
+    { print }
+  ' "$HOME/.isabelle/Isabelle2025-2/ROOTS" > "$next"
   mv -f -- "$next" "$S/ROOTS"
 }
 

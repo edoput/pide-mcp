@@ -85,7 +85,8 @@ copy.
 `scala` and `test` therefore build and execute the worktree jars without
 mutating the component catalog between modes. Each action atomically refreshes
 the same worktree-only catalog. The launcher accepts only a non-symlink Git
-worktree directly beneath the canonical worktree root, validates ownership
+worktree directly beneath the canonical worktree root whose Git common
+directory is this repository, validates ownership
 before reusing or removing state, verifies the exact base-heap links and copied
 database seeds, and rebuilds incomplete setup. For an
 environment where the Flatpak wrapper is unavailable or unreliable, set
