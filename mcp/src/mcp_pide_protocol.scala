@@ -20,6 +20,9 @@ object PideBridgeReply {
     extends PideBridgeReply
   final case class Failure(id: String, operation: String, failure: BridgeFailure)
     extends PideBridgeReply
+  /** Correlation recovered from outer PIDE properties only: its body was not parsed. */
+  final case class Oversized(id: Option[String], operation: Option[String], detail: String)
+    extends PideBridgeReply
   final case class Malformed(
     id: Option[String],
     operation: Option[String],
@@ -36,6 +39,7 @@ trait PideBridgeProtocol {
     payload: XML.Body): PideTransport.Outbound
   def cancel(id: String): PideTransport.Outbound
   def drain(id: String): PideTransport.Outbound
+  def oversized(reply: PideTransport.Inbound): PideBridgeReply
   def decode(reply: PideTransport.Inbound): PideBridgeReply
 }
 
@@ -60,6 +64,25 @@ object PideBridgeV1 extends PideBridgeProtocol {
       case List(value) => Some(value)
       case _ => None
     }
+
+  def oversized(reply: PideTransport.Inbound): PideBridgeReply = {
+    val ids = propertyValues(reply.properties, "id")
+    val operations = propertyValues(reply.properties, "operation")
+    val id = uniqueProperty(reply.properties, "id").filter(_.nonEmpty)
+    val operation = uniqueProperty(reply.properties, "operation").filter(_.nonEmpty)
+    val problem =
+      if (reply.function != ResultFunction)
+        Some("unknown PIDE bridge result function " + reply.function)
+      else if (ids.lengthCompare(1) > 0) Some("duplicate outer id")
+      else if (ids.contains("")) Some("empty outer id")
+      else if (operations.lengthCompare(1) > 0) Some("duplicate outer operation")
+      else if (operations.contains("")) Some("empty outer operation")
+      else None
+    problem match {
+      case Some(detail) => Malformed(id, operation, detail)
+      case None => Oversized(id, operation, "oversized PIDE bridge result")
+    }
+  }
 
   def hello(id: String, theory: String): PideTransport.Outbound =
     outbound(List(
@@ -198,6 +221,10 @@ object PideBridgeV1 extends PideBridgeProtocol {
             case "protocol_error" => decodeDetail(payload).fold(
               detail => malformed("invalid protocol_error payload: " + detail),
               detail => Failure(callId, op, ProtocolError(detail)))
+            case "too_large" => decodeSizePayload(payload).fold(
+              detail => malformed("invalid too_large payload: " + detail),
+              { case (actual, limit) => Failure(callId, op,
+                TooLarge(Direction.Reply, actual, limit)) })
             case _ => malformed("invalid bridge result status " + status)
           }
         }
@@ -213,6 +240,27 @@ object PideBridgeV1 extends PideBridgeProtocol {
       case NonFatal(exn) =>
         Left(Option(exn.getMessage).getOrElse(exn.getClass.getName))
     }
+
+  private def decodeSizePayload(payload: XML.Body): Either[String, (Long, Long)] = {
+    def decimal(name: String, value: String): Either[String, Long] =
+      if (value.nonEmpty && value.forall(_.isDigit))
+        try Right(java.lang.Long.parseLong(value))
+        catch { case _: NumberFormatException => Left("invalid " + name + " byte count") }
+      else Left("invalid " + name + " byte count")
+
+    try {
+      val (actualText, limitText) = XML.Decode.pair(XML.Decode.string, XML.Decode.string)(payload)
+      for {
+        actual <- decimal("actual", actualText)
+        limit <- decimal("limit", limitText)
+        _ <- Either.cond(limit > 0L, (), "limit byte count must be positive")
+        _ <- Either.cond(actual > limit, (), "actual byte count must exceed limit")
+      } yield (actual, limit)
+    }
+    catch {
+      case NonFatal(exn) => Left(Option(exn.getMessage).getOrElse(exn.getClass.getName))
+    }
+  }
 
   private[mcp] def result(
     id: String,

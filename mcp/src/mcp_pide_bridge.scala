@@ -475,6 +475,7 @@ trait BridgeCancellation {
 private[mcp] final class PideBridge(
   transport: PideTransport,
   maxPending: PideBridgePolicy.MaxPending,
+  maxReplyBytes: PideBridgePolicy.PositiveBytes,
   callTimeout: PideBridgePolicy.PositiveDuration,
   drainTimeout: PideBridgePolicy.NonNegativeDuration,
   deadlineScheduler: DeadlineScheduler,
@@ -672,7 +673,58 @@ private[mcp] final class PideBridge(
     owned
   }
 
+  private def receiveMalformed(id: Option[String], operation: Option[String], detail: String): Unit =
+    id match {
+      case Some(rawId) =>
+        val bridgeId = BridgeCallId.test(rawId)
+        if (drain.exists(_.id == bridgeId)) failDrain(rawId, ProtocolError(detail))
+        else if (hello.exists(_.id == bridgeId)) failHello(ProtocolError(detail))
+        else operation match {
+          case Some(name) =>
+            val owned = pending.reject(bridgeId, name, ProtocolError(detail)) != Unowned
+            clearDeadline(bridgeId)
+            val wasSent = sent.contains(bridgeId)
+            sent -= bridgeId
+            if (owned && wasSent) sendCancel(bridgeId)
+          case None => rejectOrdinaryControl(rawId, detail)
+        }
+      case None => diagnostics("Uncorrelated PIDE bridge result: " + detail)
+    }
+
+  private def receiveOversized(rawId: String, operation: Option[String],
+    actualBytes: Long, limitBytes: Long): Unit = {
+    val id = BridgeCallId.test(rawId)
+    val failure = TooLarge(Direction.Reply, actualBytes, limitBytes)
+    if (drain.exists(_.id == id)) failDrain(rawId, failure)
+    else if (hello.exists(_.id == id)) failHello(failure)
+    else {
+      val result = operation match {
+        case Some(name) => pending.reject(id, name, failure)
+        case None => if (pending.fail(id, failure)) Completed else Unowned
+      }
+      clearDeadline(id)
+      val wasSent = sent.contains(id)
+      sent -= id
+      if (result == Rejected && wasSent) sendCancel(id)
+      if (result == Unowned && operation.isEmpty)
+        diagnostics("Unowned PIDE bridge reply for oversized result id " + rawId)
+    }
+  }
+
   private def receive(reply: PideTransport.Inbound): Unit = synchronized {
+    if (reply.body.size > PideBridgePolicy.PositiveBytes.value(maxReplyBytes)) {
+      protocol.oversized(reply) match {
+        case PideBridgeReply.Oversized(Some(rawId), operation, _) =>
+          receiveOversized(rawId, operation, reply.body.size,
+            PideBridgePolicy.PositiveBytes.value(maxReplyBytes))
+        case PideBridgeReply.Oversized(None, _, detail) =>
+          diagnostics("Uncorrelated oversized PIDE bridge result: " + detail)
+        case PideBridgeReply.Malformed(id, operation, detail) =>
+          receiveMalformed(id, operation, detail)
+        case _ => diagnostics("Uncorrelated oversized PIDE bridge result")
+      }
+    }
+    else
     protocol.decode(reply) match {
       case PideBridgeReply.DrainAck(id) =>
         if (hello.exists(_.id == BridgeCallId.test(id)))
@@ -711,21 +763,10 @@ private[mcp] final class PideBridge(
           sent -= id
           if (result == Rejected && wasSent) sendCancel(id)
         }
-      case PideBridgeReply.Malformed(Some(rawId), operation, detail) =>
-        val id = BridgeCallId.test(rawId)
-        if (drain.exists(_.id == id)) failDrain(rawId, ProtocolError(detail))
-        else if (hello.exists(_.id == id)) failHello(ProtocolError(detail))
-        else operation match {
-          case Some(name) =>
-            val owned = pending.reject(id, name, ProtocolError(detail)) != Unowned
-            clearDeadline(id)
-            val wasSent = sent.contains(id)
-            sent -= id
-            if (owned && wasSent) sendCancel(id)
-          case None => rejectOrdinaryControl(rawId, detail)
-        }
-      case PideBridgeReply.Malformed(None, _, detail) =>
-        diagnostics("Uncorrelated PIDE bridge result: " + detail)
+      case PideBridgeReply.Malformed(id, operation, detail) =>
+        receiveMalformed(id, operation, detail)
+      case PideBridgeReply.Oversized(_, _, _) =>
+        diagnostics("Unexpected PIDE bridge oversized-reply classification")
     }
   }
 

@@ -4,6 +4,14 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-09-07
+----------
+
+- Added the public `mcp_bridge_max_reply_bytes` startup option (default 1 MiB,
+  measured in bytes). Oversized serialized PIDE bridge result envelopes now
+  terminate their correlated call with a typed reply-size failure before the
+  receiving operation decoder runs.
+
 2026-08-27 (planning completion gate and explicit test layers)
 --------------------------------------------------------------------------
 

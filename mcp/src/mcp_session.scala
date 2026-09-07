@@ -387,6 +387,10 @@ object MCP_Session {
     val bridgeMaxPending =
       PideBridgePolicy.MaxPending.checked(options.int("mcp_max_in_flight"))
         .fold(error, identity)
+    val bridgeMaxReplyBytes =
+      PideBridgePolicy.PositiveBytes.checked(
+        "mcp_bridge_max_reply_bytes", options.int("mcp_bridge_max_reply_bytes").toLong)
+        .fold(error, identity)
     val bridgeCallTimeout =
       PideBridgePolicy.PositiveDuration.checked(
         "mcp_request_timeout", options.real("mcp_request_timeout")).fold(error, identity)
@@ -417,7 +421,7 @@ object MCP_Session {
       }
 
       val mcpSession = new MCP_Session(session, session_name, session_dirs, theory,
-        structure, deps, store, bridgeMaxPending, bridgeCallTimeout,
+        structure, deps, store, bridgeMaxPending, bridgeMaxReplyBytes, bridgeCallTimeout,
         bridgeDrainTimeout, bridgeProfile)
       ownedSession = Some(mcpSession)
 
@@ -468,6 +472,7 @@ class MCP_Session private(
   val deps: Sessions.Deps,
   val store: Store,
   bridgeMaxPending: PideBridgePolicy.MaxPending,
+  bridgeMaxReplyBytes: PideBridgePolicy.PositiveBytes,
   bridgeCallTimeout: PideBridgePolicy.PositiveDuration,
   bridgeDrainTimeout: PideBridgePolicy.NonNegativeDuration,
   bridgeProfile: McpBridgeProfile
@@ -631,6 +636,7 @@ class MCP_Session private(
     new PideBridge(
       new SessionPideTransport(session, PideBridgeV1.resultFunctions),
       bridgeMaxPending,
+      bridgeMaxReplyBytes,
       bridgeCallTimeout,
       bridgeDrainTimeout,
       new ScheduledDeadlineScheduler("mcp-pide-bridge-deadline"),

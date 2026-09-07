@@ -12,6 +12,7 @@ sig
   val register: binding -> handler -> theory -> theory
   val registered: theory -> string list
   val invoke: theory -> string -> Future.group -> XML.body -> XML.body
+  val select_result: int -> string -> string -> string -> XML.body -> XML.tree
 end;
 
 
@@ -86,10 +87,32 @@ fun result_envelope id operation status payload =
     [("revision", revision), ("kind", "result"), ("id", id),
      ("operation", operation), ("status", status)]), payload);
 
+fun too_large_payload actual limit =
+  XML.Encode.pair XML.Encode.string XML.Encode.string
+    (Int.toString actual, Int.toString limit);
+
+(* Kept pure so the publication boundary and its regression test select the
+   same complete YXML envelope.  The replacement is deliberately not fed back
+   through this selector. *)
+fun select_result limit id operation status payload =
+  let
+    val envelope = result_envelope id operation status payload;
+    val actual = Bytes.size (YXML.bytes_of envelope);
+  in
+    if actual <= limit then envelope
+    else result_envelope id operation "too_large" (too_large_payload actual limit)
+  end;
+
+fun max_reply_bytes () =
+  let val limit = Options.default_int "mcp_bridge_max_reply_bytes" in
+    if limit > 0 then limit
+    else error "mcp_bridge_max_reply_bytes must be positive"
+  end;
+
 fun publish id operation status payload =
   Output.protocol_message
     [Markup.function result_function, ("id", id), ("operation", operation)]
-    [[result_envelope id operation status payload]];
+    [[select_result (max_reply_bytes ()) id operation status payload]];
 
 fun drain_envelope id status payload =
   XML.Elem ((result_element,

@@ -307,6 +307,40 @@ val (status, decoded) =
 \<^assert> (status = "ok" andalso decoded = marked);
 \<close>
 
+spec_test \<open>bridge reply size selector preserves exact envelopes and replaces oversized statuses\<close>
+  covers \<open>pide_bridge#T12\<close>
+
+ML \<open>
+fun result_props id operation status =
+  [("revision", MCP_Bridge.revision), ("kind", "result"), ("id", id),
+   ("operation", operation), ("status", status)];
+
+fun check_too_large id operation status payload =
+  let
+    val ordinary = XML.Elem (("mcp_bridge_result", result_props id operation status), payload);
+    val actual = Bytes.size (YXML.bytes_of ordinary);
+    val _ = \<^assert> (MCP_Bridge.select_result actual id operation status payload = ordinary);
+    val selected = MCP_Bridge.select_result (actual - 1) id operation status payload;
+  in
+    (case selected of
+      XML.Elem (("mcp_bridge_result", properties), counts) =>
+        let
+          val _ = \<^assert> (the (AList.lookup (op =) properties "id") = id);
+          val _ = \<^assert> (the (AList.lookup (op =) properties "operation") = operation);
+          val _ = \<^assert> (the (AList.lookup (op =) properties "status") = "too_large");
+          val (actual_text, limit_text) =
+            XML.Decode.pair XML.Decode.string XML.Decode.string counts;
+          val _ = \<^assert> (actual_text = Int.toString actual);
+          val _ = \<^assert> (limit_text = Int.toString (actual - 1));
+        in () end
+    | _ => error "unexpected bridge reply size envelope")
+  end;
+
+val _ = check_too_large "size-id" "op" "ok" (XML.Encode.string "payload");
+val _ = check_too_large "size-error" "op" "remote_error"
+  (XML.Encode.string "non-ok oversized payload");
+\<close>
+
 ML \<open>
 val tools_name =
   the (find_first (fn n => Long_Name.base_name n = "MCP_Tools") (Thy_Info.get_names ()));

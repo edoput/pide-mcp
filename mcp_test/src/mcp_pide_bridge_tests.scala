@@ -126,11 +126,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
   private def bridge(transport: ScriptedTransport, maxPending: Int = 4,
     deadlines: ManualDeadlineScheduler = new ManualDeadlineScheduler,
     drainTimeoutSeconds: Double = 0.0,
+    maxReplyBytes: Long = 4096,
     diagnostics: String => Unit = _ => ()): PideBridge = {
-    val configured = policy(maxPending, drainTimeoutSeconds)
+    val configured = policy(maxPending, drainTimeoutSeconds, maxReplyBytes)
     val control = new PideBridge(
       transport,
       configured.maxPending,
+      configured.envelopes.maxReplyBytes,
       configured.timing.callTimeout,
       configured.timing.drainTimeout,
       deadlines,
@@ -154,6 +156,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     new PideBridge(
       transport,
       policy().maxPending,
+      policy().envelopes.maxReplyBytes,
       policy().timing.callTimeout,
       policy().timing.drainTimeout,
       new ManualDeadlineScheduler,
@@ -163,13 +166,14 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       PideBridgeV1,
       diagnostics)
 
-  private def policy(maxPending: Int = 2, drainTimeoutSeconds: Double = 0.0): PideBridgePolicy =
+  private def policy(maxPending: Int = 2, drainTimeoutSeconds: Double = 0.0,
+    maxReplyBytes: Long = 4096): PideBridgePolicy =
     PideBridgePolicy.checked(
       maxPending = maxPending,
       callTimeoutSeconds = 5.0,
       drainTimeoutSeconds = drainTimeoutSeconds,
       maxRequestBytes = 1024,
-      maxReplyBytes = 4096).fold(errors => fail(errors.mkString(", ")), identity)
+      maxReplyBytes = maxReplyBytes).fold(errors => fail(errors.mkString(", ")), identity)
 
   private final case class TextOperation(name: String, request: String)
       extends BridgeOperation[String] {
@@ -427,6 +431,161 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
         case other => fail("expected missing outer " + missing + " to reject the result, got " + other)
       }
     }
+  }
+
+  spec_test("reply size protocol decodes structured too_large and rejects malformed counts",
+      covers = List("pide_bridge#T12")) {
+    val payload = XML.Encode.pair(XML.Encode.string, XML.Encode.string)("1048577", "1048576")
+    assertEquals(PideBridgeV1.decode(PideBridgeV1.result(
+      "owned-id", "op", "too_large", payload)),
+      PideBridgeReply.Failure("owned-id", "op",
+        BridgeFailure.TooLarge(BridgeFailure.Direction.Reply, 1048577L, 1048576L)))
+
+    List(("-1", "1048576"), ("1", "0"), ("1048576", "1048576")).foreach {
+      case (actual, limit) =>
+        PideBridgeV1.decode(PideBridgeV1.result(
+          "owned-id", "op", "too_large",
+          XML.Encode.pair(XML.Encode.string, XML.Encode.string)(actual, limit))) match {
+          case PideBridgeReply.Malformed(Some("owned-id"), Some("op"), detail) =>
+            assert(detail.contains("invalid too_large payload"))
+          case other => fail("expected malformed too_large payload, got " + other)
+        }
+    }
+  }
+
+  spec_test("reply size limit admits exact envelopes and rejects raw oversized replies before decoding",
+      covers = List("pide_bridge#T12")) {
+    val limit = 4096L
+    val empty = PideBridgeV1.result("x" * 38, "op", "ok", reply(""))
+    val accepted = "x" * (limit - empty.body.size).toInt
+    val exactTransport = new ScriptedTransport
+    val decoded = collection.mutable.ListBuffer.empty[String]
+    val exact = bridge(exactTransport, maxReplyBytes = limit)
+    val exactCall = Future.fork(exact.call(new BridgeOperation[String] {
+      val name = "op"
+      val requestPayload = reply("request")
+      def decodeReply(payload: XML.Body): Either[String, String] = {
+        val value = XML.Decode.string(payload); decoded += value; Right(value)
+      }
+    }, NeverCancelled))
+    exactTransport.awaitSent(1)
+    val exactId = requestProperty(exactTransport.sent.head, "id")
+    val exactReply = PideBridgeV1.result(exactId, "op", "ok", reply(accepted))
+    assertEquals(exactReply.body.size.toLong, limit)
+    exactTransport.deliverInbound(exactReply)
+    assertEquals(exactCall.join, Right(accepted))
+    assertEquals(decoded.toList, List(accepted))
+    exact.beginStop(); exact.sessionStopped()
+
+    val deadlines = new ManualDeadlineScheduler
+    val transport = new ScriptedTransport
+    val control = bridge(transport, maxPending = 2, deadlines = deadlines, maxReplyBytes = 4096)
+    var oversizedDecoderCalled = false
+    val first = Future.fork(control.call(new BridgeOperation[String] {
+      val name = "op"
+      val requestPayload = reply("first")
+      def decodeReply(payload: XML.Body): Either[String, String] = {
+        oversizedDecoderCalled = true; Right(XML.Decode.string(payload))
+      }
+    }, NeverCancelled))
+    val second = Future.fork(control.call(TextOperation("op", "second"), NeverCancelled))
+    transport.awaitSent(2)
+    val firstId = requestProperty(transport.sent(0), "id")
+    val secondId = requestProperty(transport.sent(1), "id")
+    val oversizedEmpty = PideBridgeV1.result("x" * 38, "op", "ok", reply(""))
+    val oversizedPayload = "x" * (4097L - oversizedEmpty.body.size).toInt
+    val oversizedReply = PideBridgeV1.result(firstId, "op", "ok", reply(oversizedPayload))
+    assertEquals(oversizedReply.body.size, 4097L)
+    transport.deliverInbound(oversizedReply)
+    assertEquals(first.join, Left(BridgeFailure.TooLarge(BridgeFailure.Direction.Reply, 4097L, 4096L)))
+    assert(!oversizedDecoderCalled, "oversized reply reached its operation decoder")
+    assert(!second.is_finished, "oversized first reply completed another owner")
+    assertEquals(control.pendingCount, 1)
+    assertEquals(control.deadlineCount, 1)
+    deliverResult(transport, secondId, "op", "second")
+    assertEquals(second.join, Right("second"))
+    assertEquals(control.pendingCount, 0)
+    assertEquals(control.deadlineCount, 0)
+    control.beginStop(); control.sessionStopped()
+  }
+
+  spec_test("reply size oversized replies without a safe outer id only diagnose",
+      covers = List("pide_bridge#T12")) {
+    val diagnostics = collection.mutable.ListBuffer.empty[String]
+    val transport = new ScriptedTransport
+    val control = bridge(transport, maxReplyBytes = 4096,
+      diagnostics = message => diagnostics.synchronized { diagnostics += message })
+    val call = Future.fork(control.call(TextOperation("op", "request"), NeverCancelled))
+    transport.awaitSent(1)
+    val id = requestProperty(transport.sent.head, "id")
+    transport.deliverInbound(PideTransport.Inbound(PideBridgeV1.ResultFunction,
+      List(Markup.FUNCTION -> PideBridgeV1.ResultFunction, "operation" -> "op"), Bytes("x" * 4097), ""))
+    assert(!call.is_finished, "uncorrelated oversized reply completed an owner")
+    assert(diagnostics.synchronized {
+      diagnostics.exists(_.contains("Uncorrelated oversized"))
+    })
+    deliverResult(transport, id, "op", "reply")
+    assertEquals(call.join, Right("reply"))
+    control.beginStop(); control.sessionStopped()
+  }
+
+  spec_test("reply size routes oversized control replies and malformed outer functions",
+      covers = List("pide_bridge#T12")) {
+    def oversized(id: String, operation: Option[String] = None,
+      function: String = PideBridgeV1.ResultFunction): PideTransport.Inbound =
+      PideTransport.Inbound(function,
+        List(Markup.FUNCTION -> function, "id" -> id) ++ operation.map("operation" -> _),
+        Bytes("x" * 4097), "")
+
+    val helloTransport = new ScriptedTransport
+    val hello = startupBridge(helloTransport, McpBridgeProfile.base)
+    val ready = Future.fork(hello.awaitReady(positiveDuration(1.0)))
+    helloTransport.awaitSent(1)
+    helloTransport.deliverInbound(oversized(requestProperty(helloTransport.sent.head, "id"), Some("hello")))
+    assertEquals(ready.join,
+      Left(BridgeFailure.TooLarge(BridgeFailure.Direction.Reply, 4097L, 4096L)))
+    assert(!hello.startupHelloPending)
+    hello.sessionStopped()
+
+    val drainTransport = new ScriptedTransport
+    val drain = bridge(drainTransport, drainTimeoutSeconds = 1.0)
+    val stopping = Future.fork(drain.beginStop())
+    drainTransport.awaitSent(1)
+    drainTransport.deliverInbound(oversized(requestProperty(drainTransport.sent.head, "id")))
+    assertEquals(stopping.join,
+      BridgeDrainOutcome.Failed(BridgeFailure.TooLarge(BridgeFailure.Direction.Reply, 4097L, 4096L)))
+    drain.sessionStopped()
+
+    var decoderCalled = false
+    val ordinaryTransport = new ScriptedTransport
+    val ordinary = bridge(ordinaryTransport)
+    val call = Future.fork(ordinary.call(new BridgeOperation[String] {
+      val name = "op"
+      val requestPayload = reply("request")
+      def decodeReply(payload: XML.Body): Either[String, String] = {
+        decoderCalled = true; Right(XML.Decode.string(payload))
+      }
+    }, NeverCancelled))
+    ordinaryTransport.awaitSent(1)
+    ordinaryTransport.deliverInbound(oversized(
+      requestProperty(ordinaryTransport.sent.head, "id"), Some("op"), "MCP.bogus_result"))
+    call.join match {
+      case Left(BridgeFailure.ProtocolError(detail)) =>
+        assert(detail.contains("unknown PIDE bridge result function"))
+      case other => fail("expected malformed outer function ProtocolError, got " + other)
+    }
+    assert(!decoderCalled)
+    ordinary.sessionStopped()
+
+    val diagnostics = collection.mutable.ListBuffer.empty[String]
+    val unownedTransport = new ScriptedTransport
+    val unowned = bridge(unownedTransport,
+      diagnostics = message => diagnostics.synchronized { diagnostics += message })
+    unownedTransport.deliverInbound(oversized("unowned-size-id"))
+    assert(diagnostics.synchronized {
+      diagnostics.exists(_.contains("Unowned PIDE bridge reply for oversized result id unowned-size-id"))
+    })
+    unowned.sessionStopped()
   }
 
   spec_test("missing outer result identity immediately rejects the inner owner",
