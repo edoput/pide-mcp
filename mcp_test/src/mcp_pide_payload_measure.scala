@@ -13,32 +13,64 @@ import java.nio.file.{AtomicMoveNotSupportedException, Files, StandardCopyOption
 
 
 object MCP_Pide_Payload_Measure {
-  val schema = "isabelle-mcp.pide-bridge-payloads/v1"
+  val schema = "isabelle-mcp.pide-bridge-payloads/v2"
+  val corpus_revision = "2026-09-07.1"
+  val large_request_source_text_bytes = 89332L
+  val theory_source_reply_bytes = 380170L
 
   final case class Case(
     name: String,
     direction: String,
     operation: String,
     category: String,
-    bytes: Long)
+    bytes: Long,
+    source_text_bytes: Option[Long] = None)
 
   final case class Corpus(
+    corpus_revision: String,
     bridge_revision: String,
     cases: List[Case],
     request_bytes: Long,
-    reply_bytes: Long)
+    reply_bytes: Long,
+    maxRequestBytes: Long,
+    maxReplyBytes: Long)
 
   private val request_category = "operation_request"
   private val large_categories = Set(
     "tool_catalog", "theory_source_text", "documentation_text", "structured_prover_output")
   private val context = "isabelle://context/theory/HOL.Main"
 
-  private def request(name: String, operation: BridgeOperation[?]): Case = {
+  private def deterministic_ascii_source(label: String, bytes: Long): String = {
+    require(bytes > 0 && bytes <= Int.MaxValue,
+      "fixture source-text byte count must fit in a positive Int")
+    val prefix = "(* " + label + "; deterministic ASCII fixture *)\\n"
+    require(prefix.length <= bytes,
+      "fixture source-text byte count is smaller than its prefix")
+    val result = prefix + List.fill((bytes - prefix.length).toInt)("x").mkString
+    require(result.getBytes(StandardCharsets.US_ASCII).length == bytes,
+      "fixture source text did not retain its reviewed ASCII byte count")
+    result
+  }
+
+  def default_for(maximum: Long): Long = {
+    require(maximum > 0, "payload maximum must be positive")
+    val doubled = Math.multiplyExact(maximum, 2L)
+    var rounded = 1L
+    while (rounded < doubled) {
+      if (rounded > Long.MaxValue / 2L)
+        throw new IllegalArgumentException("payload default overflows Long")
+      rounded = Math.multiplyExact(rounded, 2L)
+    }
+    rounded
+  }
+
+  private def request(name: String, operation: BridgeOperation[?],
+    source_text_bytes: Option[Long] = None): Case = {
     val arguments = PideBridgeV1.call("measure:request", "HOL.Main", operation.name,
       operation.requestPayload).arguments
     require(arguments.lengthCompare(1) == 0,
       "PideBridgeV1 did not produce one canonical request argument")
-    Case(name, "request", operation.name, request_category, arguments.head.size)
+    Case(name, "request", operation.name, request_category, arguments.head.size, source_text_bytes)
   }
 
   private val encode_annotations = XML.Encode.pair(XML.Encode.option(XML.Encode.bool),
@@ -83,27 +115,33 @@ object MCP_Pide_Payload_Measure {
         "isabelle://resource/Fixture/two" -> "Fixture resource two"))
 
   private def reply(name: String, category: String, operation: BridgeOperation[?],
-    payload: XML.Body): Case = {
+    payload: XML.Body, source_text_bytes: Option[Long] = None): Case = {
     require(operation.decodeReply(payload).isRight,
       "fixture is not accepted by the current " + operation.name + " reply codec")
     val body = PideBridgeV1.result("measure:reply", operation.name, "ok", payload).body
-    Case(name, "reply", operation.name, category, body.size)
+    Case(name, "reply", operation.name, category, body.size, source_text_bytes)
   }
 
   def corpus: Corpus = {
+    val large_request_source = deterministic_ascii_source(
+      "MCP_Repl_Tests.thy reviewed source-text basis", large_request_source_text_bytes)
     val requests = List(
       request("request.check_context", McpBridgeOperations.checkContext(Some(context))),
       request("request.ir", McpBridgeOperations.ir("term", List("term" -> "x + y"))),
       request("request.read_resource", McpBridgeOperations.readResource(context, "isar-ref")),
+      request("request.ir_large_source_text",
+        McpBridgeOperations.ir("step", List(
+          "repl" -> "Fixture",
+          "isar_text" -> large_request_source)),
+        Some(large_request_source_text_bytes)),
       request("request.resources", McpBridgeOperations.resources(context)),
       request("request.run_tool", McpBridgeOperations.runTool(context, "check_theory",
         List("theory" -> "HOL.Main"))),
       request("request.theories", McpBridgeOperations.theories),
       request("request.tools", McpBridgeOperations.tools(context)))
 
-    val source_text =
-      "theory Fixture_Source\\nimports Main\\nbegin\\n" +
-        List.fill(40)("lemma fixture: \\\"x = x\\\" by simp\\n").mkString + "end\\n"
+    val source_text = deterministic_ascii_source(
+      "Henstock_Kurzweil_Integration.thy reviewed source-text basis", theory_source_reply_bytes)
     val documentation_text =
       "# Fixture documentation\\n\\n" +
         List.fill(48)("This deterministic documentation paragraph records bridge payload shape.\\n").mkString
@@ -121,15 +159,21 @@ object MCP_Pide_Payload_Measure {
       reply("reply.structured_prover_output", "structured_prover_output",
         McpBridgeOperations.runTool(context, "fixture_prover", Nil), status_text(prover_output)),
       reply("reply.theory_source_text", "theory_source_text",
-        McpBridgeOperations.readResource(context, "Fixture_Source"), status_text(source_text)),
+        McpBridgeOperations.readResource(context, "Fixture_Source"), status_text(source_text),
+        Some(theory_source_reply_bytes)),
       reply("reply.theories", "operation_reply",
         McpBridgeOperations.theories, theories_payload),
       reply("reply.tool_catalog", "tool_catalog", McpBridgeOperations.tools(context), tool_catalog_payload))
     val all = (requests ::: replies).sortBy(_.name)
     validate(all)
-    Corpus(PideBridgeV1.revision, all,
-      all.collect { case measured if measured.direction == "request" => measured.bytes }.max,
-      all.collect { case measured if measured.direction == "reply" => measured.bytes }.max)
+    val request_maximum = all.collect {
+      case measured if measured.direction == "request" => measured.bytes
+    }.max
+    val reply_maximum = all.collect {
+      case measured if measured.direction == "reply" => measured.bytes
+    }.max
+    Corpus(corpus_revision, PideBridgeV1.revision, all, request_maximum, reply_maximum,
+      default_for(request_maximum), default_for(reply_maximum))
   }
 
   def validate(cases: List[Case]): Unit = {
@@ -140,6 +184,8 @@ object MCP_Pide_Payload_Measure {
     }.toList.sorted
     require(duplicate_names.isEmpty, "duplicate payload case names: " + duplicate_names.mkString(", "))
     require(cases.forall(measured => measured.bytes > 0), "payload sizes must be positive")
+    require(cases.forall(_.source_text_bytes.forall(_ > 0)),
+      "source-text byte bases must be positive")
     require(cases.forall(measured => Set("request", "reply")(measured.direction)),
       "payload directions must be request or reply")
     val requests = cases.filter(_.direction == "request")
@@ -163,18 +209,36 @@ object MCP_Pide_Payload_Measure {
     }.max
     require(value.request_bytes == request_maximum && value.reply_bytes == reply_maximum,
       "payload maxima must agree with cases")
+    require(value.maxRequestBytes == default_for(request_maximum) &&
+      value.maxReplyBytes == default_for(reply_maximum),
+      "payload defaults must derive from maxima")
     JSON.Format(JSON.Object(
       "schema" -> schema,
       "bridge_revision" -> value.bridge_revision,
+      "corpus_revision" -> value.corpus_revision,
       "cases" -> value.cases.map(measured => JSON.Object(
         "name" -> measured.name,
         "direction" -> measured.direction,
         "operation" -> measured.operation,
         "category" -> measured.category,
-        "bytes" -> measured.bytes)),
+        "bytes" -> measured.bytes,
+        "source_text_bytes" -> measured.source_text_bytes.getOrElse(0L))),
       "maxima" -> JSON.Object(
         "request_bytes" -> value.request_bytes,
-        "reply_bytes" -> value.reply_bytes))) + "\n"
+        "reply_bytes" -> value.reply_bytes),
+      "defaults" -> JSON.Object(
+        "maxRequestBytes" -> value.maxRequestBytes,
+        "maxReplyBytes" -> value.maxReplyBytes),
+      "provenance" -> JSON.Object(
+        "large_request_source_text" -> JSON.Object(
+          "bytes" -> large_request_source_text_bytes,
+          "observed_path" -> "mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy",
+          "observation" -> "current largest repository theory; committed deterministic ASCII fixture"),
+        "theory_source_reply" -> JSON.Object(
+          "bytes" -> theory_source_reply_bytes,
+          "observed_path" -> "HOL/Analysis/Henstock_Kurzweil_Integration.thy",
+          "observation" -> "current largest shipped Isabelle2025-2 theory; committed deterministic ASCII fixture"),
+        "default_rule" -> "next power of two at or above twice each serialized maximum"))) + "\n"
   }
 
   def default_path: Path =

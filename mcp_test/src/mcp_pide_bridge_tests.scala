@@ -1225,6 +1225,26 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       first.cases.filter(_.direction == "request").map(_.bytes).max)
     assertEquals(first.reply_bytes,
       first.cases.filter(_.direction == "reply").map(_.bytes).max)
+    assertEquals(first.maxRequestBytes, MCP_Pide_Payload_Measure.default_for(first.request_bytes))
+    assertEquals(first.maxReplyBytes, MCP_Pide_Payload_Measure.default_for(first.reply_bytes))
+    assertEquals(first.maxRequestBytes, 262144L)
+    assertEquals(first.maxReplyBytes, 1048576L)
+  }
+
+  test("payload measurement retains reviewed large source-text bases through serialization") {
+    val cases = MCP_Pide_Payload_Measure.corpus.cases
+    val large_request = cases.find(_.name == "request.ir_large_source_text")
+      .getOrElse(fail("missing large request fixture"))
+    val theory_reply = cases.find(_.name == "reply.theory_source_text")
+      .getOrElse(fail("missing theory-source reply fixture"))
+
+    assertEquals(large_request.source_text_bytes,
+      Some(MCP_Pide_Payload_Measure.large_request_source_text_bytes))
+    assertEquals(large_request.operation, "ir")
+    assertEquals(theory_reply.source_text_bytes,
+      Some(MCP_Pide_Payload_Measure.theory_source_reply_bytes))
+    assert(large_request.bytes >= MCP_Pide_Payload_Measure.large_request_source_text_bytes)
+    assert(theory_reply.bytes >= MCP_Pide_Payload_Measure.theory_source_reply_bytes)
   }
 
   test("payload measurement rejects incomplete request and reply operation coverage") {

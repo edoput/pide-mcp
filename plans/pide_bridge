@@ -65,8 +65,10 @@ claims:
     category: design
   - id: Q1
     kind: question
-    state: open
+    state: resolved
+    resolved_on: "2026-09-07"
     statement: What separate serialized request and reply byte limits admit the committed legitimate-operation corpus while bounding accidental or hostile bridge-envelope retention?
+    resolution: The committed deterministic corpus derives separate defaults of 256 KiB (262144 bytes) for requests and 1 MiB (1048576 bytes) for replies; each is the next power of two at or above twice its measured serialized-envelope maximum. Enforcement remains the next implementation slice.
   - id: T1
     kind: test
     state: active
@@ -321,17 +323,18 @@ again before envelope or domain decode.  These limits bound bridge envelopes,
 not memory allocated inside an operation before it produces its result, nor
 the fixed buffering required by Isabelle to deliver one protocol message.
 
-The envelope-size question remains open until representative tool catalogs,
-source/document reads, and large prover results are measured.  The reusable
-`tools/pide-bridge measure` launcher now records the current `PideBridgeV1`
-serialized request and reply byte counts for all seven operations plus
-committed large tool-catalog, source, documentation, and prover-output
-fixtures in `plans/evidence/pide_bridge_payloads.json`; use
-`tools/pide-bridge measure --check` to verify it without rewriting.  `Q1`
-remains OPEN: the next step is to set defaults and enforcement to the next
-power of two at or above twice each recorded maximum, recording the corpus
-revision and chosen values in that artifact.  Implementation must not silently
-pick a convenient test-only value.
+The reusable `tools/pide-bridge measure` launcher records the current
+`PideBridgeV1` serialized request and reply byte counts for all seven
+operations plus committed large tool-catalog, source, documentation, and
+prover-output fixtures in `plans/evidence/pide_bridge_payloads.json`; use
+`tools/pide-bridge measure --check` to verify it without rewriting.  The
+committed corpus includes deterministic ASCII bases for the reviewed 89,332
+byte `mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy` request fixture and the reviewed
+380,170 byte `HOL/Analysis/Henstock_Kurzweil_Integration.thy` theory-source
+reply fixture.  Q1 is resolved on 2026-09-07: the corpus derives 256 KiB
+request and 1 MiB reply defaults by rounding twice each serialized maximum up
+to the next power of two.  Enforcement remains the next implementation slice;
+the measurement result does not silently introduce it.
 
 implementation checkpoints
 --------------------------
