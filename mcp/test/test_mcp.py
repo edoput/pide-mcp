@@ -737,10 +737,11 @@ def test_builtin_activation():
     """plans/builtin_activation, step 4: ASYMMETRIC CALLABILITY end to
     end -- a del'd builtin is unlisted but stays callable (dispatch
     precedes activation), unlike a del'd ML tool (unlisted AND
-    refused). Exercised through tool_scope_set{repl} so the del is
-    local to one repl's context and never touches the shared MCP_Tools
-    theory: declare [[mcp_tools del: ...]] inside a repl step, same
-    style as the tool_scope bridge suite (mcp_bridge_tests.scala).
+    refused). The REPL's canonical context locator is returned by
+    repl_init and treated as opaque by this client; tool_scope_set uses
+    that exact value, so every activation change stays local to the REPL
+    context rather than touching the shared MCP_Tools theory. This is the
+    same style as the tool_scope bridge suite (mcp_bridge_tests.scala).
     """
     client = Client(ISABELLE + ["mcp_server", "-s", "MCP-HOL", "-T", "MCP_Repl"])
     try:
@@ -761,8 +762,13 @@ def test_builtin_activation():
         # does (transitively, via MCP-HOL's MCP theory).
         reply = client.request("tools/call", {"name": "repl_init",
             "arguments": {"repl": "BA", "theories": ["MCP-HOL.MCP_Repl"]}})
-        verdict("builtin_activation: tools/call repl_init creates BA",
-                not reply.get("result", {}).get("isError", False), json.dumps(reply))
+        content = reply.get("result", {}).get("content", [])
+        init_text = content[0].get("text", "") if content else ""
+        locator_match = re.search(r"^Context: ([^\n]+)$", init_text, re.MULTILINE)
+        locator = locator_match.group(1) if locator_match else None
+        verdict("builtin_activation: repl_init creates BA and returns its canonical context locator",
+                locator is not None and not reply.get("result", {}).get("isError", False),
+                json.dumps(reply))
 
         reply = client.request("tools/call", {"name": "repl_step",
             "arguments": {"repl": "BA",
@@ -783,15 +789,41 @@ def test_builtin_activation():
         verdict("builtin_activation: repl_step deactivates ba_probe",
                 not reply.get("result", {}).get("isError", False), json.dumps(reply))
 
-        reply = client.request("tools/call",
-            {"name": "tool_scope_set", "arguments": {"repl": "BA"}})
-        verdict("builtin_activation: tool_scope_set{repl: BA}",
+        reply = client.request("tools/call", {"name": "repl_step",
+            "arguments": {"repl": "BA",
+                          "isar_text":
+                              "mcp_tool ba_active_probe = \\<open>String.map Char.toUpper\\<close>\n"
+                              "  (description \\<open>active uppercase\\<close>)"}})
+        verdict("builtin_activation: repl_step registers an active ml tool ba_active_probe",
                 not reply.get("result", {}).get("isError", False), json.dumps(reply))
+
+        reply = client.request("tools/call",
+            {"name": "tool_scope_set", "arguments": {"context": locator}})
+        verdict("builtin_activation: tool_scope_set reuses repl_init's returned context locator",
+                not reply.get("result", {}).get("isError", False), json.dumps(reply))
+
+        reply = client.request("tools/call", {"name": "tool_scope_show", "arguments": {}})
+        content = reply.get("result", {}).get("content", [])
+        scope_text = content[0].get("text", "") if content else ""
+        scope_context = scope_text.splitlines()[0] if scope_text else ""
+        verdict("builtin_activation: tool_scope_show reports repl_init's returned context locator",
+                locator is not None and scope_context == "Context: " + locator
+                and not reply.get("result", {}).get("isError", False),
+                json.dumps(reply))
 
         reply = client.request("tools/list")
         names = [t.get("name") for t in reply.get("result", {}).get("tools", [])]
-        verdict("builtin_activation: tools/list has neither the del'd builtin nor the del'd ml tool",
-                "repl_list" not in names and "ba_probe" not in names, json.dumps(names))
+        verdict("builtin_activation: tools/list has active ba_active_probe but neither deactivated tool",
+                "ba_active_probe" in names and "repl_list" not in names and "ba_probe" not in names,
+                json.dumps(names))
+
+        reply = client.request("tools/call",
+            {"name": "ba_active_probe", "arguments": {"input": "active"}})
+        content = reply.get("result", {}).get("content", [])
+        active_text = content[0].get("text", "") if content else ""
+        verdict("builtin_activation: tools/call ba_active_probe succeeds in the REPL scope",
+                active_text == "ACTIVE" and not reply.get("result", {}).get("isError", False),
+                json.dumps(reply))
 
         # ASYMMETRIC CALLABILITY: the del'd BUILTIN stays callable...
         reply = client.request("tools/call", {"name": "repl_list", "arguments": {}})

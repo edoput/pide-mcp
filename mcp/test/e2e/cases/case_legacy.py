@@ -11,6 +11,8 @@ from mcp.test.e2e.registry import e2e_test
     verifies=("python_e2e#A1",),
     covers=(
         "check_theory#T4",
+        "context_locator#T5",
+        "context_locator#T7",
         "find_theorems#T5",
         "load_theory#T6",
         "planning_gate#T8",
