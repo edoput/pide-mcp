@@ -64,23 +64,29 @@ tools/wt-isabelle-build.sh <name> test -L scala-unit
 tools/wt-isabelle-build.sh <name> teardown    # remove the scratch user dir
 ```
 
-`build`, `scala`, and `test` run `setup` first if the scratch Isabelle user
-directory (`/tmp/isabelle-mcp-worktrees/<name>/user/.isabelle/wt-<name>`)
-doesn't exist yet. Keeping the complete user directory under `/tmp` makes its
-heaps and SQLite session databases writable from an isolated agent worktree;
-the main Isabelle user directory is read only. Inherited `~/` session roots
+`build`, `clean`, `scala`, and `test` run `setup` first if the scratch Isabelle
+user directory (`.claude/worktrees/<name>/.isabelle-worktree/user/.isabelle/wt-<name>`)
+doesn't exist yet. Keeping the complete user directory inside the ignored
+worktree state directory makes its heaps and SQLite session databases writable
+from an isolated agent and visible to the Flatpak launcher; the main Isabelle
+user directory is read only. Inherited `~/` session roots
 are materialized against the real user home during setup, so redirecting
-`USER_HOME` does not redirect AFP or other external session roots. The launcher then invokes
-`isabelle build` under `ISABELLE_IDENTIFIER=wt-<name>` against
-`.claude/worktrees/<name>/mcp/Tools`. Run it from the main checkout
+`USER_HOME` does not redirect AFP or other external session roots. The launcher
+permanently registers only that worktree's `mcp` and `mcp_test` components in
+the private user directory, then invokes `isabelle build` under
+`ISABELLE_IDENTIFIER=wt-<name>`. The worktree's `mcp/ROOTS` discovers its
+`Tools` directory without a second `-d` registration, so the session catalog
+cannot contain the same worktree sessions twice. Run it from the main checkout
 (or with an absolute path) — the script hardcodes the worktree root, so
 a stray `cd` inside the worktree itself doesn't matter, but it must
 still be invoked with `bash`/`sh` finding it via the repo path, not a
 copy.
 
-`scala` and `test` temporarily register only the worktree's `mcp` and
-`mcp_test` components, so they build and execute the worktree jars. The
-collision-safe component list is restored after success or failure. For an
+`scala` and `test` therefore build and execute the worktree jars without
+mutating the component catalog between modes. Each action atomically refreshes
+the same worktree-only catalog, validates an ownership marker before reusing or
+removing state, and rebuilds incomplete setup rather than accepting one heap
+link as completion. For an
 environment where the Flatpak wrapper is unavailable or unreliable, set
 `ISABELLE_TOOL` to the absolute Isabelle launcher executable; the script still
 supplies the same private `USER_HOME` and identifier.
