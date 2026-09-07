@@ -5,9 +5,12 @@ Deterministic contracts for the extracted PIDE bridge boundary.
 
 package isabelle.mcp.pide
 
-import isabelle.{Bytes, Future, Markup, Properties, XML, YXML}
-import isabelle.mcp.{MCP_Session, MCP_Suite, McpBridgeOperations, McpBridgeProfile}
+import isabelle.{Bytes, Future, Markup, Path, Properties, XML, YXML}
+import isabelle.mcp.{MCP_Pide_Payload_Measure, MCP_Session, MCP_Suite, McpBridgeOperations, McpBridgeProfile}
 import isabelle.mcp.control.ManualDeadlineScheduler
+
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 
 
 class MCP_Pide_Bridge_Tests extends MCP_Suite {
@@ -1196,5 +1199,61 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     })
     control.beginStop()
     control.sessionStopped()
+  }
+
+  test("payload measurement records every operation request and reply plus named large reply categories") {
+    val corpus = MCP_Pide_Payload_Measure.corpus
+    assertEquals(corpus.bridge_revision, PideBridgeV1.revision)
+    assertEquals(
+      corpus.cases.filter(_.direction == "request").map(_.operation).toSet,
+      McpBridgeOperations.operationNames)
+    assertEquals(
+      corpus.cases.filter(_.direction == "reply").map(_.operation).toSet,
+      McpBridgeOperations.operationNames)
+    assertEquals(
+      corpus.cases.filter(_.direction == "reply").map(_.category).toSet,
+      Set("operation_reply", "tool_catalog", "theory_source_text", "documentation_text",
+        "structured_prover_output"))
+    assert(corpus.cases.forall(_.bytes > 0))
+  }
+
+  test("payload measurement is deterministic and maxima are derived from cases") {
+    val first = MCP_Pide_Payload_Measure.corpus
+    val second = MCP_Pide_Payload_Measure.corpus
+    assertEquals(MCP_Pide_Payload_Measure.json(first), MCP_Pide_Payload_Measure.json(second))
+    assertEquals(first.request_bytes,
+      first.cases.filter(_.direction == "request").map(_.bytes).max)
+    assertEquals(first.reply_bytes,
+      first.cases.filter(_.direction == "reply").map(_.bytes).max)
+  }
+
+  test("payload measurement rejects incomplete request and reply operation coverage") {
+    val cases = MCP_Pide_Payload_Measure.corpus.cases
+    val missing_request = cases.filterNot(measured =>
+      measured.direction == "request" && measured.operation == "theories")
+    val missing_reply = cases.filterNot(measured =>
+      measured.direction == "reply" && measured.operation == "theories")
+
+    intercept[IllegalArgumentException] { MCP_Pide_Payload_Measure.validate(missing_request) }
+    intercept[IllegalArgumentException] { MCP_Pide_Payload_Measure.validate(missing_reply) }
+  }
+
+  test("payload measurement check mode rejects stale artifacts without rewriting them") {
+    val directory = Files.createTempDirectory("pide-payload-measure-")
+    val artifact = directory.resolve("pide_bridge_payloads.json")
+    val path = Path.explode(artifact.toString)
+    val expected = MCP_Pide_Payload_Measure.json()
+    try {
+      MCP_Pide_Payload_Measure.write(path, expected)
+      MCP_Pide_Payload_Measure.check(path, expected)
+      val stale = expected + "stale\n"
+      Files.writeString(artifact, stale, StandardCharsets.UTF_8)
+      intercept[IllegalArgumentException] { MCP_Pide_Payload_Measure.check(path, expected) }
+      assertEquals(Files.readString(artifact, StandardCharsets.UTF_8), stale)
+    }
+    finally {
+      Files.deleteIfExists(artifact)
+      Files.deleteIfExists(directory)
+    }
   }
 }

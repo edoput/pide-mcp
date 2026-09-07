@@ -322,14 +322,16 @@ not memory allocated inside an operation before it produces its result, nor
 the fixed buffering required by Isabelle to deliver one protocol message.
 
 The envelope-size question remains open until representative tool catalogs,
-source/document reads, and large prover results are measured.  Add a reusable
-`tools/pide-bridge measure` launcher that records the serialized request and
-reply byte counts for all seven operations plus committed large tool-catalog,
-source, documentation, and prover-output fixtures in
-`plans/evidence/pide_bridge_payloads.json`.  Resolve `Q1` by setting each
-default to the next power of two at or above twice the corresponding recorded
-maximum, recording the corpus revision and chosen values in that artifact.
-Implementation must not silently pick a convenient test-only value.
+source/document reads, and large prover results are measured.  The reusable
+`tools/pide-bridge measure` launcher now records the current `PideBridgeV1`
+serialized request and reply byte counts for all seven operations plus
+committed large tool-catalog, source, documentation, and prover-output
+fixtures in `plans/evidence/pide_bridge_payloads.json`; use
+`tools/pide-bridge measure --check` to verify it without rewriting.  `Q1`
+remains OPEN: the next step is to set defaults and enforcement to the next
+power of two at or above twice each recorded maximum, recording the corpus
+revision and chosen values in that artifact.  Implementation must not silently
+pick a convenient test-only value.
 
 implementation checkpoints
 --------------------------

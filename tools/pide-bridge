@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Deterministic PIDE bridge payload measurement launcher.
+set -euo pipefail
+
+launcher_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repository_root=$(dirname -- "$launcher_dir")
+artifact="$repository_root/plans/evidence/pide_bridge_payloads.json"
+
+case "${1:-}" in
+  measure)
+    shift
+    case "${1:-}" in
+      "") tool_args=() ;;
+      --check) tool_args=(-c) ; shift ;;
+      *) echo "usage: tools/pide-bridge measure [--check]" >&2; exit 2 ;;
+    esac
+    [ "$#" -eq 0 ] || { echo "usage: tools/pide-bridge measure [--check]" >&2; exit 2; }
+    if [ -n "${ISABELLE_TOOL:-}" ]; then
+      exec env ISABELLE_MCP_PAYLOAD_ARTIFACT="$artifact" "$ISABELLE_TOOL" \
+        mcp_pide_measure "${tool_args[@]}"
+    fi
+    exec env ISABELLE_MCP_PAYLOAD_ARTIFACT="$artifact" flatpak run \
+      --command=isabelle de.tum.in.isabelle.Isabelle mcp_pide_measure "${tool_args[@]}"
+    ;;
+  *) echo "usage: tools/pide-bridge measure [--check]" >&2; exit 2 ;;
+esac

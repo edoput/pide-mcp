@@ -171,4 +171,5 @@ Usage: isabelle mcp_test [OPTIONS]
 
 class Test_Tools extends Isabelle_Scala_Tools(
   MCP_Test.isabelle_tool,
-  MCP_Theory_Metadata.isabelle_tool)
+  MCP_Theory_Metadata.isabelle_tool,
+  MCP_Pide_Payload_Measure.isabelle_tool)

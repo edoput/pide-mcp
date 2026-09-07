@@ -23,6 +23,7 @@ sources = \
   src/mcp_testing.scala \
   src/mcp_connection_protocol_tests.scala \
   src/mcp_application_tests.scala \
+  src/mcp_pide_payload_measure.scala \
   src/mcp_pide_bridge_tests.scala \
   src/mcp_connection_kernel_tests.scala \
   src/mcp_connection_runtime_tests.scala \
