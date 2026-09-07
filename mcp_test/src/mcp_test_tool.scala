@@ -50,6 +50,7 @@ object MCP_Test {
 
   val pide_suites: List[Class[? <: munit.Suite]] =
     List(
+      classOf[MCP_Boot_Failure_Tests],
       classOf[MCP_Bridge_Tests],
       classOf[MCP_Ir_Bridge_Tests],
       classOf[MCP_Run_Tool_Async_Tests],

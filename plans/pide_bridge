@@ -253,6 +253,13 @@ payloads carry opaque context locators where domain behavior needs a
 Proof.context.  They never carry designation variants or bundle lists; ML owns
 context-locator resolution before invoking the registered domain handler.
 
+The composition root validates the bridge policy and loads the configured
+registry-root theory before constructing `PideBridge`.  Once the Headless
+session has started, every boot failure has exactly one cleanup owner: the raw
+session before bridge construction, or `MCP_Session.stop` afterward.  This
+prevents failed readiness from leaving a transport handler or deadline
+executor attached to an abandoned session.
+
 After the configured target theory is available, Scala sends a hello with a
 bounded startup deadline.  The reply contains the bridge revision and sorted
 registered operation names.  The composition root supplies the required

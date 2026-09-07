@@ -110,9 +110,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
     def deliver(function: String, id: String, text: String,
       properties: List[(String, String)] = Nil): Unit = {
-      val target = synchronized { receiver.getOrElse(fail("transport not started")) }
-      target(PideTransport.Inbound(
+      deliverInbound(PideTransport.Inbound(
         function, ("id" -> id) :: properties, Bytes(text), text))
+    }
+
+    def deliverInbound(message: PideTransport.Inbound): Unit = {
+      val target = synchronized { receiver.getOrElse(fail("transport not started")) }
+      target(message)
     }
   }
 
@@ -189,7 +193,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     operation: String, text: String): Unit = {
     val message = PideBridgeV1.result(
       id, operation, "ok", XML.Encode.string(text))
-    transport.deliver(message.function, id, message.body.text, message.properties)
+    transport.deliver(message.function, id, message.body.text,
+      message.properties.filterNot(_._1 == "id"))
   }
 
   private def deliverHello(transport: ScriptedTransport, id: String,
@@ -198,7 +203,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val message = PideBridgeV1.result(id, "hello", "ok",
       XML.Encode.pair(XML.Encode.string, XML.Encode.list(XML.Encode.string))(
         (revision, operations)))
-    transport.deliver(message.function, id, message.body.text, message.properties)
+    transport.deliver(message.function, id, message.body.text,
+      message.properties.filterNot(_._1 == "id"))
   }
 
   private def deliverDrain(transport: ScriptedTransport, id: String,
@@ -406,6 +412,44 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       case PideBridgeReply.Malformed(Some("outer-id"), Some("outer-operation"), detail) =>
         assert(detail.contains("does not match"))
       case other => fail("expected conflicting correlation to retain the outer owner, got " + other)
+    }
+
+    val valid = PideBridgeV1.result(
+      "owned-id", "op", "ok", XML.Encode.string("result"))
+    List("id", "operation").foreach { missing =>
+      PideBridgeV1.decode(valid.copy(
+        properties = valid.properties.filterNot(_._1 == missing))) match {
+        case PideBridgeReply.Malformed(Some("owned-id"), Some("op"), detail) =>
+          assert(detail.contains("missing outer " + missing))
+        case other => fail("expected missing outer " + missing + " to reject the result, got " + other)
+      }
+    }
+  }
+
+  spec_test("missing outer result identity immediately rejects the inner owner",
+      covers = List("pide_bridge#T2")) {
+    List("id", "operation").foreach { missing =>
+      val deadlines = new ManualDeadlineScheduler
+      val transport = new ScriptedTransport
+      val control = bridge(transport, deadlines = deadlines)
+      val call = Future.fork(control.call(TextOperation("op", "request"), NeverCancelled))
+      transport.awaitSent(1)
+      val id = requestProperty(transport.sent.head, "id")
+      val result = PideBridgeV1.result(id, "op", "ok", XML.Encode.string("wrong"))
+      transport.deliverInbound(result.copy(
+        properties = result.properties.filterNot(_._1 == missing)))
+
+      call.join match {
+        case Left(BridgeFailure.ProtocolError(message)) =>
+          assert(message.contains("missing outer " + missing))
+        case other => fail("expected missing outer identity ProtocolError, got " + other)
+      }
+      transport.awaitSent(2)
+      assertEquals(transport.sent.map(requestProperty(_, "kind")), Vector("call", "cancel"))
+      assertEquals(control.pendingCount, 0)
+      assertEquals(control.deadlineCount, 0)
+      assertEquals(deadlines.pendingCount, 0)
+      control.sessionStopped()
     }
   }
 
@@ -624,7 +668,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       operations = List("tools"))).left.exists(_.message.contains("missing required")))
     assert(rejected((transport, id) => {
       val malformed = PideBridgeV1.result(id, "hello", "ok", XML.Encode.string("not a pair"))
-      transport.deliver(malformed.function, id, malformed.body.text, malformed.properties)
+      transport.deliverInbound(malformed)
     }).left.exists(_.message.contains("malformed hello reply")))
   }
 

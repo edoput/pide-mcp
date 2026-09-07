@@ -363,9 +363,9 @@ object MCP_Session {
   }
 
   /* the boot half (plans/readiness): assumes build() already produced a
-     current heap. Headless.Resources.start_session boots from
-     store.session_heaps -- there is nothing lazy left on the ML side, this
-     is the earliest the prover can come up. */
+     current heap. Validate derived configuration before starting the prover;
+     after start_session returns, every failure path below owns exactly one
+     raw-session or MCP_Session teardown. */
   def boot(
     options: Options,
     session_name: String,
@@ -377,7 +377,6 @@ object MCP_Session {
     val resources =
       Headless.Resources.make(options, session_name, session_dirs = session_dirs,
         progress = progress)
-    val session = resources.start_session(progress = progress)
 
     /* wave 3 shared infrastructure: load_structure + deps + store, compute
        derived maps for library discovery (session_structure umbrella plan) */
@@ -394,41 +393,57 @@ object MCP_Session {
     val bridgeDrainTimeout =
       NonNegativeDuration.checked(
         "mcp_shutdown_drain", options.real("mcp_shutdown_drain")).fold(error, identity)
-    val mcp_session = new MCP_Session(session, session_name, session_dirs, theory,
-      structure, deps, store, bridgeMaxPending, bridgeCallTimeout, bridgeDrainTimeout, bridgeProfile)
 
-    /* theories already in the session image keep their protocol commands
-       (defined at build time, persisted in the heap); anything else is
-       loaded into the running session. The image qualifies theories by
-       their DEFINING session (MCP_Tools lives in the image as
-       "MCP-Tools.MCP_Tools" even when the running session is MCP-HOL),
-       so an unqualified -T must also match by base name -- otherwise the
-       default configuration only works when a -d happens to make the
-       theory file findable on disk. */
-    val loaded =
-      resources.loaded_theory(theory) ||
-      resources.loaded_theory(Long_Name.qualify(session_name, theory)) ||
-      (!Long_Name.is_qualified(theory) &&
-        resources.session_base.loaded_theories.keys.exists(Long_Name.base_name(_) == theory))
-    if (!loaded) {
-      val master_dir =
-        session_dirs.headOption.map(File.standard_path).getOrElse("")
-      val use_result =
-        session.use_theories(List(theory), master_dir = master_dir, progress = progress)
-      if (!use_result.ok) {
-        session.stop()
-        error("Failed to load theory " + quote(theory))
+    val session = resources.start_session(progress = progress)
+    var ownedSession: Option[MCP_Session] = None
+    Exn.capture {
+      /* The configured registry-root theory must exist before PideBridge
+         installs its transport and deadline executor. Image theories are
+         keyed by their defining session, so an unqualified -T also matches a
+         unique loaded base name; only a genuinely absent theory reaches
+         use_theories. A failed load remains on the raw Headless session path,
+         where one stop owns cleanup and no bridge can escape. */
+      val loaded =
+        resources.loaded_theory(theory) ||
+        resources.loaded_theory(Long_Name.qualify(session_name, theory)) ||
+        (!Long_Name.is_qualified(theory) &&
+          resources.session_base.loaded_theories.keys.exists(Long_Name.base_name(_) == theory))
+      if (!loaded) {
+        val master_dir =
+          session_dirs.headOption.map(File.standard_path).getOrElse("")
+        val use_result =
+          session.use_theories(List(theory), master_dir = master_dir, progress = progress)
+        if (!use_result.ok) error("Failed to load theory " + quote(theory))
       }
-    }
 
-    mcp_session.await_bridge_ready(bridgeCallTimeout) match {
-      case Right(()) => ()
-      case Left(failure) =>
-        mcp_session.stop()
-        error("PIDE bridge startup hello failed: " + failure.message)
-    }
+      val mcpSession = new MCP_Session(session, session_name, session_dirs, theory,
+        structure, deps, store, bridgeMaxPending, bridgeCallTimeout,
+        bridgeDrainTimeout, bridgeProfile)
+      ownedSession = Some(mcpSession)
 
-    mcp_session
+      mcpSession.await_bridge_ready(bridgeCallTimeout) match {
+        case Right(()) => ()
+        case Left(failure) =>
+          error("PIDE bridge startup hello failed: " + failure.message)
+      }
+
+      mcpSession
+    } match {
+      case Exn.Res(mcpSession) => mcpSession
+      case Exn.Exn(exn) =>
+        val stopped = Exn.capture {
+          ownedSession match {
+            case Some(mcpSession) => mcpSession.stop()
+            case None => session.stop()
+          }
+        }
+        stopped match {
+          case Exn.Res(_) => ()
+          case Exn.Exn(stopExn) =>
+            Output.warning("Failed to stop abandoned Isabelle session: " + Exn.message(stopExn))
+        }
+        throw exn
+    }
   }
 
   def start(

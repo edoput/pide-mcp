@@ -15,6 +15,32 @@ import isabelle.mcp.application.McpApplication
 import isabelle.mcp.protocol.JsonRpc
 import isabelle.mcp.transport.ScriptedDataPlane
 import java.util.concurrent.{CountDownLatch, TimeUnit}
+import scala.concurrent.duration.{Duration, DurationInt}
+
+
+class MCP_Boot_Failure_Tests extends MCP_Suite {
+  override def munitTimeout: Duration = 10.minutes
+
+  spec_test("failed registry-root loading cleans up before a later boot",
+      covers = List("pide_bridge#T10")) {
+    val options = MCP_Test_Config.options
+    val sessionDirs = MCP_Test_Config.session_dirs
+    MCP_Session.build(options, "MCP-Tools", sessionDirs, MCP_Test_Config.progress)
+
+    val failure = intercept[Throwable] {
+      MCP_Session.boot(options, "MCP-Tools", sessionDirs,
+        "MCP_Missing_Registry_Root_For_Boot_Test", McpBridgeProfile.base,
+        MCP_Test_Config.progress)
+    }
+    assert(Exn.message(failure).contains("MCP_Missing_Registry_Root_For_Boot_Test"),
+      Exn.message(failure))
+
+    val recovered = MCP_Session.boot(options, "MCP-Tools", sessionDirs,
+      "MCP_Tools", McpBridgeProfile.base, MCP_Test_Config.progress)
+    try assertEquals(recovered.bridge_operation_names, McpBridgeOperations.baseOperationNames)
+    finally recovered.stop()
+  }
+}
 
 
 /* Common protocol bridge: typed tool and resource operations over MCP-Tools. */

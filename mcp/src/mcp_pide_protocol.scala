@@ -167,7 +167,8 @@ object PideBridgeV1 extends PideBridgeProtocol {
           }
       }
 
-    correlationConflict match {
+    if (outerId.isEmpty) malformed("missing outer id")
+    else correlationConflict match {
       case Some(detail) => malformed(detail)
       case None => decoded match {
       case Left(detail) => malformed(detail)
@@ -182,6 +183,8 @@ object PideBridgeV1 extends PideBridgeProtocol {
           detail => malformed("invalid drain protocol_error payload: " + detail),
           detail => DrainFailure(callId, ProtocolError(detail)))
       case Right((_, "drain", status)) => malformed("invalid drain acknowledgement status " + status)
+      case Right((_, "result", _)) if outerOperation.isEmpty =>
+        malformed("missing outer operation")
       case Right((callId, "result", status))
           if List("revision", "kind", "id", "operation", "status").forall(exactlyOnce) &&
             properties.length == 5 =>
@@ -229,7 +232,7 @@ object PideBridgeV1 extends PideBridgeProtocol {
       payload))
     PideTransport.Inbound(
       ResultFunction,
-      List(Markup.FUNCTION -> ResultFunction),
+      List(Markup.FUNCTION -> ResultFunction, "id" -> id, "operation" -> operation),
       Bytes(YXML.string_of_body(body)),
       "")
   }
