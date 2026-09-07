@@ -29,7 +29,33 @@ case "$name" in
     ;;
 esac
 
-WT="/home/edoput/repo/isabelle-mcp/.claude/worktrees/$name"
+REPO="/home/edoput/repo/isabelle-mcp"
+WORKTREES="$REPO/.claude/worktrees"
+if [ -L "$WORKTREES" ] || [ ! -d "$WORKTREES" ]; then
+  echo "invalid worktree root: $WORKTREES" >&2
+  exit 1
+fi
+WORKTREES_REAL=$(realpath -e -- "$WORKTREES")
+WT_PATH="$WORKTREES/$name"
+if [ -L "$WT_PATH" ] || [ ! -d "$WT_PATH" ]; then
+  echo "worktree must be a real directory: $WT_PATH" >&2
+  exit 1
+fi
+WT=$(realpath -e -- "$WT_PATH")
+if [ "${WT%/*}" != "$WORKTREES_REAL" ]; then
+  echo "worktree escapes configured root: $WT" >&2
+  exit 1
+fi
+GIT_ROOT=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null) || {
+  echo "not a Git worktree: $WT" >&2
+  exit 1
+}
+GIT_ROOT=$(realpath -e -- "$GIT_ROOT")
+if [ "$GIT_ROOT" != "$WT" ]; then
+  echo "not a Git worktree root: $WT" >&2
+  exit 1
+fi
+
 STATE="$WT/.isabelle-worktree"
 USER_ROOT="$STATE/user"
 S="$USER_ROOT/.isabelle/wt-$name"
@@ -51,23 +77,41 @@ isabelle() {
 
 components_worktree() {
   local next="$S/etc/components.next.$$"
-  grep -v '/isabelle-mcp/mcp\(_test\)\?$' \
-    "$HOME/.isabelle/Isabelle2025-2/etc/components" > "$next"
+  awk -v main_mcp="$REPO/mcp" -v main_test="$REPO/mcp_test" \
+      -v worktree_mcp="$WT/mcp" -v worktree_test="$WT/mcp_test" \
+      '$0 != main_mcp && $0 != main_test &&
+       $0 != worktree_mcp && $0 != worktree_test { print }' \
+      "$HOME/.isabelle/Isabelle2025-2/etc/components" > "$next"
   printf '%s\n%s\n' "$WT/mcp" "$WT/mcp_test" >> "$next"
   mv -f -- "$next" "$S/etc/components"
 }
 
+roots_worktree() {
+  local next="$S/ROOTS.next.$$"
+  sed "s|^~/|$HOME/|" "$HOME/.isabelle/Isabelle2025-2/ROOTS" > "$next"
+  mv -f -- "$next" "$S/ROOTS"
+}
+
+safe_dir() {
+  [ -d "$1" ] && [ ! -L "$1" ]
+}
+
 state_owned() {
   local recorded=""
-  [ ! -L "$STATE" ] && [ -d "$STATE" ] && [ -f "$OWNER" ] &&
+  safe_dir "$STATE" && [ -f "$OWNER" ] && [ ! -L "$OWNER" ] &&
     IFS= read -r recorded < "$OWNER" && [ "$recorded" = "$name" ]
 }
 
 setup_complete() {
-  [ -f "$READY" ] &&
-    [ -e "$H/HOL" ] && [ -e "$H/Pure" ] &&
-    [ -f "$H/log/HOL.db" ] && [ -f "$H/log/Pure.db" ] &&
-    [ -f "$S/etc/components" ] && [ -f "$S/ROOTS" ]
+  [ -f "$READY" ] && [ ! -L "$READY" ] &&
+    safe_dir "$USER_ROOT" && safe_dir "$USER_ROOT/.isabelle" && safe_dir "$S" &&
+    safe_dir "$S/etc" && safe_dir "$S/heaps" && safe_dir "$H" && safe_dir "$H/log" &&
+    [ -L "$H/HOL" ] && [ "$(readlink -- "$H/HOL")" = "$R/HOL" ] &&
+    [ -L "$H/Pure" ] && [ "$(readlink -- "$H/Pure")" = "$R/Pure" ] &&
+    [ -f "$H/log/HOL.db" ] && [ ! -L "$H/log/HOL.db" ] &&
+    cmp -s "$R/log/HOL.db" "$H/log/HOL.db" &&
+    [ -f "$H/log/Pure.db" ] && [ ! -L "$H/log/Pure.db" ] &&
+    cmp -s "$R/log/Pure.db" "$H/log/Pure.db"
 }
 
 setup() {
@@ -92,6 +136,7 @@ setup() {
   fi
   if setup_complete; then
     components_worktree
+    roots_worktree
     echo "wt-$name: scratch Isabelle user dir already set up at $S" >&2
     return 0
   fi
@@ -102,7 +147,7 @@ setup() {
   ln -s "$R/Pure" "$H/Pure"
   cp "$R/log/HOL.db" "$R/log/Pure.db" "$H/log/"
   components_worktree
-  sed "s|^~/|$HOME/|" "$HOME/.isabelle/Isabelle2025-2/ROOTS" > "$S/ROOTS"
+  roots_worktree
   : > "$READY"
   echo "wt-$name: scratch Isabelle user dir ready at $S" >&2
 }
