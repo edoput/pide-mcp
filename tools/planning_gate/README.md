@@ -83,8 +83,13 @@ and exact dirty paths, prepares both structured manifests (using the same
 `theory-catalog` orchestration), checks the static four-producer matrix and
 compatibility spec gate, and executes tooling-unit,
 scala-unit, heap, bridge, ml-unit, and e2e. A dirty tree is a visible local
-warning; a change to HEAD or any tracked file during the invocation is a hard
-failure. The named build, catalog, theory, and test-layer commands remain
+warning; a change to HEAD, tracked content, or the set of dirty paths during
+the invocation is a hard failure. At the end it emits one compact JSON
+execution-evidence record: it contains the exact repository identities, each
+required step result, and canonical before/after digests of the producer
+catalog (including artifacts and test identities). It is accepted only when
+every required step executed and passed, the static closure passed, and both
+identities and catalog digests match. The named build, catalog, theory, and test-layer commands remain
 independently callable for diagnosis, but their success alone is never
 completion evidence.
 

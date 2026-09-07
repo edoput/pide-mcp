@@ -19,6 +19,7 @@ from .commands import (
     run_step,
     run_theory_catalog,
 )
+from .evidence import ExecutionEvidence, producer_catalog_digest, render, repository_identity
 from .document import PlanFormat, load_repository
 from .labels import audit_is_fresh, validate_labels
 from .legacy import compare, read_baseline, require_accepted
@@ -49,10 +50,11 @@ class StaticReport:
 class DoneResult:
     failures: tuple[str, ...]
     executed_steps: tuple[str, ...]
+    evidence: ExecutionEvidence
 
     @property
     def ok(self) -> bool:
-        return not self.failures
+        return self.evidence.accepted
 
 
 def _git(root: Path, *args: str) -> bytes:
@@ -187,6 +189,7 @@ def check_static_closure(root: Path) -> StaticReport:
 StepRunner = Callable[[CommandStep, Path], StepResult]
 Snapshotter = Callable[[Path], RepositorySnapshot]
 StaticChecker = Callable[[Path], StaticReport]
+ProducerDigester = Callable[[Path], str]
 
 
 def run_done(
@@ -196,6 +199,7 @@ def run_done(
     runner: StepRunner | None = None,
     snapshotter: Snapshotter = repository_snapshot,
     static_checker: StaticChecker = check_static_closure,
+    producer_digester: ProducerDigester = producer_catalog_digest,
     stream: TextIO = sys.stdout,
 ) -> DoneResult:
     root = root.resolve()
@@ -226,22 +230,27 @@ def run_done(
 
     failures: list[str] = []
     executed: list[str] = []
+    results: list[StepResult] = []
+    static_closure_passed = False
+    producer_digest_before: str | None = None
 
     def execute(step_id: str) -> bool:
         executed.append(step_id)
         result = runner(steps[step_id], root)
+        results.append(result)
         if not result.ok:
             failures.append(step_id)
         return result.ok
 
     def execute_theory_catalog() -> bool:
-        results = run_theory_catalog(root, steps=steps, runner=runner)
-        invoked = ("theories", "theory-manifest")[: len(results)]
+        catalog_results = run_theory_catalog(root, steps=steps, runner=runner)
+        invoked = ("theories", "theory-manifest")[: len(catalog_results)]
         executed.extend(invoked)
+        results.extend(catalog_results)
         failures.extend(
-            step_id for step_id, result in zip(invoked, results) if not result.ok
+            step_id for step_id, result in zip(invoked, catalog_results) if not result.ok
         )
-        return all(result.ok for result in results)
+        return all(result.ok for result in catalog_results)
 
     preparation_ok = True
     for step_id in preparation:
@@ -262,7 +271,13 @@ def run_done(
             print(f"static closure: FAIL: {ex}", file=stream)
             failures.append("static-closure")
         else:
-            if execute("spec-gate"):
+            static_closure_passed = True
+            try:
+                producer_digest_before = producer_digester(root)
+            except Exception as ex:
+                print(f"producer catalog: FAIL: {ex}", file=stream)
+                failures.append("producer-catalog-before")
+            if producer_digest_before is not None and execute("spec-gate"):
                 for step_id in execution:
                     execute(step_id)
 
@@ -276,13 +291,39 @@ def run_done(
         for path in changed:
             print(f"  {path}", file=stream)
         failures.append("tracked-content-changed")
-    if end.head == start.head and not changed:
+    if end.dirty_paths != start.dirty_paths:
+        print("repository integrity: FAIL: dirty paths changed:", file=stream)
+        for path in end.dirty_paths:
+            print(f"  {path}", file=stream)
+        failures.append("dirty-paths-changed")
+    if end.head == start.head and not changed and end.dirty_paths == start.dirty_paths:
         print("repository integrity: PASS", file=stream)
 
+    try:
+        producer_digest_after = producer_digester(root)
+    except Exception as ex:
+        print(f"producer catalog: FAIL: {ex}", file=stream)
+        producer_digest_after = None
+        failures.append("producer-catalog-after")
+    if producer_digest_before is not None and producer_digest_after != producer_digest_before:
+        print("producer catalog: FAIL: digest changed", file=stream)
+        failures.append("producer-catalog-changed")
+
     unique_failures = tuple(dict.fromkeys(failures))
+    evidence = ExecutionEvidence(
+        required,
+        tuple(results),
+        static_closure_passed,
+        repository_identity(start),
+        repository_identity(end),
+        producer_digest_before,
+        producer_digest_after,
+        unique_failures,
+    )
+    print("execution evidence: " + render(evidence), file=stream)
     print(
-        "planning gate done: " + ("PASS" if not unique_failures else "FAIL: ")
+        "planning gate done: " + ("PASS" if evidence.accepted else "FAIL: ")
         + ("" if not unique_failures else ", ".join(unique_failures)),
         file=stream,
     )
-    return DoneResult(unique_failures, tuple(executed))
+    return DoneResult(unique_failures, tuple(executed), evidence)

@@ -43,6 +43,10 @@ def static_ok(_: Path) -> StaticReport:
     return StaticReport(5, 400, 100)
 
 
+def catalog(_: Path) -> str:
+    return "sha256:catalog"
+
+
 @pytest.mark.parametrize("audit_state", ("missing", "stale"))
 @spec_test(covers=("planning_gate#T9",))
 def test_static_closure_rejects_a_missing_or_stale_legacy_label_audit(
@@ -90,6 +94,7 @@ def test_done_requires_every_fixed_execution_step_after_static_discovery() -> No
         runner=runner,
         snapshotter=lambda _: snapshot(),
         static_checker=static_ok,
+        producer_digester=catalog,
         stream=io.StringIO(),
     )
 
@@ -120,6 +125,7 @@ def test_done_uses_the_shared_theory_catalog_composition(
         runner=lambda step, _: StepResult(step.id, 0, 0),
         snapshotter=lambda _: snapshot(),
         static_checker=static_ok,
+        producer_digester=catalog,
         stream=io.StringIO(),
     )
 
@@ -140,6 +146,7 @@ def test_done_accounts_for_the_invoked_theory_step_not_an_injected_result_label(
         runner=runner,
         snapshotter=lambda _: snapshot(),
         static_checker=static_ok,
+        producer_digester=catalog,
         stream=io.StringIO(),
     )
 
@@ -162,6 +169,7 @@ def test_each_registered_step_failure_makes_done_fail_and_names_the_step(
         runner=runner,
         snapshotter=lambda _: snapshot(),
         static_checker=static_ok,
+        producer_digester=catalog,
         stream=output,
     )
 
@@ -185,6 +193,7 @@ def test_dirty_paths_are_reported_and_tracked_mutation_invalidates_completion() 
         runner=lambda step, _: StepResult(step.id, 0, 0),
         snapshotter=lambda _: next(snapshots),
         static_checker=static_ok,
+        producer_digester=catalog,
         stream=output,
     )
 
@@ -205,6 +214,23 @@ def test_head_change_invalidates_completion_even_when_files_match() -> None:
         runner=lambda step, _: StepResult(step.id, 0, 0),
         snapshotter=lambda _: next(snapshots),
         static_checker=static_ok,
+        producer_digester=catalog,
         stream=io.StringIO(),
     )
     assert "head-changed" in result.failures
+
+
+@spec_test(covers=("planning_gate#T6",))
+def test_failed_scala_layer_blocks_execution_evidence_even_with_a_tagged_test() -> None:
+    result = run_done(
+        ROOT,
+        steps=fixture_steps(),
+        runner=lambda step, _: StepResult(step.id, 1 if step.id == "scala-unit" else 0, 0),
+        snapshotter=lambda _: snapshot(),
+        static_checker=static_ok,
+        producer_digester=catalog,
+        stream=io.StringIO(),
+    )
+    assert not result.ok
+    assert "scala-unit" in result.failures
+    assert not result.evidence.accepted

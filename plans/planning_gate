@@ -21,7 +21,7 @@ invariants:
   - id: INV2
     statement: The completion command executes every registered blocking layer without filters and propagates every failure.
   - id: INV3
-    statement: Completion is invalidated if HEAD or tracked content changes during its invocation.
+    statement: Completion is invalidated if repository identity or the producer catalog changes during its invocation.
 claims:
   - id: A1
     kind: assumption
