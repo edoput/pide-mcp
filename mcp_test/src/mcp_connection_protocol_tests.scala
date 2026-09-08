@@ -7,7 +7,7 @@ package isabelle.mcp
 
 import isabelle._
 import isabelle.mcp.protocol.JsonRpc
-import isabelle.mcp.transport.{DataPlane, ScriptedDataPlane, StdioDataPlane}
+import isabelle.mcp.transport.{DataPlane, InputMessageTooLargeException, ScriptedDataPlane, StdioDataPlane}
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, IOException, OutputStream}
 import java.nio.charset.MalformedInputException
@@ -61,13 +61,34 @@ class MCP_Connection_Protocol_Tests extends MCP_Suite {
     receive_contract(new ScriptedDataPlane(lines))
     val output = new ByteArrayOutputStream
     receive_contract(new StdioDataPlane(
-      new ByteArrayInputStream(lines.mkString("\n").getBytes(StandardCharsets.UTF_8)), output))
+      new ByteArrayInputStream(lines.mkString("\n").getBytes(StandardCharsets.UTF_8)), output, 1024))
   }
 
   test("stdio input is strict UTF-8") {
     val invalid_utf8 = Array[Byte]('{'.toByte, 0xC3.toByte, '}'.toByte, '\n'.toByte)
-    val plane = new StdioDataPlane(new ByteArrayInputStream(invalid_utf8), new ByteArrayOutputStream)
+    val plane = new StdioDataPlane(new ByteArrayInputStream(invalid_utf8), new ByteArrayOutputStream, 1024)
     intercept[MalformedInputException](plane.receive())
+  }
+
+  spec_test("stdio bounds raw UTF-8 bytes and accepts exact LF CRLF EOF frames",
+      covers = List("connection_kernel#T13")) {
+    List("\n", "\r\n", "").foreach { terminator =>
+      val plane = new StdioDataPlane(new ByteArrayInputStream(
+        ("xxxx" + terminator).getBytes(StandardCharsets.UTF_8)), new ByteArrayOutputStream, 4)
+      assertEquals(plane.receive(), Some(JsonRpc.Inbound.Malformed("xxxx")))
+    }
+    val unicode = new StdioDataPlane(new ByteArrayInputStream("λλ\n".getBytes(StandardCharsets.UTF_8)),
+      new ByteArrayOutputStream, 3)
+    intercept[InputMessageTooLargeException](unicode.receive())
+    val blank = new StdioDataPlane(new ByteArrayInputStream("     \n{}\n".getBytes(StandardCharsets.UTF_8)),
+      new ByteArrayOutputStream, 4)
+    intercept[InputMessageTooLargeException](blank.receive())
+  }
+
+  test("oversized frame stops before parsing or later frames") {
+    val plane = new StdioDataPlane(new ByteArrayInputStream("12345\n{}\n".getBytes(StandardCharsets.UTF_8)),
+      new ByteArrayOutputStream, 4)
+    intercept[InputMessageTooLargeException](plane.receive())
   }
 
   test("data planes serialize complete UTF-8 single and batch envelopes") {
@@ -82,7 +103,7 @@ class MCP_Connection_Protocol_Tests extends MCP_Suite {
     assertEquals(scripted.written, List(JsonRpc.render(single), JsonRpc.render(batch)))
 
     val output = new ByteArrayOutputStream
-    val stdio = new StdioDataPlane(new ByteArrayInputStream(Array.emptyByteArray), output)
+    val stdio = new StdioDataPlane(new ByteArrayInputStream(Array.emptyByteArray), output, 1024)
     stdio.send(single)
     stdio.send(batch)
     val lines = output.toString(StandardCharsets.UTF_8).linesIterator.toList
@@ -102,7 +123,7 @@ class MCP_Connection_Protocol_Tests extends MCP_Suite {
     assertEquals(plane.written.toSet, Set(JsonRpc.render(first), JsonRpc.render(second)))
 
     val output = new ByteArrayOutputStream
-    val stdio = new StdioDataPlane(new ByteArrayInputStream(Array.emptyByteArray), output)
+    val stdio = new StdioDataPlane(new ByteArrayInputStream(Array.emptyByteArray), output, 1024)
     concurrent_sends(stdio, first, second)
     val frames = output.toString(StandardCharsets.UTF_8).linesIterator.toList
     assertEquals(frames.length, 2)
@@ -111,7 +132,7 @@ class MCP_Connection_Protocol_Tests extends MCP_Suite {
 
   test("stdio send reports an output failure") {
     val plane = new StdioDataPlane(
-      new ByteArrayInputStream(Array.emptyByteArray), new FailingOutputStream)
+      new ByteArrayInputStream(Array.emptyByteArray), new FailingOutputStream, 1024)
     val outbound = JsonRpc.Outbound.Single(JSON.Object("jsonrpc" -> "2.0", "id" -> 1,
       "result" -> JSON.Object()))
     val error = intercept[IOException](plane.send(outbound))

@@ -7,6 +7,10 @@ record; entries here point at the section that carries the details.
 2026-09-08
 ----------
 
+- Added `mcp_max_input_message_bytes` (default 1 MiB). Production stdio now
+  bounds each raw UTF-8 frame before decoding or JSON-RPC parsing; an oversized
+  frame terminates the connection without emitting a JSON-RPC reply.
+
 - Clarified the PIDE input security boundary. `SessionPideTransport` receives
   `Protocol_Output` only after stock Isabelle has run
   `Prover.message_output -> Byte_Message.read_message -> Bytes.read_stream` on

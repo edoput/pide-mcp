@@ -9,9 +9,7 @@ import isabelle.{Exn, Path, Progress, Time, error, quote}
 import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 import isabelle.mcp.connection._
 import isabelle.mcp.control.{DeadlineScheduler, ScheduledDeadlineScheduler}
-import isabelle.mcp.transport.{BufferedDataPlane, DataPlane, StdioDataPlane}
-
-import java.io.{BufferedReader, PrintStream}
+import isabelle.mcp.transport.{DataPlane, StdioDataPlane}
 
 
 private[mcp] final class ConnectionRuntime private (
@@ -90,13 +88,14 @@ private[mcp] object ConnectionRuntime {
     serverInfo: ConnectionKernel.ServerInfo,
     outputPolicy: McpOutputPolicy
   ): ConnectionRuntime =
-    production(readiness, StdioDataPlane.standard(), progress, sessionName, sessionDirs,
+    production(readiness, StdioDataPlane.standard(
+      ConnectionPolicy.MaxInputMessageBytes.value(policy.framing.maxInputMessageBytes)), progress, sessionName, sessionDirs,
       theory, installChangedSender, onShutdown, policy, serverInfo, outputPolicy)
 
-  def buffered(
+  def streams(
     readiness: () => McpApplication.Readiness,
-    input: BufferedReader,
-    output: PrintStream,
+    input: java.io.InputStream,
+    output: java.io.OutputStream,
     progress: Progress,
     sessionName: String,
     sessionDirs: List[Path],
@@ -107,8 +106,9 @@ private[mcp] object ConnectionRuntime {
     serverInfo: ConnectionKernel.ServerInfo,
     outputPolicy: McpOutputPolicy
   ): ConnectionRuntime =
-    production(readiness, new BufferedDataPlane(input, output), progress, sessionName,
-      sessionDirs, theory, installChangedSender, onShutdown, policy, serverInfo, outputPolicy)
+    production(readiness, new StdioDataPlane(input, output,
+      ConnectionPolicy.MaxInputMessageBytes.value(policy.framing.maxInputMessageBytes)), progress,
+      sessionName, sessionDirs, theory, installChangedSender, onShutdown, policy, serverInfo, outputPolicy)
 
   private def production(
     readiness: () => McpApplication.Readiness,

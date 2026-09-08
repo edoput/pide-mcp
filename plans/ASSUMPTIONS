@@ -38,6 +38,7 @@ connection_kernel#T9      e2e,scala-unit            MCP Ready can coexist with I
 connection_kernel#T10     e2e,scala-unit            Batch fixtures cover mixed requests and notifications, notification-only and empty batches, initialize-in-batch rejection, per-element admission limit
 connection_kernel#T11     bridge,scala-unit         Concurrent tool catalogs, theory catalogs, named-resource catalogs, resource reads, and designation checks retain request-unique routes; distinguishab
 connection_kernel#T12     bridge                    Concurrent load, check, and unload operations are serialized around PIDE document mutation, cancellation while waiting is interruptible, and backend s
+connection_kernel#T13     scala-unit                Stdio framing accepts exact raw-byte limits with LF, CRLF, and EOF terminators, rejects the first excess content byte (including blank input) before U
 context_locator#A1        ml-unit                   Theory_Data attached to a registry-root theory inherits resolver declarations from its theory imports and can safely store the resolver functions need
 context_locator#A2        bridge,ml-unit            A loaded theory can produce a global Proof.context, while a live REPL can expose its latest Proof.context each time its locator is resolved.
 context_locator#A3        bridge                    The server can select and, when necessary, load its configured registry-root theory at startup without rebuilding the Scala implementation.

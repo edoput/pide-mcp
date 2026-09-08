@@ -12,7 +12,7 @@ import isabelle._
 import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 import isabelle.mcp.connection._
 
-import java.io.{BufferedReader, PrintStream}
+import java.io.{InputStream, OutputStream}
 
 object MCP_Server {
   val server_name = "isabelle-mcp"
@@ -1242,13 +1242,11 @@ object MCP_Server {
       case Left(message) => error("mcp_server: invalid output policy: " + message)
     }
 
-  /* Injectable stream seam: the composition root selects its buffered data
-     plane, so tests exercise the same connection assembly rather than a
-     Handler bypass. */
+  /* Injectable byte-stream seam: tests use the production bounded framing. */
   def serve(
     readiness: () => Readiness,
-    in: BufferedReader,
-    out: PrintStream,
+    in: InputStream,
+    out: OutputStream,
     progress: Progress,
     session_name: String,
     session_dirs: List[Path],
@@ -1258,15 +1256,15 @@ object MCP_Server {
     policy: ConnectionPolicy,
     output_policy: McpOutputPolicy
   ): Unit =
-    ConnectionRuntime.buffered(
+    ConnectionRuntime.streams(
       readiness, in, out, progress, session_name, session_dirs, theory,
       install_changed_sender, on_shutdown, policy,
       ConnectionKernel.ServerInfo(server_name, server_version), output_policy).serve()
 
   def serve(
     backend: MCP_Backend,
-    in: BufferedReader,
-    out: PrintStream,
+    in: InputStream,
+    out: OutputStream,
     progress: Progress = new Progress,
     policy: ConnectionPolicy = validatedConnectionPolicy(Options.init())
   ): Unit =

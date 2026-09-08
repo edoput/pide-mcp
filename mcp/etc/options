@@ -6,6 +6,9 @@ public option mcp_shutdown_drain : real = 10.0
 public option mcp_max_in_flight : int = 8
   -- "maximum ordinary requests admitted by one MCP connection"
 
+public option mcp_max_input_message_bytes : int = 1048576
+  -- "maximum raw UTF-8 bytes in one inbound JSON-RPC message"
+
 public option mcp_request_timeout : real = 60.0
   -- "seconds an admitted ordinary MCP request may run before timing out"
 

@@ -11,7 +11,7 @@ import isabelle.mcp.connection._
 import isabelle.mcp.control.ManualDeadlineScheduler
 import isabelle.mcp.transport.{ScriptedDataPlane, StdioDataPlane}
 
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, IOException}
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -20,9 +20,11 @@ class MCP_Connection_Runtime_Tests extends MCP_Suite {
   private def checked[A](value: Either[String, A]): A =
     value.fold(message => fail(message), identity)
 
-  private def policy(maxInFlight: Int = 1): ConnectionPolicy =
+  private def policy(maxInFlight: Int = 1, maxInputMessageBytes: Int = 1048576): ConnectionPolicy =
     ConnectionPolicy(
       revision = ProtocolRevision.V2025_03_26,
+      framing = ConnectionPolicy.FramingPolicy(
+        checked(ConnectionPolicy.MaxInputMessageBytes.checked(maxInputMessageBytes))),
       admission = ConnectionPolicy.AdmissionPolicy(
         checked(ConnectionPolicy.MaxInFlight.checked(maxInFlight))),
       timing = ConnectionPolicy.TimingPolicy(
@@ -85,7 +87,7 @@ class MCP_Connection_Runtime_Tests extends MCP_Suite {
     val bytes = messages.map(JSON.Format.apply).mkString("", "\n", "\n")
       .getBytes(StandardCharsets.UTF_8)
     val output = new ByteArrayOutputStream
-    val plane = new StdioDataPlane(new ByteArrayInputStream(bytes), output)
+    val plane = new StdioDataPlane(new ByteArrayInputStream(bytes), output, 1048576)
     val executions = new AtomicInteger(0)
     val application = new McpApplication {
       def execute(operation: McpApplication.Operation,
@@ -117,6 +119,37 @@ class MCP_Connection_Runtime_Tests extends MCP_Suite {
 
     intercept[RuntimeException] { runtime.serve() }
     assertEquals(shutdowns.get(), 1, "a rejected second client reran backend teardown")
+  }
+
+  spec_test("oversized stdio input closes once without reaching the application",
+      covers = List("connection_kernel#T13")) {
+    val plane = new StdioDataPlane(
+      new ByteArrayInputStream("12345\n{}\n".getBytes(StandardCharsets.UTF_8)),
+      new ByteArrayOutputStream, 4)
+    val executions = new AtomicInteger(0)
+    val shutdowns = new AtomicInteger(0)
+    val runtime = ConnectionRuntime.compose(
+      policy = policy(maxInputMessageBytes = 4),
+      dataPlane = plane,
+      revisionRules = new Mcp2025RevisionRules,
+      scheduler = new DeterministicSequentialScheduler(1),
+      deadlineScheduler = new ManualDeadlineScheduler,
+      application = new McpApplication {
+        def execute(operation: McpApplication.Operation,
+            cancellation: McpApplication.Cancellation) = {
+          executions.incrementAndGet()
+          McpApplication.Outcome.Result(JSON.Object())
+        }
+      },
+      invariantPolicy = _ => RequestRegistry.InvariantViolationPolicy.FailFast,
+      progress = new Progress,
+      installChangedSender = _ => (),
+      onShutdown = () => shutdowns.incrementAndGet(),
+      serverInfo = serverInfo)
+
+    intercept[IOException](runtime.serve())
+    assertEquals(executions.get(), 0)
+    assertEquals(shutdowns.get(), 1)
   }
 
   spec_test("MCP Ready is independent from Isabelle backend readiness",

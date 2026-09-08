@@ -9,7 +9,7 @@ package isabelle.mcp
 
 import isabelle._
 
-import java.io.{BufferedReader, ByteArrayOutputStream, PipedReader, PipedWriter, PrintStream, StringReader}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, PipedInputStream, PipedOutputStream, PrintWriter}
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
@@ -84,8 +84,7 @@ class MCP_Protocol_Tests extends MCP_Suite {
             "arguments" -> JSON.Object("input" -> "hi"))))
       ).mkString("\n")
     val out_stream = new ByteArrayOutputStream
-    val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
-    MCP_Server.serve(backend, new BufferedReader(new StringReader(input)), out)
+    MCP_Server.serve(backend, new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), out_stream)
     assert(backend.stopped, "backend not stopped on EOF")
     val lines = split_lines(out_stream.toString(StandardCharsets.UTF_8)).filter(_.nonEmpty)
     assertEquals(lines.length, 3, "expected 3 reply lines")
@@ -1238,10 +1237,9 @@ class MCP_Tools_Tests extends MCP_Suite {
     }
     val backend = new Notifying_Backend
     val out_stream = new ByteArrayOutputStream
-    val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
-    val writer = new PipedWriter
-    val reader = new BufferedReader(new PipedReader(writer))
-    val (server, server_failure) = start_server { MCP_Server.serve(backend, reader, out) }
+    val reader = new PipedInputStream
+    val writer = new PrintWriter(new PipedOutputStream(reader), true, StandardCharsets.UTF_8)
+    val (server, server_failure) = start_server { MCP_Server.serve(backend, reader, out_stream) }
     try {
       List(
         JSON.Object("jsonrpc" -> "2.0", "id" -> "initialize", "method" -> "initialize",
@@ -1307,11 +1305,10 @@ class MCP_Tools_Tests extends MCP_Suite {
 
     val backend = new Blocking_Backend
     val out_stream = new ByteArrayOutputStream
-    val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
-    val writer = new PipedWriter
-    val reader = new BufferedReader(new PipedReader(writer))
+    val reader = new PipedInputStream
+    val writer = new PrintWriter(new PipedOutputStream(reader), true, StandardCharsets.UTF_8)
     val (server, server_failure) = start_server {
-      MCP_Server.serve(backend, reader, out, policy = serve_policy(2))
+      MCP_Server.serve(backend, reader, out_stream, policy = serve_policy(2))
     }
     def send(json: JSON.T): Unit = writer.write(JSON.Format(json) + "\n")
 
@@ -1374,12 +1371,11 @@ class MCP_Tools_Tests extends MCP_Suite {
 
     val backend = new Blocking_Backend
     val out_stream = new ByteArrayOutputStream
-    val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
-    val writer = new PipedWriter
-    val reader = new BufferedReader(new PipedReader(writer))
+    val reader = new PipedInputStream
+    val writer = new PrintWriter(new PipedOutputStream(reader), true, StandardCharsets.UTF_8)
     val policy = serve_policy(1, requestTimeout = 0.05, shutdownDrain = 1.0)
     val (server, server_failure) = start_server {
-      MCP_Server.serve(backend, reader, out, progress = new Progress, policy = policy)
+      MCP_Server.serve(backend, reader, out_stream, progress = new Progress, policy = policy)
     }
     try {
       List(
@@ -1439,12 +1435,11 @@ class MCP_Tools_Tests extends MCP_Suite {
 
     val backend = new Draining_Backend
     val out_stream = new ByteArrayOutputStream
-    val out = new PrintStream(out_stream, true, StandardCharsets.UTF_8)
-    val writer = new PipedWriter
-    val reader = new BufferedReader(new PipedReader(writer))
+    val reader = new PipedInputStream
+    val writer = new PrintWriter(new PipedOutputStream(reader), true, StandardCharsets.UTF_8)
     val policy = serve_policy(1, requestTimeout = 60.0, shutdownDrain = 1.0)
     val (server, server_failure) = start_server {
-      MCP_Server.serve(backend, reader, out, progress = new Progress, policy = policy)
+      MCP_Server.serve(backend, reader, out_stream, progress = new Progress, policy = policy)
     }
     try {
       List(

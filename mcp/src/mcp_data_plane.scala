@@ -9,8 +9,9 @@ package isabelle.mcp.transport
 
 import isabelle.mcp.protocol.JsonRpc
 
-import java.io.{BufferedReader, IOException, InputStream, InputStreamReader, OutputStream, PrintStream}
-import java.nio.charset.{CodingErrorAction, StandardCharsets}
+import java.io.{BufferedInputStream, IOException, InputStream, OutputStream, PrintStream}
+import java.nio.ByteBuffer
+import java.nio.charset.{CharacterCodingException, CodingErrorAction, StandardCharsets}
 
 
 trait DataPlane {
@@ -22,19 +23,72 @@ trait DataPlane {
 }
 
 
-final class StdioDataPlane(input: InputStream, output: OutputStream) extends DataPlane {
-  private val utf8 =
-    StandardCharsets.UTF_8.newDecoder()
-      .onMalformedInput(CodingErrorAction.REPORT)
-      .onUnmappableCharacter(CodingErrorAction.REPORT)
-  private val reader = new BufferedReader(new InputStreamReader(input, utf8))
+final class InputMessageTooLargeException(val limit: Int)
+  extends IOException("MCP input message exceeds " + limit + " bytes")
+
+
+final class StdioDataPlane(input: InputStream, output: OutputStream, maxInputMessageBytes: Int)
+  extends DataPlane {
+  require(maxInputMessageBytes > 0, "maxInputMessageBytes must be positive")
+
+  private val reader = new BufferedInputStream(input, 8192)
+  /* A connection has exactly one receiver and retains precisely one fixed
+     message buffer.  An oversized frame throws at its first excess byte;
+     it is neither drained nor copied into an unbounded intermediate. */
+  private val bytes = new Array[Byte](maxInputMessageBytes)
   private val writer = new PrintStream(output, true, StandardCharsets.UTF_8)
   private val output_lock = new AnyRef
 
+  private def decode(length: Int): String = {
+    val decoder = StandardCharsets.UTF_8.newDecoder()
+      .onMalformedInput(CodingErrorAction.REPORT)
+      .onUnmappableCharacter(CodingErrorAction.REPORT)
+    try decoder.decode(ByteBuffer.wrap(bytes, 0, length)).toString
+    catch { case exn: CharacterCodingException => throw exn }
+  }
+
+  private def readLine(): Option[String] = {
+    var length = 0
+    var complete = false
+    var pendingCR = false
+    while (!complete) {
+      val next = reader.read()
+      if (next < 0) {
+        if (pendingCR) {
+          if (length == maxInputMessageBytes)
+            throw new InputMessageTooLargeException(maxInputMessageBytes)
+          bytes(length) = '\r'
+          length += 1
+        }
+        if (length == 0) return None
+        complete = true
+      }
+      else if (pendingCR && next == '\n') complete = true
+      else {
+        if (pendingCR) {
+          if (length == maxInputMessageBytes)
+            throw new InputMessageTooLargeException(maxInputMessageBytes)
+          bytes(length) = '\r'
+          length += 1
+          pendingCR = false
+        }
+        if (next == '\n') complete = true
+        else if (next == '\r') pendingCR = true
+        else {
+          if (length == maxInputMessageBytes)
+            throw new InputMessageTooLargeException(maxInputMessageBytes)
+          bytes(length) = next.toByte
+          length += 1
+        }
+      }
+    }
+    Some(decode(length))
+  }
+
   def receive(): Option[JsonRpc.Inbound] = {
-    var line = reader.readLine()
-    while (line != null && line.isBlank) line = reader.readLine()
-    Option(line).map(JsonRpc.decode)
+    var line = readLine()
+    while (line.exists(_.isBlank)) line = readLine()
+    line.map(JsonRpc.decode)
   }
 
   def send(outbound: JsonRpc.Outbound): Unit =
@@ -46,29 +100,9 @@ final class StdioDataPlane(input: InputStream, output: OutputStream) extends Dat
 }
 
 
-/* Keeps the injectable reader/stream test seam on the same DataPlane contract
-   as production stdio.  Blank lines remain transport whitespace, matching the
-   historic serve loop rather than turning into JSON parse-error replies. */
-final class BufferedDataPlane(input: BufferedReader, output: PrintStream) extends DataPlane {
-  private val output_lock = new AnyRef
-
-  def receive(): Option[JsonRpc.Inbound] = {
-    var line = input.readLine()
-    while (line != null && line.isBlank) line = input.readLine()
-    Option(line).map(JsonRpc.decode)
-  }
-
-  def send(outbound: JsonRpc.Outbound): Unit =
-    output_lock.synchronized {
-      output.println(JsonRpc.render(outbound))
-      output.flush()
-      if (output.checkError()) throw new IOException("MCP stream output failed")
-    }
-}
-
-
 object StdioDataPlane {
-  def standard(): StdioDataPlane = new StdioDataPlane(System.in, System.out)
+  def standard(maxInputMessageBytes: Int): StdioDataPlane =
+    new StdioDataPlane(System.in, System.out, maxInputMessageBytes)
 }
 
 

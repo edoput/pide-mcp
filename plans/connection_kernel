@@ -140,6 +140,11 @@ claims:
     state: active
     statement: Concurrent load, check, and unload operations are serialized around PIDE document mutation, cancellation while waiting is interruptible, and backend shutdown joins any admitted direct operation before stopping the Isabelle session.
     layers: [bridge]
+  - id: T13
+    kind: test
+    state: active
+    statement: Stdio framing accepts exact raw-byte limits with LF, CRLF, and EOF terminators, rejects the first excess content byte (including blank input) before UTF-8 or JSON-RPC decoding, preserves strict UTF-8 and bounded blank-line behavior, and closes the runtime once without application execution.
+    layers: [scala-unit]
 spec_refinements:
   - id: R1
     state: folded
@@ -211,7 +216,10 @@ boundaries
 ----------
 
 The data plane converts a byte stream into typed JSON-RPC envelopes and writes
-complete encoded envelopes atomically.  The first implementations are
+complete encoded envelopes atomically. `StdioDataPlane` retains one fixed-size
+input buffer selected from the immutable connection policy and rejects the
+first non-terminator byte beyond `mcp_max_input_message_bytes` before UTF-8 or
+JSON-RPC decoding. The first implementations are
 `StdioDataPlane` for production and `ScriptedDataPlane` for deterministic
 tests.  It does not know lifecycle phases, request limits, tools, or Isabelle.
 HTTP is not part of this work package and would be another adapter rather than
