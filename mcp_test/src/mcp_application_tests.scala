@@ -127,4 +127,20 @@ class MCP_Application_Tests extends MCP_Suite {
     assertEquals(McpOutputPolicy.checked(0), Right(McpOutputPolicy.Disabled))
     assert(McpOutputPolicy.checked(1).exists(_.allowsUntrustedOutput))
   }
+
+  test("Handler's no-options path defaults to disabled untrusted output") {
+    val backend = new Fake_Backend
+    val handler = new MCP_Server.Handler(backend)
+    val listed = handler.handle(request(Some(31), "tools/list", None))
+      .getOrElse(fail("missing tools/list reply"))
+    val names = get_list(listed, "result", "tools").map(get_string(_, "name"))
+    assert(names.contains("shout"), "direct string result was hidden")
+    assert(!names.contains("repl_list"), "output-dependent builtin was advertised")
+
+    val called = handler.handle(request(Some(32), "tools/call",
+      Some(JSON.Object("name" -> "repl_list", "arguments" -> JSON.Object()))))
+      .getOrElse(fail("missing tools/call reply"))
+    assert(JSON.Format(called).contains("mcp_untrusted_output_bytes is 0"))
+    assertEquals(backend.last_ir, None)
+  }
 }

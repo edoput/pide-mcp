@@ -9,6 +9,7 @@ sig
   type handler = Future.group -> theory -> XML.body -> XML.body
 
   val revision: string
+  val minimum_reply_bytes: int
   val register: binding -> handler -> theory -> theory
   val registered: theory -> string list
   val invoke: theory -> string -> Future.group -> XML.body -> XML.body
@@ -24,6 +25,7 @@ type handler = Future.group -> theory -> XML.body -> XML.body;
 type entry = {serial: serial, position: Position.T, handler: handler};
 
 val revision = "1";
+val minimum_reply_bytes = 256;
 val command = "MCP.bridge";
 val result_function = "MCP.bridge_result";
 val request_element = "mcp_bridge";
@@ -106,8 +108,9 @@ fun select_result limit id operation status payload =
 
 fun max_reply_bytes () =
   let val limit = Options.default_int "mcp_bridge_max_reply_bytes" in
-    if limit > 0 then limit
-    else error "mcp_bridge_max_reply_bytes must be positive"
+    if limit >= minimum_reply_bytes then limit
+    else error ("mcp_bridge_max_reply_bytes must be at least " ^
+      string_of_int minimum_reply_bytes)
   end;
 
 fun max_request_bytes () =

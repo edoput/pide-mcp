@@ -346,6 +346,9 @@ val bounded = bounded_output 64 (replicate 100 "abcdefghij");
 \<^assert> (disabled = "");
 \<^assert> (size bounded <= 64);
 \<^assert> (length (space_explode "\n" bounded) <= 4);
+\<^assert> (MCP_Output.group_in_lineage 12 "1/12/123");
+\<^assert> (MCP_Output.group_in_lineage 12 "1/(12)/123");
+\<^assert> (not (MCP_Output.group_in_lineage 12 "1/112/123"));
 \<close>
 
 spec_test \<open>bridge reply size selector preserves exact envelopes and replaces oversized statuses\<close>
@@ -380,6 +383,13 @@ fun check_too_large id operation status payload =
 val _ = check_too_large "size-id" "op" "ok" (XML.Encode.string "payload");
 val _ = check_too_large "size-error" "op" "remote_error"
   (XML.Encode.string "non-ok oversized payload");
+
+val minimum_selected =
+  MCP_Bridge.select_result MCP_Bridge.minimum_reply_bytes
+    "00000000-0000-0000-0000-000000000000:9223372036854775807"
+    "read_resource" "ok" (XML.Encode.string (replicate_string 1024 "x"));
+\<^assert>
+  (Bytes.size (YXML.bytes_of minimum_selected) <= MCP_Bridge.minimum_reply_bytes);
 \<close>
 
 ML \<open>

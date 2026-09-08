@@ -58,7 +58,7 @@ object McpApplication {
     session_name: String,
     session_dirs: List[Path],
     theory: String,
-    outputPolicy: McpOutputPolicy = McpOutputPolicy.TestDefault
+    outputPolicy: McpOutputPolicy
   ): McpApplication =
     new IsabelleMcpApplication(readiness, session_name, session_dirs, theory, outputPolicy)
 }

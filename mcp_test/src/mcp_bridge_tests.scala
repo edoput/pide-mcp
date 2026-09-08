@@ -11,7 +11,7 @@ package isabelle.mcp
 import isabelle._
 import isabelle.mcp.connection._
 import isabelle.mcp.control.ManualDeadlineScheduler
-import isabelle.mcp.application.McpApplication
+import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 import isabelle.mcp.protocol.JsonRpc
 import isabelle.mcp.transport.ScriptedDataPlane
 import java.util.concurrent.{CountDownLatch, TimeUnit}
@@ -750,7 +750,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
         val rules = new Mcp2025RevisionRules
         val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
         val application = McpApplication.isabelle(
-          () => McpApplication.Ready(session), "MCP-HOL", Nil, "MCP_Repl")
+          () => McpApplication.Ready(session), "MCP-HOL", Nil, "MCP_Repl",
+          McpOutputPolicy.TestDefault)
         val kernel = ConnectionKernel(
           policy = policy,
           dataPlane = plane,
@@ -1578,7 +1579,8 @@ class MCP_Run_Tool_Async_Tests
       }
     }
     val application = McpApplication.isabelle(
-      () => McpApplication.Ready(backend), "MCP-Tools-Tests", Nil, "MCP_Tools_Tests")
+      () => McpApplication.Ready(backend), "MCP-Tools-Tests", Nil, "MCP_Tools_Tests",
+      McpOutputPolicy.TestDefault)
     val kernel = ConnectionKernel(
       policy = policy,
       dataPlane = plane,

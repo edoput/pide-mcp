@@ -10,6 +10,7 @@ isabelle mcp_test.
 package isabelle.mcp
 
 import isabelle._
+import isabelle.mcp.application.McpOutputPolicy
 
 import scala.concurrent.duration.{Duration, DurationInt}
 import scala.jdk.CollectionConverters._
@@ -441,14 +442,17 @@ abstract class MCP_Suite extends munit.FunSuite with MCP_Spec_Tests {
   def rpc(method: String, params: JSON.Object.T = null,
       backend: MCP_Backend = new Fake_Backend)(implicit loc: munit.Location): JSON.T = {
     next_id += 1
-    new MCP_Server.Handler(backend)
+    new MCP_Server.Handler(
+      () => MCP_Server.Ready(backend), output_policy = McpOutputPolicy.TestDefault)
       .handle(request(Some(next_id), method, Option(params)))
       .getOrElse(fail("expected a reply to " + method))
   }
 
   def notification(method: String, params: JSON.Object.T = null,
       backend: MCP_Backend = new Fake_Backend): Option[JSON.T] =
-    new MCP_Server.Handler(backend).handle(request(None, method, Option(params)))
+    new MCP_Server.Handler(
+      () => MCP_Server.Ready(backend), output_policy = McpOutputPolicy.TestDefault)
+      .handle(request(None, method, Option(params)))
 
   /* Like rpc(), but against a handler the caller owns. Context-locator
      selection is per-connection state, so its tests must reuse one handler. */

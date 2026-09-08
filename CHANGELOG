@@ -11,7 +11,9 @@ record; entries here point at the section that carries the details.
   zero: output-dependent ML tools and IR-backed builtins are hidden and rejected
   before execution. Positive values bound each call's captured output with a
   per-event charge, so both retained bytes and tiny-message count are bounded;
-  typed tool returns remain under the independent bridge reply limit.
+  typed tool returns remain under the independent bridge reply limit. Every
+  server/application assembly path now selects this policy explicitly or uses
+  the disabled default; the permissive test fixture cannot leak into production.
 
 - Added the public `mcp_bridge_max_request_bytes` startup option (default 256 KiB,
   measured in bytes). Scala rejects oversized serialized request envelopes before
@@ -20,7 +22,8 @@ record; entries here point at the section that carries the details.
 - Added the public `mcp_bridge_max_reply_bytes` startup option (default 1 MiB,
   measured in bytes). Oversized serialized PIDE bridge result envelopes now
   terminate their correlated call with a typed reply-size failure before the
-  receiving operation decoder runs.
+  receiving operation decoder runs. Limits below the 256-byte correlated
+  failure-envelope floor are rejected during configuration.
 
 2026-08-27 (planning completion gate and explicit test layers)
 --------------------------------------------------------------------------

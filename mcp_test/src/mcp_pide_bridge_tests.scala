@@ -243,7 +243,13 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
         "callTimeout must be finite and positive",
         "drainTimeout must be finite and non-negative",
         "maxRequestBytes must be positive",
-        "maxReplyBytes must be positive"))
+        "maxReplyBytes must be at least " + PideBridgePolicy.MinimumReplyBytes))
+  }
+
+  test("reply policy rejects limits too small for the correlated size failure") {
+    val minimum = PideBridgePolicy.MinimumReplyBytes
+    assert(PideBridgePolicy.checkedReplyBytes(minimum - 1).isLeft)
+    assert(PideBridgePolicy.checkedReplyBytes(minimum).isRight)
   }
 
   spec_test("request size admits the exact serialized envelope and rejects one byte over",

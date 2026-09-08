@@ -391,6 +391,7 @@ ML \<open>
 signature MCP_OUTPUT =
 sig
   val install_wrappers: unit -> unit
+  val group_in_lineage: int -> string -> bool
   val register: Future.group -> (unit -> string)
   val with_limit: Future.group -> int -> (unit -> 'a) -> 'a
   val captured: (unit -> 'a) -> 'a Exn.result * string
@@ -416,7 +417,17 @@ val buffers: (int * buffer) list Synchronized.var =
 val limits: (int * int) list Synchronized.var =
   Synchronized.var "MCP_Output.limits" [];
 
-(*walk the worker's group ancestry, as ir/ml_repl.ML does*)
+(*Task_Queue exposes ancestry only as slash-separated group ids, with
+  cancelled ids parenthesized. Match whole components: a substring test would
+  confuse e.g. group 12 with unrelated group 112 and could route trusted
+  publisher output into another call's bounded buffer.*)
+fun group_in_lineage gid lineage =
+  let val raw = string_of_int gid in
+    exists (fn component => component = raw orelse component = "(" ^ raw ^ ")")
+      (space_explode "/" lineage)
+  end;
+
+(*walk the worker's group ancestry*)
 fun find_in_worker entries =
   (case Future.worker_group () of
     NONE => NONE
@@ -425,7 +436,7 @@ fun find_in_worker entries =
         val gs = Task_Queue.str_of_groups group;
         fun lookup [] = NONE
           | lookup ((gid, value) :: rest) =
-              if String.isSubstring (string_of_int gid) gs
+              if group_in_lineage gid gs
               then SOME value else lookup rest;
       in lookup entries end);
 

@@ -55,7 +55,7 @@ claims:
     category: design
   - id: D6
     kind: design
-    statement: Request and reply limits count the raw bytes of the sole serialized YXML envelope; request size is checked before transport send and ML decode, and reply size is checked before ML publication and again before Scala decode.
+    statement: Request and reply limits count the raw bytes of the sole serialized YXML envelope; request size is checked before transport send and ML decode, reply size is checked before ML publication and again before Scala decode, and a reply limit below the 256-byte correlated-failure envelope floor is invalid configuration.
     category: design
   - id: D7
     kind: design
@@ -71,7 +71,7 @@ claims:
     category: design
   - id: D10
     kind: design
-    statement: mcp_untrusted_output_bytes is a non-negative per-call budget independent of request and reply envelopes; zero disables output-dependent tools before execution, while a positive value bounds captured output bytes and charges every output event so a stream of empty or tiny messages cannot retain an unbounded list.
+    statement: mcp_untrusted_output_bytes is a non-negative per-call budget independent of request and reply envelopes; zero disables output-dependent tools before execution, while a positive value bounds captured output bytes and charges every output event so a stream of empty or tiny messages cannot retain an unbounded list; Future-group routing matches complete ancestry components rather than ambiguous numeric substrings.
     category: design
   - id: D11
     kind: design
@@ -357,7 +357,9 @@ Scala checks requests before send and ML checks them again before byte-to-string
 conversion and decode.  ML checks encoded successful replies before
 `Output.protocol_message` and emits a small correlated `too_large` envelope
 instead; Scala checks all received bytes again before envelope or domain
-decode.  These limits bound bridge envelopes, not memory allocated inside an
+decode.  A reply budget below 256 bytes is rejected before the session starts,
+so the correlated `too_large` envelope itself fits the minimum supported
+budget.  These limits bound bridge envelopes, not memory allocated inside an
 operation before it produces its result.
 
 Untrusted output has its own public option, `mcp_untrusted_output_bytes`, and
@@ -369,7 +371,10 @@ each captured event pays a fixed accounting charge plus its retained bytes and
 separator, so both payload memory and the number of retained tiny events are
 bounded.  After exhaustion, later output is suppressed.  Direct `string_fun`
 results remain available at zero and are governed by `maxReplyBytes`, keeping
-tool-response allocation distinct from captured-output allocation.
+tool-response allocation distinct from captured-output allocation.  All
+composition entry points require an explicit policy; legacy no-options handler
+construction selects `Disabled`, while the permissive fixture remains
+package-private and explicit in tests.
 
 The current Isabelle `Prover.message_output` calls the stock
 `Byte_Message.read_message` before `SessionPideTransport` sees a frame.  Thus

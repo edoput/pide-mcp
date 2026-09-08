@@ -388,7 +388,7 @@ object MCP_Session {
       PideBridgePolicy.MaxPending.checked(options.int("mcp_max_in_flight"))
         .fold(error, identity)
     val bridgeMaxReplyBytes =
-      PideBridgePolicy.PositiveBytes.checked(
+      PideBridgePolicy.checkedReplyBytes(
         "mcp_bridge_max_reply_bytes", options.int("mcp_bridge_max_reply_bytes").toLong)
         .fold(error, identity)
     val bridgeMaxRequestBytes =

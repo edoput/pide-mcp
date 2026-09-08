@@ -119,6 +119,8 @@ final case class PideBridgePolicy(
 
 
 object PideBridgePolicy {
+  val MinimumReplyBytes: Long = 256L
+
   opaque type MaxPending = Int
   type PositiveDuration = ControlPositiveDuration
   type NonNegativeDuration = ControlNonNegativeDuration
@@ -141,6 +143,14 @@ object PideBridgePolicy {
     def value(value: PositiveBytes): Long = value
   }
 
+  def checkedReplyBytes(field: String, value: Long): Either[String, PositiveBytes] =
+    if (value < MinimumReplyBytes)
+      Left(field + " must be at least " + MinimumReplyBytes)
+    else PositiveBytes.checked(field, value)
+
+  def checkedReplyBytes(value: Long): Either[String, PositiveBytes] =
+    checkedReplyBytes("maxReplyBytes", value)
+
   final case class Timing(
     callTimeout: PositiveDuration,
     drainTimeout: NonNegativeDuration
@@ -162,7 +172,7 @@ object PideBridgePolicy {
     val call = PositiveDuration.checked("callTimeout", callTimeoutSeconds)
     val drain = NonNegativeDuration.checked("drainTimeout", drainTimeoutSeconds)
     val request = PositiveBytes.checked("maxRequestBytes", maxRequestBytes)
-    val reply = PositiveBytes.checked("maxReplyBytes", maxReplyBytes)
+    val reply = checkedReplyBytes(maxReplyBytes)
     val errors = List(pending, call, drain, request, reply).collect { case Left(error) => error }
 
     if (errors.nonEmpty) Left(errors)

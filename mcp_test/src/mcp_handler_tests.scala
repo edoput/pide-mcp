@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
-import isabelle.mcp.application.McpApplication
+import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 import isabelle.mcp.connection.{ConnectionKernel, ConnectionPolicy}
 
 import scala.concurrent.duration.DurationInt
@@ -116,12 +116,13 @@ class MCP_Readiness_Tests extends MCP_Suite {
     get(rpc_on(handler, "initialize"), "result", "capabilities", "tools")
   }
 
-  spec_test("tools/list answers while not ready with exactly the static builtin table",
+  spec_test("tools/list while not ready exposes exactly the statically safe builtin table",
       verifies = List("readiness#A2"), covers = List("readiness#T2")) {
     val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
     val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
     assertEquals(tools.map(t => get_string(t, "name")).toSet,
-      MCP_Server.all_builtin_names.toSet)
+      MCP_Server.builtins.filterNot(_.requires_untrusted_output).map(_.name).toSet ++
+        MCP_Server.tool_scope_builtin_names)
     /* Not_Ready carries no backend at all (case class Not_Ready(progress:
        String)) -- ml_tools() being "not called" is not just an
        assertion, it is structurally impossible here. */
@@ -148,7 +149,8 @@ class MCP_Readiness_Tests extends MCP_Suite {
   spec_test("Handler holds no cached backend -- a readiness transition is observed immediately",
       verifies = List("readiness#A5"), covers = List("readiness#T5")) {
     var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building")
-    val handler = new MCP_Server.Handler(() => state)
+    val handler = new MCP_Server.Handler(
+      () => state, output_policy = McpOutputPolicy.TestDefault)
     assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
     state = MCP_Server.Ready(new Fake_Backend)
     assert_no_error(call_tool_on(handler, "repl_list", JSON.Object()))
@@ -271,7 +273,8 @@ class MCP_Tools_Tests extends MCP_Suite {
         throw MCP_Session.BridgeTimedOut(5.seconds)
     }
     val application = McpApplication.isabelle(
-      () => McpApplication.Ready(new Timeout_Backend), "TEST", Nil, "MCP_Tools")
+      () => McpApplication.Ready(new Timeout_Backend), "TEST", Nil, "MCP_Tools",
+      McpOutputPolicy.TestDefault)
     assertEquals(
       application.execute(
         McpApplication.Operation.ToolsCall("shout", JSON.Object("input" -> "hello")),
@@ -347,7 +350,8 @@ class MCP_Tools_Tests extends MCP_Suite {
     }
     val backend = new Cancellable_Backend
     val application = McpApplication.isabelle(
-      () => McpApplication.Ready(backend), "TEST", Nil, "MCP_Repl")
+      () => McpApplication.Ready(backend), "TEST", Nil, "MCP_Repl",
+      McpOutputPolicy.TestDefault)
     application.execute(
       McpApplication.Operation.ToolsCall("shout", JSON.Object("input" -> "hello")),
       cancellation)

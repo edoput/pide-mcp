@@ -72,7 +72,7 @@ private[mcp] object ConnectionRuntime {
     sessionName: String,
     sessionDirs: List[Path],
     theory: String,
-    outputPolicy: McpOutputPolicy = McpOutputPolicy.TestDefault
+    outputPolicy: McpOutputPolicy
   ): McpApplication =
     McpApplication.isabelle(readiness, sessionName, sessionDirs, theory, outputPolicy)
 
@@ -88,7 +88,7 @@ private[mcp] object ConnectionRuntime {
     onShutdown: () => Unit,
     policy: ConnectionPolicy,
     serverInfo: ConnectionKernel.ServerInfo,
-    outputPolicy: McpOutputPolicy = McpOutputPolicy.TestDefault
+    outputPolicy: McpOutputPolicy
   ): ConnectionRuntime =
     production(readiness, StdioDataPlane.standard(), progress, sessionName, sessionDirs,
       theory, installChangedSender, onShutdown, policy, serverInfo, outputPolicy)
@@ -105,7 +105,7 @@ private[mcp] object ConnectionRuntime {
     onShutdown: () => Unit,
     policy: ConnectionPolicy,
     serverInfo: ConnectionKernel.ServerInfo,
-    outputPolicy: McpOutputPolicy = McpOutputPolicy.TestDefault
+    outputPolicy: McpOutputPolicy
   ): ConnectionRuntime =
     production(readiness, new BufferedDataPlane(input, output), progress, sessionName,
       sessionDirs, theory, installChangedSender, onShutdown, policy, serverInfo, outputPolicy)

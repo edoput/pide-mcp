@@ -1131,7 +1131,8 @@ object MCP_Server {
     session_name: String = "",
     session_dirs: List[Path] = Nil,
     theory: String = "",
-    application: Option[McpApplication] = None
+    application: Option[McpApplication] = None,
+    output_policy: McpOutputPolicy = McpOutputPolicy.Disabled
   ) {
     /* pre-readiness Handler(backend) construction (every existing test and
        serve() call site): the backend is live from the start, so this is
@@ -1142,7 +1143,8 @@ object MCP_Server {
 
     private val mcp_application =
       application.getOrElse(
-        ConnectionRuntime.isabelleApplication(readiness, session_name, session_dirs, theory))
+        ConnectionRuntime.isabelleApplication(
+          readiness, session_name, session_dirs, theory, output_policy))
 
     private def application_response(
       id: JSON.T, outcome: McpApplication.Outcome): Option[JSON.Object.T] =
@@ -1253,12 +1255,13 @@ object MCP_Server {
     theory: String,
     install_changed_sender: (String => Unit) => Unit,
     on_shutdown: () => Unit,
-    policy: ConnectionPolicy
+    policy: ConnectionPolicy,
+    output_policy: McpOutputPolicy
   ): Unit =
     ConnectionRuntime.buffered(
       readiness, in, out, progress, session_name, session_dirs, theory,
       install_changed_sender, on_shutdown, policy,
-      ConnectionKernel.ServerInfo(server_name, server_version)).serve()
+      ConnectionKernel.ServerInfo(server_name, server_version), output_policy).serve()
 
   def serve(
     backend: MCP_Backend,
@@ -1271,7 +1274,8 @@ object MCP_Server {
       session_name = "", session_dirs = Nil, theory = "",
       install_changed_sender = backend.set_changed_handler,
       on_shutdown = () => backend.stop(),
-      policy = policy)
+      policy = policy,
+      output_policy = McpOutputPolicy.Disabled)
 
 
   /* stdio server on a headless PIDE session (plans/readiness, spec

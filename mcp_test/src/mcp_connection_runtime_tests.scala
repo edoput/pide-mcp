@@ -6,7 +6,7 @@ Composition-root and independent-readiness contracts for one MCP connection.
 package isabelle.mcp
 
 import isabelle._
-import isabelle.mcp.application.McpApplication
+import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 import isabelle.mcp.connection._
 import isabelle.mcp.control.ManualDeadlineScheduler
 import isabelle.mcp.transport.{ScriptedDataPlane, StdioDataPlane}
@@ -122,7 +122,8 @@ class MCP_Connection_Runtime_Tests extends MCP_Suite {
   spec_test("MCP Ready is independent from Isabelle backend readiness",
       covers = List("connection_kernel#T9")) {
     var readiness: McpApplication.Readiness = McpApplication.Not_Ready("building MCP-HOL")
-    val application = McpApplication.isabelle(() => readiness, "MCP-HOL", Nil, "MCP_Repl")
+    val application = McpApplication.isabelle(
+      () => readiness, "MCP-HOL", Nil, "MCP_Repl", McpOutputPolicy.TestDefault)
     val plane = new ScriptedDataPlane(Nil)
     val connection = ConnectionKernel(
       policy = policy(),
