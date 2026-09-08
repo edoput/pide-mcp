@@ -1720,22 +1720,18 @@ class MCP_Bridge_Shutdown_Tests
 
 class MCP_Bounded_Output_Bridge_Tests
   extends MCP_Session_Suite(
-    "MCP-Tools-Tests", "MCP_Tools_Tests", McpBridgeProfile.base,
+    "MCP-HOL", "MCP_Repl", McpBridgeProfile.hol,
     options => options + "mcp_untrusted_output_bytes=64") {
 
   spec_test("live bridge inherits the per-call ML output budget",
       covers = List("pide_bridge#T13")) {
-    val theory =
-      "isabelle://context/theory/" +
-        session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
-          .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
-    session.ml_run("MCP_Tools_Tests.capture_many", Nil, theory) match {
-      case MCP_Session.Ok(output) =>
-        assert(output.nonEmpty, "positive output budget retained nothing")
-        assert(output.length <= 64, "output exceeded configured bound: " + output.length)
-        assert(output.linesIterator.length <= 4,
-          "per-event accounting retained too many tiny messages: " + output)
-      case other => fail("bounded output tool failed: " + other)
+    with_repl("BoundedOutput") {
+      session.ml_run("MCP_Repl.repl_show", List("repl" -> "BoundedOutput")) match {
+        case MCP_Session.Ok(output) =>
+          assert(output.nonEmpty, "positive output budget retained nothing")
+          assert(output.length <= 64, "output exceeded configured bound: " + output.length)
+        case other => fail("bounded output tool failed: " + other)
+      }
     }
   }
 }

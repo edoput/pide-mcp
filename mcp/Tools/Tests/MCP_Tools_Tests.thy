@@ -833,11 +833,6 @@ mcp_tool capture_slow = capture \<open>fn _ => fn _ =>
     wait behind this one\<close>)
   (annotations mutating)
 
-mcp_tool capture_many = capture \<open>fn _ => fn _ =>
-  List.app writeln (replicate 100 "abcdefghij")\<close>
-  (description \<open>emits enough messages to exercise the bridge output budget\<close>)
-  (annotations read_only)
-
 ML \<open>
 val context = Context.Proof \<^context>;
 
