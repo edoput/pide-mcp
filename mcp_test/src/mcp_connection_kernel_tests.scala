@@ -12,7 +12,7 @@ import isabelle.mcp.application.McpApplication
 import isabelle.mcp.connection._
 import isabelle.mcp.control.{DeadlineScheduler, ManualDeadlineScheduler}
 import isabelle.mcp.protocol.JsonRpc
-import isabelle.mcp.transport.{DataPlane, ScriptedDataPlane, StdioDataPlane}
+import isabelle.mcp.transport.{DataPlane, McpInputPolicy, ScriptedDataPlane, StdioDataPlane}
 import scala.concurrent.duration.DurationInt
 
 
@@ -40,8 +40,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
   ): ConnectionPolicy =
     ConnectionPolicy(
       revision = ProtocolRevision.V2025_03_26,
-      framing = ConnectionPolicy.FramingPolicy(
-        checked(ConnectionPolicy.MaxInputMessageBytes.checked(1048576))),
+      input = checked(McpInputPolicy.checked(1048576)),
       admission = ConnectionPolicy.AdmissionPolicy(
         maxInFlight = checked(ConnectionPolicy.MaxInFlight.checked(maxInFlight))),
       timing = ConnectionPolicy.TimingPolicy(
@@ -110,9 +109,9 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
   spec_test("connection policy validates leaves and snapshots options once",
       verifies = List("connection_kernel#A1")) {
     assertEquals(ConnectionPolicy.MaxInFlight.checked(0), Left("maxInFlight must be positive"))
-    assertEquals(ConnectionPolicy.MaxInputMessageBytes.checked(0),
+    assertEquals(McpInputPolicy.checked(0),
       Left("maxInputMessageBytes must be positive"))
-    assertEquals(ConnectionPolicy.MaxInputMessageBytes.checked(-1),
+    assertEquals(McpInputPolicy.checked(-1),
       Left("maxInputMessageBytes must be positive"))
     assertEquals(ConnectionPolicy.RequestTimeout.checked(0.0),
       Left("requestTimeout must be finite and positive"))
@@ -126,6 +125,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
       Left("maxInputMessageBytes must be positive"))
     assertEquals(ConnectionPolicy.fromOptions(initial + "mcp_max_input_message_bytes=-1"),
       Left("maxInputMessageBytes must be positive"))
+    assertEquals(McpInputPolicy.MaxMessageBytes.value(snapshot.input.maxMessageBytes), 1048576)
     val changed = initial + "mcp_max_in_flight=9"
     val kernel0 = ConnectionKernel(
       policy = snapshot,
@@ -328,8 +328,9 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     val deadlines = new ManualDeadlineScheduler
     val connection = ConnectionKernel(
       policy = policy(1, shutdownDrain = 1.0),
-      dataPlane = new StdioDataPlane(
-        new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), output, 1048576),
+      dataPlane = StdioDataPlane.open(
+        new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), output,
+        checked(McpInputPolicy.checked(1048576))),
       revisionRules = rules,
       scheduler = scheduler,
       deadlineScheduler = deadlines,

@@ -20,6 +20,55 @@ trait DataPlane {
      newline-delimited envelope before another call can begin. */
   def receive(): Option[JsonRpc.Inbound]
   def send(outbound: JsonRpc.Outbound): Unit
+  /* Releases data-plane-owned resources only.  Implementations must not close
+     caller-owned input or output streams. */
+  def close(): Unit = ()
+}
+
+
+/** Immutable limits for one MCP input data plane.  New parsing limits belong
+  * here instead of becoming more constructor arguments on each adapter.
+  */
+final case class McpInputPolicy private (maxMessageBytes: McpInputPolicy.MaxMessageBytes)
+
+object McpInputPolicy {
+  opaque type MaxMessageBytes = Int
+
+  object MaxMessageBytes {
+    def checked(value: Int): Either[String, MaxMessageBytes] =
+      if (value > 0) Right(value) else Left("maxInputMessageBytes must be positive")
+
+    def value(value: MaxMessageBytes): Int = value
+  }
+
+  def checked(maxInputMessageBytes: Int): Either[String, McpInputPolicy] =
+    MaxMessageBytes.checked(maxInputMessageBytes).map(McpInputPolicy(_))
+}
+
+
+/** Exclusive ownership of one reusable MCP input-message buffer. */
+trait InputBufferLease extends AutoCloseable {
+  def bytes: Array[Byte]
+  def close(): Unit
+}
+
+
+/** Allocation boundary for a future bounded pool.  A provider may return a
+  * larger buffer, but never a smaller one; framing still uses the policy size.
+  */
+trait InputBufferProvider {
+  def acquire(maximum: McpInputPolicy.MaxMessageBytes): InputBufferLease
+}
+
+
+object InputBufferProvider {
+  val unpooled: InputBufferProvider = new InputBufferProvider {
+    def acquire(maximum: McpInputPolicy.MaxMessageBytes): InputBufferLease =
+      new InputBufferLease {
+        val bytes = new Array[Byte](McpInputPolicy.MaxMessageBytes.value(maximum))
+        def close(): Unit = ()
+      }
+  }
 }
 
 
@@ -27,17 +76,24 @@ final class InputMessageTooLargeException(val limit: Int)
   extends IOException("MCP input message exceeds " + limit + " bytes")
 
 
-final class StdioDataPlane(input: InputStream, output: OutputStream, maxInputMessageBytes: Int)
+final class StdioDataPlane private (
+  input: InputStream,
+  output: OutputStream,
+  policy: McpInputPolicy,
+  bytes: Array[Byte],
+  lease: InputBufferLease
+)
   extends DataPlane {
-  require(maxInputMessageBytes > 0, "maxInputMessageBytes must be positive")
+  private val maxInputMessageBytes = McpInputPolicy.MaxMessageBytes.value(policy.maxMessageBytes)
 
   private val reader = new BufferedInputStream(input, 8192)
   /* A connection has exactly one receiver and retains precisely one fixed
      message buffer.  An oversized frame throws at its first excess byte;
      it is neither drained nor copied into an unbounded intermediate. */
-  private val bytes = new Array[Byte](maxInputMessageBytes)
   private val writer = new PrintStream(output, true, StandardCharsets.UTF_8)
+  private val input_lock = new AnyRef
   private val output_lock = new AnyRef
+  private var lease_open = true
 
   private def decode(length: Int): String = {
     val decoder = StandardCharsets.UTF_8.newDecoder()
@@ -85,11 +141,13 @@ final class StdioDataPlane(input: InputStream, output: OutputStream, maxInputMes
     Some(decode(length))
   }
 
-  def receive(): Option[JsonRpc.Inbound] = {
-    var line = readLine()
-    while (line.exists(_.isBlank)) line = readLine()
-    line.map(JsonRpc.decode)
-  }
+  def receive(): Option[JsonRpc.Inbound] =
+    input_lock.synchronized {
+      if (!lease_open) throw new IOException("MCP stdio data plane is closed")
+      var line = readLine()
+      while (line.exists(_.isBlank)) line = readLine()
+      line.map(JsonRpc.decode)
+    }
 
   def send(outbound: JsonRpc.Outbound): Unit =
     output_lock.synchronized {
@@ -97,12 +155,45 @@ final class StdioDataPlane(input: InputStream, output: OutputStream, maxInputMes
       writer.flush()
       if (writer.checkError()) throw new IOException("MCP stdio output failed")
     }
+
+  override def close(): Unit =
+    input_lock.synchronized {
+      if (lease_open) {
+        lease_open = false
+        lease.close()
+      }
+    }
 }
 
 
 object StdioDataPlane {
-  def standard(maxInputMessageBytes: Int): StdioDataPlane =
-    new StdioDataPlane(System.in, System.out, maxInputMessageBytes)
+  final case class Resources(inputBuffers: InputBufferProvider = InputBufferProvider.unpooled)
+
+  object Resources {
+    val default: Resources = Resources()
+  }
+
+  def open(input: InputStream, output: OutputStream, policy: McpInputPolicy,
+      resources: Resources = Resources.default): StdioDataPlane = {
+    val lease = resources.inputBuffers.acquire(policy.maxMessageBytes)
+    try {
+      val bytes = lease.bytes
+      val required = McpInputPolicy.MaxMessageBytes.value(policy.maxMessageBytes)
+      require(bytes.length >= required,
+        "input buffer has " + bytes.length + " bytes; policy requires " + required)
+      new StdioDataPlane(input, output, policy, bytes, lease)
+    }
+    catch {
+      case exn: Throwable =>
+        try lease.close()
+        catch { case closeExn: Throwable => exn.addSuppressed(closeExn) }
+        throw exn
+    }
+  }
+
+  def standard(policy: McpInputPolicy,
+      resources: Resources = Resources.default): StdioDataPlane =
+    open(System.in, System.out, policy, resources)
 }
 
 

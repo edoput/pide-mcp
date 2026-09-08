@@ -9,7 +9,8 @@ import isabelle._
 import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 import isabelle.mcp.connection._
 import isabelle.mcp.control.ManualDeadlineScheduler
-import isabelle.mcp.transport.{ScriptedDataPlane, StdioDataPlane}
+import isabelle.mcp.transport.{InputBufferLease, InputBufferProvider,
+  InputMessageTooLargeException, McpInputPolicy, ScriptedDataPlane, StdioDataPlane}
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, IOException}
 import java.nio.charset.StandardCharsets
@@ -23,13 +24,38 @@ class MCP_Connection_Runtime_Tests extends MCP_Suite {
   private def policy(maxInFlight: Int = 1, maxInputMessageBytes: Int = 1048576): ConnectionPolicy =
     ConnectionPolicy(
       revision = ProtocolRevision.V2025_03_26,
-      framing = ConnectionPolicy.FramingPolicy(
-        checked(ConnectionPolicy.MaxInputMessageBytes.checked(maxInputMessageBytes))),
+      input = checked(McpInputPolicy.checked(maxInputMessageBytes)),
       admission = ConnectionPolicy.AdmissionPolicy(
         checked(ConnectionPolicy.MaxInFlight.checked(maxInFlight))),
       timing = ConnectionPolicy.TimingPolicy(
         checked(ConnectionPolicy.RequestTimeout.checked(5.0)),
         checked(ConnectionPolicy.ShutdownDrain.checked(0.0))))
+
+  private def stdio(input: ByteArrayInputStream, output: ByteArrayOutputStream,
+      maxInputMessageBytes: Int = 1048576): StdioDataPlane =
+    StdioDataPlane.open(input, output, checked(McpInputPolicy.checked(maxInputMessageBytes)))
+
+  private final class RecordingBufferProvider(
+    extraBytes: Int = 0,
+    releaseFailure: Option[IOException] = None
+  ) extends InputBufferProvider {
+    val acquisitions = new AtomicInteger(0)
+    val releases = new AtomicInteger(0)
+    val requestedBytes = new AtomicInteger(0)
+
+    def acquire(maximum: McpInputPolicy.MaxMessageBytes): InputBufferLease = {
+      acquisitions.incrementAndGet()
+      val requested = McpInputPolicy.MaxMessageBytes.value(maximum)
+      requestedBytes.set(requested)
+      new InputBufferLease {
+        val bytes = new Array[Byte](requested + extraBytes)
+        def close(): Unit = {
+          releases.incrementAndGet()
+          releaseFailure.foreach(exn => throw exn)
+        }
+      }
+    }
+  }
 
   private val serverInfo = ConnectionKernel.ServerInfo("runtime-test", "1")
 
@@ -87,7 +113,7 @@ class MCP_Connection_Runtime_Tests extends MCP_Suite {
     val bytes = messages.map(JSON.Format.apply).mkString("", "\n", "\n")
       .getBytes(StandardCharsets.UTF_8)
     val output = new ByteArrayOutputStream
-    val plane = new StdioDataPlane(new ByteArrayInputStream(bytes), output, 1048576)
+    val plane = stdio(new ByteArrayInputStream(bytes), output)
     val executions = new AtomicInteger(0)
     val application = new McpApplication {
       def execute(operation: McpApplication.Operation,
@@ -121,34 +147,84 @@ class MCP_Connection_Runtime_Tests extends MCP_Suite {
     assertEquals(shutdowns.get(), 1, "a rejected second client reran backend teardown")
   }
 
-  spec_test("oversized stdio input closes once without reaching the application",
+  spec_test("production stdio input uses its structured policy and releases its lease",
       covers = List("connection_kernel#T13")) {
-    val plane = new StdioDataPlane(
-      new ByteArrayInputStream("12345\n{}\n".getBytes(StandardCharsets.UTF_8)),
-      new ByteArrayOutputStream, 4)
-    val executions = new AtomicInteger(0)
+    List(4, 9).foreach { limit =>
+      val provider = new RecordingBufferProvider(extraBytes = 16)
+      val output = new ByteArrayOutputStream
+      val shutdowns = new AtomicInteger(0)
+      val runtime = ConnectionRuntime.streams(
+        readiness = () => McpApplication.Not_Ready("oversized input must not dispatch"),
+        input = new ByteArrayInputStream(
+          (("x" * (limit + 1)) + "\n{}\n").getBytes(StandardCharsets.UTF_8)),
+        output = output,
+        progress = new Progress,
+        sessionName = "",
+        sessionDirs = Nil,
+        theory = "",
+        installChangedSender = _ => (),
+        onShutdown = () => shutdowns.incrementAndGet(),
+        policy = policy(maxInputMessageBytes = limit),
+        serverInfo = serverInfo,
+        outputPolicy = McpOutputPolicy.Disabled,
+        dataPlaneResources = StdioDataPlane.Resources(provider))
+
+      val failure = intercept[InputMessageTooLargeException](runtime.serve())
+      assertEquals(failure.limit, limit)
+      assertEquals(output.size(), 0)
+      assertEquals(provider.acquisitions.get(), 1)
+      assertEquals(provider.requestedBytes.get(), limit)
+      assertEquals(provider.releases.get(), 1)
+      assertEquals(shutdowns.get(), 1)
+    }
+  }
+
+  test("production stdio releases input resources on EOF exactly once") {
+    val provider = new RecordingBufferProvider
     val shutdowns = new AtomicInteger(0)
-    val runtime = ConnectionRuntime.compose(
-      policy = policy(maxInputMessageBytes = 4),
-      dataPlane = plane,
-      revisionRules = new Mcp2025RevisionRules,
-      scheduler = new DeterministicSequentialScheduler(1),
-      deadlineScheduler = new ManualDeadlineScheduler,
-      application = new McpApplication {
-        def execute(operation: McpApplication.Operation,
-            cancellation: McpApplication.Cancellation) = {
-          executions.incrementAndGet()
-          McpApplication.Outcome.Result(JSON.Object())
-        }
-      },
-      invariantPolicy = _ => RequestRegistry.InvariantViolationPolicy.FailFast,
+    val runtime = ConnectionRuntime.streams(
+      readiness = () => McpApplication.Not_Ready("no input"),
+      input = new ByteArrayInputStream(Array.emptyByteArray),
+      output = new ByteArrayOutputStream,
       progress = new Progress,
+      sessionName = "",
+      sessionDirs = Nil,
+      theory = "",
       installChangedSender = _ => (),
       onShutdown = () => shutdowns.incrementAndGet(),
-      serverInfo = serverInfo)
+      policy = policy(maxInputMessageBytes = 32),
+      serverInfo = serverInfo,
+      outputPolicy = McpOutputPolicy.Disabled,
+      dataPlaneResources = StdioDataPlane.Resources(provider))
 
-    intercept[IOException](runtime.serve())
-    assertEquals(executions.get(), 0)
+    runtime.serve()
+    intercept[RuntimeException](runtime.serve())
+    assertEquals(provider.acquisitions.get(), 1)
+    assertEquals(provider.releases.get(), 1)
+    assertEquals(shutdowns.get(), 1)
+  }
+
+  test("backend shutdown still runs when input-buffer release fails") {
+    val releaseFailure = new IOException("deliberate input-buffer release failure")
+    val provider = new RecordingBufferProvider(releaseFailure = Some(releaseFailure))
+    val shutdowns = new AtomicInteger(0)
+    val runtime = ConnectionRuntime.streams(
+      readiness = () => McpApplication.Not_Ready("no input"),
+      input = new ByteArrayInputStream(Array.emptyByteArray),
+      output = new ByteArrayOutputStream,
+      progress = new Progress,
+      sessionName = "",
+      sessionDirs = Nil,
+      theory = "",
+      installChangedSender = _ => (),
+      onShutdown = () => shutdowns.incrementAndGet(),
+      policy = policy(maxInputMessageBytes = 32),
+      serverInfo = serverInfo,
+      outputPolicy = McpOutputPolicy.Disabled,
+      dataPlaneResources = StdioDataPlane.Resources(provider))
+
+    assertEquals(intercept[IOException](runtime.serve()), releaseFailure)
+    assertEquals(provider.releases.get(), 1)
     assertEquals(shutdowns.get(), 1)
   }
 

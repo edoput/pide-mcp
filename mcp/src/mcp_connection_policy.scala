@@ -7,6 +7,7 @@ package isabelle.mcp.connection
 
 import isabelle.Options
 import isabelle.mcp.control.{NonNegativeDuration, PositiveDuration}
+import isabelle.mcp.transport.McpInputPolicy
 
 
 sealed abstract class ProtocolRevision private (val value: String)
@@ -18,7 +19,7 @@ object ProtocolRevision {
 
 final case class ConnectionPolicy(
   revision: ProtocolRevision,
-  framing: ConnectionPolicy.FramingPolicy,
+  input: McpInputPolicy,
   admission: ConnectionPolicy.AdmissionPolicy,
   timing: ConnectionPolicy.TimingPolicy
 )
@@ -26,7 +27,6 @@ final case class ConnectionPolicy(
 
 object ConnectionPolicy {
   opaque type MaxInFlight = Int
-  opaque type MaxInputMessageBytes = Int
   type RequestTimeout = PositiveDuration
   type ShutdownDrain = NonNegativeDuration
 
@@ -37,12 +37,6 @@ object ConnectionPolicy {
     def value(value: MaxInFlight): Int = value
   }
 
-  object MaxInputMessageBytes {
-    def checked(value: Int): Either[String, MaxInputMessageBytes] =
-      if (value > 0) Right(value) else Left("maxInputMessageBytes must be positive")
-
-    def value(value: MaxInputMessageBytes): Int = value
-  }
 
   object RequestTimeout {
     def checked(seconds: Double): Either[String, RequestTimeout] =
@@ -60,19 +54,18 @@ object ConnectionPolicy {
     def seconds(value: ShutdownDrain): Double = NonNegativeDuration.seconds(value)
   }
 
-  final case class FramingPolicy(maxInputMessageBytes: MaxInputMessageBytes)
   final case class AdmissionPolicy(maxInFlight: MaxInFlight)
   final case class TimingPolicy(requestTimeout: RequestTimeout, shutdownDrain: ShutdownDrain)
 
   def fromOptions(options: Options): Either[String, ConnectionPolicy] =
     for {
-      maxInputMessageBytes <- MaxInputMessageBytes.checked(options.int("mcp_max_input_message_bytes"))
+      input <- McpInputPolicy.checked(options.int("mcp_max_input_message_bytes"))
       maxInFlight <- MaxInFlight.checked(options.int("mcp_max_in_flight"))
       requestTimeout <- RequestTimeout.checked(options.real("mcp_request_timeout"))
       shutdownDrain <- ShutdownDrain.checked(options.real("mcp_shutdown_drain"))
     } yield ConnectionPolicy(
       revision = ProtocolRevision.V2025_03_26,
-      framing = FramingPolicy(maxInputMessageBytes = maxInputMessageBytes),
+      input = input,
       admission = AdmissionPolicy(maxInFlight = maxInFlight),
       timing = TimingPolicy(requestTimeout = requestTimeout, shutdownDrain = shutdownDrain))
 

@@ -13,7 +13,7 @@ import isabelle.mcp.connection._
 import isabelle.mcp.control.ManualDeadlineScheduler
 import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
 import isabelle.mcp.protocol.JsonRpc
-import isabelle.mcp.transport.ScriptedDataPlane
+import isabelle.mcp.transport.{McpInputPolicy, ScriptedDataPlane}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import scala.concurrent.duration.{Duration, DurationInt}
 
@@ -741,8 +741,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
         def checked[A](value: Either[String, A]): A = value.fold(error, identity)
         val policy = ConnectionPolicy(
           revision = ProtocolRevision.V2025_03_26,
-          framing = ConnectionPolicy.FramingPolicy(
-            checked(ConnectionPolicy.MaxInputMessageBytes.checked(1048576))),
+          input = checked(McpInputPolicy.checked(1048576)),
           admission = ConnectionPolicy.AdmissionPolicy(
             checked(ConnectionPolicy.MaxInFlight.checked(2))),
           timing = ConnectionPolicy.TimingPolicy(
@@ -1562,8 +1561,7 @@ class MCP_Run_Tool_Async_Tests
     def checked[A](value: Either[String, A]): A = value.fold(error, identity)
     val policy = ConnectionPolicy(
       revision = ProtocolRevision.V2025_03_26,
-      framing = ConnectionPolicy.FramingPolicy(
-        checked(ConnectionPolicy.MaxInputMessageBytes.checked(1048576))),
+      input = checked(McpInputPolicy.checked(1048576)),
       admission = ConnectionPolicy.AdmissionPolicy(
         checked(ConnectionPolicy.MaxInFlight.checked(1))),
       timing = ConnectionPolicy.TimingPolicy(

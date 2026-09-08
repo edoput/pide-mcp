@@ -7,6 +7,13 @@ record; entries here point at the section that carries the details.
 2026-09-08
 ----------
 
+- Replaced primitive stdio input-limit arguments with a transport-owned
+  `McpInputPolicy`. `StdioDataPlane` now acquires one input buffer through an
+  injectable provider/resource bundle and the connection runtime releases its
+  lease exactly once after draining. The default remains one unpooled,
+  exact-sized array; this establishes the allocation boundary for a future
+  bounded pool without implementing that pool or changing framing behavior.
+
 - Added `mcp_max_input_message_bytes` (default 1 MiB). Production stdio now
   bounds each raw UTF-8 frame before decoding or JSON-RPC parsing; an oversized
   frame terminates the connection without emitting a JSON-RPC reply.

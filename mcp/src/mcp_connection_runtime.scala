@@ -55,7 +55,8 @@ private[mcp] final class ConnectionRuntime private (
           "(waited " + shutdownDrain.message + "; cancelled " + drain.cancelled.length +
           "; raise mcp_shutdown_drain to wait longer)")
       progress.echo("Shutting down ...")
-      onShutdown()
+      try connection.dataPlane.close()
+      finally onShutdown()
     }
     failure.foreach(exn => throw exn)
   }
@@ -86,11 +87,12 @@ private[mcp] object ConnectionRuntime {
     onShutdown: () => Unit,
     policy: ConnectionPolicy,
     serverInfo: ConnectionKernel.ServerInfo,
-    outputPolicy: McpOutputPolicy
+    outputPolicy: McpOutputPolicy,
+    dataPlaneResources: StdioDataPlane.Resources = StdioDataPlane.Resources.default
   ): ConnectionRuntime =
-    production(readiness, StdioDataPlane.standard(
-      ConnectionPolicy.MaxInputMessageBytes.value(policy.framing.maxInputMessageBytes)), progress, sessionName, sessionDirs,
-      theory, installChangedSender, onShutdown, policy, serverInfo, outputPolicy)
+    production(readiness, StdioDataPlane.standard(policy.input, dataPlaneResources),
+      progress, sessionName, sessionDirs, theory, installChangedSender, onShutdown,
+      policy, serverInfo, outputPolicy)
 
   def streams(
     readiness: () => McpApplication.Readiness,
@@ -104,11 +106,12 @@ private[mcp] object ConnectionRuntime {
     onShutdown: () => Unit,
     policy: ConnectionPolicy,
     serverInfo: ConnectionKernel.ServerInfo,
-    outputPolicy: McpOutputPolicy
+    outputPolicy: McpOutputPolicy,
+    dataPlaneResources: StdioDataPlane.Resources = StdioDataPlane.Resources.default
   ): ConnectionRuntime =
-    production(readiness, new StdioDataPlane(input, output,
-      ConnectionPolicy.MaxInputMessageBytes.value(policy.framing.maxInputMessageBytes)), progress,
-      sessionName, sessionDirs, theory, installChangedSender, onShutdown, policy, serverInfo, outputPolicy)
+    production(readiness, StdioDataPlane.open(input, output, policy.input, dataPlaneResources),
+      progress, sessionName, sessionDirs, theory, installChangedSender, onShutdown,
+      policy, serverInfo, outputPolicy)
 
   private def production(
     readiness: () => McpApplication.Readiness,

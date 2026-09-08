@@ -216,10 +216,15 @@ boundaries
 ----------
 
 The data plane converts a byte stream into typed JSON-RPC envelopes and writes
-complete encoded envelopes atomically. `StdioDataPlane` retains one fixed-size
-input buffer selected from the immutable connection policy and rejects the
-first non-terminator byte beyond `mcp_max_input_message_bytes` before UTF-8 or
-JSON-RPC decoding. The first implementations are
+complete encoded envelopes atomically. `StdioDataPlane` acquires one fixed-size
+input-buffer lease from its resource bundle, using the typed `McpInputPolicy`
+selected by the immutable connection policy. It rejects the first
+non-terminator byte beyond `mcp_max_input_message_bytes` before UTF-8 or
+JSON-RPC decoding. A provider may supply a larger buffer without weakening the
+policy limit. The default provider allocates one exact-sized array; a future
+bounded pool replaces that provider without changing the data-plane signature.
+The runtime releases the lease after the connection drains and does not close
+the caller-owned byte streams. The first implementations are
 `StdioDataPlane` for production and `ScriptedDataPlane` for deterministic
 tests.  It does not know lifecycle phases, request limits, tools, or Isabelle.
 HTTP is not part of this work package and would be another adapter rather than
@@ -276,6 +281,8 @@ value for each connection:
 
     ConnectionPolicy(
       revision = ProtocolRevision.v2025_03_26,
+      input = McpInputPolicy.checked(
+        options.int("mcp_max_input_message_bytes")),
       admission = AdmissionPolicy(
         maxInFlight = MaxInFlight.checked(...)),
       timing = TimingPolicy(
