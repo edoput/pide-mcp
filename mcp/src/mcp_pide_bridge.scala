@@ -1,6 +1,18 @@
 /*  Title:      mcp/src/mcp_pide_bridge.scala
 
 Typed control/data-plane boundary for Scala-to-Isabelle/ML calls.
+
+IMPORTANT PIDE INPUT SECURITY BOUNDARY: this file receives ML-to-Scala protocol
+output only after Isabelle has read and allocated the complete peer-declared
+message via Prover.message_output -> Byte_Message.read_message ->
+Bytes.read_stream.  The request/reply limits implemented here cannot prevent
+that earlier allocation: maxReplyBytes is a post-read bound on what the MCP
+bridge retains and decodes, not a bound on Isabelle's physical PIDE read.
+
+A pre-allocation bound requires a bounded or pluggable reader in Isabelle,
+before Bytes.read_stream consumes the declared chunks.  This application does
+not patch Isabelle or install a replacement reader; it keeps the local
+post-read checks as defence in depth and documents the missing upstream bound.
 */
 
 package isabelle.mcp.pide
@@ -239,20 +251,7 @@ private[mcp] object SessionPideTransport {
 
 
 /** Production data plane for a known set of protocol-result functions.
-  *
-  * Security boundary: this adapter receives a [[Prover.Protocol_Output]] only
-  * after Isabelle's `Prover.message_output` has called the stock
-  * `Byte_Message.read_message`, which in turn has let peer-declared chunks
-  * reach `Bytes.read_stream`.  Therefore no check in this class, including
-  * `maxReplyBytes` in [[PideBridge]], can be a pre-allocation PIDE-read bound.
-  * That limit remains defence in depth for retained bridge envelopes, decoding,
-  * and correlation after the frame exists.
-  *
-  * A transport-level bound needs an Isabelle-provided bounded or pluggable
-  * reader before `Bytes.read_stream`: it must validate the header size, chunk
-  * count, individual lengths, and checked aggregate, then obtain bounded
-  * storage.  This component deliberately has no local reader replacement,
-  * Isabelle patch, reflection hook, or allocator/pool workaround.
+  * See the file-level PIDE input security boundary above.
   */
 private[mcp] final class SessionPideTransport(
   session: Headless.Session,
