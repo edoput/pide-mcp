@@ -1,6 +1,38 @@
 /*  Title:      mcp/src/mcp_pide_protocol.scala
 
 Versioned internal protocol for the Scala-to-Isabelle/ML bridge.
+
+This file owns the inner PideBridge request/result envelope.  Requests become
+one serialized YXML byte argument of the raw `MCP.bridge` protocol command;
+results arrive as one serialized YXML body chunk of a
+`function=MCP.bridge_result` protocol message.  Isabelle's PIDE transport adds
+and removes the outer comma-separated byte-length header.
+
+The raw framing can be remembered as follows.  Here X is YXML.X_byte (0x05),
+Y is YXML.Y_byte (0x06), N is the byte length of the YXML envelope, and `|` is
+only a visual chunk boundary -- it is not present on the wire:
+
+  Scala -> ML request
+
+    10,N\n | MCP.bridge | X Y mcp_bridge
+                            Y revision=1 Y kind=call Y id=7
+                            Y theory=MCP_Tools Y operation=tools X
+                            PAYLOAD
+                            X Y X
+
+  ML -> Scala result
+
+    8,1,26,4,15,N\n | protocol | 3 | function=MCP.bridge_result
+                              | id=7 | operation=tools
+                              | X Y mcp_bridge_result
+                                  Y revision=1 Y kind=result Y id=7
+                                  Y operation=tools Y status=ok X
+                                  PAYLOAD
+                                  X Y X
+
+After the header newline the chunks are concatenated with no delimiters: their
+declared byte lengths are the only outer framing.  Within the final chunk,
+`X Y name Y key=value ... X` opens a YXML element and `X Y X` closes it.
 */
 
 package isabelle.mcp.pide
