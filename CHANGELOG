@@ -4,6 +4,24 @@ isabelle mcp_server — changelog
 Design decisions and milestones, newest first. The spec is the full
 record; entries here point at the section that carries the details.
 
+2026-09-08
+----------
+
+- Clarified the PIDE input security boundary. `SessionPideTransport` receives
+  `Protocol_Output` only after stock Isabelle has run
+  `Prover.message_output -> Byte_Message.read_message -> Bytes.read_stream` on
+  peer-declared chunks. `mcp_bridge_max_reply_bytes` remains an important
+  post-read defense for retained bridge envelopes, decoding, and correlation;
+  it is not a pre-allocation frame-read cap.
+
+- Removed the repository-local reader-hook/pool plan and its unavailable test.
+  A real transport-level bound requires upstream Isabelle to expose a bounded
+  or pluggable reader that validates header size, chunk count, individual
+  lengths, and checked aggregate before acquiring bounded storage and before
+  `Bytes.read_stream`. Producer-side request/reply caps and
+  `mcp_untrusted_output_bytes` are unchanged. Theory-end catalog folding and
+  ML heap limits remain outside this slice.
+
 2026-09-07
 ----------
 

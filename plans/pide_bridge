@@ -79,7 +79,16 @@ claims:
     category: design
   - id: D12
     kind: design
-    statement: The eventual Isabelle reader hook validates a bounded header, chunk count, each chunk length, and checked aggregate length before body allocation; its allocator port owns lane-specific leases so a pool can be added without changing PideBridge or application code.
+    statement: >-
+      SessionPideTransport receives Protocol_Output only after Isabelle's stock
+      Prover.message_output -> Byte_Message.read_message -> Bytes.read_stream
+      path has consumed peer-declared chunks. maxReplyBytes is consequently
+      post-read defense in depth for bridge-envelope retention, decoding, and
+      correlation, not a pre-allocation PIDE-read bound. A real transport bound
+      is an upstream Isabelle boundary: a bounded or pluggable reader would
+      need to validate header size, chunk count, individual lengths, and
+      checked aggregate before obtaining bounded storage and before
+      Bytes.read_stream.
     category: design
   - id: Q1
     kind: question
@@ -152,11 +161,6 @@ claims:
     state: active
     statement: With untrusted output disabled, output-dependent ML tools and IR-backed builtins are absent from tools/list and rejected before their backend runner is called; with a positive budget, captured output and retained output-event count stay within that budget while a direct string-result tool remains governed only by the reply limit.
     layers: [scala-unit, ml-unit, bridge]
-  - id: T14
-    kind: test
-    state: active
-    statement: The bounded Isabelle message reader rejects an overlong header, excess chunk count, any excess chunk, and aggregate-length overflow before body allocation; exact-bound frames succeed and every acquired lane lease is released on success, rejection, decode failure, and shutdown.
-    layers: [scala-unit, bridge]
 spec_refinements: []
 done_command:
   - tools/planning-gate
@@ -377,15 +381,22 @@ construction selects `Disabled`, while the permissive fixture remains
 package-private and explicit in tests.
 
 The current Isabelle `Prover.message_output` calls the stock
-`Byte_Message.read_message` before `SessionPideTransport` sees a frame.  Thus
-the adapter's Scala reply check is defense in depth, not a pre-allocation read
-bound.  The approved reader-hook checkpoint belongs below `PideTransport`: it
-must validate the frame header and lengths before body allocation and acquire a
-lane-specific lease.  `PideBridge` continues to receive owned bytes, so a later
-pool changes only the reader/allocator implementation.  Until that Isabelle
-hook is present, supported MCP bridge results are producer-bounded and normal
-tool output is suppressed/bounded in ML, but a deliberately hand-crafted raw
-protocol message outside these routes is not consumer-bounded.
+`Byte_Message.read_message` before `SessionPideTransport` sees a frame; that
+reader reaches `Bytes.read_stream` after accepting peer-declared chunks.
+Therefore the adapter's Scala reply check is defense in depth for retained
+bridge envelopes, decoding, and correlation after a frame exists, not a
+pre-allocation PIDE-read bound.  A transport-level consumer bound is an
+upstream Isabelle boundary, not a repository-local checkpoint: Isabelle would
+need to provide a bounded or pluggable message reader that validates header
+size, chunk count, individual lengths, and a checked aggregate before it
+obtains bounded storage and before `Bytes.read_stream`.  This repository does
+not patch Isabelle or install a replacement reader, use reflection, add a
+configuration option, retain an inactive reader, or add an allocator/pool.
+Until such upstream behavior exists, supported MCP bridge results retain their
+producer-side request/reply caps and normal tool output remains
+suppressed/bounded by `mcp_untrusted_output_bytes`, but a deliberately
+hand-crafted raw protocol message outside these routes is not
+consumer-bounded.
 
 The reusable `tools/pide-bridge measure` launcher records the current
 `PideBridgeV1` serialized request and reply byte counts for all seven
@@ -423,9 +434,11 @@ implementation checkpoints
    output-dependent tools from their registry form before execution, install
    per-call ML output accounting, and suppress output side channels from the
    captured Future group.
-7. Add the small Isabelle reader hook and the lane-aware allocator/lease port;
-   first use fresh bounded buffers, then add pooling without changing the
-   bridge protocol or application surface.
+7. Record the stock-Isabelle reader as an upstream security boundary. Do not
+   implement a local reader hook, allocator/lease port, pool, installer,
+   reflection path, or configuration option; revisit only if Isabelle supplies
+   a bounded or pluggable reader with pre-`Bytes.read_stream` validation and
+   bounded storage.
 8. Run focused Scala, ML, and live bridge tests after each checkpoint.  Finish
    with an adversarial review, all static gates, and the complete
    `tools/planning-gate done` command.
@@ -439,6 +452,9 @@ non-goals
 - Narrowing theory, scope, or REPL mutation locks; that is operation isolation.
 - Exposing the internal bridge envelope to MCP clients.
 - Limiting arbitrary allocation inside user ML code or imposing an ML-process
-  heap limit; this plan bounds transport and captured-output retention only.
+  heap limit; ML heap limits are outside this plan.
+- Treating `maxReplyBytes` as a bound on stock PIDE frame allocation. It bounds
+  bridge-envelope retention after Isabelle has read the frame, while a bounded
+  stock PIDE reader is an upstream requirement.
 - Changing catalog notifications in this checkpoint; declaration coalescing
   remains a later theory-end catalog change.

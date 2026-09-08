@@ -137,7 +137,7 @@ pide_bridge#D8            unstated                  PideBridge.call returns Eith
 pide_bridge#D9            unstated                  A lane is an accounting and allocation class over the one physical PIDE stream, not a separate socket or executor; the lane classes are control, typed
 pide_bridge#D10           unstated                  mcp_untrusted_output_bytes is a non-negative per-call budget independent of request and reply envelopes; zero disables output-dependent tools before e
 pide_bridge#D11           unstated                  ML output routing suppresses ordinary status, report, result, system, and user protocol messages from a captured tool group; the bridge publishes its
-pide_bridge#D12           unstated                  The eventual Isabelle reader hook validates a bounded header, chunk count, each chunk length, and checked aggregate length before body allocation; its
+pide_bridge#D12           unstated                  SessionPideTransport receives Protocol_Output only after Isabelle's stock Prover.message_output -> Byte_Message.read_message -> Bytes.read_stream path
 pide_bridge#Q1            unstated                  What separate serialized request and reply byte limits admit the committed legitimate-operation corpus while bounding accidental or hostile bridge-env
 pide_bridge#T1            bridge,scala-unit         Two distinguishable calls released in reverse order receive their own replies exactly once through the same bridge registry.
 pide_bridge#T2            scala-unit                A wrong-operation, wrong-version, malformed, or invalid-status reply with a known call ID atomically fails that matching call with ProtocolError and c
@@ -152,7 +152,6 @@ pide_bridge#T10           bridge,scala-unit         A bounded startup hello make
 pide_bridge#T11           bridge,ml-unit,scala-unit  A serialized request of exactly maxRequestBytes succeeds, a larger request returns TooLarge before transport send, and the ML decoder independently re
 pide_bridge#T12           bridge,ml-unit,scala-unit  A serialized reply of exactly maxReplyBytes succeeds, while a larger operation result becomes a small correlated TooLarge reply before protocol public
 pide_bridge#T13           bridge,ml-unit,scala-unit  With untrusted output disabled, output-dependent ML tools and IR-backed builtins are absent from tools/list and rejected before their backend runner i
-pide_bridge#T14           bridge,scala-unit         The bounded Isabelle message reader rejects an overlong header, excess chunk count, any excess chunk, and aggregate-length overflow before body alloca
 plan_format#A1            tooling-unit              A plan has one canonical machine-readable value for every field used by a gate.  Markdown may explain a field but cannot override it.
 plan_format#A2            tooling-unit              YAML is parsed safely and duplicate keys are rejected before schema or semantic validation.
 plan_format#A3            tooling-unit              A plan remains readable without custom rendering: the frontmatter is short structured data and the body is ordinary Markdown.

@@ -238,7 +238,22 @@ private[mcp] object SessionPideTransport {
 }
 
 
-/** Production data plane for a known set of protocol-result functions. */
+/** Production data plane for a known set of protocol-result functions.
+  *
+  * Security boundary: this adapter receives a [[Prover.Protocol_Output]] only
+  * after Isabelle's `Prover.message_output` has called the stock
+  * `Byte_Message.read_message`, which in turn has let peer-declared chunks
+  * reach `Bytes.read_stream`.  Therefore no check in this class, including
+  * `maxReplyBytes` in [[PideBridge]], can be a pre-allocation PIDE-read bound.
+  * That limit remains defence in depth for retained bridge envelopes, decoding,
+  * and correlation after the frame exists.
+  *
+  * A transport-level bound needs an Isabelle-provided bounded or pluggable
+  * reader before `Bytes.read_stream`: it must validate the header size, chunk
+  * count, individual lengths, and checked aggregate, then obtain bounded
+  * storage.  This component deliberately has no local reader replacement,
+  * Isabelle patch, reflection hook, or allocator/pool workaround.
+  */
 private[mcp] final class SessionPideTransport(
   session: Headless.Session,
   resultFunctions: Set[String]
