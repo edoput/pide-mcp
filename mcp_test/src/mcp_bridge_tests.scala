@@ -238,6 +238,17 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
     assertEquals(session.bridge_operation_names, McpBridgeOperations.holOperationNames)
   }
 
+  spec_test("ir bridge: oversized request is typed and does not poison the next call",
+      covers = List("pide_bridge#T11")) {
+    val oversized = "x" * 262144
+    session.ir("repls", List("padding" -> oversized)) match {
+      case MCP_Session.Error(message) =>
+        assert(message.contains("request bridge envelope"), message)
+      case other => fail("expected request TooLarge, got " + other)
+    }
+    assert(session.ir("repls", Nil).ok)
+  }
+
   spec_test("common v1 envelope executes all seven typed operations and reply codecs",
       verifies = List("pide_bridge#I1")) {
     val tools = session.ml_tools()
@@ -1703,5 +1714,28 @@ class MCP_Bridge_Shutdown_Tests
       "backend stop returned before pending work terminated")
     expect_error(resource.join, containing = "session stopped")
     assert(Exn.is_exn(direct.join_result), "direct work escaped backend stop")
+  }
+}
+
+
+class MCP_Bounded_Output_Bridge_Tests
+  extends MCP_Session_Suite(
+    "MCP-Tools-Tests", "MCP_Tools_Tests", McpBridgeProfile.base,
+    options => options + "mcp_untrusted_output_bytes=64") {
+
+  spec_test("live bridge inherits the per-call ML output budget",
+      covers = List("pide_bridge#T13")) {
+    val theory =
+      "isabelle://context/theory/" +
+        session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
+          .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+    session.ml_run("MCP_Tools_Tests.capture_many", Nil, theory) match {
+      case MCP_Session.Ok(output) =>
+        assert(output.nonEmpty, "positive output budget retained nothing")
+        assert(output.length <= 64, "output exceeded configured bound: " + output.length)
+        assert(output.linesIterator.length <= 4,
+          "per-event accounting retained too many tiny messages: " + output)
+      case other => fail("bounded output tool failed: " + other)
+    }
   }
 }

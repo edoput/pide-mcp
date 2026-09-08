@@ -520,7 +520,8 @@ abstract class MCP_Suite extends munit.FunSuite with MCP_Spec_Tests {
    recurring repl-lifecycle patterns */
 
 abstract class MCP_Session_Suite(session_name: String, theory: String,
-  bridgeProfile: McpBridgeProfile) extends MCP_Suite {
+  bridgeProfile: McpBridgeProfile,
+  configureOptions: Options => Options = identity) extends MCP_Suite {
   override def munitTimeout: Duration = 10.minutes
 
   private var session0: MCP_Session = null
@@ -532,7 +533,7 @@ abstract class MCP_Session_Suite(session_name: String, theory: String,
     MCP_Test_Config.progress.echo(
       "Starting PIDE session " + session_name + " for " + getClass.getSimpleName + " ...")
     session0 =
-      MCP_Session.start(MCP_Test_Config.options, session_name,
+      MCP_Session.start(configureOptions(MCP_Test_Config.options), session_name,
         MCP_Test_Config.session_dirs, theory, bridgeProfile,
         progress = MCP_Test_Config.progress)
   }
