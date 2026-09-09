@@ -5,6 +5,9 @@ handoff lease: there is never a task queue between reservation and execution.
 The request registry remains the source of request ownership and terminal
 state; this port is the source of execution-capacity admission and owns only
 worker resources.
+
+Provides the concurrent production scheduler and sequential/manual schedulers
+for controlled execution and tests.
 */
 
 package isabelle.mcp.connection

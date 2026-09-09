@@ -2,9 +2,10 @@
 
 Shared, data-driven vocabulary for test pyramid layers.
 
-Layer names live exclusively in etc/test_layers.json. Scala suite registration
-resolves a stable role through this module; the manifest exporter validates
-against the same loaded snapshot. tools/spec_gate.py consumes the same file.
+Layer names live exclusively in mcp_test/etc/test_layers.json. This module
+validates the registry and caches its loaded snapshot and hash. Scala suite
+registration resolves stable roles through that snapshot; manifest export
+uses the same registry, also consumed by tools/spec_gate.py.
 */
 
 package isabelle.mcp

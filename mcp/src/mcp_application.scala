@@ -1,8 +1,9 @@
 /*  Title:      mcp/src/mcp_application.scala
 
-Typed application boundary for one MCP connection.  This package owns ordinary
-tool/resource dispatch and its per-connection state; JSON-RPC IDs, transport,
-lifecycle, scheduling, and completion ownership stay on the connection side.
+Typed application boundary for one MCP connection. This file provides
+tool/resource dispatch, backend-readiness handling, the selected context,
+and output-policy filtering. JSON-RPC IDs, transport, lifecycle, scheduling,
+and completion ownership remain with the connection.
 */
 
 package isabelle.mcp.application

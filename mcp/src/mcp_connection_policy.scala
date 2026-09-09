@@ -1,6 +1,8 @@
 /*  Title:      mcp/src/mcp_connection_policy.scala
 
-Immutable, validated configuration selected once for one connection.
+Immutable, validated configuration for one MCP connection: protocol revision,
+input-byte bound, in-flight request limit, request timeout, and shutdown drain.
+Converts Isabelle options into the typed policy used by the connection.
 */
 
 package isabelle.mcp.connection

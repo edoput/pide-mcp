@@ -1,6 +1,8 @@
 /*  Title:      mcp_test/src/mcp_pide_payload_measure.scala
 
-Deterministic, fixture-backed measurements for the PIDE bridge envelopes.
+Constructs a deterministic corpus of serialized PIDE bridge envelopes,
+derives size defaults, and writes or checks the JSON measurement artifact.
+Measurements use fixtures rather than live prover traffic.
 */
 
 package isabelle.mcp

@@ -1,6 +1,8 @@
 /*  Title:      mcp/src/mcp_server.scala
 
 MCP server over stdio: newline-delimited JSON-RPC 2.0 on stdin/stdout.
+Provides builtin tool definitions, the handler adapter, server startup, and
+integration with the connection runtime.
 
 Nothing but protocol replies may be written to stdout; all logging goes
 through the given progress (Console_Progress(stderr = true) in the tool).

@@ -1,7 +1,8 @@
 /*  Title:      mcp/src/mcp_revision_rules.scala
 
-MCP 2025-03-26 message classification.  This is protocol validation only:
-admission/lifecycle decisions are owned by ConnectionKernel.
+MCP 2025-03-26 message classification: converts JSON-RPC envelopes into typed
+MCP messages or protocol rejections, including method parameter validation.
+Admission and lifecycle decisions are owned by ConnectionKernel.
 */
 
 package isabelle.mcp.connection

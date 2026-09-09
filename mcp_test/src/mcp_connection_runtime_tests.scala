@@ -1,6 +1,8 @@
 /*  Title:      mcp_test/src/mcp_connection_runtime_tests.scala
 
-Composition-root and independent-readiness contracts for one MCP connection.
+Tests injected-port composition, one-shot connection serving, and resource
+cleanup. Verifies that MCP initialization can complete before the Isabelle
+backend is ready.
 */
 
 package isabelle.mcp

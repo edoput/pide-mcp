@@ -1,8 +1,9 @@
 /*  Title:      mcp_test/src/mcp_handler_tests.scala
 
-Unit suites over Fake_Backend -- fast, no prover: the JSON-RPC
-protocol surface, the tool surface (builtin table rows and their
-dispatch onto backend.ir), the resource surface, and the pure codecs.
+Tests the JSON-RPC handler, backend readiness, tools, resources, scopes,
+codecs, symbols, context locators, documentation, and session configuration.
+Uses Fake_Backend and filesystem/distribution fixtures without starting a
+prover. Also provides the documentation-catalog performance suite.
 */
 
 package isabelle.mcp

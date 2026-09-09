@@ -1,6 +1,13 @@
 /*  Title:      mcp_test/src/mcp_pide_bridge_tests.scala
 
-Deterministic contracts for the extracted PIDE bridge boundary.
+Deterministic PIDE bridge contracts using a scripted transport and manual
+deadlines, without starting Isabelle. Tests startup negotiation, reply
+correlation, envelope validation, request/reply size limits, bounded
+admission, cancellation, transport failures, and shutdown drain.
+
+Controlled reply ordering and callbacks exercise competing terminal outcomes
+and capacity recovery. Payload-corpus checks verify operation coverage,
+deterministic measurements, derived defaults, and stale-artifact detection.
 */
 
 package isabelle.mcp.pide

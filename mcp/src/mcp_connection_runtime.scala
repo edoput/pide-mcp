@@ -1,6 +1,8 @@
 /*  Title:      mcp/src/mcp_connection_runtime.scala
 
-One-shot composition root and serve loop for one logical MCP connection.
+Assembles the application, transport, connection kernel, and schedulers for one
+logical MCP client. Runs the one-shot serve loop and coordinates connection
+shutdown, transport resource release, and backend teardown.
 */
 
 package isabelle.mcp

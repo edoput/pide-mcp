@@ -2,11 +2,11 @@
 
 Command-line tool: isabelle mcp_test.
 
-The default run exercises the JSON-RPC handler and the stdio loop
-against Fake_Backend -- fast, no prover. -L selects one registered
-execution layer; -L all (and its compatibility alias -b) runs every
-Scala layer. Suites are munit; the runner reports failures and one layer
-summary by default.
+Registers the Scala suites and runs all registered Scala unit suites by
+default, without starting a prover. -L selects one execution layer; -L all
+(and its compatibility alias -b) runs every Scala layer. Supports filtering
+by test name or plan-link ID and metadata-only manifest export. Suites use
+munit; execution reports failures and layer summaries by default.
 */
 
 package isabelle.mcp

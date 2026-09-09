@@ -1,6 +1,8 @@
 /*  Title:      mcp_test/src/mcp_connection_protocol_tests.scala
 
-Focused contracts for the JSON-RPC/data-plane seam.
+Tests JSON-RPC framing and data-plane behavior: strict UTF-8 decoding,
+input-byte limits, buffer release, complete concurrent writes, and output
+failures.
 */
 
 package isabelle.mcp

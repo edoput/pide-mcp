@@ -1,9 +1,9 @@
 /*  Title:      mcp_test/src/mcp_bridge_tests.scala
 
-Bridge suites against real headless PIDE sessions (isabelle mcp_test
--L bridge): typed operations over MCP-Tools and the IR dispatcher over
-MCP-HOL/MCP_Repl -- the one layer
-Fake_Backend cannot cover.
+Integration suites against real headless PIDE sessions (isabelle mcp_test
+-L bridge). Cover typed operations over MCP-Tools, IR dispatch over
+MCP-HOL/MCP_Repl, boot failures, asynchronous execution, bounded output,
+and shutdown.
 */
 
 package isabelle.mcp

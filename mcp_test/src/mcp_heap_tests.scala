@@ -1,10 +1,8 @@
 /*  Title:      mcp_test/src/mcp_heap_tests.scala
 
-Self-test of the MCP_Heap_Suite fixture on the smallest heap (Pure):
-the helpers' contract -- output capture and error detection -- not any
-mcp ML code. Heap suites proper (pinning fresh-process/heap-restart
-behavior such as Thy_Info keying or the segments gap) extend
-MCP_Heap_Suite with the heap under test.
+Fresh-process tests against saved Pure, MCP-Tools, and MCP-HOL heaps,
+covering fixture output/error handling, persisted tool registration, and
+REPL context resolution.
 */
 
 package isabelle.mcp

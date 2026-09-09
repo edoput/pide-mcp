@@ -1,6 +1,8 @@
 /*  Title:      mcp/src/mcp_bridge_operations.scala
 
-Typed application payload codecs for the internal PIDE bridge.
+Typed application operations and payload codecs for the internal PIDE bridge.
+Provides base and HOL profiles specifying the operations that startup
+negotiation must confirm before the selected application can use the bridge.
 */
 
 package isabelle.mcp

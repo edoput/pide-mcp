@@ -6,6 +6,18 @@ The human-readable test name is deliberately not part of the link protocol.
 Munit carries each link as a semantic Tag; discovery reads the registered Test
 objects without evaluating their bodies and emits a deterministic JSON
 manifest for tools/spec_gate.py.
+
+Also validates plan links and test classes, records manifest provenance, and
+provides metadata self-tests. For example, inside an MCP_Suite:
+
+  spec_test("unit selector returns the registered unit suites",
+      covers = List("planning_gate#T8")) {
+    assertEquals(MCP_Test.suites_for(MCP_Test.scala_unit_layer),
+      MCP_Test.unit_suites)
+  }
+
+Use verifies for qualified A/I claims and covers for T obligations. New suites
+must also be included in MCP_Test's suite registration to enter the manifest.
 */
 
 package isabelle.mcp

@@ -1,8 +1,9 @@
 /*  Title:      mcp/src/mcp_request_registry.scala
 
 Connection-owned request identity, terminal ownership, cancellation, and
-invariant detection.  Scheduling and wire output deliberately remain outside
-this checkpoint.
+invariant detection. Completion tokens distinguish successive requests that
+reuse the same wire ID, preventing stale completions from claiming a newer
+request. Scheduling and wire output remain outside this registry.
 */
 
 package isabelle.mcp.connection

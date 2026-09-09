@@ -1,24 +1,10 @@
 /*  Title:      mcp/src/mcp_config.scala
 
-Pre-flight check over a `-d` session-directory set (plans/
-session_dirs_errors, ROOTS_ANALYSIS.md section 2 "the bugs this
-exposes"). Pure Scala, no prover: Sessions.load_structure builds one
-global session graph over every `-d` and throws on the first collision
-(duplicate session name, bad parent, ...), which is opaque and takes
-down every root, not just the offending one. This module re-derives
-what load_structure would see, one layer below the fold that throws
-(Root_File.entries is lazy and forcing it never enters that fold --
-verified, see plans/session_dirs_errors A1), and attributes every
-session name to a ROOT file, a line, and whether it came from one of
-the user's own `-d` directories or from the pre-existing distribution/
-AFP/component baseline.
-
-DECIDED POLICY (2026-08-07, see plans/session_dirs_errors): a `-d`
-configuration error is not degraded around. MCP_Server.run calls
-check() synchronously before anything else and, if the result is
-non-empty, exits via error(render(issues)) -- the server never comes
-up on a bad config. This module only computes and renders the
-diagnosis; it does not decide what happens next. */
+Preflight diagnostics for session directories: report invalid roots and
+duplicate session declarations with source locations and component/user
+provenance. Computes and renders issues without starting a prover; the caller
+decides whether startup proceeds.
+*/
 
 package isabelle.mcp
 

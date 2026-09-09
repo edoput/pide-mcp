@@ -1,6 +1,7 @@
 /*  Title:      mcp/src/mcp-main.scala
 
-Command-line tool: isabelle mcp_server.
+Registers isabelle mcp_server, parses session and option arguments, and starts
+the stdio MCP server with diagnostics directed to stderr.
 */
 
 package isabelle.mcp

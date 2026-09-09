@@ -2,7 +2,8 @@
 
 Connection-kernel contracts for validated policy, revision classification,
 lifecycle control, request ownership, deadlines, bounded scheduling, batch
-aggregation, and shutdown without Isabelle.
+aggregation, cancellation, competing terminal outcomes, and shutdown without
+Isabelle.
 */
 
 package isabelle.mcp

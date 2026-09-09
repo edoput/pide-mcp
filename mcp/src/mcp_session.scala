@@ -1,10 +1,10 @@
 /*  Title:      mcp/src/mcp_session.scala
 
-Headless PIDE session serving MCP tools registered in Isabelle/ML.
-
-The ML side (mcp/Tools/mcp_bridge.ML) defines one versioned protocol command.
-Typed operations select a context locator and complete promises by internal
-string request id.
+Backend interface and headless Isabelle session implementation for MCP.
+Provides session build, boot, and shutdown; bridge-backed ML calls; theory
+and resource operations; scope management; and documentation access.
+Shared tool/result types and payload codecs support these operations.
+Internal call correlation and promise completion are delegated to PideBridge.
 */
 
 package isabelle.mcp

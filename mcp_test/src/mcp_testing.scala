@@ -1,9 +1,8 @@
 /*  Title:      mcp_test/src/mcp_testing.scala
 
-Test infrastructure for the mcp component: the fake backend, the munit
-base suites carrying the recurring test patterns (json access, jsonrpc
-helpers, the builtin dispatch assertion, with_repl / slow_step /
-await_busy for bridge tests), and the JUnit-driven runner behind
+Shared infrastructure for MCP Scala tests: fake and failing backends,
+common assertions, live-session and fresh-heap fixtures, and test
+configuration. Provides the JUnit-based execution and reporting used by
 isabelle mcp_test.
 */
 

@@ -1,8 +1,8 @@
 /*  Title:      mcp_test/src/mcp_application_tests.scala
 
-Focused contracts for the checkpoint-3 application port.  These tests carry
-no connection_kernel plan links: lifecycle, scheduler, and cancellation races
-remain later checkpoints.
+Tests typed application delegation, separation of wire identity from
+application operations, and filtering/rejection of tools when untrusted
+output is disabled.
 */
 
 package isabelle.mcp

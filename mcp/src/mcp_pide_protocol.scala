@@ -1,12 +1,18 @@
 /*  Title:      mcp/src/mcp_pide_protocol.scala
 
-Versioned internal protocol for the Scala-to-Isabelle/ML bridge.
+Versioned internal protocol for the Scala-to-Isabelle/ML bridge: encodes call,
+hello, cancellation, and drain requests, and decodes and validates result and
+drain-reply envelopes.
 
 This file owns the inner PideBridge request/result envelope.  Requests become
 one serialized YXML byte argument of the raw `MCP.bridge` protocol command;
 results arrive as one serialized YXML body chunk of a
 `function=MCP.bridge_result` protocol message.  Isabelle's PIDE transport adds
 and removes the outer comma-separated byte-length header.
+
+*/
+
+/* Wire-format example.
 
 The raw framing can be remembered as follows.  Here X is YXML.X_byte (0x05),
 Y is YXML.Y_byte (0x06), N is the byte length of the YXML envelope, and `|` is

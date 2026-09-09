@@ -1,8 +1,8 @@
 /*  Title:      mcp/src/mcp_protocol.scala
 
-Typed JSON-RPC transport values. This package owns JSON syntax and the
-single-or-batch envelope shape only; MCP lifecycle and method validation belong
-to the connection kernel introduced in later checkpoints.
+Typed JSON-RPC values and encoding/decoding for single and batch envelopes.
+Method classification belongs to RevisionRules; lifecycle admission belongs to
+the connection kernel.
 */
 
 package isabelle.mcp.protocol

@@ -1,6 +1,8 @@
 /*  Title:      mcp/src/mcp_pide_bridge.scala
 
-Typed control/data-plane boundary for Scala-to-Isabelle/ML calls.
+Typed Scala-to-Isabelle/ML calls over a replaceable PIDE transport.
+Provides session transport adaptation, startup negotiation, call correlation,
+bounded admission, cancellation, deadlines, and shutdown drain.
 
 IMPORTANT PIDE INPUT SECURITY BOUNDARY: this file receives ML-to-Scala protocol
 output only after Isabelle has read and allocated the complete peer-declared
