@@ -1031,6 +1031,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assertEquals(pre.call(TextOperation("op", "request"), already),
       Left(BridgeFailure.Cancelled))
     assertEquals(preTransport.sent, Vector.empty)
+    assertEquals(pre.pendingCount, 0)
+    assertEquals(pre.deadlineCount, 0)
     pre.beginStop()
     pre.sessionStopped()
 
@@ -1042,6 +1044,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       Left(BridgeFailure.Cancelled))
     assertEquals(markedTransport.sent, Vector.empty)
     assertEquals(markedBridge.pendingCount, 0)
+    assertEquals(markedBridge.deadlineCount, 0)
     markedBridge.beginStop()
     markedBridge.sessionStopped()
 
@@ -1058,6 +1061,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assertEquals(requestProperty(cancelTransport.sent(1), "id"), cancelId)
     assertEquals(cancelled.join, Left(BridgeFailure.Cancelled))
     assertEquals(cancelBridge.pendingCount, 0)
+    assertEquals(cancelBridge.deadlineCount, 0)
 
     val replyTransport = new ScriptedTransport
     val replyBridge = bridge(replyTransport)
@@ -1071,6 +1075,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assertEquals(completed.join, Right("reply"))
     assertEquals(replyTransport.sent.length, 1)
     assertEquals(replyBridge.pendingCount, 0)
+    assertEquals(replyBridge.deadlineCount, 0)
     cancelBridge.beginStop()
     cancelBridge.sessionStopped()
     replyBridge.beginStop()

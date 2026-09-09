@@ -289,8 +289,13 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
     finally session.ir("remove", List("repl" -> repl))
   }
 
+  /* The public cancellable IR API calls the production PideBridge (rather
+     than the older direct PIDE helper). The deterministic bridge unit test
+     owns pending/deadline accounting; here a live PIDE session proves that
+     ordered cancellation reaches the registered IR operation, releases its
+     REPL claim, and leaves subsequent IR calls usable. */
   spec_test("ir bridge cancellation returns promptly, releases the claim, and leaves the session usable",
-      covers = List("connection_kernel#T4")) {
+      covers = List("pide_bridge#T3", "connection_kernel#T4")) {
     with_repl("CancelledIR") {
       val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
       val requestId = RequestId.string("live-ir-cancel")

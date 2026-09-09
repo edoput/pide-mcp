@@ -1875,8 +1875,16 @@ val _ =
     (Synchronized.value routing_probe));
 \<close>
 
-spec_test \<open>IR bridge cancellation interrupts work and cleans its output route\<close>
-  covers \<open>connection_kernel#T4\<close>
+text \<open>T3's ML-unit evidence starts at the shared cancellation executor,
+then invokes the registered \<open>ir\<close> operation through the common registry.
+The cancellation interrupts that executor-owned IR work, suppresses its
+terminal publication, and removes its route.  This fixture does not expose a
+Future-group identity probe: it establishes cancellation-route behavior, not
+a count of allocated groups.  The bridge-layer test supplies real PIDE-command
+dispatch that is intentionally outside this direct ML fixture.\<close>
+
+spec_test \<open>IR bridge cancellation through the common registry cleans its route\<close>
+  covers \<open>pide_bridge#T3\<close> and \<open>connection_kernel#T4\<close>
 
 ML \<open>
 val _ =
@@ -1893,7 +1901,7 @@ val _ =
     val published = Synchronized.var "MCP_Repl.bridge_cancel_published" 0;
     val _ =
       MCP_Cancellation.fork_group id "MCP.bridge.ir.test"
-        (fn group => MCP_Repl.bridge_handler group \<^theory> payload)
+        (fn group => MCP_Bridge.invoke \<^theory> "ir" group payload)
         (fn _ => Synchronized.change published (fn n => n + 1))
         (K ());
     fun await_busy 0 = false
