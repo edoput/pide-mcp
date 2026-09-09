@@ -220,7 +220,7 @@ def test_head_change_invalidates_completion_even_when_files_match() -> None:
     assert "head-changed" in result.failures
 
 
-@spec_test(covers=("planning_gate#T6",))
+@spec_test(covers=("planning_gate#T3",))
 def test_failed_scala_layer_blocks_execution_evidence_even_with_a_tagged_test() -> None:
     result = run_done(
         ROOT,
