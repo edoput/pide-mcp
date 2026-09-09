@@ -48,9 +48,40 @@ class MCP_Boot_Failure_Tests extends MCP_Suite {
 
 class MCP_Bridge_Tests extends MCP_Session_Suite(
   "MCP-Tools", "MCP_Tools", McpBridgeProfile.base) {
+  private def registry_change_theory(name: String): String =
+    "theory " + name + "\n  imports \"MCP-Tools.MCP_Tools\"\nbegin\n\n" +
+      "mcp_tool registered_during_load = \\<open>String.map Char.toUpper\\<close> " +
+      "(description \\<open>base bridge registry-change fixture\\<close>)\n\nend\n"
+
+  private def with_fixture_dir(files: (String, String)*)(body: Path => Unit): Unit =
+    Isabelle_System.with_tmp_dir("base-bridge") { dir =>
+      for ((name, content) <- files) File.write(dir + Path.basic(name + ".thy"), content)
+      body(dir)
+    }
+
   spec_test("startup hello advertises precisely MCP-Tools base bridge operations",
       covers = List("pide_bridge#T10")) {
     assertEquals(session.bridge_operation_names, McpBridgeOperations.baseOperationNames)
+  }
+
+  spec_test("base bridge executes all six base operations over production PIDE",
+      verifies = List("pide_bridge#I1"), covers = List("pide_bridge#T9")) {
+    val tools = session.ml_tools()
+    assert(tools.rows.exists(_.name == "MCP_Tools.shout"))
+
+    val theories = session.ml_theories()
+    val rootTheory = theories.find(Long_Name.base_name(_) == "MCP_Tools")
+      .getOrElse(fail("MCP_Tools not in " + theories.mkString(", ")))
+    val locator = "isabelle://context/theory/" + rootTheory
+
+    assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> "bridge"), locator),
+      MCP_Session.Ok("BRIDGE"))
+    assertEquals(session.check_context(locator), MCP_Session.Ok(locator))
+
+    val resources = session.ml_named_resources(locator)
+    assert(resources.exists(_._1 == "MCP_Tools.greeting"))
+    assertEquals(session.ml_read_resource("MCP_Tools.greeting", locator),
+      MCP_Session.Ok("hello from MCP_Resource"))
   }
 
   /* the bridge carries FULL INTERNAL names + the form tag; exposed
@@ -105,6 +136,36 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
   test("bridge: ml_run unknown tool is an error") {
     expect_error(session.ml_run("no_such_tool", List("input" -> "x")),
       containing = "no_such_tool")
+  }
+
+  spec_test("base bridge keeps registry notifications independent from base calls",
+      covers = List("pide_bridge#T9")) {
+    val changed = new CountDownLatch(1)
+    val events = collection.mutable.ListBuffer.empty[String]
+    session.set_changed_handler { event =>
+      events.synchronized { events += event }
+      changed.countDown()
+    }
+    try {
+      with_fixture_dir("BaseBridgeChangedDuringLoad" ->
+          registry_change_theory("BaseBridgeChangedDuringLoad")) { dir =>
+        try {
+          expect_ok(session.load_theory("BaseBridgeChangedDuringLoad", File.standard_path(dir)),
+            "load theory registering an MCP tool")
+          assert(changed.await(2, TimeUnit.SECONDS),
+            "MCP.tools_changed from document registration did not reach the session handler")
+          assert(events.synchronized { events.contains("tools") },
+            "document registration emitted no tools list-change event")
+          assert(session.ml_tools().rows.exists(_.name == "MCP_Tools.shout"),
+            "base bridge tools call was unusable after the independent notification")
+          assert(session.ml_theories().exists(_.contains("MCP_Tools")),
+            "base bridge theories call was unusable after the independent notification")
+        }
+        finally expect_ok(session.unload_theory("BaseBridgeChangedDuringLoad"),
+          "unload theory registering an MCP tool")
+      }
+    }
+    finally session.set_changed_handler(_ => ())
   }
 
   test("bridge: canonical root context equals an explicitly validated locator") {
@@ -251,7 +312,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
   }
 
   spec_test("common v1 envelope executes all seven typed operations and reply codecs",
-      verifies = List("pide_bridge#I1"), covers = List("pide_bridge#T9")) {
+      verifies = List("pide_bridge#I1")) {
     val tools = session.ml_tools()
     assert(tools.rows.exists(_.name == "MCP_Tools.shout"))
 
@@ -290,13 +351,8 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
     finally session.ir("remove", List("repl" -> repl))
   }
 
-  /* The public cancellable IR API calls the production PideBridge (rather
-     than the older direct PIDE helper). The deterministic bridge unit test
-     owns pending/deadline accounting; here a live PIDE session proves that
-     ordered cancellation reaches the registered IR operation, releases its
-     REPL claim, and leaves subsequent IR calls usable. */
   spec_test("ir bridge cancellation returns promptly, releases the claim, and leaves the session usable",
-      covers = List("pide_bridge#T3", "connection_kernel#T4")) {
+      covers = List("connection_kernel#T4")) {
     with_repl("CancelledIR") {
       val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
       val requestId = RequestId.string("live-ir-cancel")
@@ -638,11 +694,6 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
   private def wave2_theory(name: String, body: String): String =
     "theory " + name + "\n  imports Main\nbegin\n\n" + body + "\n\nend\n"
 
-  private def registry_change_theory(name: String): String =
-    "theory " + name + "\n  imports \"MCP-Tools.MCP_Tools\"\nbegin\n\n" +
-      "mcp_tool registered_during_load = \\<open>String.map Char.toUpper\\<close> " +
-      "(description \\<open>live registry-change fixture\\<close>)\n\nend\n"
-
   private val wave2_good = "lemma wave2_good: \"True\" by simp"
   private val wave2_bad = "lemma wave2_bad: \"False\"\n  by simp"
   private val wave2_warn = "lemma wave2_warn: \"False\"\n  sorry"
@@ -652,34 +703,6 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
       for ((name, content) <- files) File.write(dir + Path.basic(name + ".thy"), content)
       body(dir)
     }
-
-  spec_test("live document registration fans out its ML tools_changed event without blocking the bridge",
-      covers = List("pide_bridge#T9")) {
-    val changed = new CountDownLatch(1)
-    val events = collection.mutable.ListBuffer.empty[String]
-    session.set_changed_handler { event =>
-      events.synchronized { events += event }
-      changed.countDown()
-    }
-    try {
-      with_fixture_dir("BridgeChangedDuringLoad" -> registry_change_theory("BridgeChangedDuringLoad")) {
-        dir =>
-          try {
-            expect_ok(session.load_theory("BridgeChangedDuringLoad", File.standard_path(dir)),
-              "load theory registering an MCP tool")
-            assert(changed.await(2, TimeUnit.SECONDS),
-              "MCP.tools_changed from document registration did not reach the session handler")
-            assert(events.synchronized { events.contains("tools") },
-              "document registration emitted no tools list-change event")
-            assert(session.ir("repls", Nil).ok,
-              "bridge call did not remain usable after the independent list-change event")
-          }
-          finally expect_ok(session.unload_theory("BridgeChangedDuringLoad"),
-            "unload theory registering an MCP tool")
-      }
-    }
-    finally session.set_changed_handler(_ => ())
-  }
 
   /* theory-resource tier matrix (isabelle://theory/{name}[/diagnostics|
      /entities|/commands]): three of the four tiers are fixed, reusable
@@ -1543,8 +1566,8 @@ class MCP_Run_Tool_Async_Tests
     }
   }
 
-  spec_test("named-resource bridge cancellation returns promptly and remains usable",
-      covers = List("connection_kernel#T11", "connection_kernel#T4")) {
+  spec_test("base bridge cancellation interrupts a started resource and recovers",
+      covers = List("pide_bridge#T3", "connection_kernel#T11", "connection_kernel#T4")) {
     val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
     val requestId = RequestId.string("live-resource-cancel")
     val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
@@ -1552,16 +1575,19 @@ class MCP_Run_Tool_Async_Tests
       case other => fail("could not admit live resource cancellation fixture: " + other)
     }
     val slow = Future.fork(session.ml_read_resource_cancellable(
-      "MCP_Tools_Tests.slow_resource", test_theory, admitted.cancellation))
-    Thread.sleep(100)
-    assert(!slow.is_finished, "slow resource fixture completed before cancellation")
+      "MCP_Tools_Tests.bridge_slow_resource", test_theory, admitted.cancellation))
+    eventually("base bridge resource worker did not report started", Time.seconds(3.0)) {
+      session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", test_theory) ==
+        MCP_Session.Ok("started")
+    }
 
-    val before = Time.now()
     assert(registry.cancel(requestId, Some("bridge fixture"))
       .isInstanceOf[RequestRegistry.Cancelled])
     expect_error(slow.join, containing = "cancelled")
-    assert(Time.now() - before < Time.seconds(1.0),
-      "Scala resource bridge promise did not return promptly after cancellation")
+    eventually("base bridge resource worker did not report interruption", Time.seconds(5.0)) {
+      session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", test_theory) ==
+        MCP_Session.Ok("interrupted")
+    }
     assertEquals(
       session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory).ok,
       true,
@@ -1728,34 +1754,33 @@ class MCP_Run_Tool_Async_Tests
 }
 
 
-/* A separate PIDE session fixes a generous bridge deadline before startup.
-   The deterministic PideBridge test owns the timeout/result race; this test
-   proves the timeout reaches real ML work and leaves the live session usable. */
-class MCP_Bridge_Timeout_Tests extends MCP_Session_Suite(
-  "MCP-HOL", "MCP_Repl", McpBridgeProfile.hol,
-  options => options + "mcp_request_timeout=2.0") {
+/* The deterministic PideBridge test owns the timeout/result race.  This
+   separate base-session test proves its deadline reaches a started ML worker,
+   observes that worker's interrupt cleanup, and leaves later base work usable. */
+class MCP_Base_Bridge_Timeout_Tests extends MCP_Session_Suite(
+  "MCP-Tools-Tests", "MCP_Tools_Tests", McpBridgeProfile.base,
+  options => options + "mcp_request_timeout=1.0") {
 
-  spec_test("live bridge deadline interrupts a slow IR call and preserves the next call",
+  spec_test("base bridge deadline interrupts a started resource and recovers",
       covers = List("pide_bridge#T4")) {
-    with_repl("BridgeDeadline") {
-      val slow = Future.fork(session.ir("step",
-        List("repl" -> "BridgeDeadline",
-          "isar_text" -> "ML_command \\<open>OS.Process.sleep (seconds 30.0)\\<close>")))
-      await_busy("BridgeDeadline")
-      assert(session.ir("repls", Nil).ok,
-        "a fast bridge reply did not arrive while the timed call was pending")
-
-      val timeout = intercept[MCP_Session.BridgeTimedOut] { slow.join }
-      assertEquals(timeout.delay, 2.seconds)
-      eventually("timed-out IR work retained the REPL claim", Time.seconds(3.0)) {
-        session.ir("repls", Nil) match {
-          case MCP_Session.Ok(text) => text.contains("BridgeDeadline") && !text.contains("busy")
-          case _ => false
-        }
-      }
-      expect_ok(session.ir("state", List("repl" -> "BridgeDeadline", "state_idx" -> "-1")),
-        "IR session was unusable after a bridge timeout")
+    val testTheory = "isabelle://context/theory/" +
+      session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
+        .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+    val slow = Future.fork(
+      session.ml_read_resource("MCP_Tools_Tests.bridge_slow_resource", testTheory))
+    eventually("base bridge timeout worker did not report started", Time.seconds(3.0)) {
+      session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", testTheory) ==
+        MCP_Session.Ok("started")
     }
+
+    val timeout = intercept[MCP_Session.BridgeTimedOut] { slow.join }
+    assertEquals(timeout.delay, 1.seconds)
+    eventually("base bridge timeout worker did not report interruption", Time.seconds(5.0)) {
+      session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", testTheory) ==
+        MCP_Session.Ok("interrupted")
+    }
+    assertEquals(session.ml_read_resource("MCP_Tools_Tests.test_collection", testTheory).ok,
+      true, "base bridge was unusable after a deadline interrupt")
   }
 }
 

@@ -1287,6 +1287,67 @@ val _ =
   in () end;
 \<close>
 
+text \<open>The shared executor, rather than any legacy operation wrapper,
+owns the request Future group and cancellation route.  The worker must run in
+the supplied group; the negative probe makes the same ownership predicate fail
+for an unrelated worker group.  After cancellation, the interrupted worker
+must finish its cleanup before the route disappears, and its result must never
+publish.\<close>
+
+spec_test \<open>base bridge executor owns its worker group and suppresses a cancelled result\<close>
+  covers \<open>pide_bridge#T3\<close>
+
+ML \<open>
+val _ =
+  let
+    val id = "base-bridge-cancellation-route";
+    val started = Synchronized.var "MCP base bridge worker started" false;
+    val stopped = Synchronized.var "MCP base bridge worker stopped" false;
+    val interrupted = Synchronized.var "MCP base bridge worker interrupted" false;
+    val published = Synchronized.var "MCP base bridge worker published" 0;
+    fun await state 0 = false
+      | await state attempts =
+          if Synchronized.value state then true
+          else (OS.Process.sleep (seconds 0.01); await state (attempts - 1));
+    fun owns supplied =
+      (case Future.worker_group () of
+        SOME actual => Task_Queue.group_id actual = Task_Queue.group_id supplied
+      | NONE => false);
+    val _ =
+      MCP_Cancellation.fork_group id "MCP.bridge.base.test"
+        (fn group =>
+          let
+            val _ = \<^assert> (owns group);
+            val wrong_group = Future.new_group NONE;
+            val wrong = Future.join
+              ((singleton o Future.forks)
+                {name = "MCP bridge wrong-group probe", group = SOME wrong_group,
+                 deps = [], pri = ~1, interrupts = true}
+                (fn () => owns group));
+            val _ = \<^assert> (not wrong);
+            val _ = Synchronized.change started (K true);
+            val result = Exn.capture_body (fn () => OS.Process.sleep (seconds 5.0));
+            val _ = Thread_Attributes.uninterruptible_body (fn _ =>
+              (Synchronized.change interrupted
+                (K (case result of Exn.Res _ => false | Exn.Exn exn => Exn.is_interrupt exn));
+               Synchronized.change stopped (K true)));
+          in Exn.release result end)
+        (fn _ => Synchronized.change published (fn n => n + 1))
+        (K ());
+    val _ = \<^assert> (await started 200);
+    val _ = \<^assert> (MCP_Cancellation.cancel id);
+    val _ = \<^assert> (await stopped 300);
+    val _ = \<^assert> (Synchronized.value interrupted);
+    fun route_gone 0 = false
+      | route_gone attempts =
+          if MCP_Cancellation.member id
+          then (OS.Process.sleep (seconds 0.01); route_gone (attempts - 1))
+          else true;
+    val _ = \<^assert> (route_gone 300);
+    val _ = \<^assert> (Synchronized.value published = 0);
+  in () end;
+\<close>
+
 ML \<open>
 (*MCP_Output.captured must inherit MCP.run_tool's cancellation group.  A
   fresh, unrelated group would let the outer bridge request finish as
@@ -1346,9 +1407,67 @@ silently return empty output. Reset here, exactly as MCP_Repl.thy's
 own build-time self-test does.\<close>
 ML \<open>MCP_Output.reset ()\<close>
 
+spec_test \<open>base bridge registry invokes each of its six operations\<close>
+  covers \<open>pide_bridge#T9\<close>
+
+ML \<open>
+val _ =
+  let
+    val root = \<^theory>\<open>MCP_Tools\<close>;
+    val operations =
+      ["check_context", "read_resource", "resources", "run_tool", "theories", "tools"];
+    val _ = \<^assert> (MCP_Bridge.registered root = operations);
+    val duplicate = Exn.capture_body
+      (fn () => MCP_Bridge.register (Binding.name "tools") MCP_Bridge_Base.tools root);
+    val _ = \<^assert> (Exn.is_exn duplicate);
+    val group = Future.new_group NONE;
+    val locator = "isabelle://context/theory/" ^ Context.theory_long_name root;
+    fun invoke operation payload = MCP_Bridge.invoke root operation group payload;
+    fun status result = XML.Decode.pair XML.Decode.string XML.Decode.self result;
+    val tools = invoke "tools" (XML.Encode.string locator);
+    val _ = \<^assert> (String.isSubstring "MCP_Tools.shout" (XML.content_of tools));
+    val theories = invoke "theories" (XML.Encode.unit ());
+    val _ = \<^assert> (String.isSubstring "MCP_Tools" (XML.content_of theories));
+    val (run_status, run_output) = status (invoke "run_tool"
+      (XML.Encode.pair XML.Encode.string
+        (XML.Encode.pair XML.Encode.string
+          (XML.Encode.list (XML.Encode.pair XML.Encode.string XML.Encode.string)))
+        (locator, ("MCP_Tools.shout", [("input", "bridge")]))));
+    val _ = \<^assert> (run_status = "ok" andalso XML.content_of run_output = "BRIDGE");
+    val (context_status, context_output) =
+      status (invoke "check_context" (XML.Encode.option XML.Encode.string NONE));
+    val _ = \<^assert> (context_status = "ok" andalso XML.content_of context_output = locator);
+    val resources = invoke "resources" (XML.Encode.string locator);
+    val _ = \<^assert> (String.isSubstring "MCP_Tools.greeting" (XML.content_of resources));
+    val (read_status, read_output) = status (invoke "read_resource"
+      (XML.Encode.pair XML.Encode.string XML.Encode.string
+        (locator, "MCP_Tools.greeting")));
+    val _ = \<^assert> (read_status = "ok" andalso
+      XML.content_of read_output = "hello from MCP_Resource");
+  in () end;
+\<close>
+
+ML \<open>
+val bridge_lifecycle = Synchronized.var "MCP base bridge lifecycle" "idle";
+\<close>
+
 mcp_resource slow_resource = \<open>fn _ =>
   (OS.Process.sleep (Time.fromReal 2.0); "slow resource done")\<close>
   (description \<open>a cancellable bridge fixture\<close>)
+
+mcp_resource bridge_slow_resource = \<open>fn _ =>
+  let
+    val _ = Synchronized.change bridge_lifecycle (K "started");
+    val result = Exn.capture_body (fn () => OS.Process.sleep (seconds 30.0));
+    val _ = Thread_Attributes.uninterruptible_body (fn _ =>
+      Synchronized.change bridge_lifecycle
+        (K (case result of Exn.Res () => "completed"
+          | Exn.Exn exn => if Exn.is_interrupt exn then "interrupted" else "failed")));
+  in Exn.release result; "slow resource done" end\<close>
+  (description \<open>a base bridge cancellation fixture with lifecycle signals\<close>)
+
+mcp_resource bridge_lifecycle = \<open>fn _ => Synchronized.value bridge_lifecycle\<close>
+  (description \<open>the slow-resource lifecycle for base bridge tests\<close>)
 
 section \<open>Bridge drain ownership\<close>
 
