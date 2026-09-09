@@ -4,8 +4,11 @@ Replaceable byte transport for one MCP connection. It frames UTF-8 stdio input
 and serializes complete JSON-RPC envelopes, but intentionally knows nothing
 about MCP lifecycle, request scheduling, tool dispatch, or Isabelle backends.
 
-Security boundary: McpInputPolicy currently bounds raw input bytes and the
-message buffer only. JsonRpc.decode still delegates to Isabelle's recursive
+Trust assumption: stdio input comes from a trusted client. McpInputPolicy
+currently bounds raw input bytes and the message buffer only; it does not
+make this transport suitable for untrusted input.
+
+JsonRpc.decode still delegates to Isabelle's recursive
 JSON parser without a nesting-depth limit, so deeply nested JSON within the
 byte limit can exhaust the parser stack. That separate parser problem is known
 and deliberately deferred; future structural parsing limits belong in
@@ -117,38 +120,28 @@ final class StdioDataPlane private (
 
   private def readLine(): Option[String] = {
     var length = 0
-    var complete = false
     var pendingCR = false
-    while (!complete) {
-      val next = reader.read()
-      if (next < 0) {
-        if (pendingCR) {
-          if (length == maxInputMessageBytes)
-            throw new InputMessageTooLargeException(maxInputMessageBytes)
-          bytes(length) = '\r'
-          length += 1
-        }
-        if (length == 0) return None
-        complete = true
-      }
-      else if (pendingCR && next == '\n') complete = true
-      else {
-        if (pendingCR) {
-          if (length == maxInputMessageBytes)
-            throw new InputMessageTooLargeException(maxInputMessageBytes)
-          bytes(length) = '\r'
-          length += 1
-          pendingCR = false
-        }
-        if (next == '\n') complete = true
-        else if (next == '\r') pendingCR = true
-        else {
-          if (length == maxInputMessageBytes)
-            throw new InputMessageTooLargeException(maxInputMessageBytes)
-          bytes(length) = next.toByte
-          length += 1
-        }
-      }
+
+    /* If the JSON parser cannot enforce structural limits, check structure
+       here before parsing (e.g. bounded nesting and matching delimiters,
+       respecting JSON strings and escapes), with limits from McpInputPolicy. */
+    def append(value: Int): Unit = {
+      if (length == maxInputMessageBytes)
+        throw new InputMessageTooLargeException(maxInputMessageBytes)
+      bytes(length) = value.toByte
+      length += 1
+    }
+
+    var next = reader.read()
+    while (next != '\n') {
+      if (pendingCR) append('\r')
+
+      if (next < 0)
+        return if (length == 0) None else Some(decode(length))
+
+      pendingCR = next == '\r'
+      if (!pendingCR) append(next)
+      next = reader.read()
     }
     Some(decode(length))
   }
