@@ -3,6 +3,13 @@
 Replaceable byte transport for one MCP connection. It frames UTF-8 stdio input
 and serializes complete JSON-RPC envelopes, but intentionally knows nothing
 about MCP lifecycle, request scheduling, tool dispatch, or Isabelle backends.
+
+Security boundary: McpInputPolicy currently bounds raw input bytes and the
+message buffer only. JsonRpc.decode still delegates to Isabelle's recursive
+JSON parser without a nesting-depth limit, so deeply nested JSON within the
+byte limit can exhaust the parser stack. That separate parser problem is known
+and deliberately deferred; future structural parsing limits belong in
+McpInputPolicy.
 */
 
 package isabelle.mcp.transport
@@ -62,6 +69,11 @@ trait InputBufferProvider {
 
 
 object InputBufferProvider {
+  /* The default provider allocates one exact-sized Array[Byte] when a data
+     plane opens, retains it for that connection, and cannot reuse it after
+     close. A future bounded pool can replace only this provider, recycle
+     released leases, and bound aggregate leased storage; McpInputPolicy and
+     StdioDataPlane signatures need not change. */
   val unpooled: InputBufferProvider = new InputBufferProvider {
     def acquire(maximum: McpInputPolicy.MaxMessageBytes): InputBufferLease =
       new InputBufferLease {
