@@ -97,3 +97,13 @@ def test_symlinked_preferences_cannot_redirect_write(environment, tmp_path):
         with pytest.raises(WorktreeError, match='symlinked'):
             state.setup()
     assert outside.read_text() == 'untouched'
+
+
+def test_explicit_base_root_is_quoted_as_data(environment):
+    worktree, launcher, _, _ = environment
+    base_root = "/installation/base heaps/$(literal)"
+    state = State(worktree, launcher, base_heaps=base_root)
+    with state.locked():
+        state.setup()
+        assignment = (state.home / 'etc/settings').read_text().strip()
+        assert shlex.split(assignment) == ['ISABELLE_HEAPS_SYSTEM=' + base_root]

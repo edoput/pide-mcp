@@ -74,7 +74,15 @@ Python configures the private user directory and delegates heap selection and
 validation to Isabelle's native `build -n -b Pure HOL`. Isabelle can read its
 system heaps; new heaps and databases go into the checkout's private user
 state. The helper does not enumerate platforms, copy base databases, or load
-the main user's heaps/catalog. Missing or outdated base heaps fail setup;
+the main user's heaps/catalog. If the installation keeps its base sessions in a user heap root instead of
+its system root, pass `--base-heaps /absolute/heap-root` before the action.
+This names a store root, not a platform directory. Isabelle treats it as the
+system input store while `system_heaps = false` keeps outputs private. The
+path is interpreted inside the selected installation. Use the same option
+on subsequent commands. Keep this base store stable during execution; the
+helper does not lock external stores or make them filesystem read-only. Obtain the configured root with
+`tools/isabelle getenv -b ISABELLE_HEAPS`; do not guess a release/platform.
+Missing or outdated base heaps fail setup;
 report the requirement rather than building them or switching installation.
 Isabelle's bootstrap can compile the registered Scala components during this
 check, so setup is not read-only.

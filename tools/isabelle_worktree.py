@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -71,9 +72,10 @@ def atomic_text(path: Path, content: str) -> None:
 
 
 class State:
-    def __init__(self, worktree: Path, launcher: Launcher, components=(), roots=()):
+    def __init__(self, worktree: Path, launcher: Launcher, components=(), roots=(), base_heaps=None):
         self.worktree = worktree
         self.launcher = launcher
+        self.base_heaps = base_heaps
         self.state = worktree / ".isabelle-worktree"
         self.components = [real_dir(p, "component") for p in (worktree / "mcp", worktree / "mcp_test", *components)]
         self.roots = [real_dir(p, "session root") for p in roots]
@@ -114,7 +116,7 @@ class State:
         for path in (self.user, self.user / ".isabelle", self.home, self.home / "etc", self.home / "heaps"):
             if path.exists() or path.is_symlink():
                 real_dir(path, "private state directory")
-        for path in (self.home / "etc" / "components", self.home / "ROOTS", self.home / "etc" / "preferences"):
+        for path in (self.home / "etc" / "components", self.home / "ROOTS", self.home / "etc" / "preferences", self.home / "etc" / "settings"):
             if path.is_symlink():
                 raise WorktreeError(f"refusing symlinked state file: {path}")
 
@@ -132,6 +134,11 @@ class State:
         (self.home / "etc").mkdir(parents=True, exist_ok=True)
         (self.home / "heaps").mkdir(exist_ok=True)
         self.catalogs()
+        # A caller may nominate a base store in the installation namespace.
+        # Isabelle still chooses its platform and validates every dependency.
+        atomic_text(self.home / "etc" / "settings",
+                    "" if self.base_heaps is None else
+                    "ISABELLE_HEAPS_SYSTEM=" + shlex.quote(self.base_heaps) + "\n")
         # Keep all mutable build output in this checkout. Isabelle's Store
         # chooses compatible system heaps and validates their build metadata.
         atomic_text(self.home / "etc" / "preferences", "system_heaps = false\n")
@@ -154,11 +161,12 @@ def main(argv=None) -> int:
     parser.add_argument("--worktree", required=True, type=Path)
     parser.add_argument("--component", action="append", type=Path, default=[])
     parser.add_argument("--root", action="append", type=Path, default=[])
+    parser.add_argument("--base-heaps", help="optional base heap input root, as visible to Isabelle")
     parser.add_argument("action", choices=("setup", "build", "clean", "scala", "test", "teardown"))
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
-        state = State(checkout(args.worktree), resolve_launcher(), args.component, args.root)
+        state = State(checkout(args.worktree), resolve_launcher(), args.component, args.root, args.base_heaps)
         if args.arguments and args.action != "test":
             raise WorktreeError("extra arguments are only supported for test")
         if args.action == "teardown" and not state.state.exists() and not state.state.is_symlink():
