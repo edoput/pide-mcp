@@ -1480,13 +1480,21 @@ class MCP_Tools_Tests extends MCP_Suite {
    fresh, stateless Handler per call, wrong for scope persistence). */
 
 class MCP_Tool_Scope_Tests extends MCP_Suite {
-  test("tools/list includes locator-based tool_scope_show/set schemas") {
+  spec_test("tools/list exposes a single context-only tool scope mutation",
+      covers = List("context_locator#T5")) {
     val show = tool_row("tool_scope_show")
     assertEquals(annotation(show, "readOnlyHint"), true)
     val set = tool_row("tool_scope_set")
+    assertEquals(get(set, "inputSchema"),
+      JSON.Object(
+        "type" -> "object",
+        "properties" -> JSON.Object("context" -> JSON.Object("type" -> "string")),
+        "required" -> List("context")))
     assertEquals(required_args(set), List("context"))
     assertEquals(property_type(set, "context"), "string")
     assert(!MCP_Server.all_builtin_names.contains("tool_scope_include"))
+    assert(!McpBridgeOperations.operationNames.exists(_.contains("bundle")))
+    assert(!McpBridgeOperations.operationNames.exists(_.contains("include")))
   }
 
   test("tool_scope_show obtains the canonical default locator from the backend") {
@@ -1523,6 +1531,35 @@ class MCP_Tool_Scope_Tests extends MCP_Suite {
     val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
     assert(show.contains("isabelle://context/theory/MCP_Tools"),
       "scope should be unchanged: " + show)
+  }
+
+  spec_test("tool_scope_set forwards an opaque extension locator and commits only ML canonical output",
+      covers = List("context_locator#T4")) {
+    val candidate = "isabelle://context/fixture/alias"
+    val canonical = "isabelle://context/fixture/self"
+    val rejected = "isabelle://context/fixture/missing"
+    class Extension_Backend extends Fake_Backend {
+      var checked: List[String] = Nil
+      override def check_context(context: String): MCP_Session.Result = {
+        checked = checked :+ context
+        if (context == candidate) MCP_Session.Ok(canonical)
+        else if (context == canonical) MCP_Session.Ok(canonical)
+        else if (context == rejected) MCP_Session.Error("Unknown fixture context " + quote("missing"))
+        else super.check_context(context)
+      }
+    }
+    val backend = new Extension_Backend
+    val handler = new MCP_Server.Handler(backend)
+
+    assert_no_error(call_tool_on(handler, "tool_scope_set", JSON.Object("context" -> candidate)))
+    val after_success = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(after_success.startsWith("Context: " + canonical + "\n"), after_success)
+
+    val message = assert_is_error(call_tool_on(handler, "tool_scope_set", JSON.Object("context" -> rejected)))
+    assert(message.contains("Unknown fixture context"), message)
+    val after_failure = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(after_failure.startsWith("Context: " + canonical + "\n"), after_failure)
+    assertEquals(backend.checked, List(candidate, canonical, rejected, canonical))
   }
 
   test("tool_scope_set: theory locator round-trips through tool_scope_show") {

@@ -53,8 +53,11 @@ object MCP_Test {
       classOf[MCP_Boot_Failure_Tests],
       classOf[MCP_Bridge_Tests],
       classOf[MCP_Ir_Bridge_Tests],
+      classOf[MCP_Context_Root_Bridge_Tests],
+      classOf[MCP_Base_Bridge_Timeout_Tests],
       classOf[MCP_Run_Tool_Async_Tests],
       classOf[MCP_Bounded_Output_Bridge_Tests],
+      classOf[MCP_Bridge_Reply_Limit_Tests],
       classOf[MCP_Bridge_Shutdown_Tests])
 
   val scala_unit_layer: String = MCP_Test_Layers("scala_unit_suites")

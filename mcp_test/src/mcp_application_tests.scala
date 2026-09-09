@@ -74,7 +74,8 @@ class MCP_Application_Tests extends MCP_Suite {
     assertEquals(get(ping, "result"), JSON.Object())
   }
 
-  test("disabled untrusted output hides and rejects output-dependent tools before dispatch") {
+  spec_test("disabled untrusted output hides and rejects output-dependent tools before dispatch",
+      covers = List("pide_bridge#T13")) {
     class OutputBackend extends Fake_Backend {
       var runs = List.empty[String]
       override def ml_tools(context: String): MCP_Session.Tools_Reply = {

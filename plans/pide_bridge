@@ -51,7 +51,7 @@ claims:
     category: design
   - id: D5
     kind: design
-    statement: MCP_Tools defines the extensible ML operation registry and its one common executor; handlers are inherited through the configured registry-root theory, descendant theories register additional handlers, and MCP_Repl contributes IR decoding, dispatch, and output capture without creating a second call route or Future group.
+    statement: MCP_Tools defines the extensible ML operation registry and its one common executor; handlers are inherited through the configured registry-root theory and descendant theories may register additional handlers. Legacy deployment descriptions retain MCP_Repl IR decoding, dispatch, and output capture pending its approved retirement; this plan adds no IR coverage or production-profile change.
     category: design
   - id: D6
     kind: design
@@ -109,7 +109,7 @@ claims:
   - id: T3
     kind: test
     state: active
-    statement: Cancellation before dispatch sends no call, cancellation after dispatch sends one ordered cancel, and cancel/result races produce one Cancelled or successful outcome while leaving no pending entry, deadline, or ML route; IR uses exactly one common-executor Future group and cancellation route.
+    statement: Cancellation before dispatch sends no call, cancellation after dispatch sends one ordered cancel, and cancel/result races produce one Cancelled or successful outcome while leaving no pending entry, deadline, or ML route; the common executor assigns each admitted request one owning Future group and cancellation route. The user explicitly retired IR from future coverage on 2026-09-09; this does not claim removal of legacy IR code or contracts.
     layers: [scala-unit, ml-unit, bridge]
   - id: T4
     kind: test
@@ -139,12 +139,12 @@ claims:
   - id: T9
     kind: test
     state: active
-    statement: Tools, theories, tool execution, context checks, named-resource listing, and named-resource reads register in MCP_Tools; IR registers only in MCP_Repl; duplicate registration fails; all seven operations use the common executor and production PideBridge while list-change events remain independent fan-out notifications.
+    statement: Tools, theories, tool execution, context checks, named-resource listing, and named-resource reads are the six base operations registered in MCP_Tools; duplicate base registration fails; those six operations use the common executor and production PideBridge while list-change events remain independent fan-out notifications. The former IR-specific seventh-operation acceptance was retired by the user's 2026-09-09 decision and is not claimed as covered or removed.
     layers: [ml-unit, bridge]
   - id: T10
     kind: test
     state: active
-    statement: A bounded startup hello makes MCP-Tools Ready with only base operations and MCP-HOL Ready with IR, while an absent command, wrong revision, or missing required operation fails backend readiness before public bridge calls are accepted.
+    statement: A bounded startup hello makes MCP-Tools Ready with only base operations and, in the legacy deployment description pending approved IR retirement, MCP-HOL Ready with IR; an absent command, wrong revision, or missing required operation fails backend readiness before public bridge calls are accepted.
     layers: [scala-unit, bridge]
   - id: T11
     kind: test
@@ -280,6 +280,11 @@ duplicate names fail at theory build.  `MCP_Repl` registers IR, but contributes
 only decode, dispatch, and output-capture behavior.  The common executor owns
 the sole Future group and cancellation route, so wrapping IR cannot create a
 nested route or double-register the ID.
+
+The IR deployment description above is legacy pending removal.  The user
+retired IR from future coverage on 2026-09-09, so T3 and T9 establish only the
+shared executor and six base operations; this is not a claim that legacy IR
+code or contracts have been removed.
 
 The configured theory is the immutable registry-root theory defined by
 `plans/context_locator`, not the connection's agent context.  Operation

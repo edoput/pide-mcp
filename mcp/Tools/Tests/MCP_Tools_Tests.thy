@@ -1,8 +1,10 @@
 theory MCP_Tools_Tests
   imports
     "MCP-Assumption.MCP_Assumption"
-    MCP_Fixture_B MCP_Fixture_C MCP_Fixture_Sibling
+    MCP_Fixture_B MCP_Fixture_C MCP_Fixture_Root MCP_Fixture_Sibling
 begin
+
+external_file "MCP_Cancellation_Drain_Test.ML"
 
 text \<open>Unit tests: the theory fails to load iff a test fails, so
 \<^verbatim>\<open>isabelle build -d mcp/Tools MCP-Tools-Tests\<close> is the test runner.
@@ -78,6 +80,32 @@ val (canonical, resolved) =
 \<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
   MCP_Context_Locator.resolve_string root
     "isabelle://context/theory/No_Such_Theory")));
+\<close>
+
+spec_test \<open>extension resolver canonicalizes an alias in ML\<close>
+  verifies \<open>context_locator#I1\<close>
+
+ML \<open>
+val root = \<^theory>\<open>MCP_Fixture_Root\<close>;
+val (canonical, resolved) =
+  MCP_Context_Locator.resolve_string root "isabelle://context/fixture/alias";
+\<^assert> (canonical = "isabelle://context/fixture/self");
+\<^assert> (Context.eq_thy (Proof_Context.theory_of resolved, root));
+\<close>
+
+spec_test \<open>base tools bridge rejects a bundle-shaped payload\<close>
+  covers \<open>context_locator#T5\<close>
+
+ML \<open>
+val root = \<^theory>\<open>MCP_Fixture_Root\<close>;
+val group = Future.new_group NONE;
+val locator = "isabelle://context/theory/" ^ Context.theory_long_name root;
+val ordinary = MCP_Bridge.invoke root "tools" group (XML.Encode.string locator);
+val bundle_shaped = Exn.capture_body (fn () =>
+  MCP_Bridge.invoke root "tools" group
+    (XML.Encode.pair XML.Encode.string XML.Encode.string (locator, "exploration")));
+\<^assert> (ordinary <> MCP_Protocol.empty_tools_body);
+\<^assert> (Exn.is_exn bundle_shaped);
 \<close>
 
 section \<open>Registration: name space entities\<close>
@@ -1285,6 +1313,67 @@ val _ =
   in () end;
 \<close>
 
+text \<open>The shared executor, rather than any legacy operation wrapper,
+owns the request Future group and cancellation route.  The worker must run in
+the supplied group; the negative probe makes the same ownership predicate fail
+for an unrelated worker group.  After cancellation, the interrupted worker
+must finish its cleanup before the route disappears, and its result must never
+publish.\<close>
+
+spec_test \<open>base bridge executor owns its worker group and suppresses a cancelled result\<close>
+  covers \<open>pide_bridge#T3\<close>
+
+ML \<open>
+val _ =
+  let
+    val id = "base-bridge-cancellation-route";
+    val started = Synchronized.var "MCP base bridge worker started" false;
+    val stopped = Synchronized.var "MCP base bridge worker stopped" false;
+    val interrupted = Synchronized.var "MCP base bridge worker interrupted" false;
+    val published = Synchronized.var "MCP base bridge worker published" 0;
+    fun await state 0 = false
+      | await state attempts =
+          if Synchronized.value state then true
+          else (OS.Process.sleep (seconds 0.01); await state (attempts - 1));
+    fun owns supplied =
+      (case Future.worker_group () of
+        SOME actual => Task_Queue.group_id actual = Task_Queue.group_id supplied
+      | NONE => false);
+    val _ =
+      MCP_Cancellation.fork_group id "MCP.bridge.base.test"
+        (fn group =>
+          let
+            val _ = \<^assert> (owns group);
+            val wrong_group = Future.new_group NONE;
+            val wrong = Future.join
+              ((singleton o Future.forks)
+                {name = "MCP bridge wrong-group probe", group = SOME wrong_group,
+                 deps = [], pri = ~1, interrupts = true}
+                (fn () => owns group));
+            val _ = \<^assert> (not wrong);
+            val _ = Synchronized.change started (K true);
+            val result = Exn.capture_body (fn () => OS.Process.sleep (seconds 5.0));
+            val _ = Thread_Attributes.uninterruptible_body (fn _ =>
+              (Synchronized.change interrupted
+                (K (case result of Exn.Res _ => false | Exn.Exn exn => Exn.is_interrupt exn));
+               Synchronized.change stopped (K true)));
+          in Exn.release result end)
+        (fn _ => Synchronized.change published (fn n => n + 1))
+        (K ());
+    val _ = \<^assert> (await started 200);
+    val _ = \<^assert> (MCP_Cancellation.cancel id);
+    val _ = \<^assert> (await stopped 300);
+    val _ = \<^assert> (Synchronized.value interrupted);
+    fun route_gone 0 = false
+      | route_gone attempts =
+          if MCP_Cancellation.member id
+          then (OS.Process.sleep (seconds 0.01); route_gone (attempts - 1))
+          else true;
+    val _ = \<^assert> (route_gone 300);
+    val _ = \<^assert> (Synchronized.value published = 0);
+  in () end;
+\<close>
+
 ML \<open>
 (*MCP_Output.captured must inherit MCP.run_tool's cancellation group.  A
   fresh, unrelated group would let the outer bridge request finish as
@@ -1344,9 +1433,67 @@ silently return empty output. Reset here, exactly as MCP_Repl.thy's
 own build-time self-test does.\<close>
 ML \<open>MCP_Output.reset ()\<close>
 
+spec_test \<open>base bridge registry invokes each of its six operations\<close>
+  covers \<open>pide_bridge#T9\<close>
+
+ML \<open>
+val _ =
+  let
+    val root = \<^theory>\<open>MCP_Tools\<close>;
+    val operations =
+      ["check_context", "read_resource", "resources", "run_tool", "theories", "tools"];
+    val _ = \<^assert> (MCP_Bridge.registered root = operations);
+    val duplicate = Exn.capture_body
+      (fn () => MCP_Bridge.register (Binding.name "tools") MCP_Bridge_Base.tools root);
+    val _ = \<^assert> (Exn.is_exn duplicate);
+    val group = Future.new_group NONE;
+    val locator = "isabelle://context/theory/" ^ Context.theory_long_name root;
+    fun invoke operation payload = MCP_Bridge.invoke root operation group payload;
+    fun status result = XML.Decode.pair XML.Decode.string XML.Decode.self result;
+    val tools = invoke "tools" (XML.Encode.string locator);
+    val _ = \<^assert> (String.isSubstring "MCP_Tools.shout" (XML.content_of tools));
+    val theories = invoke "theories" (XML.Encode.unit ());
+    val _ = \<^assert> (String.isSubstring "MCP_Tools" (XML.content_of theories));
+    val (run_status, run_output) = status (invoke "run_tool"
+      (XML.Encode.pair XML.Encode.string
+        (XML.Encode.pair XML.Encode.string
+          (XML.Encode.list (XML.Encode.pair XML.Encode.string XML.Encode.string)))
+        (locator, ("MCP_Tools.shout", [("input", "bridge")]))));
+    val _ = \<^assert> (run_status = "ok" andalso XML.content_of run_output = "BRIDGE");
+    val (context_status, context_output) =
+      status (invoke "check_context" (XML.Encode.option XML.Encode.string NONE));
+    val _ = \<^assert> (context_status = "ok" andalso XML.content_of context_output = locator);
+    val resources = invoke "resources" (XML.Encode.string locator);
+    val _ = \<^assert> (String.isSubstring "MCP_Tools.greeting" (XML.content_of resources));
+    val (read_status, read_output) = status (invoke "read_resource"
+      (XML.Encode.pair XML.Encode.string XML.Encode.string
+        (locator, "MCP_Tools.greeting")));
+    val _ = \<^assert> (read_status = "ok" andalso
+      XML.content_of read_output = "hello from MCP_Resource");
+  in () end;
+\<close>
+
+ML \<open>
+val bridge_lifecycle = Synchronized.var "MCP base bridge lifecycle" "idle";
+\<close>
+
 mcp_resource slow_resource = \<open>fn _ =>
   (OS.Process.sleep (Time.fromReal 2.0); "slow resource done")\<close>
   (description \<open>a cancellable bridge fixture\<close>)
+
+mcp_resource bridge_slow_resource = \<open>fn _ =>
+  let
+    val _ = Synchronized.change bridge_lifecycle (K "started");
+    val result = Exn.capture_body (fn () => OS.Process.sleep (seconds 30.0));
+    val _ = Thread_Attributes.uninterruptible_body (fn _ =>
+      Synchronized.change bridge_lifecycle
+        (K (case result of Exn.Res () => "completed"
+          | Exn.Exn exn => if Exn.is_interrupt exn then "interrupted" else "failed")));
+  in Exn.release result; "slow resource done" end\<close>
+  (description \<open>a base bridge cancellation fixture with lifecycle signals\<close>)
+
+mcp_resource bridge_lifecycle = \<open>fn _ => Synchronized.value bridge_lifecycle\<close>
+  (description \<open>the slow-resource lifecycle for base bridge tests\<close>)
 
 section \<open>Bridge drain ownership\<close>
 
@@ -1354,25 +1501,28 @@ spec_test \<open>bridge drain waits through result publication and closes ML adm
   covers \<open>pide_bridge#T6\<close>
 
 ML \<open>
-val _ =
-  let
-    val group = Future.new_group NONE;
-    val _ = MCP_Cancellation.register "drain-route" group;
-    val _ = \<^assert> (MCP_Cancellation.drain "drain-one" = []);
-    val _ = \<^assert> (MCP_Cancellation.finish "drain-route" = SOME false);
-    (*finish decides publication, but cleanup is the publication boundary: the
-      route and both drain owners must remain until cleanup follows publish.*)
-    val _ = \<^assert> (MCP_Cancellation.member "drain-route");
-    val _ = \<^assert> (MCP_Cancellation.drain "drain-two" = []);
-    val _ = \<^assert>
-      (MCP_Cancellation.cleanup "drain-route" = ["drain-one", "drain-two"]);
-    val _ = \<^assert> (not (MCP_Cancellation.member "drain-route"));
-    val _ = \<^assert> (MCP_Cancellation.drain "drain-empty" = ["drain-empty"]);
-    val rejected = Exn.capture_body
-      (fn () => MCP_Cancellation.register "post-drain-route" (Future.new_group NONE));
-    val _ = \<^assert> (Exn.is_exn rejected);
-    val _ = \<^assert> (not (MCP_Cancellation.member "post-drain-route"));
-  in () end;
+val fixture = File.read (Resources.master_directory @{theory} +
+  Path.basic "MCP_Cancellation_Drain_Test.ML");
+val probe =
+  "let\n" ^
+  "  val thy =\n" ^
+  "    (case try Thy_Info.get_theory \"MCP-Tools.MCP_Tools\" of\n" ^
+  "      SOME thy => thy\n" ^
+  "    | NONE => Thy_Info.get_theory \"MCP_Tools\");\n" ^
+  "  val ctxt = Proof_Context.init_global thy;\n" ^
+  "in\n" ^
+  "  ML_Context.eval_in (SOME ctxt) ML_Compiler.flags Position.none\n" ^
+  "    (ML_Lex.read " ^ ML_Syntax.print_string fixture ^ ")\n" ^
+  "end;";
+val result =
+  ML_Process.args
+  |> ML_Process.logic "MCP-Tools"
+  |> ML_Process.eval_expr probe
+  |> ML_Process.eval_expr "exit 0;"
+  |> Isabelle_System.ML_process;
+val _ = if Process_Result.ok result then ()
+  else error ("fresh MCP-Tools drain fixture failed:\n" ^
+    Process_Result.err result ^ "\n" ^ Process_Result.out result);
 \<close>
 
 end

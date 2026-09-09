@@ -12,6 +12,7 @@ import isabelle._
 import isabelle.mcp.connection._
 import isabelle.mcp.control.ManualDeadlineScheduler
 import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
+import isabelle.mcp.pide.PideBridgeV1
 import isabelle.mcp.protocol.JsonRpc
 import isabelle.mcp.transport.{McpInputPolicy, ScriptedDataPlane}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
@@ -50,6 +51,26 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
   spec_test("startup hello advertises precisely MCP-Tools base bridge operations",
       covers = List("pide_bridge#T10")) {
     assertEquals(session.bridge_operation_names, McpBridgeOperations.baseOperationNames)
+  }
+
+  spec_test("base bridge executes all six base operations over production PIDE",
+      verifies = List("pide_bridge#I1"), covers = List("pide_bridge#T9")) {
+    val tools = session.ml_tools()
+    assert(tools.rows.exists(_.name == "MCP_Tools.shout"))
+
+    val theories = session.ml_theories()
+    val rootTheory = theories.find(Long_Name.base_name(_) == "MCP_Tools")
+      .getOrElse(fail("MCP_Tools not in " + theories.mkString(", ")))
+    val locator = "isabelle://context/theory/" + rootTheory
+
+    assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> "bridge"), locator),
+      MCP_Session.Ok("BRIDGE"))
+    assertEquals(session.check_context(locator), MCP_Session.Ok(locator))
+
+    val resources = session.ml_named_resources(locator)
+    assert(resources.exists(_._1 == "MCP_Tools.greeting"))
+    assertEquals(session.ml_read_resource("MCP_Tools.greeting", locator),
+      MCP_Session.Ok("hello from MCP_Resource"))
   }
 
   /* the bridge carries FULL INTERNAL names + the form tag; exposed
@@ -226,6 +247,51 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
     val section_text = result_text(section_reply)
     assert(section_text.contains("definition--statement--proof elements"),
       "isar-ref section read should return Spec.thy's body text: " + section_text.take(200))
+  }
+}
+
+
+/* Base bridge context-locator fixtures. */
+
+class MCP_Context_Root_Bridge_Tests extends MCP_Session_Suite(
+  "MCP-Tools-Tests", "MCP_Fixture_Root", McpBridgeProfile.base) {
+
+  spec_test("base bridge starts at the configured inherited registry root and keeps it while scope changes",
+      verifies = List("context_locator#A3", "context_locator#I1"),
+      covers = List("context_locator#T4", "context_locator#T5", "context_locator#T6")) {
+    val root = session.root_context() match {
+      case MCP_Session.Ok(locator) => locator
+      case error => fail("configured root was not available: " + error)
+    }
+    assert(root.endsWith("MCP_Fixture_Root"), root)
+    assert(session.ml_tools(root).rows.exists(_.name == "MCP_Fixture_Root.root_probe"),
+      "configured root did not expose its own tool")
+    val handler = new MCP_Server.Handler(session)
+    assert_no_error(call_tool_on(handler, "tool_scope_set",
+      JSON.Object("context" -> "isabelle://context/fixture/alias")))
+    val canonical_scope = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(canonical_scope.startsWith("Context: isabelle://context/fixture/self\n"), canonical_scope)
+    assert_is_error(call_tool_on(handler, "tool_scope_set",
+      JSON.Object("context" -> "isabelle://context/fixture/missing")))
+    val unchanged_scope = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(unchanged_scope.startsWith("Context: isabelle://context/fixture/self\n"), unchanged_scope)
+
+    assert_no_error(call_tool_on(handler, "tool_scope_set",
+      JSON.Object("context" -> "isabelle://context/theory/MCP_Tools")))
+    val selected = get_list(rpc_on(handler, "tools/list"), "result", "tools")
+    assert(selected.exists(row => get_string(row, "name") == "shout"),
+      "selected ancestor context did not expose its inherited tool")
+    assert(!selected.exists(row => get_string(row, "name") == "root_probe"),
+      "selected ancestor context unexpectedly retained the root-only tool")
+    val shout = call_tool_on(handler, "shout", JSON.Object("input" -> "base"))
+    assert_no_error(shout)
+    assertEquals(result_text(shout), "BASE")
+    assertEquals(session.root_context(), MCP_Session.Ok(root),
+      "tool scope selection changed the admitted bridge registry root")
+    assertEquals(session.check_context("isabelle://context/fixture/alias"),
+      MCP_Session.Ok("isabelle://context/fixture/self"))
+    assertEquals(session.ml_run("MCP_Fixture_Root.root_probe", Nil,
+      "isabelle://context/fixture/self"), MCP_Session.Ok("root"))
   }
 }
 
@@ -1453,6 +1519,80 @@ class MCP_Run_Tool_Async_Tests
       session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
         .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
 
+  private def registry_change_theory(name: String): String =
+    "theory " + name + "\n  imports \"MCP-Tools.MCP_Tools\"\nbegin\n\n" +
+      "mcp_tool registered_during_load = \\<open>String.map Char.toUpper\\<close> " +
+      "(description \\<open>base bridge tool-notification fixture\\<close>)\n" +
+      "mcp_resource resource_during_load = \\<open>K \"base bridge resource\"\\<close> " +
+      "(description \\<open>base bridge resource-notification fixture\\<close>)\n\nend\n"
+
+  private def with_fixture_dir(files: (String, String)*)(body: Path => Unit): Unit =
+    Isabelle_System.with_tmp_dir("base-bridge") { dir =>
+      for ((name, content) <- files) File.write(dir + Path.basic(name + ".thy"), content)
+      body(dir)
+    }
+
+  spec_test("base bridge fans out tool and resource notifications during pending work",
+      covers = List("pide_bridge#T9")) {
+    val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
+    val requestId = RequestId.string("base-bridge-notification-pending")
+    val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
+      case value: RequestRegistry.Admitted => value
+      case other => fail("could not admit base bridge notification fixture: " + other)
+    }
+    val slow = Future.fork(session.ml_read_resource_cancellable(
+      "MCP_Tools_Tests.bridge_slow_resource", test_theory, admitted.cancellation))
+    val changed = new CountDownLatch(2)
+    val events = collection.mutable.Set.empty[String]
+    var cancelled = false
+    session.set_changed_handler { event =>
+      val firstExpected = events.synchronized {
+        val expected = event == "tools" || event == "resources"
+        if (expected && !events.contains(event)) { events += event; true }
+        else false
+      }
+      if (firstExpected) changed.countDown()
+    }
+    try {
+      eventually("base bridge notification worker did not report started", Time.seconds(3.0)) {
+        session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", test_theory) ==
+          MCP_Session.Ok("started")
+      }
+      with_fixture_dir("BaseBridgeChangedDuringLoad" ->
+          registry_change_theory("BaseBridgeChangedDuringLoad")) { dir =>
+        try {
+          expect_ok(session.load_theory("BaseBridgeChangedDuringLoad", File.standard_path(dir)),
+            "load theory registering an MCP tool and resource")
+          assert(changed.await(2, TimeUnit.SECONDS),
+            "MCP tool/resource registration events did not reach the session handler")
+          assert(events.synchronized { events.contains("tools") && events.contains("resources") },
+            "document registration did not emit both tools and resources events")
+          assert(!slow.is_finished,
+            "registry notifications waited for the pending base bridge resource")
+          assert(registry.cancel(requestId, Some("base bridge notification fixture"))
+            .isInstanceOf[RequestRegistry.Cancelled])
+          cancelled = true
+          expect_error(slow.join, containing = "cancelled")
+          eventually("base bridge notification worker did not report interruption", Time.seconds(5.0)) {
+            session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", test_theory) ==
+              MCP_Session.Ok("interrupted")
+          }
+          assert(session.ml_tools(test_theory).rows.exists(_.name == "MCP_Tools_Tests.capture_ok"),
+            "base bridge tools call was unusable after notification and cancellation")
+        }
+        finally expect_ok(session.unload_theory("BaseBridgeChangedDuringLoad"),
+          "unload theory registering an MCP tool and resource")
+      }
+    }
+    finally {
+      if (!cancelled) {
+        registry.cancel(requestId, Some("base bridge notification cleanup"))
+        slow.join_result
+      }
+      session.set_changed_handler(_ => ())
+    }
+  }
+
   spec_test("single bridge registry correlates a fast reply before an earlier slow reply",
       covers = List("pide_bridge#T1", "pide_bridge#T8")) {
     val slow = Future.fork(
@@ -1504,8 +1644,8 @@ class MCP_Run_Tool_Async_Tests
     }
   }
 
-  spec_test("named-resource bridge cancellation returns promptly and remains usable",
-      covers = List("connection_kernel#T11", "connection_kernel#T4")) {
+  spec_test("base bridge cancellation interrupts a started resource and recovers",
+      covers = List("pide_bridge#T3", "connection_kernel#T11", "connection_kernel#T4")) {
     val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
     val requestId = RequestId.string("live-resource-cancel")
     val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
@@ -1513,16 +1653,19 @@ class MCP_Run_Tool_Async_Tests
       case other => fail("could not admit live resource cancellation fixture: " + other)
     }
     val slow = Future.fork(session.ml_read_resource_cancellable(
-      "MCP_Tools_Tests.slow_resource", test_theory, admitted.cancellation))
-    Thread.sleep(100)
-    assert(!slow.is_finished, "slow resource fixture completed before cancellation")
+      "MCP_Tools_Tests.bridge_slow_resource", test_theory, admitted.cancellation))
+    eventually("base bridge resource worker did not report started", Time.seconds(3.0)) {
+      session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", test_theory) ==
+        MCP_Session.Ok("started")
+    }
 
-    val before = Time.now()
     assert(registry.cancel(requestId, Some("bridge fixture"))
       .isInstanceOf[RequestRegistry.Cancelled])
     expect_error(slow.join, containing = "cancelled")
-    assert(Time.now() - before < Time.seconds(1.0),
-      "Scala resource bridge promise did not return promptly after cancellation")
+    eventually("base bridge resource worker did not report interruption", Time.seconds(5.0)) {
+      session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", test_theory) ==
+        MCP_Session.Ok("interrupted")
+    }
     assertEquals(
       session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory).ok,
       true,
@@ -1689,6 +1832,71 @@ class MCP_Run_Tool_Async_Tests
 }
 
 
+/* The deterministic PideBridge test owns the timeout/result race.  This
+   separate base-session test proves its deadline reaches a started ML worker,
+   observes that worker's interrupt cleanup, and leaves later base work usable. */
+class MCP_Base_Bridge_Timeout_Tests extends MCP_Session_Suite(
+  "MCP-Tools-Tests", "MCP_Tools_Tests", McpBridgeProfile.base,
+  options => options + "mcp_request_timeout=1.0") {
+
+  spec_test("base bridge deadline interrupts a started resource and recovers",
+      covers = List("pide_bridge#T4")) {
+    val testTheory = "isabelle://context/theory/" +
+      session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
+        .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+    val slow = Future.fork(
+      session.ml_read_resource("MCP_Tools_Tests.bridge_slow_resource", testTheory))
+    eventually("base bridge timeout worker did not report started", Time.seconds(3.0)) {
+      session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", testTheory) ==
+        MCP_Session.Ok("started")
+    }
+
+    val timeout = intercept[MCP_Session.BridgeTimedOut] { slow.join }
+    assertEquals(timeout.delay, 1.seconds)
+    eventually("base bridge timeout worker did not report interruption", Time.seconds(5.0)) {
+      session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", testTheory) ==
+        MCP_Session.Ok("interrupted")
+    }
+    assertEquals(session.ml_read_resource("MCP_Tools_Tests.test_collection", testTheory).ok,
+      true, "base bridge was unusable after a deadline interrupt")
+  }
+}
+
+
+/* The bridge uses a UUID prefix (36 characters) followed by :0 for hello, so
+   this isolated suite's first operation is exactly the fixed 38-byte :1 id.
+   ASCII shout input keeps Scala and ML YXML byte counts identical. */
+class MCP_Bridge_Reply_Limit_Tests extends MCP_Session_Suite(
+  "MCP-Tools", "MCP_Tools", McpBridgeProfile.base,
+  options => options + "mcp_bridge_max_reply_bytes=1024") {
+
+  spec_test("live bridge accepts an exact reply limit, reports correlated TooLarge, and recovers",
+      covers = List("pide_bridge#T12")) {
+    val limit = 1024L
+    val id = "00000000-0000-0000-0000-000000000000:1"
+    def status(text: String): XML.Body =
+      XML.Encode.pair(XML.Encode.string, XML.Encode.self)(("ok", List(XML.Text(text))))
+    val empty = PideBridgeV1.result(id, "run_tool", "ok", status(""))
+    val exactText = "x" * (limit - empty.body.size).toInt
+    val exact = PideBridgeV1.result(id, "run_tool", "ok", status(exactText))
+    assertEquals(exact.body.size.toLong, limit)
+
+    val root = "isabelle://context/theory/MCP_Tools"
+    assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> exactText), root),
+      MCP_Session.Ok(exactText.toUpperCase))
+
+    session.ml_run("MCP_Tools.shout", List("input" -> (exactText + "x")), root) match {
+      case MCP_Session.Error(message) =>
+        assert(message.contains("reply bridge envelope has " + (limit + 1L)), message)
+        assert(message.contains("limit is " + limit), message)
+      case other => fail("expected correlated reply TooLarge, got " + other)
+    }
+    assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> "ok"), root),
+      MCP_Session.Ok("OK"))
+  }
+}
+
+
 class MCP_Bridge_Shutdown_Tests
   extends MCP_Session_Suite(
     "MCP-Tools-Tests", "MCP_Tools_Tests", McpBridgeProfile.base) {
@@ -1696,12 +1904,20 @@ class MCP_Bridge_Shutdown_Tests
 
   override def afterAll(): Unit = if (!stopped) super.afterAll()
 
-  spec_test("backend stop cancels every pending bridge and joins direct Scala work",
-      covers = List("connection_kernel#T4", "connection_kernel#T11", "connection_kernel#T12")) {
-    val testTheory =
+  /* This live test observes stop idempotence and post-stop rejection.  The
+     scripted bridge test owns the internal drain acknowledgement ordering;
+     no route or worker counters are exposed here. */
+  spec_test("backend stop joins live work, is repeatable, and rejects post-stop calls",
+      covers = List("pide_bridge#T6", "connection_kernel#T4", "connection_kernel#T11",
+        "connection_kernel#T12")) {
+    def phase[A](name: String)(body: => A): A =
+      try body
+      catch { case exn: Throwable => fail(name + " failed: " + Exn.message(exn)) }
+    val testTheory = phase("discovering the live registry-root theory") {
       "isabelle://context/theory/" +
         session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
           .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+    }
     val resource = Future.fork(session.ml_read_resource_cancellable(
       "MCP_Tools_Tests.slow_resource", testTheory, McpApplication.Cancellation.Never))
     val direct = Future.fork(session.direct_cancellable(McpApplication.Cancellation.Never) {
@@ -1712,12 +1928,17 @@ class MCP_Bridge_Shutdown_Tests
     assert(!resource.is_finished && !direct.is_finished,
       "shutdown fixtures completed before backend stop")
 
-    session.stop()
+    phase("first session stop") { session.stop() }
     stopped = true
     assert(resource.is_finished && direct.is_finished,
       "backend stop returned before pending work terminated")
     expect_error(resource.join, containing = "session stopped")
     assert(Exn.is_exn(direct.join_result), "direct work escaped backend stop")
+    phase("second session stop") { session.stop() }
+    phase("post-stop bridge rejection") {
+      expect_error(session.ml_run("MCP_Tools.shout", List("input" -> "after-stop"), testTheory),
+        containing = "Isabelle session stopped")
+    }
   }
 }
 
