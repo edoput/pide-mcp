@@ -575,6 +575,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
         oversizedDecoderCalled = true; Right(XML.Decode.string(payload))
       }
     }, NeverCancelled))
+    transport.awaitSent(1)
     val second = Future.fork(control.call(TextOperation("op", "second"), NeverCancelled))
     transport.awaitSent(2)
     val firstId = requestProperty(transport.sent(0), "id")
