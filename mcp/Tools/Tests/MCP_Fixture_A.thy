@@ -5,6 +5,7 @@ begin
 setup \<open>MCP_Context_Locator.register \<^binding>\<open>fixture\<close>
   (fn root => fn target =>
     if target = "self" then (target, Proof_Context.init_global root)
+    else if target = "alias" then ("self", Proof_Context.init_global root)
     else error ("Unknown fixture context " ^ quote target))\<close>
 
 text \<open>Registration site for the visibility fixtures: \<open>alpha\<close> stays

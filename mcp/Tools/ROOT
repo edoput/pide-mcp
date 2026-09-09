@@ -13,6 +13,7 @@ session "MCP-Tools-Tests" in "Tests" = "MCP-Tools" +
   sessions
     "MCP-Assumption"
   theories
+    MCP_Fixture_Root
     MCP_Tools_Tests
 
 session "MCP-HOL" in "HOL" = HOL +

@@ -251,6 +251,51 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
 }
 
 
+/* Base bridge context-locator fixtures. */
+
+class MCP_Context_Root_Bridge_Tests extends MCP_Session_Suite(
+  "MCP-Tools-Tests", "MCP_Fixture_Root", McpBridgeProfile.base) {
+
+  spec_test("base bridge starts at the configured inherited registry root and keeps it while scope changes",
+      verifies = List("context_locator#A3", "context_locator#I1"),
+      covers = List("context_locator#T4", "context_locator#T5", "context_locator#T6")) {
+    val root = session.root_context() match {
+      case MCP_Session.Ok(locator) => locator
+      case error => fail("configured root was not available: " + error)
+    }
+    assert(root.endsWith("MCP_Fixture_Root"), root)
+    assert(session.ml_tools(root).rows.exists(_.name == "MCP_Fixture_Root.root_probe"),
+      "configured root did not expose its own tool")
+    val handler = new MCP_Server.Handler(session)
+    assert_no_error(call_tool_on(handler, "tool_scope_set",
+      JSON.Object("context" -> "isabelle://context/fixture/alias")))
+    val canonical_scope = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(canonical_scope.startsWith("Context: isabelle://context/fixture/self\n"), canonical_scope)
+    assert_is_error(call_tool_on(handler, "tool_scope_set",
+      JSON.Object("context" -> "isabelle://context/fixture/missing")))
+    val unchanged_scope = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
+    assert(unchanged_scope.startsWith("Context: isabelle://context/fixture/self\n"), unchanged_scope)
+
+    assert_no_error(call_tool_on(handler, "tool_scope_set",
+      JSON.Object("context" -> "isabelle://context/theory/MCP_Tools")))
+    val selected = get_list(rpc_on(handler, "tools/list"), "result", "tools")
+    assert(selected.exists(row => get_string(row, "name") == "shout"),
+      "selected ancestor context did not expose its inherited tool")
+    assert(!selected.exists(row => get_string(row, "name") == "root_probe"),
+      "selected ancestor context unexpectedly retained the root-only tool")
+    val shout = call_tool_on(handler, "shout", JSON.Object("input" -> "base"))
+    assert_no_error(shout)
+    assertEquals(result_text(shout), "BASE")
+    assertEquals(session.root_context(), MCP_Session.Ok(root),
+      "tool scope selection changed the admitted bridge registry root")
+    assertEquals(session.check_context("isabelle://context/fixture/alias"),
+      MCP_Session.Ok("isabelle://context/fixture/self"))
+    assertEquals(session.ml_run("MCP_Fixture_Root.root_probe", Nil,
+      "isabelle://context/fixture/self"), MCP_Session.Ok("root"))
+  }
+}
+
+
 /* MCP.ir bridge: the dispatcher over the I/R engine (MCP-HOL/MCP_Repl) */
 
 class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(

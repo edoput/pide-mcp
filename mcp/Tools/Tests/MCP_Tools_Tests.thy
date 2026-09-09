@@ -1,7 +1,7 @@
 theory MCP_Tools_Tests
   imports
     "MCP-Assumption.MCP_Assumption"
-    MCP_Fixture_B MCP_Fixture_C MCP_Fixture_Sibling
+    MCP_Fixture_B MCP_Fixture_C MCP_Fixture_Root MCP_Fixture_Sibling
 begin
 
 external_file "MCP_Cancellation_Drain_Test.ML"
@@ -80,6 +80,32 @@ val (canonical, resolved) =
 \<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
   MCP_Context_Locator.resolve_string root
     "isabelle://context/theory/No_Such_Theory")));
+\<close>
+
+spec_test \<open>extension resolver canonicalizes an alias in ML\<close>
+  verifies \<open>context_locator#I1\<close>
+
+ML \<open>
+val root = \<^theory>\<open>MCP_Fixture_Root\<close>;
+val (canonical, resolved) =
+  MCP_Context_Locator.resolve_string root "isabelle://context/fixture/alias";
+\<^assert> (canonical = "isabelle://context/fixture/self");
+\<^assert> (Context.eq_thy (Proof_Context.theory_of resolved, root));
+\<close>
+
+spec_test \<open>base tools bridge rejects a bundle-shaped payload\<close>
+  covers \<open>context_locator#T5\<close>
+
+ML \<open>
+val root = \<^theory>\<open>MCP_Fixture_Root\<close>;
+val group = Future.new_group NONE;
+val locator = "isabelle://context/theory/" ^ Context.theory_long_name root;
+val ordinary = MCP_Bridge.invoke root "tools" group (XML.Encode.string locator);
+val bundle_shaped = Exn.capture_body (fn () =>
+  MCP_Bridge.invoke root "tools" group
+    (XML.Encode.pair XML.Encode.string XML.Encode.string (locator, "exploration")));
+\<^assert> (ordinary <> MCP_Protocol.empty_tools_body);
+\<^assert> (Exn.is_exn bundle_shaped);
 \<close>
 
 section \<open>Registration: name space entities\<close>
