@@ -48,17 +48,6 @@ class MCP_Boot_Failure_Tests extends MCP_Suite {
 
 class MCP_Bridge_Tests extends MCP_Session_Suite(
   "MCP-Tools", "MCP_Tools", McpBridgeProfile.base) {
-  private def registry_change_theory(name: String): String =
-    "theory " + name + "\n  imports \"MCP-Tools.MCP_Tools\"\nbegin\n\n" +
-      "mcp_tool registered_during_load = \\<open>String.map Char.toUpper\\<close> " +
-      "(description \\<open>base bridge registry-change fixture\\<close>)\n\nend\n"
-
-  private def with_fixture_dir(files: (String, String)*)(body: Path => Unit): Unit =
-    Isabelle_System.with_tmp_dir("base-bridge") { dir =>
-      for ((name, content) <- files) File.write(dir + Path.basic(name + ".thy"), content)
-      body(dir)
-    }
-
   spec_test("startup hello advertises precisely MCP-Tools base bridge operations",
       covers = List("pide_bridge#T10")) {
     assertEquals(session.bridge_operation_names, McpBridgeOperations.baseOperationNames)
@@ -136,36 +125,6 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
   test("bridge: ml_run unknown tool is an error") {
     expect_error(session.ml_run("no_such_tool", List("input" -> "x")),
       containing = "no_such_tool")
-  }
-
-  spec_test("base bridge keeps registry notifications independent from base calls",
-      covers = List("pide_bridge#T9")) {
-    val changed = new CountDownLatch(1)
-    val events = collection.mutable.ListBuffer.empty[String]
-    session.set_changed_handler { event =>
-      events.synchronized { events += event }
-      changed.countDown()
-    }
-    try {
-      with_fixture_dir("BaseBridgeChangedDuringLoad" ->
-          registry_change_theory("BaseBridgeChangedDuringLoad")) { dir =>
-        try {
-          expect_ok(session.load_theory("BaseBridgeChangedDuringLoad", File.standard_path(dir)),
-            "load theory registering an MCP tool")
-          assert(changed.await(2, TimeUnit.SECONDS),
-            "MCP.tools_changed from document registration did not reach the session handler")
-          assert(events.synchronized { events.contains("tools") },
-            "document registration emitted no tools list-change event")
-          assert(session.ml_tools().rows.exists(_.name == "MCP_Tools.shout"),
-            "base bridge tools call was unusable after the independent notification")
-          assert(session.ml_theories().exists(_.contains("MCP_Tools")),
-            "base bridge theories call was unusable after the independent notification")
-        }
-        finally expect_ok(session.unload_theory("BaseBridgeChangedDuringLoad"),
-          "unload theory registering an MCP tool")
-      }
-    }
-    finally session.set_changed_handler(_ => ())
   }
 
   test("bridge: canonical root context equals an explicitly validated locator") {
@@ -1514,6 +1473,80 @@ class MCP_Run_Tool_Async_Tests
     "isabelle://context/theory/" +
       session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
         .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+
+  private def registry_change_theory(name: String): String =
+    "theory " + name + "\n  imports \"MCP-Tools.MCP_Tools\"\nbegin\n\n" +
+      "mcp_tool registered_during_load = \\<open>String.map Char.toUpper\\<close> " +
+      "(description \\<open>base bridge tool-notification fixture\\<close>)\n" +
+      "mcp_resource resource_during_load = \\<open>K \"base bridge resource\"\\<close> " +
+      "(description \\<open>base bridge resource-notification fixture\\<close>)\n\nend\n"
+
+  private def with_fixture_dir(files: (String, String)*)(body: Path => Unit): Unit =
+    Isabelle_System.with_tmp_dir("base-bridge") { dir =>
+      for ((name, content) <- files) File.write(dir + Path.basic(name + ".thy"), content)
+      body(dir)
+    }
+
+  spec_test("base bridge fans out tool and resource notifications during pending work",
+      covers = List("pide_bridge#T9")) {
+    val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
+    val requestId = RequestId.string("base-bridge-notification-pending")
+    val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
+      case value: RequestRegistry.Admitted => value
+      case other => fail("could not admit base bridge notification fixture: " + other)
+    }
+    val slow = Future.fork(session.ml_read_resource_cancellable(
+      "MCP_Tools_Tests.bridge_slow_resource", test_theory, admitted.cancellation))
+    val changed = new CountDownLatch(2)
+    val events = collection.mutable.Set.empty[String]
+    var cancelled = false
+    session.set_changed_handler { event =>
+      val firstExpected = events.synchronized {
+        val expected = event == "tools" || event == "resources"
+        if (expected && !events.contains(event)) { events += event; true }
+        else false
+      }
+      if (firstExpected) changed.countDown()
+    }
+    try {
+      eventually("base bridge notification worker did not report started", Time.seconds(3.0)) {
+        session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", test_theory) ==
+          MCP_Session.Ok("started")
+      }
+      with_fixture_dir("BaseBridgeChangedDuringLoad" ->
+          registry_change_theory("BaseBridgeChangedDuringLoad")) { dir =>
+        try {
+          expect_ok(session.load_theory("BaseBridgeChangedDuringLoad", File.standard_path(dir)),
+            "load theory registering an MCP tool and resource")
+          assert(changed.await(2, TimeUnit.SECONDS),
+            "MCP tool/resource registration events did not reach the session handler")
+          assert(events.synchronized { events.contains("tools") && events.contains("resources") },
+            "document registration did not emit both tools and resources events")
+          assert(!slow.is_finished,
+            "registry notifications waited for the pending base bridge resource")
+          assert(registry.cancel(requestId, Some("base bridge notification fixture"))
+            .isInstanceOf[RequestRegistry.Cancelled])
+          cancelled = true
+          expect_error(slow.join, containing = "cancelled")
+          eventually("base bridge notification worker did not report interruption", Time.seconds(5.0)) {
+            session.ml_read_resource("MCP_Tools_Tests.bridge_lifecycle", test_theory) ==
+              MCP_Session.Ok("interrupted")
+          }
+          assert(session.ml_tools(test_theory).rows.exists(_.name == "MCP_Tools_Tests.capture_ok"),
+            "base bridge tools call was unusable after notification and cancellation")
+        }
+        finally expect_ok(session.unload_theory("BaseBridgeChangedDuringLoad"),
+          "unload theory registering an MCP tool and resource")
+      }
+    }
+    finally {
+      if (!cancelled) {
+        registry.cancel(requestId, Some("base bridge notification cleanup"))
+        slow.join_result
+      }
+      session.set_changed_handler(_ => ())
+    }
+  }
 
   spec_test("single bridge registry correlates a fast reply before an earlier slow reply",
       covers = List("pide_bridge#T1", "pide_bridge#T8")) {
