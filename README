@@ -203,5 +203,5 @@ Isabelle launcher configuration
 -------------------------------
 
 All repository scripts use ISABELLE (a quoted command prefix), otherwise
-isabelle on PATH. See tools/ISABELLE.md for native, Flatpak, CI, and explicit
+isabelle on PATH. See .agents/skills/isabelle-execution/SKILL.md for native, Flatpak, CI, and explicit
 worktree setup. The launcher never silently switches installations.

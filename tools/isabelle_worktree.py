@@ -24,50 +24,6 @@ class WorktreeError(RuntimeError):
     pass
 
 
-# Executed by the selected installation, so /app and other container-local
-# paths are interpreted there. No host paths are interpolated into shell code.
-DISCOVER = r'''
-set -eu
-printf '%s\0' "$ISABELLE_HOME" "$ISABELLE_IDENTIFIER" "$ML_SYSTEM" \
-  "$ISABELLE_HEAPS" "$ISABELLE_HEAPS_SYSTEM"
-declare -A seen
-shopt -s nullglob
-for root in "$ISABELLE_HEAPS" "$ISABELLE_HEAPS_SYSTEM"; do
-  for candidate in "$root"/"${ML_SYSTEM}_"*; do
-    id=${candidate##*/}
-    [[ -z ${seen[$id]:-} ]] || continue
-    seen[$id]=1
-    files=()
-    for name in Pure log/Pure.db HOL log/HOL.db; do
-      found=''
-      for source in "$ISABELLE_HEAPS" "$ISABELLE_HEAPS_SYSTEM"; do
-        if [[ -f $source/$id/$name ]]; then found=$source/$id/$name; break; fi
-      done
-      [[ -n $found ]] || break
-      files+=("$found")
-    done
-    if [[ ${#files[@]} -eq 4 ]]; then
-      platform=${id#"${ML_SYSTEM}_"}
-      poly=$POLYML_HOME/$platform/poly
-      [[ -f $poly ]] || continue
-      printf '%s\0' "$id" "${files[@]}" "$poly"
-    fi
-  done
-done
-'''
-HASH = r'''
-set -eu
-if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum -- "$@"
-elif command -v shasum >/dev/null 2>&1; then
-  shasum -a 256 -- "$@"
-else
-  echo 'Isabelle environment needs sha256sum or shasum for seed validation' >&2
-  exit 2
-fi
-'''
-
-
 def real_dir(path: Path, label: str) -> Path:
     try:
         mode = path.lstat().st_mode
@@ -103,36 +59,6 @@ def invoke(launcher: Launcher, args: list[str], *, environment=None, cwd=None) -
     return result.stdout
 
 
-def selected_installation(launcher: Launcher, heap_id: str | None = None) -> dict:
-    output = invoke(launcher, ["env", "bash", "-c", DISCOVER])
-    fields = output.rstrip("\0").split("\0")
-    if len(fields) < 5 or (len(fields) - 5) % 6:
-        raise WorktreeError("selected Isabelle returned malformed heap settings")
-    home, identifier, ml_system, user_heaps, system_heaps = fields[:5]
-    candidates = [fields[i:i + 6] for i in range(5, len(fields), 6)]
-    if heap_id is not None:
-        candidates = [row for row in candidates if row[0] == heap_id]
-    if len(candidates) != 1:
-        choices = ", ".join(row[0] for row in candidates) or "none"
-        raise WorktreeError(
-            f"expected one complete Pure/HOL seed set, found {choices}; "
-            "select --heap-id when ambiguous, or build base sessions explicitly "
-            "with the selected installation first"
-        )
-    selected = candidates[0]
-    hashes = invoke(launcher, ["env", "bash", "-c", HASH, "hash", *selected[1:]])
-    digests = [line[:64] for line in hashes.splitlines()]
-    if len(digests) != 5 or any(len(d) != 64 or any(c not in "0123456789abcdef" for c in d) for d in digests):
-        raise WorktreeError("selected Isabelle returned malformed seed digests")
-    return {
-        "argv": list(launcher.argv), "home": home,
-        "version": invoke(launcher, ["version"]).strip(),
-        "identifier": identifier, "ml_system": ml_system,
-        "user_heaps": user_heaps, "system_heaps": system_heaps,
-        "heap_id": selected[0], "sources": selected[1:], "sha256": digests,
-    }
-
-
 def atomic_text(path: Path, content: str) -> None:
     fd, name = tempfile.mkstemp(prefix=".write-", dir=path.parent)
     try:
@@ -145,7 +71,7 @@ def atomic_text(path: Path, content: str) -> None:
 
 
 class State:
-    def __init__(self, worktree: Path, launcher: Launcher, components=(), roots=(), heap_id=None):
+    def __init__(self, worktree: Path, launcher: Launcher, components=(), roots=()):
         self.worktree = worktree
         self.launcher = launcher
         self.state = worktree / ".isabelle-worktree"
@@ -153,7 +79,6 @@ class State:
         self.roots = [real_dir(p, "session root") for p in roots]
         if len(set(self.components)) != len(self.components):
             raise WorktreeError("duplicate component path")
-        self.heap_id = heap_id
         self.identifier = "mcp-wt-" + hashlib.sha256(str(worktree).encode()).hexdigest()[:16]
         self.user = self.state / "user"
         self.home = self.user / ".isabelle" / self.identifier
@@ -189,7 +114,7 @@ class State:
         for path in (self.user, self.user / ".isabelle", self.home, self.home / "etc", self.home / "heaps"):
             if path.exists() or path.is_symlink():
                 real_dir(path, "private state directory")
-        for path in (self.home / "etc" / "components", self.home / "ROOTS", self.state / "installation.json"):
+        for path in (self.home / "etc" / "components", self.home / "ROOTS", self.home / "etc" / "preferences"):
             if path.is_symlink():
                 raise WorktreeError(f"refusing symlinked state file: {path}")
 
@@ -204,27 +129,12 @@ class State:
 
     def setup(self) -> None:
         self.check_tree()
-        installation = selected_installation(self.launcher, self.heap_id)
-        record = self.state / "installation.json"
-        if record.exists() and json.loads(record.read_text()) != installation:
-            raise WorktreeError("selected installation or base seeds changed; explicitly teardown this private state before recreating it")
-        heaps = self.home / "heaps" / installation["heap_id"]
-        for path in (heaps, heaps / "log"):
-            if path.exists() or path.is_symlink():
-                real_dir(path, "private heap directory")
         (self.home / "etc").mkdir(parents=True, exist_ok=True)
-        (heaps / "log").mkdir(parents=True, exist_ok=True)
+        (self.home / "heaps").mkdir(exist_ok=True)
         self.catalogs()
-        names = ("Pure", "log/Pure.db", "HOL", "log/HOL.db")
-        targets = [heaps / name for name in names]
-        for target in targets:
-            if target.is_symlink():
-                raise WorktreeError(f"refusing symlinked private seed: {target}")
-        if not record.exists() or not all(p.is_file() for p in targets):
-            for source, target in zip(installation["sources"][:4], targets):
-                # This also verifies the destination is visible from Isabelle.
-                invoke(self.launcher, ["env", "cp", "--", source, str(target)])
-                invoke(self.launcher, ["env", "chmod", "u+w", str(target)])
+        # Keep all mutable build output in this checkout. Isabelle's Store
+        # chooses compatible system heaps and validates their build metadata.
+        atomic_text(self.home / "etc" / "preferences", "system_heaps = false\n")
         # Verify that the adapter propagated the state settings, before any
         # Scala/bootstrap command could use the wrong component catalog.
         reported = invoke(self.launcher, ["getenv", "-b", "ISABELLE_HOME_USER"], environment=self.environment()).strip()
@@ -232,7 +142,6 @@ class State:
             raise WorktreeError(f"launcher did not forward private state: expected {self.home}, got {reported}")
         print("checking base heaps without rebuilding them (Isabelle may compile configured Scala components)", file=sys.stderr)
         invoke(self.launcher, ["build", "-n", "-b", "Pure", "HOL"], environment=self.environment(), cwd=self.worktree)
-        atomic_text(record, json.dumps(installation, sort_keys=True) + "\n")
         print(f"private Isabelle state ready: {self.home}", file=sys.stderr)
 
     def teardown(self) -> None:
@@ -245,12 +154,11 @@ def main(argv=None) -> int:
     parser.add_argument("--worktree", required=True, type=Path)
     parser.add_argument("--component", action="append", type=Path, default=[])
     parser.add_argument("--root", action="append", type=Path, default=[])
-    parser.add_argument("--heap-id", help="select a seed platform when the installation has several")
     parser.add_argument("action", choices=("setup", "build", "clean", "scala", "test", "teardown"))
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
-        state = State(checkout(args.worktree), resolve_launcher(), args.component, args.root, args.heap_id)
+        state = State(checkout(args.worktree), resolve_launcher(), args.component, args.root)
         if args.arguments and args.action != "test":
             raise WorktreeError("extra arguments are only supported for test")
         if args.action == "teardown" and not state.state.exists() and not state.state.is_symlink():

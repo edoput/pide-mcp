@@ -7,7 +7,7 @@ import shlex
 import pytest
 
 from tools.isabelle_launcher import Launcher
-from tools.isabelle_worktree import State, WorktreeError, selected_installation
+from tools.isabelle_worktree import State, WorktreeError
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ case $1 in
   env) shift; exec env "$@" ;;
   version) echo Fixture ;;
   getenv) printf '%s\\n' "$USER_HOME/.isabelle/$ISABELLE_IDENTIFIER" ;;
-  build) exit 0 ;;
+  build) [[ ! -e "$ISABELLE_HEAPS_SYSTEM/fail-check" ]] ;;
   *) exit 9 ;;
 esac
 ''')
@@ -44,28 +44,25 @@ esac
     return worktree, Launcher((str(fake),), 'fixture'), base, poly
 
 
-def test_system_only_seeds_are_discovered_and_copied_privately(environment):
+def test_setup_registers_only_checkout_components_without_copying_heaps(environment):
     worktree, launcher, base, _ = environment
     state = State(worktree, launcher)
+    before = {p: p.read_bytes() for p in base.rglob('*') if p.is_file()}
     with state.locked():
         state.setup()
-        config = (state.home / 'etc/components').read_text().splitlines()
-        assert config == [str(worktree / 'mcp'), str(worktree / 'mcp_test')]
-        private = state.home / 'heaps' / base.name
-        assert (private / 'HOL').read_bytes() == (base / 'HOL').read_bytes()
-        assert not (private / 'HOL').is_symlink()
-        (private / 'log/HOL.db').write_text('private changes')
-        assert (base / 'log/HOL.db').read_text() == 'seed log/HOL.db'
+        assert (state.home / 'etc/components').read_text().splitlines() == [
+            str(worktree / 'mcp'), str(worktree / 'mcp_test')]
+        assert list((state.home / 'heaps').iterdir()) == []
+        assert (state.home / 'etc/preferences').read_text() == 'system_heaps = false\n'
+    assert all(p.read_bytes() == content for p, content in before.items())
 
 
-def test_changed_runtime_is_rejected_before_reusing_state(environment):
-    worktree, launcher, _, poly = environment
+def test_native_heap_validation_failure_is_propagated(environment):
+    worktree, launcher, base, _ = environment
+    (base.parent / 'fail-check').touch()
     state = State(worktree, launcher)
-    with state.locked():
+    with state.locked(), pytest.raises(WorktreeError, match='build failed'):
         state.setup()
-        (poly / 'poly').write_text('runtime two')
-        with pytest.raises(WorktreeError, match='changed'):
-            state.setup()
 
 
 def test_symlinked_state_ancestor_cannot_redirect_catalog_write(environment, tmp_path):
@@ -89,8 +86,14 @@ def test_another_owner_cannot_teardown_state(environment):
             state.teardown()
 
 
-def test_missing_base_database_is_an_actionable_error(environment):
-    _, launcher, base, _ = environment
-    (base / 'log/HOL.db').unlink()
-    with pytest.raises(WorktreeError, match='build base sessions explicitly'):
-        selected_installation(launcher)
+def test_symlinked_preferences_cannot_redirect_write(environment, tmp_path):
+    worktree, launcher, _, _ = environment
+    state = State(worktree, launcher)
+    outside = tmp_path / 'preferences'
+    outside.write_text('untouched')
+    with state.locked():
+        (state.home / 'etc').mkdir(parents=True)
+        (state.home / 'etc/preferences').symlink_to(outside)
+        with pytest.raises(WorktreeError, match='symlinked'):
+            state.setup()
+    assert outside.read_text() == 'untouched'

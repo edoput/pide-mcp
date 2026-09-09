@@ -1,3 +1,8 @@
+---
+name: isabelle-execution
+description: Run, build, test, or diagnose Isabelle MCP in an explicitly selected checkout and installation, including host Flatpak and private worktree state.
+---
+
 # Running Isabelle tools
 
 All repository scripts select `ISABELLE` when it is set, otherwise `isabelle`
@@ -51,11 +56,11 @@ recreate containers, or select another distribution on failure.
 ## Private worktree state
 
 ```sh
-tools/wt-isabelle-build.sh --worktree /absolute/checkout setup
-tools/wt-isabelle-build.sh --worktree /absolute/checkout scala
-tools/wt-isabelle-build.sh --worktree /absolute/checkout build
-tools/wt-isabelle-build.sh --worktree /absolute/checkout test -L scala-unit
-tools/wt-isabelle-build.sh --worktree /absolute/checkout teardown
+python3 tools/isabelle_worktree.py --worktree /absolute/checkout setup
+python3 tools/isabelle_worktree.py --worktree /absolute/checkout scala
+python3 tools/isabelle_worktree.py --worktree /absolute/checkout build
+python3 tools/isabelle_worktree.py --worktree /absolute/checkout test -L scala-unit
+python3 tools/isabelle_worktree.py --worktree /absolute/checkout teardown
 ```
 
 Any Git checkout root is accepted; it need not be under an agent-specific
@@ -65,25 +70,29 @@ checkout's MCP components are registered. Supply additional `--component`
 and `--root` paths explicitly before the action. The helper does not copy
 the main user's component catalog or ROOTS file.
 
-The helper queries heap roots inside the selected installation, including
-system heaps inaccessible directly from an agent container. It discovers
-complete Pure/HOL seed sets without a hardcoded release or platform path.
-If several exist, select `--heap-id`; the selected runtime must still accept
-them. Missing base sessions are an actionable error, not an implicit build.
-
-Base heaps and databases are copied into private writable state, not shared
-as mutable files. Their source digests and the Poly/ML executable digest bind
-reuse to the selected installation. Every setup checks `build -n -b Pure HOL`
-and verifies that the private user directory reached Isabelle. This does not
-rebuild base heaps, but Isabelle's bootstrap may compile configured Scala
-components. Setup is therefore not a read-only command.
+Python configures the private user directory and delegates heap selection and
+validation to Isabelle's native `build -n -b Pure HOL`. Isabelle can read its
+system heaps; new heaps and databases go into the checkout's private user
+state. The helper does not enumerate platforms, copy base databases, or load
+the main user's heaps/catalog. Missing or outdated base heaps fail setup;
+report the requirement rather than building them or switching installation.
+Isabelle's bootstrap can compile the registered Scala components during this
+check, so setup is not read-only.
 
 Ownership and directory checks reject symlink substitutions and mismatched
-state; a lock prevents simultaneous helper operations. Installation changes
-require explicit teardown before setup. Concurrent commands run outside the
+state; a lock prevents simultaneous helper operations. Concurrent commands run outside the
 helper are not covered by that lock. A command that bypasses the adapter and
 silently drops private-state variables fails before the build check.
 
 For agent verification, run the full gate only in the intended environment.
 Passing fixture tests or `version` does not establish full planning-gate
 acceptance, Flatpak prover cleanup, or a successful run in another agent/CI.
+
+## Choose the verification action
+
+After Scala or component build-property changes, run `scala` before exercising
+the server. Do not add `scala_build -f`: it rebuilds distribution jars, which
+may be read-only. After theory or ML changes, run `build` to check the MCP
+sessions; Scala compilation alone does not check theories. Use `test` for the
+relevant MCP test labels. Full acceptance remains `tools/planning-gate done`;
+its environment must select the same installation and intended components.

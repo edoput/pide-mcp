@@ -29,7 +29,7 @@ Run Isabelle commands through `tools/isabelle`; configure `ISABELLE` or an
 `isabelle` executable on PATH. On this machine that executable should use the
 host Flatpak. Do not switch installations after a failure. Use the explicit
 worktree helper for private heaps and session databases. See
-`tools/ISABELLE.md` for installation and state setup.
+`.agents/skills/isabelle-execution/SKILL.md` for installation and state setup.
 
 The flatpak is also where the **sources** live:
 
