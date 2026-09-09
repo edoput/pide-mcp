@@ -1926,6 +1926,60 @@ val _ =
   in () end;
 \<close>
 
+text \<open>The common bridge registry is inherited theory data.  This direct
+ML fixture exercises the registered handlers through \<^ML_structure>\<open>MCP_Bridge\<close>'s
+common invocation point.  It establishes the registry and handler side only;
+the live PIDE bridge fixture separately exercises the production transport.\<close>
+
+spec_test \<open>bridge registry keeps base operations separate from IR and invokes all seven handlers\<close>
+  covers \<open>pide_bridge#T9\<close>
+
+ML \<open>
+val _ =
+  let
+    val base_root = \<^theory>\<open>MCP_Tools\<close>;
+    val repl_root = \<^theory>;
+    val base_operations =
+      ["check_context", "read_resource", "resources", "run_tool", "theories", "tools"];
+    val repl_operations = sort_strings ("ir" :: base_operations);
+    val _ = \<^assert> (MCP_Bridge.registered base_root = base_operations);
+    val _ = \<^assert> (MCP_Bridge.registered repl_root = repl_operations);
+    val duplicate = Exn.capture_body
+      (fn () => MCP_Bridge.register (Binding.name "ir") MCP_Repl.bridge_handler repl_root);
+    val _ = \<^assert> (Exn.is_exn duplicate);
+    val group = Future.new_group NONE;
+    val locator = "isabelle://context/theory/" ^ Context.theory_long_name repl_root;
+    fun invoke operation payload = MCP_Bridge.invoke repl_root operation group payload;
+    fun status result = XML.Decode.pair XML.Decode.string XML.Decode.self result;
+    val tools = invoke "tools" (XML.Encode.string locator);
+    val _ = \<^assert> (String.isSubstring "MCP_Tools.shout" (XML.content_of tools));
+    val theories = invoke "theories" (XML.Encode.unit ());
+    val _ = \<^assert> (String.isSubstring "MCP_Tools" (XML.content_of theories));
+    val (run_status, run_output) = status (invoke "run_tool"
+      (XML.Encode.pair XML.Encode.string
+        (XML.Encode.pair XML.Encode.string
+          (XML.Encode.list (XML.Encode.pair XML.Encode.string XML.Encode.string)))
+        (locator, ("no_such_bridge_tool", []))));
+    val _ = \<^assert> (run_status = "error" andalso
+      String.isSubstring "no_such_bridge_tool" (XML.content_of run_output));
+    val (context_status, context_output) =
+      status (invoke "check_context" (XML.Encode.option XML.Encode.string NONE));
+    val _ = \<^assert> (context_status = "ok" andalso XML.content_of context_output = locator);
+    val resources = invoke "resources" (XML.Encode.string locator);
+    val _ = \<^assert> (String.isSubstring "MCP_Tools.greeting" (XML.content_of resources));
+    val (read_status, read_output) = status (invoke "read_resource"
+      (XML.Encode.pair XML.Encode.string XML.Encode.string
+        (locator, "no_such_bridge_resource")));
+    val _ = \<^assert> (read_status = "error" andalso
+      String.isSubstring "no_such_bridge_resource" (XML.content_of read_output));
+    val (ir_status, _) = status (invoke "ir"
+      (XML.Encode.pair XML.Encode.string
+        (XML.Encode.list (XML.Encode.pair XML.Encode.string XML.Encode.string))
+        ("repls", [])));
+    val _ = \<^assert> (ir_status = "ok");
+  in () end;
+\<close>
+
 (*drop this session's repl churn and wrapper state -- see MCP_Repl.reset*)
 ML \<open>MCP_Repl.reset ()\<close>
 

@@ -4,6 +4,8 @@ theory MCP_Tools_Tests
     MCP_Fixture_B MCP_Fixture_C MCP_Fixture_Sibling
 begin
 
+external_file "MCP_Cancellation_Drain_Test.ML"
+
 text \<open>Unit tests: the theory fails to load iff a test fails, so
 \<^verbatim>\<open>isabelle build -d mcp/Tools MCP-Tools-Tests\<close> is the test runner.
 This session is separate from MCP-Tools so the registrations below never
@@ -1354,25 +1356,28 @@ spec_test \<open>bridge drain waits through result publication and closes ML adm
   covers \<open>pide_bridge#T6\<close>
 
 ML \<open>
-val _ =
-  let
-    val group = Future.new_group NONE;
-    val _ = MCP_Cancellation.register "drain-route" group;
-    val _ = \<^assert> (MCP_Cancellation.drain "drain-one" = []);
-    val _ = \<^assert> (MCP_Cancellation.finish "drain-route" = SOME false);
-    (*finish decides publication, but cleanup is the publication boundary: the
-      route and both drain owners must remain until cleanup follows publish.*)
-    val _ = \<^assert> (MCP_Cancellation.member "drain-route");
-    val _ = \<^assert> (MCP_Cancellation.drain "drain-two" = []);
-    val _ = \<^assert>
-      (MCP_Cancellation.cleanup "drain-route" = ["drain-one", "drain-two"]);
-    val _ = \<^assert> (not (MCP_Cancellation.member "drain-route"));
-    val _ = \<^assert> (MCP_Cancellation.drain "drain-empty" = ["drain-empty"]);
-    val rejected = Exn.capture_body
-      (fn () => MCP_Cancellation.register "post-drain-route" (Future.new_group NONE));
-    val _ = \<^assert> (Exn.is_exn rejected);
-    val _ = \<^assert> (not (MCP_Cancellation.member "post-drain-route"));
-  in () end;
+val fixture = File.read (Resources.master_directory @{theory} +
+  Path.basic "MCP_Cancellation_Drain_Test.ML");
+val probe =
+  "let\n" ^
+  "  val thy =\n" ^
+  "    (case try Thy_Info.get_theory \"MCP-Tools.MCP_Tools\" of\n" ^
+  "      SOME thy => thy\n" ^
+  "    | NONE => Thy_Info.get_theory \"MCP_Tools\");\n" ^
+  "  val ctxt = Proof_Context.init_global thy;\n" ^
+  "in\n" ^
+  "  ML_Context.eval_in (SOME ctxt) ML_Compiler.flags Position.none\n" ^
+  "    (ML_Lex.read " ^ ML_Syntax.print_string fixture ^ ")\n" ^
+  "end;";
+val result =
+  ML_Process.args
+  |> ML_Process.logic "MCP-Tools"
+  |> ML_Process.eval_expr probe
+  |> ML_Process.eval_expr "exit 0;"
+  |> Isabelle_System.ML_process;
+val _ = if Process_Result.ok result then ()
+  else error ("fresh MCP-Tools drain fixture failed:\n" ^
+    Process_Result.err result ^ "\n" ^ Process_Result.out result);
 \<close>
 
 end

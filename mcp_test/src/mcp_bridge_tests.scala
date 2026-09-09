@@ -12,6 +12,7 @@ import isabelle._
 import isabelle.mcp.connection._
 import isabelle.mcp.control.ManualDeadlineScheduler
 import isabelle.mcp.application.{McpApplication, McpOutputPolicy}
+import isabelle.mcp.pide.PideBridgeV1
 import isabelle.mcp.protocol.JsonRpc
 import isabelle.mcp.transport.{McpInputPolicy, ScriptedDataPlane}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
@@ -250,7 +251,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
   }
 
   spec_test("common v1 envelope executes all seven typed operations and reply codecs",
-      verifies = List("pide_bridge#I1")) {
+      verifies = List("pide_bridge#I1"), covers = List("pide_bridge#T9")) {
     val tools = session.ml_tools()
     assert(tools.rows.exists(_.name == "MCP_Tools.shout"))
 
@@ -637,6 +638,11 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
   private def wave2_theory(name: String, body: String): String =
     "theory " + name + "\n  imports Main\nbegin\n\n" + body + "\n\nend\n"
 
+  private def registry_change_theory(name: String): String =
+    "theory " + name + "\n  imports \"MCP-Tools.MCP_Tools\"\nbegin\n\n" +
+      "mcp_tool registered_during_load = \\<open>String.map Char.toUpper\\<close> " +
+      "(description \\<open>live registry-change fixture\\<close>)\n\nend\n"
+
   private val wave2_good = "lemma wave2_good: \"True\" by simp"
   private val wave2_bad = "lemma wave2_bad: \"False\"\n  by simp"
   private val wave2_warn = "lemma wave2_warn: \"False\"\n  sorry"
@@ -646,6 +652,34 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
       for ((name, content) <- files) File.write(dir + Path.basic(name + ".thy"), content)
       body(dir)
     }
+
+  spec_test("live document registration fans out its ML tools_changed event without blocking the bridge",
+      covers = List("pide_bridge#T9")) {
+    val changed = new CountDownLatch(1)
+    val events = collection.mutable.ListBuffer.empty[String]
+    session.set_changed_handler { event =>
+      events.synchronized { events += event }
+      changed.countDown()
+    }
+    try {
+      with_fixture_dir("BridgeChangedDuringLoad" -> registry_change_theory("BridgeChangedDuringLoad")) {
+        dir =>
+          try {
+            expect_ok(session.load_theory("BridgeChangedDuringLoad", File.standard_path(dir)),
+              "load theory registering an MCP tool")
+            assert(changed.await(2, TimeUnit.SECONDS),
+              "MCP.tools_changed from document registration did not reach the session handler")
+            assert(events.synchronized { events.contains("tools") },
+              "document registration emitted no tools list-change event")
+            assert(session.ir("repls", Nil).ok,
+              "bridge call did not remain usable after the independent list-change event")
+          }
+          finally expect_ok(session.unload_theory("BridgeChangedDuringLoad"),
+            "unload theory registering an MCP tool")
+      }
+    }
+    finally session.set_changed_handler(_ => ())
+  }
 
   /* theory-resource tier matrix (isabelle://theory/{name}[/diagnostics|
      /entities|/commands]): three of the four tiers are fixed, reusable
@@ -1694,6 +1728,72 @@ class MCP_Run_Tool_Async_Tests
 }
 
 
+/* A separate PIDE session fixes a generous bridge deadline before startup.
+   The deterministic PideBridge test owns the timeout/result race; this test
+   proves the timeout reaches real ML work and leaves the live session usable. */
+class MCP_Bridge_Timeout_Tests extends MCP_Session_Suite(
+  "MCP-HOL", "MCP_Repl", McpBridgeProfile.hol,
+  options => options + "mcp_request_timeout=2.0") {
+
+  spec_test("live bridge deadline interrupts a slow IR call and preserves the next call",
+      covers = List("pide_bridge#T4")) {
+    with_repl("BridgeDeadline") {
+      val slow = Future.fork(session.ir("step",
+        List("repl" -> "BridgeDeadline",
+          "isar_text" -> "ML_command \\<open>OS.Process.sleep (seconds 30.0)\\<close>")))
+      await_busy("BridgeDeadline")
+      assert(session.ir("repls", Nil).ok,
+        "a fast bridge reply did not arrive while the timed call was pending")
+
+      val timeout = intercept[MCP_Session.BridgeTimedOut] { slow.join }
+      assertEquals(timeout.delay, 2.seconds)
+      eventually("timed-out IR work retained the REPL claim", Time.seconds(3.0)) {
+        session.ir("repls", Nil) match {
+          case MCP_Session.Ok(text) => text.contains("BridgeDeadline") && !text.contains("busy")
+          case _ => false
+        }
+      }
+      expect_ok(session.ir("state", List("repl" -> "BridgeDeadline", "state_idx" -> "-1")),
+        "IR session was unusable after a bridge timeout")
+    }
+  }
+}
+
+
+/* The bridge uses a UUID prefix (36 characters) followed by :0 for hello, so
+   this isolated suite's first operation is exactly the fixed 38-byte :1 id.
+   ASCII shout input keeps Scala and ML YXML byte counts identical. */
+class MCP_Bridge_Reply_Limit_Tests extends MCP_Session_Suite(
+  "MCP-Tools", "MCP_Tools", McpBridgeProfile.base,
+  options => options + "mcp_bridge_max_reply_bytes=1024") {
+
+  spec_test("live bridge accepts an exact reply limit, reports correlated TooLarge, and recovers",
+      covers = List("pide_bridge#T12")) {
+    val limit = 1024L
+    val id = "00000000-0000-0000-0000-000000000000:1"
+    def status(text: String): XML.Body =
+      XML.Encode.pair(XML.Encode.string, XML.Encode.self)(("ok", List(XML.Text(text))))
+    val empty = PideBridgeV1.result(id, "run_tool", "ok", status(""))
+    val exactText = "x" * (limit - empty.body.size).toInt
+    val exact = PideBridgeV1.result(id, "run_tool", "ok", status(exactText))
+    assertEquals(exact.body.size.toLong, limit)
+
+    val root = "isabelle://context/theory/MCP_Tools"
+    assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> exactText), root),
+      MCP_Session.Ok(exactText.toUpperCase))
+
+    session.ml_run("MCP_Tools.shout", List("input" -> (exactText + "x")), root) match {
+      case MCP_Session.Error(message) =>
+        assert(message.contains("reply bridge envelope has " + (limit + 1L)), message)
+        assert(message.contains("limit is " + limit), message)
+      case other => fail("expected correlated reply TooLarge, got " + other)
+    }
+    assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> "ok"), root),
+      MCP_Session.Ok("OK"))
+  }
+}
+
+
 class MCP_Bridge_Shutdown_Tests
   extends MCP_Session_Suite(
     "MCP-Tools-Tests", "MCP_Tools_Tests", McpBridgeProfile.base) {
@@ -1701,12 +1801,20 @@ class MCP_Bridge_Shutdown_Tests
 
   override def afterAll(): Unit = if (!stopped) super.afterAll()
 
-  spec_test("backend stop cancels every pending bridge and joins direct Scala work",
-      covers = List("connection_kernel#T4", "connection_kernel#T11", "connection_kernel#T12")) {
-    val testTheory =
+  /* This live test observes stop idempotence and post-stop rejection.  The
+     scripted bridge test owns the internal drain acknowledgement ordering;
+     no route or worker counters are exposed here. */
+  spec_test("backend stop joins live work, is repeatable, and rejects post-stop calls",
+      covers = List("pide_bridge#T6", "connection_kernel#T4", "connection_kernel#T11",
+        "connection_kernel#T12")) {
+    def phase[A](name: String)(body: => A): A =
+      try body
+      catch { case exn: Throwable => fail(name + " failed: " + Exn.message(exn)) }
+    val testTheory = phase("discovering the live registry-root theory") {
       "isabelle://context/theory/" +
         session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
           .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
+    }
     val resource = Future.fork(session.ml_read_resource_cancellable(
       "MCP_Tools_Tests.slow_resource", testTheory, McpApplication.Cancellation.Never))
     val direct = Future.fork(session.direct_cancellable(McpApplication.Cancellation.Never) {
@@ -1717,12 +1825,17 @@ class MCP_Bridge_Shutdown_Tests
     assert(!resource.is_finished && !direct.is_finished,
       "shutdown fixtures completed before backend stop")
 
-    session.stop()
+    phase("first session stop") { session.stop() }
     stopped = true
     assert(resource.is_finished && direct.is_finished,
       "backend stop returned before pending work terminated")
     expect_error(resource.join, containing = "session stopped")
     assert(Exn.is_exn(direct.join_result), "direct work escaped backend stop")
+    phase("second session stop") { session.stop() }
+    phase("post-stop bridge rejection") {
+      expect_error(session.ml_run("MCP_Tools.shout", List("input" -> "after-stop"), testTheory),
+        containing = "Isabelle session stopped")
+    }
   }
 }
 
