@@ -135,7 +135,7 @@ pide_bridge#D5            unstated                  MCP_Tools defines the extens
 pide_bridge#D6            unstated                  Request and reply limits count the raw bytes of the sole serialized YXML envelope; request size is checked before transport send and ML decode, reply
 pide_bridge#D7            unstated                  PideTransport reports byte delivery and termination but does not own Headless.Session.stop; the composition root owns Isabelle session termination and
 pide_bridge#D8            unstated                  PideBridge.call returns Either[BridgeFailure, A]; an operation-domain error remains a successfully decoded A, while transport, protocol, remote-execut
-pide_bridge#D9            unstated                  A lane is an accounting and allocation class over the one physical PIDE stream, not a separate socket or executor; the lane classes are control, typed
+pide_bridge#D9            unstated                  Bridge request envelopes, bridge reply envelopes, and captured untrusted output use independent accounting budgets over one physical PIDE connection;
 pide_bridge#D10           unstated                  mcp_untrusted_output_bytes is a non-negative per-call budget independent of request and reply envelopes; zero disables output-dependent tools before e
 pide_bridge#D11           unstated                  ML output routing suppresses ordinary status, report, result, system, and user protocol messages from a captured tool group; the bridge publishes its
 pide_bridge#D12           unstated                  SessionPideTransport receives Protocol_Output only after Isabelle's stock Prover.message_output -> Byte_Message.read_message -> Bytes.read_stream path

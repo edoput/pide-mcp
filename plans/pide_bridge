@@ -21,7 +21,7 @@ invariants:
   - id: INV3
     statement: Bridge stop completes only after an ML drain acknowledgement or termination of the underlying Isabelle session proves that no call, deadline, protocol reply, route, or worker remains owned by the bridge.
   - id: INV4
-    statement: Control, typed response, and untrusted output are separate accounting lanes on one PIDE connection; output may never consume control or response capacity.
+    statement: Bridge request envelopes, bridge reply envelopes, and captured untrusted output have independent byte budgets on one physical PIDE connection; no budget can borrow from another.
 claims:
   - id: A1
     kind: assumption
@@ -67,7 +67,7 @@ claims:
     category: design
   - id: D9
     kind: design
-    statement: A lane is an accounting and allocation class over the one physical PIDE stream, not a separate socket or executor; the lane classes are control, typed response, and untrusted output.
+    statement: Bridge request envelopes, bridge reply envelopes, and captured untrusted output use independent accounting budgets over one physical PIDE connection; this does not imply separate sockets, executors, or a repository-local pre-read allocation lane.
     category: design
   - id: D10
     kind: design
@@ -226,15 +226,6 @@ substitute an in-memory transport without an Isabelle process.  Transport
 close detaches bridge delivery; it does not own `Headless.Session.stop`, which
 remains a composition-root responsibility because the current backend also
 uses that session for direct PIDE operations.
-
-The three lanes share that transport.  `hello`, `cancel`, and `drain` are
-control; the single terminal `MCP.bridge_result` is a typed response; output
-produced while evaluating user ML belongs to untrusted output.  Lane identity
-controls accounting and allocation only.  The reader-facing seam is an
-allocator that acquires `(lane, declared_size)` before a body is read and
-returns a releasable lease.  Its first implementation may allocate fresh
-storage; a bounded pool can replace it later without teaching `PideBridge`
-about buffer reuse.
 
 state and ordering
 ------------------
