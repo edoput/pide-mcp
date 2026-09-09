@@ -84,6 +84,7 @@ class State:
         self.identifier = "mcp-wt-" + hashlib.sha256(str(worktree).encode()).hexdigest()[:16]
         self.user = self.state / "user"
         self.home = self.user / ".isabelle" / self.identifier
+        self.selection = self.state / "base-heaps.json"
         self.owner = {"schema": 1, "worktree": str(worktree), "uid": os.getuid()}
 
     def check_owner(self) -> None:
@@ -116,7 +117,7 @@ class State:
         for path in (self.user, self.user / ".isabelle", self.home, self.home / "etc", self.home / "heaps"):
             if path.exists() or path.is_symlink():
                 real_dir(path, "private state directory")
-        for path in (self.home / "etc" / "components", self.home / "ROOTS", self.home / "etc" / "preferences", self.home / "etc" / "settings"):
+        for path in (self.home / "etc" / "components", self.home / "ROOTS", self.home / "etc" / "preferences", self.home / "etc" / "settings", self.selection):
             if path.is_symlink():
                 raise WorktreeError(f"refusing symlinked state file: {path}")
 
@@ -129,16 +130,41 @@ class State:
         atomic_text(self.home / "etc" / "components", "".join(str(p) + "\n" for p in self.components))
         atomic_text(self.home / "ROOTS", "".join(str(p) + "\n" for p in self.roots))
 
-    def setup(self) -> None:
+    def installation(self) -> dict[str, object]:
+        """Read the selected Isabelle's roots before changing private settings."""
+        values = {}
+        for name in ("ISABELLE_HEAPS", "ISABELLE_HEAPS_SYSTEM", "ISABELLE_HOME", "ML_SYSTEM", "ISABELLE_IDENTIFIER"):
+            values[name] = invoke(self.launcher, ["getenv", "-b", name], cwd=self.worktree).strip()
+        return {"argv": list(self.launcher.argv), **values}
+
+    def saved_selection(self, installation: dict[str, object]) -> str | None:
+        if not self.selection.exists():
+            return None
+        if self.selection.is_symlink() or not self.selection.is_file():
+            raise WorktreeError(f"refusing invalid base heap selection: {self.selection}")
+        saved = json.loads(self.selection.read_text())
+        if (not isinstance(saved, dict) or saved.get("schema") != 1 or
+                not isinstance(saved.get("root"), str)):
+            raise WorktreeError(f"invalid base heap selection: {self.selection}")
+        # A selection only describes the Isabelle installation that validated it.
+        return saved["root"] if saved.get("installation") == installation else None
+
+    def candidates(self, installation: dict[str, object]) -> list[str]:
+        if self.base_heaps is not None:
+            return [self.base_heaps]
+        saved = self.saved_selection(installation)
+        if saved is not None:
+            return [saved]
+        roots = [installation["ISABELLE_HEAPS"], installation["ISABELLE_HEAPS_SYSTEM"]]
+        return list(dict.fromkeys(root for root in roots if isinstance(root, str) and root))
+
+    def configure(self, base_heaps: str) -> None:
         self.check_tree()
         (self.home / "etc").mkdir(parents=True, exist_ok=True)
         (self.home / "heaps").mkdir(exist_ok=True)
         self.catalogs()
-        # A caller may nominate a base store in the installation namespace.
-        # Isabelle still chooses its platform and validates every dependency.
         atomic_text(self.home / "etc" / "settings",
-                    "" if self.base_heaps is None else
-                    "ISABELLE_HEAPS_SYSTEM=" + shlex.quote(self.base_heaps) + "\n")
+                    "ISABELLE_HEAPS_SYSTEM=" + shlex.quote(base_heaps) + "\n")
         # Keep all mutable build output in this checkout. Isabelle's Store
         # chooses compatible system heaps and validates their build metadata.
         atomic_text(self.home / "etc" / "preferences", "system_heaps = false\n")
@@ -147,9 +173,28 @@ class State:
         reported = invoke(self.launcher, ["getenv", "-b", "ISABELLE_HOME_USER"], environment=self.environment()).strip()
         if reported != str(self.home):
             raise WorktreeError(f"launcher did not forward private state: expected {self.home}, got {reported}")
+
+    def setup(self) -> None:
+        self.check_tree()
+        installation = self.installation()
+        candidates = self.candidates(installation)
+        if not candidates:
+            raise WorktreeError("selected Isabelle did not report a base heap root")
         print("checking base heaps without rebuilding them (Isabelle may compile configured Scala components)", file=sys.stderr)
-        invoke(self.launcher, ["build", "-n", "-b", "Pure", "HOL"], environment=self.environment(), cwd=self.worktree)
-        print(f"private Isabelle state ready: {self.home}", file=sys.stderr)
+        failures = []
+        for base_heaps in candidates:
+            print(f"checking base heap root: {base_heaps}", file=sys.stderr)
+            self.configure(base_heaps)
+            try:
+                invoke(self.launcher, ["build", "-n", "-b", "Pure", "HOL"], environment=self.environment(), cwd=self.worktree)
+            except WorktreeError as ex:
+                failures.append(f"{base_heaps}: {ex}")
+                print(f"base heap root failed: {base_heaps}: {ex}", file=sys.stderr)
+                continue
+            atomic_text(self.selection, json.dumps({"schema": 1, "root": base_heaps, "installation": installation}, sort_keys=True) + "\n")
+            print(f"private Isabelle state ready: {self.home}", file=sys.stderr)
+            return
+        raise WorktreeError("no usable base heaps: " + "; ".join(failures))
 
     def teardown(self) -> None:
         self.check_owner()
@@ -158,7 +203,8 @@ class State:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--worktree", required=True, type=Path)
+    parser.add_argument("--worktree", type=Path,
+                        help="Git checkout root (defaults to the checkout containing the current directory)")
     parser.add_argument("--component", action="append", type=Path, default=[])
     parser.add_argument("--root", action="append", type=Path, default=[])
     parser.add_argument("--base-heaps", help="optional base heap input root, as visible to Isabelle")
@@ -166,7 +212,15 @@ def main(argv=None) -> int:
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
-        state = State(checkout(args.worktree), resolve_launcher(), args.component, args.root, args.base_heaps)
+        selected_worktree = args.worktree
+        if selected_worktree is None:
+            discovered = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"], text=True, capture_output=True, check=False,
+            )
+            if discovered.returncode:
+                raise WorktreeError("current directory is not inside a Git checkout; pass --worktree")
+            selected_worktree = Path(discovered.stdout.strip())
+        state = State(checkout(selected_worktree), resolve_launcher(), args.component, args.root, args.base_heaps)
         if args.arguments and args.action != "test":
             raise WorktreeError("extra arguments are only supported for test")
         if args.action == "teardown" and not state.state.exists() and not state.state.is_symlink():

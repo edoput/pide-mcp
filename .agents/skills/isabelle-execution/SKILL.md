@@ -1,6 +1,6 @@
 ---
 name: isabelle-execution
-description: Run, build, test, or diagnose Isabelle MCP in an explicitly selected checkout and installation, including host Flatpak and private worktree state.
+description: Run, build, test, or diagnose Isabelle MCP in the current checkout and selected installation, including host Flatpak and private worktree state.
 ---
 
 # Running Isabelle tools
@@ -56,34 +56,34 @@ recreate containers, or select another distribution on failure.
 ## Private worktree state
 
 ```sh
-python3 tools/isabelle_worktree.py --worktree /absolute/checkout setup
-python3 tools/isabelle_worktree.py --worktree /absolute/checkout scala
-python3 tools/isabelle_worktree.py --worktree /absolute/checkout build
-python3 tools/isabelle_worktree.py --worktree /absolute/checkout test -L scala-unit
-python3 tools/isabelle_worktree.py --worktree /absolute/checkout teardown
+python3 tools/isabelle_worktree.py setup
+python3 tools/isabelle_worktree.py scala
+python3 tools/isabelle_worktree.py build
+python3 tools/isabelle_worktree.py test -L scala-unit
+python3 tools/isabelle_worktree.py teardown
 ```
 
+The helper discovers the Git checkout containing the current directory. To
+operate on a different checkout, pass `--worktree /absolute/checkout`.
 Any Git checkout root is accepted; it need not be under an agent-specific
-directory. The old positional worktree-name interface is replaced by
-`--worktree`. State is under `<checkout>/.isabelle-worktree`; only that
+directory. State is under `<checkout>/.isabelle-worktree`; only that
 checkout's MCP components are registered. Supply additional `--component`
 and `--root` paths explicitly before the action. The helper does not copy
 the main user's component catalog or ROOTS file.
 
-Python configures the private user directory and delegates heap selection and
-validation to Isabelle's native `build -n -b Pure HOL`. Isabelle can read its
-system heaps; new heaps and databases go into the checkout's private user
-state. The helper does not enumerate platforms, copy base databases, or load
-the main user's heaps/catalog. If the installation keeps its base sessions in a user heap root instead of
-its system root, pass `--base-heaps /absolute/heap-root` before the action.
-This names a store root, not a platform directory. Isabelle treats it as the
-system input store while `system_heaps = false` keeps outputs private. The
-path is interpreted inside the selected installation. Use the same option
-on subsequent commands. Keep this base store stable during execution; the
-helper does not lock external stores or make them filesystem read-only. Obtain the configured root with
-`tools/isabelle getenv -b ISABELLE_HEAPS`; do not guess a release/platform.
-Missing or outdated base heaps fail setup;
-report the requirement rather than building them or switching installation.
+Before private settings are written, Python reads the selected Isabelle's user
+and system heap roots plus its installation identity. It validates the user
+root first and then the system root with Isabelle's native `build -n -b Pure
+HOL`, recording the first successful root together with that installation
+identity and launcher arguments. Later runs revalidate that recorded root; a
+failed recorded root is reported and is not silently replaced. A changed
+installation invalidates the record and starts the user-then-system search
+again. `--base-heaps /absolute/heap-root` names the only candidate for that
+run. This names a store root, not a platform directory. Missing or outdated
+base heaps fail setup; report the requirement rather than building them,
+copying them, or switching installation. New heaps and databases remain in
+the checkout's private user state. The helper does not enumerate platforms,
+copy base databases, or load the main user's heaps/catalog.
 Isabelle's bootstrap can compile the registered Scala components during this
 check, so setup is not read-only.
 
