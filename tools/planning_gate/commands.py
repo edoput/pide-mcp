@@ -13,14 +13,7 @@ import time
 from typing import Callable, Mapping, TextIO
 
 from .matrix import load_layers
-
-
-DEFAULT_ISABELLE = (
-    "flatpak",
-    "run",
-    "--command=isabelle",
-    "de.tum.in.isabelle.Isabelle",
-)
+from tools.isabelle_launcher import LauncherError, resolve_launcher
 
 
 class CommandError(ValueError):
@@ -34,6 +27,7 @@ class CommandStep:
     argv: tuple[str, ...]
     timeout_seconds: float
     layers: tuple[str, ...] = ()
+    environment: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -75,17 +69,10 @@ def run_theory_catalog(
 
 
 def isabelle_command(environment: Mapping[str, str] | None = None) -> tuple[str, ...]:
-    environment = os.environ if environment is None else environment
-    configured = environment.get("ISABELLE")
-    if configured is None:
-        return DEFAULT_ISABELLE
     try:
-        argv = tuple(shlex.split(configured))
-    except ValueError as ex:
-        raise CommandError(f"cannot parse ISABELLE as an argument vector: {ex}") from ex
-    if not argv or any("\x00" in value for value in argv):
-        raise CommandError("ISABELLE must name a non-empty command without NUL bytes")
-    return argv
+        return resolve_launcher(environment).argv
+    except LauncherError as ex:
+        raise CommandError(str(ex)) from ex
 
 
 def registered_commands(
@@ -97,6 +84,7 @@ def registered_commands(
     root = root.resolve()
     python = python or sys.executable
     isabelle = isabelle_command(environment)
+    child_environment = resolve_launcher(environment).child_environment(environment)
     registry = load_layers(root)
     required_roles = {
         "scala_unit_suites",
@@ -178,7 +166,7 @@ def registered_commands(
         ),
         e2e: CommandStep(
             e2e, "run every registered procedural end-to-end case",
-            (python, "-m", "mcp.test.e2e", "run", "--all"), 14400, (e2e,),
+            (python, "-m", "mcp.test.e2e", "run", "--all"), 14400, (e2e,), environment=child_environment,
         ),
     }
     return steps
@@ -203,7 +191,9 @@ def run_step(step: CommandStep, root: Path, *, stream: TextIO = sys.stdout) -> S
     print(f"\n==> {step.id}: {step.description}", file=stream, flush=True)
     print("    argv: " + shlex.join(step.argv), file=stream, flush=True)
     started = time.monotonic()
-    process = subprocess.Popen(step.argv, cwd=root, start_new_session=True)
+    process = subprocess.Popen(
+        step.argv, cwd=root, start_new_session=True, env=step.environment
+    )
 
     def terminate_group() -> None:
         try:

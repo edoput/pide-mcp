@@ -28,7 +28,7 @@ Cases:
 Usage:
   python3 mcp/test/repro_concurrent_serve.py
 
-`ISABELLE` may override the default project Flatpak command.
+`ISABELLE` may override the default isabelle executable on PATH.
 
 Exit code 0 iff all assertions pass.
 """

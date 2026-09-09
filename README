@@ -198,3 +198,10 @@ Project layout
     ir/         the I/R proving engine (reused verbatim by MCP-HOL)
     spec        the full design record; CHANGELOG tracks decisions
     plans/      per-tool implementation plans; evals/ agent evaluations
+
+Isabelle launcher configuration
+-------------------------------
+
+All repository scripts use ISABELLE (a quoted command prefix), otherwise
+isabelle on PATH. See tools/ISABELLE.md for native, Flatpak, CI, and explicit
+worktree setup. The launcher never silently switches installations.

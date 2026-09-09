@@ -13,7 +13,6 @@ import argparse
 import os
 from pathlib import Path
 import queue
-import shlex
 import shutil
 import tempfile
 import time
@@ -21,14 +20,11 @@ from typing import Any, Callable
 import uuid
 
 from mcp.test.e2e.client import Client, wait_for_ready
+from tools.isabelle_launcher import resolve_launcher
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ISABELLE = shlex.split(
-    os.environ.get(
-        "ISABELLE", "flatpak run --command=isabelle de.tum.in.isabelle.Isabelle"
-    )
-)
+ISABELLE = list(resolve_launcher().argv)
 PROTOCOL = "2025-03-26"
 
 

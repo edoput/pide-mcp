@@ -20,13 +20,15 @@ Whenever you edit a `.scala` file under `mcp/src/` or `mcp_test/src/` (or either
 `etc/build.props`), rebuild the jars immediately afterwards by running:
 
 ```
-flatpak run --command=isabelle de.tum.in.isabelle.Isabelle scala_build
+tools/isabelle scala_build
 ```
 
 Do this before running or testing the MCP server, so the jars never go
 stale relative to the sources.
 
 Never add `-f`. It forces a rebuild of Isabelle/Scala itself, and `isabelle.jar`
-lives inside the read-only flatpak image, so the build dies with
+can live inside a read-only packaged distribution, so the build dies with
 `*** I/O error: /app/lib/classes/isabelle.jar: Read-only file system`.
 Plain `scala_build` rebuilds both component jars, which is all this needs.
+
+Select the launcher through `ISABELLE` or PATH; see `tools/ISABELLE.md`.

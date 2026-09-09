@@ -25,18 +25,11 @@ Isabelle has two implementation languages with distinct roles:
   Reference: `isabelle doc system`, chapter "Isabelle/Scala systems
   programming" (source: `src/Doc/System/Scala.thy`).
 
-Run every Isabelle command through the flatpak:
-
-```
-flatpak run --command=isabelle de.tum.in.isabelle.Isabelle <args>
-```
-
-Where the reference files below write `isabelle <cmd>`, that names the
-command — always invoke it through the flatpak above. Rationale: a second
-install ships a different Poly/ML binary while sharing
-`$ISABELLE_HOME_USER/heaps`, and a root session's build digest is the SHA1
-of the `poly` binary, so alternating between installs invalidates Pure and
-forces a full Pure → HOL rebuild every time.
+Run Isabelle commands through `tools/isabelle`; configure `ISABELLE` or an
+`isabelle` executable on PATH. On this machine that executable should use the
+host Flatpak. Do not switch installations after a failure. Use the explicit
+worktree helper for private heaps and session databases. See
+`tools/ISABELLE.md` for installation and state setup.
 
 The flatpak is also where the **sources** live:
 

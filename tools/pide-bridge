@@ -15,12 +15,8 @@ case "${1:-}" in
       *) echo "usage: tools/pide-bridge measure [--check]" >&2; exit 2 ;;
     esac
     [ "$#" -eq 0 ] || { echo "usage: tools/pide-bridge measure [--check]" >&2; exit 2; }
-    if [ -n "${ISABELLE_TOOL:-}" ]; then
-      exec env ISABELLE_MCP_PAYLOAD_ARTIFACT="$artifact" "$ISABELLE_TOOL" \
-        mcp_pide_measure "${tool_args[@]}"
-    fi
-    exec env ISABELLE_MCP_PAYLOAD_ARTIFACT="$artifact" flatpak run \
-      --command=isabelle de.tum.in.isabelle.Isabelle mcp_pide_measure "${tool_args[@]}"
+    exec env ISABELLE_MCP_PAYLOAD_ARTIFACT="$artifact" \
+      "$launcher_dir/isabelle" mcp_pide_measure "${tool_args[@]}"
     ;;
   *) echo "usage: tools/pide-bridge measure [--check]" >&2; exit 2 ;;
 esac

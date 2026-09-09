@@ -40,10 +40,7 @@ either the fail-fast behavior regressed (REPRO case) or valid multi-root
 configs stopped working (CONTROL case) -- either way, something to fix.
 
 Environment:
-  ISABELLE   command to run isabelle, shell-split (default: the flatpak, per
-             the project's "always go through the flatpak" rule -- the bundled
-             Isabelle2025-2_linux tree shares $ISABELLE_HOME_USER/heaps and
-             alternating between installs forces a full Pure rebuild)
+  ISABELLE   shell-quoted command prefix; defaults to isabelle on PATH.
   MCP_SESSION  -s SESSION to use (default: MCP-Tools, the cheap Pure-based
              registry -- the failure is in ROOT parsing, which happens before
              anything is built, so the base session is irrelevant and the
@@ -59,7 +56,6 @@ Environment:
 """
 
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -67,11 +63,11 @@ import tempfile
 import time
 
 from mcp.test.e2e.client import Client as JsonRpcClient
+from tools.isabelle_launcher import resolve_launcher
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-ISABELLE = shlex.split(os.environ.get(
-    "ISABELLE", "flatpak run --command=isabelle de.tum.in.isabelle.Isabelle"))
+ISABELLE = list(resolve_launcher().argv)
 SESSION = os.environ.get("MCP_SESSION", "MCP-Tools")
 TIMEOUT = float(os.environ.get("REPRO_TIMEOUT", "180"))
 

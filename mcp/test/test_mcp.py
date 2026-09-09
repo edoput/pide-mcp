@@ -32,17 +32,16 @@ Exit code 0 iff all assertions pass; prints one verdict line per case.
 import json
 import os
 import re
-import shlex
 import shutil
 import sys
 import tempfile
 import time
 
 from mcp.test.e2e.client import Client, wait_for_ready, wait_for_shout
+from tools.isabelle_launcher import resolve_launcher
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ISABELLE = shlex.split(os.environ.get(
-    "ISABELLE", "flatpak run --command=isabelle de.tum.in.isabelle.Isabelle"))
+ISABELLE = list(resolve_launcher().argv)
 TIMEOUT = float(os.environ.get("MCP_TEST_TIMEOUT", "600"))
 HANDSHAKE_TIMEOUT = float(os.environ.get("MCP_HANDSHAKE_TIMEOUT", "60"))
 

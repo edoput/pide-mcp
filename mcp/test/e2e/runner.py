@@ -12,6 +12,7 @@ import traceback
 from typing import Callable, Iterable, TextIO
 
 from .registry import CaseDefinition, RegistryError, load_runtime_case
+from tools.isabelle_launcher import resolve_launcher
 from .processes import terminate_process_session
 
 
@@ -55,6 +56,7 @@ def run_process(
     timeout_seconds: float,
     line_sink: Callable[[str, str], None] | None = None,
     supervisor: ProcessSupervisor | None = None,
+    environment: dict[str, str] | None = None,
 ) -> ProcessResult:
     process = subprocess.Popen(
         argv,
@@ -64,6 +66,7 @@ def run_process(
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
+        env=environment,
     )
     if supervisor is not None:
         supervisor.add(process)
@@ -177,6 +180,7 @@ def run_cases(
     )
     output_lock = threading.Lock()
     supervisor = ProcessSupervisor()
+    worker_environment = resolve_launcher().child_environment()
 
     def run(case: CaseDefinition) -> ProcessResult:
         prefix = f"[e2e:{case.function}]"
@@ -192,6 +196,7 @@ def run_cases(
             case.timeout_seconds,
             line_sink=show if verbose else None,
             supervisor=supervisor,
+            environment=worker_environment,
         )
 
     executor = ThreadPoolExecutor(max_workers=min(jobs, len(cases)) or 1)

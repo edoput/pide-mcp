@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Report launcher/settings failures without starting an Isabelle build."""
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isabelle_launcher import LauncherError, resolve_launcher
+
+
+def main():
+    try:
+        launcher = resolve_launcher()
+        report = {'command': launcher.argv, 'selection': launcher.source}
+        keys = ('ISABELLE_HOME', 'ISABELLE_HOME_USER', 'ISABELLE_HEAPS',
+                'ISABELLE_HEAPS_SYSTEM', 'ISABELLE_MCP_HOME', 'ISABELLE_MCP_TEST_HOME')
+        for arguments in (['version'], ['getenv', *keys]):
+            result = subprocess.run([*launcher.argv, *arguments], capture_output=True,
+                                    text=True, timeout=30)
+            if result.returncode:
+                report.update(failed_command=arguments, returncode=result.returncode,
+                              stderr=result.stderr, stdout=result.stdout)
+                print(json.dumps(report, indent=2))
+                return 2
+            if arguments[0] == 'version':
+                report['version'] = result.stdout.strip()
+            else:
+                report['settings'] = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+        root = Path(__file__).resolve().parents[1]
+        report['component_mismatches'] = {
+            key: {'expected': str(root / directory), 'actual': report['settings'].get(key)}
+            for key, directory in (('ISABELLE_MCP_HOME', 'mcp'), ('ISABELLE_MCP_TEST_HOME', 'mcp_test'))
+            if report['settings'].get(key) != str(root / directory)
+        }
+        print(json.dumps(report, indent=2))
+        return 2 if report['component_mismatches'] else 0
+    except (LauncherError, OSError, subprocess.TimeoutExpired) as ex:
+        print(f'isabelle diagnostic: {ex}', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
