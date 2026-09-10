@@ -227,7 +227,7 @@ def wait_for_shout(
 
 def wait_for_ready(
     client: Client,
-    probe_name: str = "repl_list",
+    probe_name: str = "list_sessions",
     probe_args: dict[str, Any] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:

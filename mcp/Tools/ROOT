@@ -16,20 +16,17 @@ session "MCP-Tools-Tests" in "Tests" = "MCP-Tools" +
     MCP_Tools_Tests
 
 session "MCP-HOL" in "HOL" = HOL +
-  description "Agentic proving: I/R engine + MCP.ir bridge over HOL"
-  options [record_theories]
+  description "HOL-safe MCP tool registration"
   sessions
     "MCP-Tools"
   theories
     MCP
-    MCP_Repl
 
 session "MCP-HOL-Tests" in "HOL/Tests" = "MCP-HOL" +
-  description "Unit tests for the MCP.ir dispatcher (MCP_Repl) over the I/R engine"
-  options [record_theories]
+  description "HOL-safe registration regression tests"
   sessions
     "MCP-Assumption"
+    "HOL-Library"
   theories
-    MCP_Fixture_Nav
-    MCP_Repl_Tests
-    Ir_Tests
+    MCP_HOL_Tests
+    MCP_HOL_Import_Tests

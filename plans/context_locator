@@ -1,252 +1,192 @@
 ---
 schema: isabelle-mcp.plan/v1
 id: context_locator
-title: Theory-extensible context locators for agent tool scope
+title: Root tool catalogue and ML-owned invocation targets
 status: in_progress
 depends_on:
-  - connection_kernel
+- connection_kernel
 allowed_modules:
-  - spec
-  - plans
-  - CHANGELOG
-  - README
-  - mcp/src
-  - mcp/Tools
-  - mcp_test/src
-  - mcp/test
+- spec
+- plans
+- CHANGELOG
+- README
+- mcp/src
+- mcp/Tools
+- mcp_test/src
+- mcp/test
 invariants:
-  - id: INV1
-    statement: Every accepted context locator is parsed and resolved only by Isabelle/ML and yields one ordinary Proof.context at the point an operation executes.
-  - id: INV2
-    statement: Context-resolver kinds are immutable theory declarations inherited through imports; duplicate definitions cannot silently replace one another.
-  - id: INV3
-    statement: Scala stores and transports a context locator as an opaque value and cannot branch on theory, repl, or extension-defined resolver kinds.
-  - id: INV4
-    statement: No MCP request can include, open, or otherwise apply an Isabelle bundle; bundle activation is controlled only by Isabelle theory and proof text.
+- id: INV1
+  statement: Every accepted context locator is parsed and resolved only by Isabelle/ML
+    and yields one ordinary Proof.context at the point an operation executes.
+- id: INV2
+  statement: Context-resolver kinds are immutable theory declarations inherited through
+    imports; duplicate definitions cannot silently replace one another.
+- id: INV3
+  statement: Scala transports a target URL as an opaque string and does not branch
+    on resolver kinds.
+- id: INV4
+  statement: No MCP request can include, open, or otherwise apply an Isabelle bundle;
+    bundle activation is controlled only by Isabelle theory and proof text.
 claims:
-  - id: A1
-    kind: assumption
-    state: active
-    statement: Theory_Data attached to a registry-root theory inherits resolver declarations from its theory imports and can safely store the resolver functions needed to construct Proof.context values.
-    layers: [ml-unit]
-  - id: A2
-    kind: assumption
-    state: active
-    statement: A loaded theory can produce a global Proof.context, while a live REPL can expose its latest Proof.context each time its locator is resolved.
-    layers: [ml-unit, bridge]
-  - id: A3
-    kind: assumption
-    state: active
-    statement: The server can select and, when necessary, load its configured registry-root theory at startup without rebuilding the Scala implementation.
-    layers: [bridge]
-  - id: I1
-    kind: infrastructure
-    state: active
-    statement: MCP_Context_Locator is the sole owner of locator parsing, canonical printing, resolver registration, and resolution to Proof.context.
-    layers: [ml-unit, bridge]
-  - id: D1
-    kind: design
-    statement: A context locator is an address for an existing Isabelle context, not a third context kind beside theory, Proof.context, and Context.generic.
-    category: design
-  - id: D2
-    kind: design
-    statement: The canonical external form is isabelle://context/KIND/TARGET; Isabelle/ML owns its parser and printer, while Scala may wrap but never interpret the string.
-    category: design
-  - id: D3
-    kind: design
-    statement: MCP_Context_Locator stores named resolver functions in Theory_Data on the registry-root theory; MCP_Tools registers theory and MCP_Repl registers repl through ordinary theory setup.
-    category: design
-  - id: D4
-    kind: design
-    statement: The -T option selects the registry-root theory at server startup. One active connection captures that root, and changing it after Ready is separate control-plane work rather than an implicit effect of loading or selecting an agent context.
-    category: design
-  - id: D5
-    kind: design
-    statement: Tool scope contains exactly one context locator. Network-controlled bundle lists and tool_scope_include are removed; theory authors retain Isabelle-native bundle and attribute control in Isar text.
-    category: design
-  - id: D6
-    kind: design
-    statement: tool_scope_set accepts one context field, tool_scope_show returns its canonical locator, and REPL creation returns a canonical repl locator that clients can pass back unchanged.
-    category: design
-  - id: Q1
-    kind: question
-    state: resolved
-    statement: May an MCP client change the registry-root theory after the connection becomes Ready?
-    resolution: No in this plan. The root is runtime startup configuration and is immutable for one active connection; a future control-plane plan may define atomic switching, in-flight snapshot ownership, readiness revalidation, and catalog notifications.
-    resolved_on: "2026-08-31"
-  - id: T1
-    kind: test
-    state: active
-    statement: Canonical theory, repl, and extension locators round-trip through the ML parser and printer; malformed scheme, authority, kind, target, and escaping forms are rejected without invoking a resolver.
-    layers: [ml-unit]
-  - id: T2
-    kind: test
-    state: active
-    statement: A resolver registered in an imported theory is available in its descendant, an unrelated theory cannot use it, and duplicate resolver-kind registration fails at theory construction or merge.
-    layers: [ml-unit]
-  - id: T3
-    kind: test
-    state: active
-    statement: A theory locator resolves to its global Proof.context; a repl locator observes the latest REPL state on every execution; unknown kinds, unknown theories, and stale REPL IDs return typed operation errors.
-    layers: [ml-unit, bridge]
-  - id: T4
-    kind: test
-    state: active
-    statement: Scala round-trips an extension-defined locator without parsing its kind, and tool_scope_set commits only the canonical ML-validated value while a failed check leaves connection scope unchanged.
-    layers: [scala-unit, bridge]
-  - id: T5
-    kind: test
-    state: active
-    statement: tools/list and tools/call use the current context locator without any bundle payload; tool_scope_include is absent, and no public schema or bridge operation accepts network-controlled bundle names.
-    layers: [scala-unit, ml-unit, bridge, e2e]
-  - id: T6
-    kind: test
-    state: active
-    statement: Starting with -T Scratch uses Scratch's inherited resolver and tool registries, while selecting another agent context does not change the registry root used by admitted bridge calls.
-    layers: [bridge, e2e]
-  - id: T7
-    kind: test
-    state: active
-    statement: REPL creation returns a canonical context locator and an agent can set it, register a tool through REPL work, observe that tool in tools/list, and call it without Scala knowing the repl resolver kind.
-    layers: [bridge, e2e]
-spec_refinements:
-  - id: R1
-    state: folded
-    folded_on: "2026-08-31"
-    statement: Replace bare theory names, repl-prefixed strings, and Scala-side designation branching with canonical ML-owned context locators and a Theory_Data resolver registry.
-    spec_ids: [D-2026-08-31-context-locators]
-  - id: R2
-    state: folded
-    folded_on: "2026-08-31"
-    statement: Remove network-controlled bundle inclusion from tool scope while preserving Isabelle bundles and activation declarations in theory and proof text.
-    spec_ids: [D-2026-08-31-context-locators]
-  - id: R3
-    state: folded
-    folded_on: "2026-08-31"
-    statement: Define -T as runtime startup selection of an immutable per-connection registry-root theory and document how ROOT availability differs from theory-import inheritance.
-    spec_ids: [D-2026-08-31-context-locators]
+- id: A1
+  kind: assumption
+  state: active
+  statement: Theory_Data attached to a registry-root theory inherits resolver declarations
+    from its theory imports and can safely store the resolver functions needed to
+    construct Proof.context values.
+  layers:
+  - ml-unit
+- id: A2
+  kind: assumption
+  state: active
+  statement: A loaded theory produces a global Proof.context when its target is resolved.
+  layers:
+  - ml-unit
+  - bridge
+- id: A3
+  kind: assumption
+  state: active
+  statement: The server can bootstrap a private live PIDE wrapper importing exactly
+    the -T selected theory, hold its document requirement until shutdown, and observe
+    ancestor/wrapper reprocessing without rebuilding Scala.
+  layers:
+  - bridge
+- id: I1
+  kind: infrastructure
+  state: active
+  statement: MCP_Context_Locator is the sole owner of locator parsing, canonical printing,
+    resolver registration, and resolution to Proof.context.
+  layers:
+  - ml-unit
+  - bridge
+- id: D1
+  kind: design
+  statement: A context locator is an address for an existing Isabelle context, not
+    a third context kind beside theory, Proof.context, and Context.generic.
+  category: design
+- id: D2
+  kind: design
+  statement: Scala transports target URLs opaquely; ML owns the current parser and
+    resolver extension mechanism. Do not redesign resolver result types in this cleanup.
+  category: design
+- id: D3
+  kind: design
+  statement: MCP_Context_Locator stores named resolver functions in Theory_Data on
+    the registry-root theory; MCP_Tools registers the theory resolver through ordinary
+    setup.
+  category: design
+- id: D4
+  kind: design
+  statement: Every startup creates one private temporary live PIDE wrapper importing
+    exactly the -T theory, uniformly for image and source imports. Its context supplies
+    the catalogue and default execution. Bootstrap/final end precede hello/Ready;
+    lifetime document retention ends only after drain, release and stop. No source/image
+    split or heap fallback is allowed.
+  category: design
+- id: D5
+  kind: design
+  statement: The root catalogue selects names, activation and actual ML tool implementations;
+    an invocation target supplies only the execution Proof.context.
+  category: design
+- id: D6
+  kind: design
+  statement: 'Every ML tool automatically advertises optional String context in ordinary
+    arguments. The framework resolves its URL in ML, strips it before invoking unchanged
+    #run, and defaults to root when absent. A tool-owned context declaration fails
+    clearly; Scala builtins do not gain this parameter.'
+  category: design
+- id: Q1
+  kind: question
+  state: resolved
+  statement: May an MCP client change the registry-root theory after the connection
+    becomes Ready?
+  resolution: No in this plan. The root is runtime startup configuration and is immutable
+    for one active connection; a future control-plane plan may define atomic switching,
+    in-flight snapshot ownership, readiness revalidation, and catalog notifications.
+  resolved_on: '2026-08-31'
+- id: T1
+  kind: test
+  state: active
+  statement: Theory and extension locators round-trip through the existing ML parser/printer;
+    malformed forms fail before resolver invocation.
+  layers:
+  - ml-unit
+- id: T2
+  kind: test
+  state: active
+  statement: A resolver registered in an imported theory is available in its descendant,
+    an unrelated theory cannot use it, and duplicate resolver-kind registration fails
+    at theory construction or merge.
+  layers:
+  - ml-unit
+- id: T3
+  kind: test
+  state: active
+  statement: Theory and extension targets resolve at execution; unknown kinds and
+    unknown theories return operation errors.
+  layers:
+  - ml-unit
+  - bridge
+- id: T4
+  kind: test
+  state: active
+  statement: ML tool schemas include optional String context, builtin schemas do not;
+    declaring a tool-owned context parameter fails. Scala transports extension URLs
+    opaquely and ML rejects malformed/unavailable targets and removes context before
+    invoking the tool.
+  layers:
+  - scala-unit
+  - bridge
+  - ml-unit
+- id: T5
+  kind: test
+  state: active
+  statement: tools/list uses the fresh root catalogue; tools/call selects the root
+    tool value and executes it in the target, including when the target declares a
+    conflicting same-name tool. No request accepts bundle activation.
+  layers:
+  - scala-unit
+  - ml-unit
+  - bridge
+  - e2e
+- id: T6
+  kind: test
+  state: active
+  statement: Starting with -T Scratch owns a private live PIDE wrapper importing exactly
+    Scratch until shutdown, observes successful final end before readiness, and sees
+    changed inherited tools after ancestor/wrapper reprocessing. Image and source
+    selections use the same wrapper path; invocation targets never change its catalogue.
+  layers:
+  - bridge
+  - e2e
+spec_refinements: []
 done_command:
-  - tools/planning-gate
-  - done
+- tools/planning-gate
+- done
 ---
 
-context_locator — implementation plan
-=====================================
 
-problem
--------
 
-The current agent-context implementation uses one string for three different
-concerns: a bare theory name, a `repl:ID` special case, and an empty default.
-Scala understands those cases, while `MCP_Tools` contains a mutable hook that
-`MCP_Repl` fills with `Ir.context_of`.  A second network argument lets clients
-apply Isabelle bundles outside theory text.  This makes REPL support a special
-cross-language branch instead of a theory-contributed Isabelle feature.
 
-terminology and ownership
--------------------------
 
-- The **registry-root theory** is selected by `mcp_server -T THEORY`.  Its
-  imports determine the bridge-operation, context-resolver, tool, and resource
-  declarations available to that server instance.
-- A **context locator** is a canonical external address such as
-  `isabelle://context/theory/HOL.List` or
-  `isabelle://context/repl/INSTANCE`.  It is not an Isabelle context.
-- The **resolved context** is the ordinary `Proof.context` returned by the
-  selected ML resolver when an operation executes.
-- **Tool scope** is per-connection Scala state containing one opaque context
-  locator.  It does not contain bundle names or a registry-root selector.
 
-`ROOT` makes sessions and theories buildable and available.  Only a theory
-`imports` edge causes `Theory_Data` inheritance.  Starting a server with
-`-s My-Session -T Scratch` selects Scratch's inherited registries at runtime;
-merely listing Scratch in the same ROOT session does not make it inherit
-MCP_Repl.
+The private live wrapper imports exactly the -T selected theory and owns the
+catalogue, operation registry and resolver registry. Its Proof.context is the
+default execution context, uniformly for image and source selections.
+ML resolves the invocation target and calls the selected root tool value in that
+Proof.context. Keep the existing resolver API and extension direction, including
+future URL schemes. No connection-selected context, overlays or richer state
+results are introduced. Notifications signal a refresh; imports merge ancestor
+data into descendants and do not propagate declarations upwards.
 
-ML architecture
----------------
-
-`MCP_Context_Locator` is implemented in `mcp_context_locator.ML`, loaded by
-`MCP_Tools.thy` with `ML_file`.  It owns an abstract locator value, canonical
-parsing and printing, a `Theory_Data` table of resolver functions,
-registration, and resolution.  A resolver receives the registry-root theory
-and its decoded target and returns the canonical target together with a
-`Proof.context`; this lets theory aliases normalize without a second lookup.
-The registry is theory data rather than generic data because it must be
-available before a proof context can be resolved and resolver availability
-must not vary inside a proof block.
-
-`MCP_Tools` registers the `theory` resolver.  It finds the named loaded theory
-and returns `Proof_Context.init_global thy`.  `MCP_Repl` registers `repl` and
-uses `Ir.context_of` at resolution time, so the same locator observes later
-REPL steps.  Other theories may register new resolver kinds through the same
-setup API.  Duplicate names fail through the name-space table; there is no
-mutable single-provider callback.
-
-The project follows its existing `isabelle://...` addressing convention, but
-does not use Isabelle/ML's `Url` structure: that library accepts only file,
-HTTP, HTTPS, and FTP URLs.  The locator module owns one narrow parser for the
-fixed `isabelle://context/` authority, a registered kind, and a canonical
-target.  Current theory names and REPL identifiers require no escaping; the
-parser and tests nevertheless define one canonical percent-encoding for target
-bytes so extension-defined targets cannot create ambiguous path boundaries.
-
-Scala and public surface
-------------------------
-
-Scala may define an opaque `ContextLocator` wrapper to prevent accidental use
-as an unrelated string, but it does not parse the locator.  Candidate values
-cross the bridge to `check_context`; ML returns the canonical spelling on
-success.  The connection commits only that returned value.
-
-`tool_scope_set` replaces its mutually exclusive `theory` and `repl` fields
-with one required `context` string.  `tool_scope_show` reports that canonical
-locator.  REPL creation returns its locator so clients do not construct the
-representation themselves.  Normal tools/list and tools/call requests do not
-repeat it: they use the connection's current tool scope.
-
-The registry root and agent context are deliberately different controls.  The
-root determines which implementations the server has; the locator determines
-which Isabelle context those implementations operate on.  Loading a theory or
-selecting another agent context cannot silently change the root.  A live root
-switch remains feasible through a later explicit control-plane design because
-the bridge envelope identifies its theory per admitted call, but it is not part
-of this plan.
-
-bundle removal
---------------
-
-Delete `tool_scope_include`, the Scala bundle list, bundle parameters on
-backend methods, and bundle fields in every bridge payload.  Delete
-request-time `Bundle.includes_cmd`.  `MCP_Tool` remains `Generic_Data`, and
-Isabelle authors still control activation with declarations, `unbundle`,
-`context includes`, and `including` in ordinary Isar text.  This plan removes
-remote bundle manipulation, not Isabelle bundle semantics.
-
-implementation sequence
------------------------
-
-1. Add ML parser/printer and resolver-registry unit tests, then implement
-   `MCP_Context_Locator` and register the base theory resolver.
-2. Register `repl` from MCP_Repl, remove the mutable repl-context hook, and
-   prove inheritance, duplicate rejection, latest-state resolution, and stale
-   target behavior.
-3. Replace Scala designation and bundle state with an opaque context locator;
-   change tool_scope_set/show and make REPL creation return its locator.
-4. Remove bundle fields from the Scala and ML bridge operations and delete
-   tool_scope_include.  Preserve Isar-side bundle tests as proof that user-owned
-   activation remains intact.
-5. Add a custom Scratch theory/session fixture and live cases for registry-root
-   selection, extension-defined opaque locators, REPL self-extension, and
-   unchanged roots across agent-context changes.
-6. Update user documentation, generated claim registries, test declarations,
-   and static gates; then run the single repository done command.
-
-non-goals
----------
-
-- Adding a third Isabelle context type.
-- Letting clients register ML resolver functions over MCP.
-- Changing the registry root after an active connection is Ready.
-- Removing Isabelle bundles, declaration attributes, or Generic_Data tool
-  activation from theory and proof text.
+Every internal hello/call carries mandatory root_node, root_command and root_exec
+attributes alongside the existing theory identity. The node names the owned
+wrapper; command and evaluation IDs select its completed final end. Use existing
+Isabelle snapshot/Document APIs only, with no prover-source patches. ML checks
+current execution identity, completion, final-end state and theory identity before
+selecting the root. Missing, malformed, stale or unfinished selectors fail through
+correlated errors, without fallback or automatic retry. Replies, cancel/drain,
+operation payloads and public context arguments remain unchanged.
+The wrapper requirement lasts from startup to shutdown. Bootstrap and successful
+final end precede Ready; drain precedes release/stop. This is one server-owned
+root, not a multi-user document service.

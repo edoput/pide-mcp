@@ -2,6 +2,7 @@ theory MCP_Tools_Tests
   imports
     "MCP-Assumption.MCP_Assumption"
     MCP_Fixture_B MCP_Fixture_C MCP_Fixture_Sibling
+  keywords "fixture_command" :: diag
 begin
 
 text \<open>Unit tests: the theory fails to load iff a test fails, so
@@ -114,7 +115,7 @@ val {pos, ...} =
 ML \<open>
 (*re-declaring the same binding in the same theory is a DUPLICATE error
   (Name_Space.define strict) -- the pivot's replacement for the old
-  replace-by-name semantics; replay on theory re-run stays idempotent
+  labelace-by-name semantics; replay on theory re-run stays idempotent
   because each run starts from empty context data*)
 \<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
   \<^theory> |> Named_Target.theory_map (fn lthy =>
@@ -172,8 +173,6 @@ section \<open>Print commands\<close>
 
 print_mcp_tools
 print_mcp_tools!
-print_mcp_resources
-print_mcp_resources!
 
 section \<open>Protocol payloads\<close>
 
@@ -234,7 +233,8 @@ val rows = map (fn (n, (d, (f, _))) => (n, d, f)) full_rows;
   its annotations are the string_fun default (form tag proves nothing)*)
 val (_, (_, (_, (shout_params, shout_annot)))) =
   the (find_first (fn (n, _) => n = "MCP_Tools.shout") full_rows);
-\<^assert> (shout_params = [("input", (MCP_Tool.String, (true, (NONE, "tool input"))))]);
+\<^assert> (shout_params = [("input", (MCP_Tool.String, (true, (NONE, "tool input")))),
+  ("context", (MCP_Tool.String, (false, (NONE, "Optional target context URL; defaults to the startup root"))))]);
 \<^assert> (shout_annot = (NONE, (NONE, (NONE, SOME false))));
 
 (*A10: ptyp_fixture's explicit (annotations destructive) clause crosses
@@ -249,28 +249,28 @@ val (_, (_, (_, (_, ptyp_fixture_annot)))) =
   the run slot errors with the builtin message if ever invoked directly.
   A2 (first half): mirrors never enter the ml row list -- Builtin rows
   never reach exposure-name computation.*)
-\<^assert> (not (exists (fn (n, _, _) => n = "MCP_Tools.repl_list") rows));
-\<^assert> (member (op =) builtin_rows ("repl_list", true));
-\<^assert> (member (op =) builtin_rows ("tool_scope_set", true));
-\<^assert> (MCP_Tool.is_active (Context.Proof \<^context>) "MCP_Tools.repl_list");
+\<^assert> (not (exists (fn (n, _, _) => n = "MCP_Tools.list_sessions") rows));
+\<^assert> (member (op =) builtin_rows ("list_sessions", true));
+\<^assert> (member (op =) builtin_rows ("check_theory", true));
+\<^assert> (MCP_Tool.is_active (Context.Proof \<^context>) "MCP_Tools.list_sessions");
 \<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
-  MCP_Tool.run \<^context> "MCP_Tools.repl_list" [])));
+  MCP_Tool.run \<^context> "MCP_Tools.list_sessions" [])));
 \<close>
 
-declare [[mcp_tools del: repl_list]]
+declare [[mcp_tools del: list_sessions]]
 ML \<open>
 (*del hides the mirror from the builtins section (active = false) but
   the row stays registered -- A2 (second half): "hidden" (registered,
   del'd) is distinguishable from "absent" (no mirror at all)*)
 val (_, builtin_rows_del) = decode_full (MCP_Protocol.tools_body \<^context>);
-\<^assert> (member (op =) builtin_rows_del ("repl_list", false));
-\<^assert> (MCP_Tool.defined (Context.Proof \<^context>) "MCP_Tools.repl_list");
-\<^assert> (not (MCP_Tool.is_active (Context.Proof \<^context>) "MCP_Tools.repl_list"));
+\<^assert> (member (op =) builtin_rows_del ("list_sessions", false));
+\<^assert> (MCP_Tool.defined (Context.Proof \<^context>) "MCP_Tools.list_sessions");
+\<^assert> (not (MCP_Tool.is_active (Context.Proof \<^context>) "MCP_Tools.list_sessions"));
 \<close>
-declare [[mcp_tools add: repl_list]]
+declare [[mcp_tools add: list_sessions]]
 ML \<open>
 val (_, builtin_rows_readd) = decode_full (MCP_Protocol.tools_body \<^context>);
-\<^assert> (member (op =) builtin_rows_readd ("repl_list", true));
+\<^assert> (member (op =) builtin_rows_readd ("list_sessions", true));
 \<close>
 
 ML \<open>\<^assert> (MCP_Protocol.run_tool \<^context> "MCP_Tools.shout" [("input", "abc")] = ("ok", "ABC"))\<close>
@@ -290,6 +290,107 @@ let
 in
   \<^assert> (status = "error");
   \<^assert> (String.isSubstring "Inactive" output)
+end;
+\<close>
+
+mcp_tool target_probe = run \<open>fn ctxt => fn _ =>
+  Context.theory_long_name (Proof_Context.theory_of ctxt)\<close>
+  (description \<open>Report execution theory; framework context must be stripped before validation\<close>)
+
+section \<open>Retained bridge operations\<close>
+
+spec_test \<open>retained bridge operations inherit and reject duplicate registration\<close>
+  covers \<open>pide_bridge#T9\<close>
+
+ML \<open>
+val root = \<^theory>;
+val group = Future.new_group NONE;
+\<^assert> (MCP_Bridge.registered root = ["check_context", "run_tool", "tools"]);
+\<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
+  MCP_Bridge.register (Binding.name "tools") MCP_Bridge_Base.tools root)));
+\<^assert> (MCP_Bridge.invoke root "tools" group (XML.Encode.string "root") =
+  MCP_Protocol.tools_body (Proof_Context.init_global root));
+val root_reply = MCP_Bridge.invoke root "check_context" group (XML.Encode.option XML.Encode.string NONE);
+\<^assert> (#1 (XML.Decode.pair XML.Decode.string XML.Decode.self root_reply) = "ok");
+val run_payload = XML.Encode.pair XML.Encode.string
+  (XML.Encode.pair XML.Encode.string (XML.Encode.list (XML.Encode.pair XML.Encode.string XML.Encode.string)))
+  ("root", ("MCP_Tools.shout", [("input", "bridge")]));
+val run_reply = MCP_Bridge.invoke root "run_tool" group run_payload;
+\<^assert> (XML.Decode.pair XML.Decode.string XML.Decode.string run_reply = ("ok", "BRIDGE"));
+\<close>
+
+section \<open>Root catalogue and target execution\<close>
+
+spec_test \<open>framework context preserves root selection and rejects reserved parameter collisions\<close>
+  covers \<open>context_locator#T4\<close> and \<open>context_locator#T5\<close>
+
+ML \<open>
+local
+  val marker = Attrib.setup_config_bool \<^binding>\<open>target_marker\<close> (K false);
+  val base = Named_Target.theory_init \<^theory>;
+  fun tool run : MCP_Tool.tool =
+    {description = "catalogue selection probe", params = [], constraints = [],
+     form = MCP_Tool.String_Fun, annotations = MCP_Tool.read_only, run = run};
+  val (name, catalogue) = MCP_Tool.declare (Binding.name "catalogue_probe")
+    (tool (fn ctxt => fn args =>
+      if exists (fn (key, _) => key = "context") args then "leaked context"
+      else if Config.get ctxt marker then "root-in-target" else "root")) base;
+  val (_, target) = MCP_Tool.declare (Binding.name "catalogue_probe")
+    (tool (fn _ => fn _ => "wrong-target-implementation")) base;
+  val target = Config.put marker true target;
+  val catalogue = Proof_Context.init_global
+    (MCP_Context_Locator.register (Binding.name "framework_probe")
+      (fn _ => fn _ => ("target", target)) (Local_Theory.exit_global catalogue));
+  val target_args = [("context", "isabelle://context/framework_probe/target")];
+  val inactive = Context.proof_map (MCP_Tool.deactivate name) catalogue;
+in
+  val result = MCP_Protocol.run_tool catalogue name target_args;
+  val _ = if result = ("ok", "root-in-target") then () else error ("Context fixture: " ^ #1 result ^ ": " ^ #2 result);
+  val _ = \<^assert> (MCP_Protocol.run_tool catalogue name [] = ("ok", "root"));
+  val _ = \<^assert> (#1 (MCP_Protocol.run_tool inactive name target_args) = "error");
+  val _ = \<^assert> (#1 (MCP_Protocol.run_tool base name target_args) = "error");
+  val _ = \<^assert> (#1 (MCP_Protocol.run_tool catalogue name (target_args @ target_args)) = "error");
+  val _ = \<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
+    MCP_Tool.declare (Binding.name "reserved_param")
+      {description = "invalid", params = [{name = "context", typ = MCP_Tool.String,
+        required = false, default = NONE, description = "collision"}], constraints = [],
+       form = MCP_Tool.String_Fun, annotations = MCP_Tool.read_only,
+       run = fn _ => fn _ => "wrong"} base)));
+end;
+
+(*Listing ignores target input: the root determines the catalogue even when
+  the target string is malformed. Target resolution remains a run-time concern.*)
+val root = \<^theory>;
+val listing = MCP_Protocol.tools_body (Proof_Context.init_global root);
+\<^assert> (MCP_Bridge_Base.tools (Future.new_group NONE) root (XML.Encode.string "invalid-target") = listing);
+val bad_call = XML.Encode.pair XML.Encode.string
+  (XML.Encode.pair XML.Encode.string (XML.Encode.list (XML.Encode.pair XML.Encode.string XML.Encode.string)))
+  ("ignored-legacy-root", ("MCP_Tools.shout", [("context", "invalid-target")]));
+\<^assert> (#1 (XML.Decode.pair XML.Decode.string XML.Decode.self
+  (MCP_Bridge_Base.run_tool (Future.new_group NONE) root bad_call)) = "error");
+\<close>
+
+section \<open>Document root selector validation\<close>
+
+ML \<open>
+local
+  val properties = [("theory", "Draft.Root"), ("root_node", "/tmp/Root.thy"),
+    ("root_command", "-42"), ("root_exec", "107")];
+  val selected = MCP_Bridge.root_selector properties;
+  fun fails props = Exn.is_exn (Exn.capture_body (fn () => MCP_Bridge.root_selector props));
+  fun changed key value = AList.update (op =) (key, value) properties;
+in
+  val _ = \<^assert> (#theory selected = "Draft.Root" andalso #node selected = "/tmp/Root.thy"
+    andalso #command_id selected = ~42 andalso #exec_id selected = 107);
+  val _ = List.app (fn key =>
+    (\<^assert> (fails (AList.delete (op =) key properties));
+     \<^assert> (fails (changed key ""));
+     \<^assert> (fails ((key, "duplicate") :: properties))))
+    ["theory", "root_node", "root_command", "root_exec"];
+  val _ = List.app (fn malformed =>
+    (\<^assert> (fails (changed "root_command" malformed));
+     \<^assert> (fails (changed "root_exec" malformed))))
+    ["0", "01", "+1", " 1", "1x", "1.0"];
 end;
 \<close>
 
@@ -356,33 +457,14 @@ val rows = decode_tools (MCP_Protocol.tools_body tools_ctxt);
   MCP_Context_Locator.resolve_string \<^theory>
     "isabelle://context/theory/No_Such_Theory")));
 
-(*No repl resolver is inherited by the base MCP-Tools-Tests image.*)
-val repl_err =
+(*An unregistered resolver kind must be rejected.*)
+val unknown_err =
   (case Exn.capture_body (fn () => MCP_Context_Locator.resolve_string \<^theory>
-      "isabelle://context/repl/R1") of
+      "isabelle://context/unknown/R1") of
     Exn.Exn exn => Runtime.exn_message exn
   | Exn.Res _ => "");
-\<^assert> (String.isSubstring "repl" repl_err);
+\<^assert> (String.isSubstring "unknown" unknown_err);
 \<close>
-
-section \<open>Resources (exact mirror of tools)\<close>
-
-ML \<open>
-val rrows =
-  let open XML.Decode in list (pair string string) (MCP_Protocol.resources_body \<^context>) end;
-\<^assert> (member (op =) rrows ("MCP_Tools.greeting", "a static demo resource"));
-\<^assert> (MCP_Protocol.read_resource \<^context> "MCP_Tools.greeting" =
-  ("ok", "hello from MCP_Resource"));
-\<^assert> (#1 (MCP_Protocol.read_resource \<^context> "no_such_resource") = "error");
-\<close>
-
-declare [[mcp_resources del: greeting]]
-ML \<open>
-\<^assert> (not (MCP_Resource.is_active (Context.Proof \<^context>) "MCP_Tools.greeting"));
-\<^assert> (#1 (MCP_Protocol.read_resource \<^context> "MCP_Tools.greeting") = "error");
-\<close>
-declare [[mcp_resources add: greeting]]
-ML \<open>\<^assert> (MCP_Resource.is_active (Context.Proof \<^context>) "MCP_Tools.greeting")\<close>
 
 section \<open>Combinators: quoting matrix\<close>
 
@@ -459,24 +541,24 @@ param, which map_filter already drops.\<close>
 ML \<open>
 val opt_ps =
   [mk_param ("crit", MCP_Tool.String) true NONE,
-   mk_param ("repl", MCP_Tool.String) false NONE];
+   mk_param ("label", MCP_Tool.String) false NONE];
 
 (*absent optional is dropped, not an error and not a spurious empty pair*)
 \<^assert> (MCP_Combinators.validate \<^context> opt_ps [] [("crit", "x")] = [("crit", "x")]);
 (*supplied optional is kept, in declaration order*)
-\<^assert> (MCP_Combinators.validate \<^context> opt_ps [] [("crit", "x"), ("repl", "T")] =
-  [("crit", "x"), ("repl", "T")]);
+\<^assert> (MCP_Combinators.validate \<^context> opt_ps [] [("crit", "x"), ("label", "T")] =
+  [("crit", "x"), ("label", "T")]);
 
 (*assemble: an absent optional referenced in the format substitutes the
   empty string rather than erroring "Missing argument"*)
-\<^assert> (MCP_Combinators.assemble opt_ps "find_theorems (repl $repl) $crit"
+\<^assert> (MCP_Combinators.assemble opt_ps "fixture_command (label $label) $crit"
     [("crit", "conj")] =
-  ("find_theorems (repl ) \"conj\"", 0));
+  ("fixture_command (label ) \"conj\"", 0));
 (*a SUPPLIED value still goes through normal type-directed quoting --
   only the absent case bypasses it*)
-\<^assert> (MCP_Combinators.assemble opt_ps "find_theorems (repl $repl) $crit"
-    [("crit", "conj"), ("repl", "T")] =
-  ("find_theorems (repl \"T\") \"conj\"", 0));
+\<^assert> (MCP_Combinators.assemble opt_ps "fixture_command (label $label) $crit"
+    [("crit", "conj"), ("label", "T")] =
+  ("fixture_command (label \"T\") \"conj\"", 0));
 \<close>
 
 text \<open>A2: (optional) is declarable from isar with NO new header keyword
@@ -484,19 +566,19 @@ text \<open>A2: (optional) is declarable from isar with NO new header keyword
 default value.\<close>
 
 mcp_tool optional_probe = run \<open>fn _ => fn args =>
-  (case AList.lookup (op =) args "repl" of SOME v => "repl=" ^ v | NONE => "no-repl")\<close>
+  (case AList.lookup (op =) args "label" of SOME v => "label=" ^ v | NONE => "no-label")\<close>
   (description \<open>probe for the (optional) modifier\<close>)
   (params
-    repl :: string (optional) \<open>REPL id; omitted = image\<close>
+    label :: string (optional) \<open>Optional label\<close>
     crit :: string \<open>search criteria\<close>)
 
 ML \<open>
 val optional_probe = MCP_Tool.get (Context.Proof \<^context>) "MCP_Tools_Tests.optional_probe";
-val repl_param = the (find_first (fn p => #name p = "repl") (#params optional_probe));
-\<^assert> (not (#required repl_param) andalso #default repl_param = NONE);
-\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.optional_probe" [("crit", "x")] = "no-repl");
-\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.optional_probe" [("crit", "x"), ("repl", "T")] =
-  "repl=T");
+val label_param = the (find_first (fn p => #name p = "label") (#params optional_probe));
+\<^assert> (not (#required label_param) andalso #default label_param = NONE);
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.optional_probe" [("crit", "x")] = "no-label");
+\<^assert> (MCP_Tool.run \<^context> "MCP_Tools_Tests.optional_probe" [("crit", "x"), ("label", "T")] =
+  "label=T");
 \<close>
 
 ML \<open>
@@ -504,7 +586,7 @@ ML \<open>
 \<^assert> (err_mentions
   (fn () => MCP_Combinators.exec_text \<^theory> 0
     ("mcp_tool \"optional_bad\" = run \<open>fn _ => fn _ => \"\"\<close> (description \<open>d\<close>) " ^
-     "(params repl :: string (optional) = \<open>T\<close> \<open>x\<close>)"))
+     "(params label :: string (optional) = \<open>T\<close> \<open>x\<close>)"))
   "optional");
 \<close>
 
@@ -650,9 +732,9 @@ section \<open>Combinators: format assembly\<close>
 
 ML \<open>
 (*type-directed quoting: string -> inner string, nat -> literal*)
-\<^assert> (MCP_Combinators.assemble ps "find_theorems (limit $limit) $crit"
+\<^assert> (MCP_Combinators.assemble ps "fixture_command (limit $limit) $crit"
     [("crit", "conj"), ("limit", "40")] =
-  ("find_theorems (limit 40) \"conj\"", 0));
+  ("fixture_command (limit 40) \"conj\"", 0));
 
 (*source params: single-line -> inline cartouche, multiline -> framed
   on its own line with shift 1*)
@@ -663,14 +745,14 @@ val sp = [mk_param ("input", MCP_Tool.Source) true NONE];
   ("ML_val \<open>\nval x = 1;\nval y = x;\<close>", 1));
 
 (*format checking at build time: unknown placeholder, unused required*)
-\<^assert> (is_err (fn () => MCP_Combinators.check_format ps "find_theorems $bogus"));
-\<^assert> (is_err (fn () => MCP_Combinators.check_format ps "find_theorems (limit $limit)"));
-\<^assert> (MCP_Combinators.check_format ps "find_theorems (limit $limit) $crit" = ());
+\<^assert> (is_err (fn () => MCP_Combinators.check_format ps "fixture_command $bogus"));
+\<^assert> (is_err (fn () => MCP_Combinators.check_format ps "fixture_command (limit $limit)"));
+\<^assert> (MCP_Combinators.check_format ps "fixture_command (limit $limit) $crit" = ());
 
 (*injection: adversarial string values stay data*)
 val (evil, _) =
-  MCP_Combinators.assemble ps "find_theorems $crit" [("crit", "x\" and_evil \"y")];
-\<^assert> (evil = "find_theorems \"x\\\" and_evil \\\"y\"");
+  MCP_Combinators.assemble ps "fixture_command $crit" [("crit", "x\" and_evil \"y")];
+\<^assert> (evil = "fixture_command \"x\\\" and_evil \\\"y\"");
 \<close>
 
 section \<open>Exec runner: capture and positions\<close>
@@ -716,19 +798,26 @@ val out = MCP_Tool.run \<^context> "MCP_Tools_Tests.find_consts" [("input", "str
 \<^assert> (String.isSubstring "Pure.prop" out);
 \<close>
 
-mcp_tool "find_theorems"
-  (description \<open>search theorems; criteria as in the find_theorems command\<close>)
+ML \<open>
+val _ = Outer_Syntax.command \<^command_keyword>\<open>fixture_command\<close>
+  "diagnostic fixture with a numeric option and quoted input"
+  ((Parse.$$$ "(" |-- Parse.nat --| Parse.$$$ ")") -- Parse.embedded >>
+    (fn (limit, input) => Toplevel.keep (fn _ => writeln (string_of_int limit ^ ":" ^ input))));
+\<close>
+
+mcp_tool "fixture_command"
+  (description \<open>search theorems; criteria as in the fixture_command command\<close>)
   (params
-    criteria :: args \<open>search criteria in find_theorems syntax, e.g. name: conj\<close>
+    criteria :: string \<open>diagnostic input text\<close>
     limit :: nat = 20 \<open>maximum number of results\<close>)
-  (format \<open>find_theorems ($limit) $criteria\<close>)
+  (format \<open>fixture_command ($limit) $criteria\<close>)
 
 ML \<open>
 val out =
-  MCP_Tool.run \<^context> "MCP_Tools_Tests.find_theorems" [("criteria", "name: conjunctionI")];
+  MCP_Tool.run \<^context> "MCP_Tools_Tests.fixture_command" [("criteria", "name: conjunctionI")];
 \<^assert> (String.isSubstring "conjunctionI" out);
 (*declared params land on the tool*)
-val tool = MCP_Tool.get (Context.Proof \<^context>) "MCP_Tools_Tests.find_theorems";
+val tool = MCP_Tool.get (Context.Proof \<^context>) "MCP_Tools_Tests.fixture_command";
 \<^assert> (map #name (#params tool) = ["criteria", "limit"]);
 \<^assert> (#default (nth (#params tool) 1) = SOME "20");
 \<close>
@@ -747,11 +836,10 @@ ML \<open>
   (fn () => MCP_Tool.run \<^context> "MCP_Tools_Tests.snippet" [("n", "no")]) "n");
 \<close>
 
-section \<open>The mcp_tool command: capture form (plans/ml_builtin_migration A1/A2)\<close>
+section \<open>The mcp_tool command: capture form\<close>
 
 spec_test \<open>capture-form tools return output and total declared arguments\<close>
-  verifies \<open>ml_builtin_migration#A1\<close> and \<open>ml_builtin_migration#A2\<close>
-  covers \<open>planning_gate#T8\<close>
+  covers \<open>mcp_tool_registry#T2\<close> and \<open>planning_gate#T8\<close>
 
 mcp_tool capture_ok = capture \<open>fn _ => fn args =>
   writeln ("got:" ^ MCP_Combinators.arg args "x")\<close>
@@ -788,7 +876,7 @@ mcp_tool capture_bad_accessor = capture \<open>fn _ => fn args =>
 mcp_tool capture_slow = capture \<open>fn _ => fn _ =>
   (OS.Process.sleep (Time.fromReal 2.0); writeln "slow done")\<close>
   (description \<open>sleeps ~2s then writelns -- for the run_tool bridge async
-    test (plans/ml_builtin_migration A4), a fast concurrent call must not
+    test, a fast concurrent call must not
     wait behind this one\<close>)
   (annotations mutating)
 
@@ -826,14 +914,14 @@ val context = Context.Proof \<^context>;
 \<^assert> (#form (MCP_Tool.get context "MCP_Tools_Tests.capture_ok") = MCP_Tool.Capture);
 \<^assert> (String.isSubstring "[capture]" (MCP_Combinators.exec_text \<^theory> 0 "print_mcp_tools"));
 
-(*D2 (plans/param_schema_v2's follow-up to plans/ml_builtin_migration
+(*The parameter schema
   step 3): the declared (annotations ...) clause threads through to the
   registered row, per tool -- not silently defaulted*)
 \<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.capture_ok") = MCP_Tool.read_only);
 \<^assert> (#annotations (MCP_Tool.get context "MCP_Tools_Tests.capture_slow") = MCP_Tool.mutating);
 \<close>
 
-text \<open>A5 (plans/ml_builtin_migration): a capture tool forks its OWN group
+text \<open>A capture tool forks its OWN group
 and registers its OWN buffer inside \<^verbatim>\<open>MCP_Output.captured\<close>
 (MCP_Tools.thy). Nest it inside an already-registered OUTER group (the
 shape a naive MCP.run_tool that also registered a buffer would create,
@@ -909,7 +997,7 @@ ML \<open>
 text \<open>Forms whose tag proves nothing about behavior default silently to
 MCP_Tool.default_annotations when no clause is offered (string_fun) or
 have no clause to offer at all (diag_wrap's are derived); the capture
-form (D2, plans/ml_builtin_migration) requires an explicit clause
+form requires an explicit clause
 instead of defaulting -- see MCP_Tools_Tests.thy's capture-form section
 for its own coverage.\<close>
 
@@ -942,11 +1030,11 @@ acceptance is per-form. REJECTED for diag_wrap (already proves its
 hints -- an explicit clause would let a declaration override a proven
 fact) and the string form (its tag proves nothing, same rejection as
 its existing params/format clauses). MANDATORY for the capture form
-(plans/ml_builtin_migration D2, closed out by this plan's follow-up):
+(the explicit capture annotation rule):
 its tag ALSO proves nothing, but unlike string_fun it validates real
 declared params against real behavior, so a missing clause is a
 registration error naming the gap rather than a silent default.
-mcp_resource has no concept of tool annotations at all.\<close>
+\<close>
 
 ML \<open>
 \<^assert> (reg_fails
@@ -958,9 +1046,6 @@ ML \<open>
 \<^assert> (reg_fails
   "mcp_tool capture_no_annot = capture \<open>fn _ => fn _ => ()\<close> (description \<open>d\<close>)"
   "Missing (annotations");
-\<^assert> (reg_fails
-  "mcp_resource annot_res (isar \<open>print_theory\<close>) (description \<open>d\<close>) (annotations mutating)"
-  "not meaningful");
 (*an unknown bucket name is a parse-time error listing the five valid ones*)
 \<^assert> (reg_fails
   ("mcp_tool annot_bogus = run \<open>fn _ => fn _ => \"\"\<close> (description \<open>d\<close>) " ^
@@ -1106,15 +1191,11 @@ val _ = #run diag_tool \<^context> [("a", "3")];
 \<close>
 
 text \<open>Rejected where a cross-param constraint is meaningless: the string
-form (one fixed param) and mcp_resource (no concept of tool params at
-all) -- same rejection message as the other tool-only clauses.\<close>
+form (one fixed param) -- same rejection message as the other tool-only clauses.\<close>
 
 ML \<open>
 \<^assert> (reg_fails
   "mcp_tool eo_func = \<open>fn s => s\<close> (description \<open>d\<close>) (exactly_one a b)"
-  "not meaningful");
-\<^assert> (reg_fails
-  "mcp_resource eo_res (isar \<open>print_theory\<close>) (description \<open>d\<close>) (exactly_one a b)"
   "not meaningful");
 \<close>
 
@@ -1165,43 +1246,10 @@ val rt_by_name = fn n => the (find_first (fn p => #name p = n) (#params rt_tool)
   [("offset", "3"), ("names", "a"), ("kind", "thm")] = "thm3");
 \<close>
 
-section \<open>The mcp_resource command: three forms\<close>
-
-named_theorems test_collection \<open>a dynamic fact for the read-time test\<close>
-
-mcp_resource test_collection
-
-ML \<open>
-(*read-time evaluation: the collection is empty now ...*)
-val r0 = MCP_Resource.read \<^context> "MCP_Tools_Tests.test_collection";
-\<close>
-
-declare Pure.reflexive [test_collection]
-
-ML \<open>
-(*... and a fact added AFTER registration is visible on the next read*)
-val r1 = MCP_Resource.read \<^context> "MCP_Tools_Tests.test_collection";
-\<^assert> (r0 <> r1);
-\<^assert> (String.isSubstring "\<equiv>" r1);
-\<close>
-
-mcp_resource consts_dump (isar \<open>print_theory\<close>)
-  (description \<open>the theory content listing, captured at read time\<close>)
-
-ML \<open>
-val out = MCP_Resource.read \<^context> "MCP_Tools_Tests.consts_dump";
-\<^assert> (out <> "");
-\<close>
-
-ML \<open>
-(*unknown fact name rejected at registration (spec phase-2 box)*)
-\<^assert> (reg_fails "mcp_resource no_such_fact_xyz" "no_such_fact_xyz");
-\<close>
-
 section \<open>Bridge cancellation routing\<close>
 
 spec_test \<open>run-tool bridge groups are cancelled and cleaned before execution\<close>
-  covers \<open>connection_kernel#T4\<close>
+  covers \<open>connection_kernel#T4\<close> and \<open>pide_bridge#T3\<close>
 
 ML \<open>
 val _ =
@@ -1281,7 +1329,7 @@ val _ =
   in () end;
 \<close>
 
-text \<open>A13 (plans/ml_builtin_migration): the capture-form exercises above ran
+text \<open>The capture-form exercises above ran
 \<^verbatim>\<open>MCP_Output.captured\<close> at BUILD time, which installs the Private_Output
 wrappers and marks \<^verbatim>\<open>wrapped = true\<close> in a Synchronized var that survives
 into the saved heap. A fresh process loading this heap re-assigns
@@ -1289,39 +1337,7 @@ Private_Output's functions at startup, silently discarding those wrappers
 -- but \<^verbatim>\<open>wrapped\<close> still reads true there, so a later
 \<^verbatim>\<open>install_wrappers ()\<close> call (inside \<^verbatim>\<open>captured\<close>) would see "already
 installed" and skip re-installing them, and every capture-form tool would
-silently return empty output. Reset here, exactly as MCP_Repl.thy's
-own build-time self-test does.\<close>
+silently return empty output. Reset here after build-time tests.\<close>
 ML \<open>MCP_Output.reset ()\<close>
-
-mcp_resource slow_resource = \<open>fn _ =>
-  (OS.Process.sleep (Time.fromReal 2.0); "slow resource done")\<close>
-  (description \<open>a cancellable bridge fixture\<close>)
-
-section \<open>Bridge drain ownership\<close>
-
-spec_test \<open>bridge drain waits through result publication and closes ML admission\<close>
-  covers \<open>pide_bridge#T6\<close>
-
-ML \<open>
-val _ =
-  let
-    val group = Future.new_group NONE;
-    val _ = MCP_Cancellation.register "drain-route" group;
-    val _ = \<^assert> (MCP_Cancellation.drain "drain-one" = []);
-    val _ = \<^assert> (MCP_Cancellation.finish "drain-route" = SOME false);
-    (*finish decides publication, but cleanup is the publication boundary: the
-      route and both drain owners must remain until cleanup follows publish.*)
-    val _ = \<^assert> (MCP_Cancellation.member "drain-route");
-    val _ = \<^assert> (MCP_Cancellation.drain "drain-two" = []);
-    val _ = \<^assert>
-      (MCP_Cancellation.cleanup "drain-route" = ["drain-one", "drain-two"]);
-    val _ = \<^assert> (not (MCP_Cancellation.member "drain-route"));
-    val _ = \<^assert> (MCP_Cancellation.drain "drain-empty" = ["drain-empty"]);
-    val rejected = Exn.capture_body
-      (fn () => MCP_Cancellation.register "post-drain-route" (Future.new_group NONE));
-    val _ = \<^assert> (Exn.is_exn rejected);
-    val _ = \<^assert> (not (MCP_Cancellation.member "post-drain-route"));
-  in () end;
-\<close>
 
 end

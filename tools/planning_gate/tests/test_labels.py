@@ -52,10 +52,8 @@ def test_current_canonical_labels_are_semantically_valid() -> None:
     report = validate_labels(load_repository(root))
 
     assert report.v1_plans == 8
-    assert report.claims == 124
-    assert tuple(
-        (blocker.plan, blocker.claim, blocker.reason) for blocker in report.blockers
-    ) == (("pide_bridge", "Q1", "question is open"),)
+    assert report.claims == 122
+    assert report.blockers == ()
 
 
 @spec_test(verifies=("plan_label_schema#A1",), covers=("plan_label_schema#T4",))

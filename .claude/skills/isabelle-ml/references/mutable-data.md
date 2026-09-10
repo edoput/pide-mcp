@@ -23,4 +23,4 @@ Rule: a Pure-based theory must never end up as the first parent of a
 HOL theory; give users a HOL-anchored wrapper to import instead —
 local example `mcp/Tools/HOL/MCP.thy` (`MCP-HOL.MCP`), which imports
 `Main` first and documents the mechanism, is exactly that wrapper for
-the `mcp_tool`/`mcp_resource` commands.
+the `mcp_tool` commands.

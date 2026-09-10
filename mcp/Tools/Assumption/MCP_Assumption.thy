@@ -203,9 +203,9 @@ authoritative existence and layer checks happen after export in
 <^verbatim>\<open>tools/spec_gate.py\<close>.\<close>
 
 ML \<open>
-  \<^assumption>\<open>repl_list#I1\<close> true;
+  \<^assumption>\<open>list_sessions#I1\<close> true;
   \<^assert> (Exn.is_exn (Exn.capture MCP_Assumption.check_id
-    ("repl_list#T", Position.none)));
+    ("list_sessions#T", Position.none)));
   \<^assert> (Exn.is_exn (Exn.capture MCP_Assumption.check_id
     ("not qualified", Position.none)));
 \<close>

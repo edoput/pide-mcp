@@ -11,7 +11,7 @@ package isabelle.mcp
 
 import isabelle._
 import isabelle.mcp.pide.{BridgeDrainOutcome, BridgeFailure, BridgeResult,
-  PideBridge, PideBridgePolicy, PideBridgeV1, SessionPideTransport}
+  PideBridge, PideBridgePolicy, PideBridgeV1, PideRootSelector, SessionPideTransport}
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.control.ScheduledDeadlineScheduler
 import isabelle.mcp.control.NonNegativeDuration
@@ -35,7 +35,7 @@ trait MCP_Backend {
   def root_context_cancellable(
     cancellation: McpApplication.Cancellation): MCP_Session.Result = root_context()
   /* Rows carry full internal names, form tags and declared params relative to
-     the selected context. Exposed client names remain a Scala concern. */
+     the startup root catalogue. Exposed client names remain a Scala concern. */
   def ml_tools(context: String): MCP_Session.Tools_Reply
   def ml_tools_cancellable(context: String,
     cancellation: McpApplication.Cancellation): MCP_Session.Tools_Reply =
@@ -51,62 +51,8 @@ trait MCP_Backend {
   def check_context_cancellable(context: String,
     cancellation: McpApplication.Cancellation): MCP_Session.Result =
     check_context(context)
-  /* registration events (MCP.tools_changed / MCP.resources_changed from
-     MCP_Tool.declare): the server loop registers a callback that pushes
-     the matching notifications/{tools,resources}/list_changed line to the
-     client. Default: drop (Fake_Backend tests set their own). */
+  /* Declaration events trigger tools/list_changed notifications. */
   def set_changed_handler(handler: String => Unit): Unit = ()
-  def ir(fname: String, args: List[(String, String)]): MCP_Session.Result
-  def ir_cancellable(fname: String, args: List[(String, String)],
-    cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    ir(fname, args)
-  /* context-taking tools (find_theorems' "context promotion", later
-     find_definition): resolve a client-given theory name to the
-     canonical Thy_Info key the ir bridge needs, same normalization as
-     image_theory/resolve_theory. Right = resolved, ready to cross the
-     bridge; Left = a user-facing error message (unknown name, or a
-     filesystem-tier theory that needs load_theory first -- Thy_Info has
-     no entry for those, so there is no context to search). */
-  def resolve_context_theory(name: String): Either[String, String]
-  /* repl_init_from_source (plans/repl_init_from_source): create `repl`
-     rooted at the command/segment `theory` resolves the given locator
-     to. Callers have already checked exactly one of offset/pattern/
-     index is set (MCP_Session.Locator.exactly_one) -- this only needs
-     to resolve tier and locator, then dispatch to the right ir fname. */
-  def init_from_source(repl: String, theory: String,
-    offset: Option[Int], pattern: Option[String], index: Option[Int]): MCP_Session.Result
-  def init_from_source_cancellable(repl: String, theory: String,
-    offset: Option[Int], pattern: Option[String], index: Option[Int],
-    cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    init_from_source(repl, theory, offset, pattern, index)
-  def mcp_resources(): List[(String, String, String)]
-  def mcp_resources_cancellable(
-    cancellation: McpApplication.Cancellation): List[(String, String, String)] =
-    mcp_resources()
-  def mcp_resource_read(uri: String): MCP_Session.Result
-  def mcp_resource_read_cancellable(uri: String,
-    cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    mcp_resource_read(uri)
-  /* scope_add/scope_remove (plans/scope_add, plans/scope_remove, spec
-     "scoping"): the resource scope is a set of theory-name glob patterns,
-     scala-side only, no bridge. mcp_resources() enumerates matches
-     against the full known theory universe (tier-tagged) plus the
-     implicit working set (theories loaded via load_theory/check_theory,
-     tracked independently of scope_patterns); scope never limits
-     mcp_resource_read, only the listing. */
-  def scope_add(patterns: List[String]): MCP_Session.Result
-  def scope_remove(patterns: List[String]): MCP_Session.Result
-  /* scope_show (plans/scope_show): the read side of S1 -- explicit
-     patterns with match counts, plus every implicit member (theories
-     loaded via load_theory/check_theory, active REPLs, registered named
-     resources). No bridge of its own: patterns/theories/named resources
-     are already scala-tracked state, and REPLs are read by reusing the
-     existing "repls" ir fname (repl_list's own bridge call) rather than
-     adding a new one. */
-  def scope_show(): MCP_Session.Result
-  def scope_show_cancellable(
-    cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    scope_show()
   def load_theory(name: String, master_dir: String): MCP_Session.Result
   def unload_theory(name: String): MCP_Session.Result
   def check_theory(name: String, master_dir: String): MCP_Session.Result
@@ -115,8 +61,7 @@ trait MCP_Backend {
   def search_sources(pattern: String): MCP_Session.Result
   /* doc_list (plans/doc_list, wave 5, spec "documentation for the agent"):
      the Doc.contents() catalog joined to doc sessions, computed once at
-     startup (Doc_Catalog.make); not scope-filtered (catalog items, not
-     theories -- discovery is never scoped). */
+     startup (Doc_Catalog.make). */
   def doc_list(pattern: String): MCP_Session.Result
   /* doc_read (plans/doc_read, wave 5): resolves `name` through the same
      Doc_Catalog doc_list serves. section addresses manuals (toc without
@@ -142,6 +87,117 @@ object MCP_Session {
   final case class BridgeTimedOut(delay: FiniteDuration)
     extends RuntimeException("PIDE bridge call timed out after " +
       (delay.toNanos.toDouble / 1000000000.0) + " seconds")
+
+  private[mcp] object RootDocument {
+    /** The caller resolves the configured import once. Every input gets a fresh
+      * live wrapper; image and source inputs differ only in their import text.
+      */
+    def create(session: Headless.Session, imported: Document.Node.Name): RootDocument = {
+      val directory = File.path(Isabelle_System.tmp_dir("mcp-root-"))
+      try {
+        val name = "MCP_Root_" + UUID.random().toString.replace("-", "")
+        val source = directory + Path.basic(name + ".thy")
+        val importText =
+          if (session.resources.loaded_theory(imported.theory)) imported.theory
+          else File.standard_path(imported.path.drop_ext)
+        File.write(source, "theory " + name + "\nimports " + Outer_Syntax.quote_string(importText) +
+          "\nbegin\nend\n")
+        val master = File.standard_path(directory)
+        val node = session.resources.import_name(Sessions.DRAFT, session.master_directory(master), name)
+        new RootDocument(session, node, master, Some(directory))
+      }
+      catch {
+        case exn: Throwable =>
+          try Isabelle_System.rm_tree(directory)
+          catch { case cleanup: Throwable => exn.addSuppressed(cleanup) }
+          throw exn
+      }
+    }
+  }
+
+  /** Own one live document root independently of temporary use_theories calls.
+    * Requiring the root also protects its current imports: Headless purge keeps
+    * every predecessor of a required node. Removed imports need not stay pinned.
+    */
+  private[mcp] final class RootDocument(
+    val session: Headless.Session,
+    val node: Document.Node.Name,
+    val masterDirectory: String,
+    private val ownedDirectory: Option[Path] = None
+  ) {
+    private val owner = UUID.random()
+    private var released = false
+    private var disposed = false
+    @volatile private var available = false
+
+    def selector(): BridgeResult[PideRootSelector] = {
+      if (!available) Left(BridgeFailure.ProtocolError("MCP root document is not successfully loaded"))
+      else try {
+        val snapshot = session.snapshot(node)
+        val command = snapshot.node.commands.iterator.filterNot(_.is_ignored).toList.lastOption
+          .getOrElse(error("MCP root document has no final command"))
+        if (command.span.name != "end") error("MCP root document has no final end command")
+        val exec = snapshot.state.the_assignment(snapshot.version).check_finished.command_execs
+          .getOrElse(command.id, Nil).headOption.getOrElse(error("MCP root end command has no evaluation"))
+        if (command.id == 0L || exec == 0L) error("MCP root selector contains an unassigned identity")
+        Right(PideRootSelector(node.theory, node.node, command.id, exec))
+      }
+      catch { case NonFatal(exn) => Left(BridgeFailure.ProtocolError(MCP_Server.plain_message(exn))) }
+    }
+
+    def load(progress: Progress): Unit = synchronized {
+      if (released) error("MCP root ownership has been released")
+      available = false
+      val resources = session.resources
+      if (resources.loaded_theory(node.theory))
+        error("The MCP root must be a live theory document, not an image theory: " +
+          quote(node.theory))
+      val dependencies = resources.dependencies(List(node -> Position.none), progress = progress).check_errors
+      // Pin before waiting. use_theories owns and releases a different UUID.
+      resources.load_theories(session, owner, List(node), dependencies.loaded_files,
+        unicode_symbols = false, progress = progress)
+      val result = session.use_theories(List(File.standard_path(node.path.drop_ext)),
+        master_dir = masterDirectory, progress = progress)
+      if (!result.ok) error("Failed to load MCP root theory " + quote(node.theory))
+      available = true
+    }
+
+    def owns(candidate: Document.Node.Name): Boolean =
+      session.resources.dependencies(List(node -> Position.none)).check_errors.theories.contains(candidate)
+
+    def release(): Unit = synchronized {
+      if (!released) {
+        available = false
+        session.resources.unload_theories(session, owner, List(node))
+        released = true
+      }
+    }
+
+    /** Release may precede session termination; disposal follows termination
+      * and removes only the private wrapper, never an imported source file.
+      */
+    def dispose(): Unit = synchronized {
+      if (!disposed) {
+        release()
+        ownedDirectory.foreach(Isabelle_System.rm_tree)
+        disposed = true
+      }
+    }
+  }
+
+  private[mcp] def stopRootSession(session: Headless.Session,
+      root: Option[RootDocument], reportStopped: () => Unit): Unit = {
+    try root.foreach(_.release())
+    finally {
+      var terminated = false
+      try {
+        session.stop()
+        terminated = true
+        reportStopped()
+      }
+      finally if (terminated) root.foreach(_.dispose())
+    }
+  }
 
   sealed abstract class Result { def ok: Boolean }
   case class Ok(text: String) extends Result { def ok = true }
@@ -251,87 +307,7 @@ object MCP_Session {
     Tools_Reply(rows, activation)
   }
 
-  def decode_resources(body: XML.Body): List[(String, String)] = {
-    import XML.Decode._
-    list(pair(string, string))(body)
-  }
-
-  def decode_theories(body: XML.Body): List[String] = {
-    import XML.Decode._
-    list(string)(body)
-  }
-
-  /* MCP.ir argument encoding (see the spec's "argument encoding"): named
-     args as one yxml chunk holding an association list of (key, value)
-     string pairs, list-valued arguments as repeated keys; the ML dispatcher
-     decodes with the mirror MCP_Repl.decode_args.
-
-     The inbound half of the client-edge recoding boundary (spec: "symbol
-     recoding at the client edge"): recode = Symbol.encode turns unicode
-     back into the symbol notation ML speaks, so a model may send either
-     form. YXML.string_of_body applies recode to TEXT NODES ONLY
-     (Pure/PIDE/yxml.scala, Output_String.string) -- which is why the
-     recode goes here as a parameter and never over an assembled chunk:
-     running Symbol.encode across finished yxml would walk its X/Y
-     control bytes. Isabelle/Scala does the same thing one layer down in
-     prover.scala's protocol_command_args (Symbol.encode_yxml), but the
-     bridge uses protocol_command_raw, which skips it. Symbol.encode is a
-     no-op on text that is already symbol notation (pure ascii, so its
-     recoder never fires), so \<open> in a model-authored isar_text
-     survives byte-identical. */
-  def encode_args(args: List[(String, String)]): String = {
-    import XML.Encode._
-    YXML.string_of_body(list(pair(string, string))(args), recode = Symbol.encode)
-  }
-
-  def decode_args(body: XML.Body): List[(String, String)] = {
-    import XML.Decode._
-    list(pair(string, string))(body)
-  }
-
-  /* scope_add/scope_remove glob patterns ("HOL-Library.*", "Main"): '*'
-     matches any run of characters, everything else (including '.') is
-     literal -- theory long names use '.' as a qualifier separator, not a
-     regex metachar, so it must be escaped like any other literal. */
-  /* shared locator resolution (plans/repl_init_from_source step 2: "PURE
-     where possible ... unit-tests without a prover"), reused by
-     repl_init_from_source's PIDE-snapshot branch and (planned) by
-     goto_definition. Items are pre-extracted (id, offset, length,
-     source) so the same function serves any ordered list of addressable
-     spans -- a Document.Node's commands here, an offset/pattern/index
-     triple picks exactly one by construction once exactly_one has
-     already been checked. */
-  object Locator {
-    case class Item(id: Long, offset: Text.Offset, length: Int, source: String)
-
-    def exactly_one(offset: Option[Int], pattern: Option[String], index: Option[Int]): Either[String, Unit] = {
-      val n = List(offset.isDefined, pattern.isDefined, index.isDefined).count(identity)
-      if (n == 0) Left("exactly one of offset, pattern, index is required")
-      else if (n > 1) Left("exactly one of offset, pattern, index is required (got more than one)")
-      else Right(())
-    }
-
-    def resolve(items: List[Item], offset: Option[Int], pattern: Option[String],
-        index: Option[Int]): Either[String, Long] =
-      (offset, pattern, index) match {
-        case (Some(o), None, None) =>
-          items.find(it => o >= it.offset && o < it.offset + it.length) match {
-            case Some(it) => Right(it.id)
-            case None => Left("offset " + o + " is not inside any command")
-          }
-        case (None, Some(p), None) =>
-          items.find(_.source.contains(p)) match {
-            case Some(it) => Right(it.id)
-            case None => Left("pattern " + quote(p) + " not found")
-          }
-        case (None, None, Some(i)) =>
-          val idx = if (i < 0) items.length + i else i
-          if (idx >= 0 && idx < items.length) Right(items(idx).id)
-          else Left("index " + i + " out of range (0.." + (items.length - 1) + ")")
-        case _ => Left("exactly one of offset, pattern, index is required")
-      }
-  }
-
+  /* Documentation catalogue entry-name glob matching. */
   def glob_to_regex(pattern: String): scala.util.matching.Regex = {
     val sb = new StringBuilder
     for (c <- pattern) {
@@ -400,29 +376,31 @@ object MCP_Session {
 
     val session = resources.start_session(progress = progress)
     var ownedSession: Option[MCP_Session] = None
+    var ownedRoot: Option[RootDocument] = None
     Exn.capture {
-      /* The configured registry-root theory must exist before PideBridge
-         installs its transport and deadline executor. Image theories are
-         keyed by their defining session, so an unqualified -T also matches a
-         unique loaded base name; only a genuinely absent theory reaches
-         use_theories. A failed load remains on the raw Headless session path,
-         where one stop owns cleanup and no bridge can escape. */
-      val loaded =
-        resources.loaded_theory(theory) ||
-        resources.loaded_theory(Long_Name.qualify(session_name, theory)) ||
-        (!Long_Name.is_qualified(theory) &&
-          resources.session_base.loaded_theories.keys.exists(Long_Name.base_name(_) == theory))
-      if (!loaded) {
-        val master_dir =
-          session_dirs.headOption.map(File.standard_path).getOrElse("")
-        val use_result =
-          session.use_theories(List(theory), master_dir = master_dir, progress = progress)
-        if (!use_result.ok) error("Failed to load theory " + quote(theory))
+      val master = session_dirs.headOption.map(File.standard_path).getOrElse("")
+      val exactImage =
+        if (resources.loaded_theory(theory)) Some(theory)
+        else if (!Long_Name.is_qualified(theory)) {
+          val qualified = Long_Name.qualify(session_name, theory)
+          if (resources.loaded_theory(qualified)) Some(qualified)
+          else resources.session_base.loaded_theories.keys.filter(Long_Name.base_name(_) == theory) match {
+            case List(unique) => Some(unique)
+            case _ => None
+          }
+        }
+        else None
+      val imported = exactImage match {
+        case Some(name) => Document.Node.Name.loaded_theory(name)
+        case None => resources.import_name(Sessions.DRAFT, session.master_directory(master), theory)
       }
+      val root = RootDocument.create(session, imported)
+      ownedRoot = Some(root)
+      root.load(progress)
 
       val mcpSession = new MCP_Session(session, session_name, session_dirs, theory,
         structure, deps, store, bridgeMaxPending, bridgeMaxReplyBytes, bridgeCallTimeout,
-        bridgeDrainTimeout, bridgeProfile)
+        bridgeDrainTimeout, bridgeProfile, root)
       ownedSession = Some(mcpSession)
 
       mcpSession.await_bridge_ready(bridgeCallTimeout) match {
@@ -438,7 +416,7 @@ object MCP_Session {
         val stopped = Exn.capture {
           ownedSession match {
             case Some(mcpSession) => mcpSession.stop()
-            case None => session.stop()
+            case None => stopRootSession(session, ownedRoot, () => ())
           }
         }
         stopped match {
@@ -475,7 +453,8 @@ class MCP_Session private(
   bridgeMaxReplyBytes: PideBridgePolicy.PositiveBytes,
   bridgeCallTimeout: PideBridgePolicy.PositiveDuration,
   bridgeDrainTimeout: PideBridgePolicy.NonNegativeDuration,
-  bridgeProfile: McpBridgeProfile
+  bridgeProfile: McpBridgeProfile,
+  private val rootDocument: MCP_Session.RootDocument
 ) extends MCP_Backend {
   private final class DirectOperation {
     val id: String = UUID.random().toString
@@ -610,7 +589,6 @@ class MCP_Session private(
   private object RegistryChange {
     final case class Entry(function: String, event: String)
     val Tools = Entry("MCP.tools_changed", "tools")
-    val Resources = Entry("MCP.resources_changed", "resources")
   }
   private object ChangeHandler extends Session.Protocol_Handler {
     private def changed(change: RegistryChange.Entry)(msg: Prover.Protocol_Output): Boolean = {
@@ -621,13 +599,9 @@ class MCP_Session private(
     private def tools_changed(msg: Prover.Protocol_Output): Boolean =
       changed(RegistryChange.Tools)(msg)
 
-    private def resources_changed(msg: Prover.Protocol_Output): Boolean =
-      changed(RegistryChange.Resources)(msg)
-
     override val functions: Session.Protocol_Functions =
       List(
-        RegistryChange.Tools.function -> tools_changed,
-        RegistryChange.Resources.function -> resources_changed)
+        RegistryChange.Tools.function -> tools_changed)
   }
 
   session.init_protocol_handler(ChangeHandler)
@@ -640,7 +614,7 @@ class MCP_Session private(
       bridgeCallTimeout,
       bridgeDrainTimeout,
       new ScheduledDeadlineScheduler("mcp-pide-bridge-deadline"),
-      theory,
+      () => current_root_selector(),
       McpBridgeOperations.operationNames,
       bridgeProfile,
       PideBridgeV1)
@@ -696,13 +670,6 @@ class MCP_Session private(
       cancellation: McpApplication.Cancellation): MCP_Session.Tools_Reply =
     bridge_value(bridge.call(McpBridgeOperations.tools(context), cancellation))
 
-  def ml_theories(): List[String] =
-    ml_theories_cancellable(McpApplication.Cancellation.Never)
-
-  private[mcp] def ml_theories_cancellable(
-      cancellation: McpApplication.Cancellation): List[String] =
-    bridge_value(bridge.call(McpBridgeOperations.theories, cancellation))
-
   def ml_run(name: String, args: List[(String, String)],
       context: String): MCP_Session.Result =
     ml_run_cancellable(name, args, context, McpApplication.Cancellation.Never)
@@ -716,8 +683,7 @@ class MCP_Session private(
     bridge_result(bridge.call(
       McpBridgeOperations.runTool(context, name, args), cancellation))
 
-  /* Validate and canonicalize a context locator before the application
-     commits it as per-connection state. */
+  /* Validate and canonicalize an opaque context locator in ML. */
   def check_context(context: String): MCP_Session.Result =
     check_context_cancellable(context, McpApplication.Cancellation.Never)
 
@@ -726,227 +692,6 @@ class MCP_Session private(
     bridge_result(bridge.call(
       McpBridgeOperations.checkContext(Some(context)), cancellation))
 
-  /* MCP.ir: the I/R engine dispatcher (MCP_Repl.thy), named args, async
-     (a slow call must not block a concurrent fast one) */
-  def ir(fname: String, args: List[(String, String)]): MCP_Session.Result =
-    ir_cancellable(fname, args, McpApplication.Cancellation.Never)
-
-  override def ir_cancellable(fname: String, args: List[(String, String)],
-      cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    bridge_result(bridge.call(McpBridgeOperations.ir(fname, args), cancellation))
-
-  /* isabelle://named/{name}: user-registered resources from MCP_Resource
-     (MCP_Tools.thy), the mcp_tool/mcp_resource ML registry -- mirrors
-     ml_tools()/ml_run() exactly (MCP_Resource is MCP_Tool's sibling). */
-  def ml_named_resources(context: String): List[(String, String)] =
-    ml_named_resources_cancellable(context, McpApplication.Cancellation.Never)
-
-  def ml_named_resources(): List[(String, String)] =
-    ml_named_resources(root_context_value(McpApplication.Cancellation.Never))
-
-  private[mcp] def ml_named_resources_cancellable(context: String,
-      cancellation: McpApplication.Cancellation): List[(String, String)] =
-    bridge_value(bridge.call(McpBridgeOperations.resources(context), cancellation))
-
-  def ml_read_resource(name: String, context: String): MCP_Session.Result =
-    ml_read_resource_cancellable(name, context, McpApplication.Cancellation.Never)
-
-  def ml_read_resource(name: String): MCP_Session.Result =
-    ml_read_resource(name, root_context_value(McpApplication.Cancellation.Never))
-
-  private[mcp] def ml_read_resource_cancellable(name: String, context: String,
-      cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    bridge_result(bridge.call(McpBridgeOperations.readResource(context, name), cancellation))
-
-  /* isabelle://session: the cheap always-there overview (name, dirs, loaded
-     theory, loaded theories via Thy_Info.get_names()) */
-  def mcp_resources(): List[(String, String, String)] =
-    mcp_resources_cancellable(McpApplication.Cancellation.Never)
-
-  override def mcp_resources_cancellable(
-      cancellation: McpApplication.Cancellation): List[(String, String, String)] = {
-    val rows = ml_named_resources_cancellable(root_context_value(cancellation), cancellation)
-    val exposed = MCP_Server.exposure(rows.map(_._1))
-    val universe = known_theory_tiers()
-    val regexes = scope_patterns.value.map(MCP_Session.glob_to_regex)
-    val pattern_matched = universe.keys.filter(name => regexes.exists(_.matches(name))).toSet
-    /* the implicit working set: theories loaded via load_theory/
-       check_theory are in scope regardless of any pattern (S1's "loading
-       a theory auto-adds it to scope"); image theories are NOT dumped in
-       by default -- they are the search space patterns filter into, not
-       the default listing. */
-    val scoped_theories = (theory_master_dirs.value.keySet ++ pattern_matched).toList.sorted
-    ("isabelle://session", "session", "current session name, dirs, loaded theories") ::
-    rows.flatMap { case (name, description) =>
-      exposed.get(name).map(x => ("isabelle://named/" + x, x, description))
-    } ++
-    scoped_theories.map { name =>
-      val tier = universe.getOrElse(name, LoadedTier)
-      ("isabelle://theory/" + name, name, "theory (" + tier.name + ")")
-    } ++
-    active_repl_ids(cancellation).map(id => ("isabelle://repl/" + id, id, "repl"))
-  }
-
-  /* MCP.ir (fname "repls" included) is a protocol command defined ONLY by
-     MCP_Repl.thy (the HOL/Ir layer) -- sessions built on the base
-     MCP_Tools.thy alone (e.g. this project's own "MCP-Tools" test
-     session) never register it. Calling ir() there would send a
-     protocol command nothing answers, leaving the promise unfulfilled
-     forever: a real hang, hit once by mcp_resources()/scope_show()
-     unconditionally calling active_repl_ids() against such a session.
-     Guard on whether MCP_Repl is actually in this session's image
-     (computed once, no protocol round-trip) before ever sending "repls". */
-  private val repl_bridge_available: Boolean =
-    session.resources.session_base.loaded_theories.keys.exists(Long_Name.base_name(_) == "MCP_Repl")
-
-  /* active REPL ids, read by reusing repl_list's own "repls" ir fname
-     rather than adding a new bridge call (plans/scope_show: "no bridge").
-     Ir.repls() (ir/ir.ML) only ever formats human text through `out`, one
-     line per repl: "    ID (n steps..., from ..., ...)" -- the id is the
-     token up to the first " (". */
-  private val repl_line = """\A\s*(\S+) \(.*\)\z""".r
-  private def active_repl_ids(
-      cancellation: McpApplication.Cancellation = McpApplication.Cancellation.Never): List[String] =
-    if (!repl_bridge_available) Nil
-    else ir_cancellable("repls", Nil, cancellation) match {
-      case MCP_Session.Ok(text) => text.linesIterator.collect({ case repl_line(id) => id }).toList
-      case MCP_Session.Error(_) => Nil
-    }
-
-  private val repl_uri = """\Aisabelle://repl/([^/]+)\z""".r
-  private val repl_text_uri = """\Aisabelle://repl/([^/]+)/text\z""".r
-  private val named_uri = """\Aisabelle://named/([^/]+)\z""".r
-  private val theory_diagnostics_uri = """\Aisabelle://theory/([^/]+)/diagnostics\z""".r
-  private val theory_commands_uri = """\Aisabelle://theory/([^/]+)/commands\z""".r
-  private val theory_entities_uri = """\Aisabelle://theory/([^/]+)/entities\z""".r
-  private val theory_source_uri = """\Aisabelle://theory/([^/]+)\z""".r
-  private val not_yet_backed_uri = """\Aisabelle://(theory/[^/]+(?:/[a-z]+)?)\z""".r
-
-  def mcp_resource_read(uri: String): MCP_Session.Result =
-    mcp_resource_read_cancellable(uri, McpApplication.Cancellation.Never)
-
-  override def mcp_resource_read_cancellable(uri: String,
-      cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    uri match {
-      case "isabelle://session" =>
-        MCP_Session.Ok(
-          "session: " + session_name + "\n" +
-          "dirs: " + session_dirs.map(_.implode).mkString(", ") + "\n" +
-          "theory: " + theory + "\n" +
-          "theories: " + ml_theories_cancellable(cancellation).mkString(", "))
-      /* isabelle://repl/{id} and .../text (spec's resource templates):
-         thin dispatch onto the same MCP.ir bridge repl_show/repl_text
-         use, so a REPL is readable as a resource with no separate
-         backing mechanism. */
-      case repl_text_uri(repl_id) =>
-        ir_cancellable("text", List("repl" -> repl_id), cancellation)
-      case repl_uri(repl_id) =>
-        ir_cancellable("show", List("repl" -> repl_id), cancellation)
-      /* isabelle://named/{name}: thin dispatch onto MCP_Resource's own
-         registry via the MCP.read_resource protocol command -- mirrors
-         MCP.run_tool exactly (see ml_read_resource above). The uri holds
-         the EXPOSED name; resolve it back to the full internal name
-         through the same exposure map resources/list used. */
-      case named_uri(name) =>
-        val context = root_context_value(cancellation)
-        val exposed =
-          MCP_Server.exposure(ml_named_resources_cancellable(context, cancellation).map(_._1))
-        val internal = exposed.collectFirst({ case (i, x) if x == name => i }).getOrElse(name)
-        ml_read_resource_cancellable(internal, context, cancellation)
-      /* isabelle://theory/{name}/diagnostics: unblocked by wave 2
-         (load_theory/check_theory), per the plans' gating chain. */
-      case theory_diagnostics_uri(name) => theory_diagnostics(name)
-      /* isabelle://theory/{name}/commands and the bare form (source):
-         Ir.source_map/Ir.source (MCP.ir fnames "source_map"/"source",
-         see MCP_Repl.thy's dispatcher) read off Thy_Info.
-         get_theory_segments, so they work for image theories whose
-         session was built with record_theories (mcp/Tools/ROOT sets it
-         for this tree) -- segments recorded at build time DO survive
-         the saved heap into a live server. (A previous KNOWN GAP note
-         here claimed they never do; that was FALSE, an artifact of
-         forwarding the client's unresolved name to ML: Thy_Info.
-         get_theory errored "undefined entry" and ir.ML's find_source
-         rewrote it as "No recorded segments". image_theory's
-         normalization fixed it.) Theories from heaps built WITHOUT
-         record_theories genuinely have no segments and get Isabelle's
-         actionable rebuild hint. Non-image (wave-2-loaded or
-         filesystem) theories fall through to not_yet_backed_uri below
-         -- Headless.Session.use_theories goes through the PIDE
-         document model, not Thy_Info, so they never have segments. */
-      case theory_commands_uri(name) if image_tier(name) =>
-        ir_cancellable("source_map",
-          List("theory_name" -> image_theory(name).get, "start" -> "0", "stop" -> "-1"),
-          cancellation)
-      case theory_commands_uri(name) =>
-        resolve_theory(name) match {
-          case Some((_, FileSystemTier(_))) =>
-            MCP_Session.Ok(name + ": filesystem theory — command map needs load_theory")
-          /* a genuinely loaded (wave-2) theory and a wholly unrecognized
-             name both lack a Thy_Info-recorded command map -- neither is
-             "unknown" in the sense of resource reads (which report state
-             rather than fail), so both get the documented not-backed-yet
-             text rather than a bespoke error per case. */
-          case _ =>
-            MCP_Session.Error(
-              "Resource " + quote("isabelle://theory/" + name + "/commands") +
-              " is a documented template but not backed yet (only image theories built " +
-              "with record_theories have a recorded command map); see spec's resource " +
-              "templates section")
-        }
-      case theory_source_uri(name) if image_tier(name) =>
-        ir_cancellable("source",
-          List("theory_name" -> image_theory(name).get, "start" -> "0", "stop" -> "-1"),
-          cancellation)
-      case theory_source_uri(name) =>
-        resolve_theory(name) match {
-          case Some((_, FileSystemTier(path))) =>
-            Exn.capture(File.read(path)) match {
-              case Exn.Res(content) => MCP_Session.Ok(content)
-              case Exn.Exn(exn) =>
-                MCP_Session.Error(
-                  "Failed to read " + quote(path.toString) + ": " + MCP_Server.plain_message(exn))
-            }
-          /* same rationale as /commands above: loaded and unrecognized
-             alike, no recorded source to serve. */
-          case _ =>
-            MCP_Session.Error(
-              "Resource " + quote("isabelle://theory/" + name) +
-              " is a documented template but not backed yet (only image theories built " +
-              "with record_theories have recorded source); see spec's resource " +
-              "templates section")
-        }
-      /* isabelle://theory/{name}/entities: image tier via new ML
-         (MCP_Repl.thy's entities function, dispatcher fname "entities")
-         over Name_Space.theory_name filtering -- NOT the same gap as
-         /commands above, since it reads per-entry bookkeeping baked
-         into the theory value itself (heap-serialized), not
-         Thy_Info.get_theory_segments (process-local, lost on restart).
-         Loaded (wave-2) tier via PIDE entity-def markup on the live
-         snapshot -- see theory_entities below. Filesystem (never
-         loaded) theories still fall through to not_yet_backed_uri. */
-      case theory_entities_uri(name) => theory_entities(name, cancellation)
-      /* documented templates (resource_templates in mcp_server.scala)
-         whose backing needs a later wave -- only true for unknown theories
-         now (steps 2-3 backed all documented paths). */
-      case not_yet_backed_uri(_) =>
-        MCP_Session.Error(
-          "Unknown theory in resource " + quote(uri) +
-          "; see list_theories or search_sources to discover available theories")
-      case _ => MCP_Session.Error("Unknown MCP resource " + quote(uri))
-    }
-
-  /* image-tier name normalization: clients name theories in whatever
-     form they know -- base ("MCP_Repl", the -T spelling), this session's
-     qualifier ("MCP-HOL.MCP_Repl"), a foreign qualifier for a theory
-     whose canonical key is unqualified ("HOL.Main" for "Main") -- but
-     both loaded_theories here and Thy_Info on the ML side key by the
-     canonical long name, and that keying itself mixes qualified and
-     unqualified entries ("HOL.Wellfounded" vs plain "Main"). Resolve:
-     verbatim, then qualified by this session, then a UNIQUE base-name
-     match over the whole image; unknown or ambiguous -> None (not image
-     tier). Whatever crosses the ir bridge must be the RESOLVED name,
-     never the client's spelling: Thy_Info.get_theory is an exact lookup
-     and errors with a bare "undefined entry" otherwise. */
   private def image_theory(name: String): Option[String] = {
     val resources = session.resources
     if (resources.loaded_theory(name)) Some(name)
@@ -966,75 +711,6 @@ class MCP_Session private(
 
   private def image_tier(name: String): Boolean = image_theory(name).isDefined
 
-  def resolve_context_theory(name: String): Either[String, String] =
-    resolve_theory(name) match {
-      case Some((resolved, ImageTier)) => Right(resolved)
-      case Some((resolved, LoadedTier)) => Right(resolved)
-      case Some((_, FileSystemTier(_))) =>
-        Left(
-          "Unknown theory " + quote(name) + " context: filesystem theory, not yet " +
-            "loaded (no context to search) -- load_theory first")
-      case None => Left("Unknown theory " + quote(name))
-    }
-
-  /* repl_init_from_source: loaded tier has a live PIDE snapshot, so the
-     locator resolves against its command list (MCP_Session.Locator,
-     command ids from Document.Node.command_iterator) and the REPL is
-     created via the "init_from_document" ir fname -- the state AFTER
-     the located command (Ir.init_from_document's eval_result_state).
-     Image tier has no PIDE document; the analogous resolution happens
-     ML-side against Thy_Info.get_theory_segments (MCP_Repl.thy's
-     init_from_segment, dispatcher fname "init_from_segment") since
-     segment text is only ever available in that process. Filesystem
-     tier and unknown names have no context to attach to. */
-  def init_from_source(repl: String, theory: String,
-      offset: Option[Int], pattern: Option[String], index: Option[Int]): MCP_Session.Result =
-    init_from_source_cancellable(
-      repl, theory, offset, pattern, index, McpApplication.Cancellation.Never)
-
-  override def init_from_source_cancellable(repl: String, theory: String,
-      offset: Option[Int], pattern: Option[String], index: Option[Int],
-      cancellation: McpApplication.Cancellation): MCP_Session.Result =
-    resolve_theory(theory) match {
-      case Some((resolved, LoadedTier)) =>
-        theory_master_dirs.value.get(resolved) match {
-          case Some(master_dir) =>
-            val node_name =
-              session.resources.import_name(
-                Sessions.DRAFT, session.master_directory(master_dir), resolved)
-            val snapshot = session.snapshot(node_name)
-            val items =
-              snapshot.node.command_iterator(Text.Range.full).toList
-                .filter({ case (cmd, _) => cmd.is_proper })
-                .map({ case (cmd, off) => MCP_Session.Locator.Item(cmd.id, off, cmd.length, cmd.source) })
-            MCP_Session.Locator.resolve(items, offset, pattern, index) match {
-              case Right(command_id) =>
-                ir_cancellable("init_from_document",
-                  List("repl" -> repl, "node_name" -> node_name.node,
-                    "command_id" -> command_id.toString), cancellation)
-              case Left(msg) => MCP_Session.Error("repl_init_from_source: " + msg)
-            }
-          case None =>
-            MCP_Session.Error(quote(resolved) + ": loaded theory (no snapshot available)")
-        }
-      case Some((resolved, ImageTier)) =>
-        ir_cancellable("init_from_segment",
-          List("repl" -> repl, "theory_name" -> resolved) ++
-            offset.toList.map(o => "offset" -> o.toString) ++
-            pattern.toList.map(p => "pattern" -> p) ++
-            index.toList.map(i => "index" -> i.toString), cancellation)
-      case Some((_, FileSystemTier(_))) =>
-        MCP_Session.Error(
-          "Unknown theory " + quote(theory) + " context: filesystem theory, not yet " +
-            "loaded (no context to attach to) -- load_theory first")
-      case None => MCP_Session.Error("Unknown theory " + quote(theory))
-    }
-
-  /* resolve_theory: unified three-tier resolution for filesystem-tier
-     resource widening (step 2), load_theory session-qualified resolution
-     (step 3), and client-facing queries. Returns (long_name, tier, path)
-     where tier is "image" | "loaded" | "filesystem" and path is only
-     populated for filesystem tier. Checks tiers in order of authority. */
   sealed abstract class Tier { def name: String }
   case object ImageTier extends Tier { def name = "image" }
   case object LoadedTier extends Tier { def name = "loaded" }
@@ -1065,99 +741,8 @@ class MCP_Session private(
     }
   }
 
-  /* the spec's three-tier answer for isabelle://theory/{name}/diagnostics:
-     image theories are "checked at build time" (no live snapshot to
-     read); theories we've loaded via load_theory/check_theory (tracked
-     in theory_master_dirs) get a live PIDE-snapshot diagnostics read,
-     recomputed on every call (read-time evaluation, per the spec); any
-     other name is a filesystem theory we haven't promoted, so it gets
-     the documented "not checked" nudge rather than an error -- resource
-     reads report state, they don't fail just because a theory happens
-     to have errors or hasn't been loaded. */
-  private def theory_diagnostics(name: String): MCP_Session.Result = {
-    resolve_theory(name) match {
-      case Some((resolved, ImageTier)) =>
-        MCP_Session.Ok(resolved + ": checked at build time")
-      case Some((resolved, LoadedTier)) =>
-        theory_master_dirs.value.get(name) match {
-          case Some(master_dir) =>
-            val node_name =
-              session.resources.import_name(
-                Sessions.DRAFT, session.master_directory(master_dir), name)
-            val snapshot = session.snapshot(node_name)
-            val has_errors = snapshot.messages.exists { case (tree, _) => Protocol.is_error(tree) }
-            val msgs = render_messages(snapshot.messages)
-            val header = name + ": " + (if (has_errors) "error" else "ok")
-            MCP_Session.Ok(if (msgs.isEmpty) header else header + "\n" + msgs.map("  " + _).mkString("\n"))
-          case None => MCP_Session.Ok(name + ": loaded theory (status not available)")
-        }
-      /* a wholly unrecognized name is optimistic here too, same as a
-         known-but-unloaded filesystem theory: diagnostics never fails
-         just because a theory hasn't been indexed, and load_theory
-         itself is the actionable next step either way (it will error
-         cleanly there if the name really doesn't exist). */
-      case Some((_, FileSystemTier(_))) | None =>
-        MCP_Session.Ok(name + ": filesystem theory — not checked; load_theory to check")
-    }
-  }
-
-  /* isabelle://theory/{name}/entities: image tier defers to the ir
-     bridge's "entities" fname (MCP_Repl.thy, Name_Space.theory_name
-     filtering -- works, unlike /commands, since it reads heap-
-     serialized bookkeeping); loaded (wave-2) tier reads the live
-     snapshot's entity-DEFINITION markup directly (Markup.Entity.Def --
-     a def occurrence carries its own kind/name at its own position, no
-     cross-referencing needed, since we're already sitting at the def
-     site); filesystem (never loaded) theories get the same "documented
-     template, not backed yet" text the generic not_yet_backed_uri
-     fallback uses, since there is no PIDE snapshot and no image
-     name-space to query. */
-  private def theory_entities(name: String,
-      cancellation: McpApplication.Cancellation): MCP_Session.Result = {
-    resolve_theory(name) match {
-      case Some((resolved, ImageTier)) =>
-        ir_cancellable("entities", List("theory_name" -> resolved), cancellation)
-      case Some((_, LoadedTier)) =>
-        theory_master_dirs.value.get(name) match {
-          case Some(master_dir) =>
-            val node_name =
-              session.resources.import_name(
-                Sessions.DRAFT, session.master_directory(master_dir), name)
-            val snapshot = session.snapshot(node_name)
-            val doc = Line.Document(snapshot.node.source)
-            val defs =
-              snapshot.select(Text.Range.full, Markup.Elements(Markup.ENTITY), _ => {
-                case Text.Info(range, elem) =>
-                  (Markup.Entity.unapply(elem.markup), Markup.Entity.Def.unapply(elem.markup)) match {
-                    case (Some((kind, entity_name)), Some(_)) =>
-                      Some((kind, entity_name, range.start))
-                    case _ => None
-                  }
-              }).map(_.info).distinct.sortBy(_._3)
-            val header = "   kind     line  name"
-            val rows =
-              defs.map { case (kind, entity_name, offset) =>
-                val line = doc.position(offset).line + 1
-                "%8s  %6d  %s".format(kind, line, entity_name)
-              }
-            MCP_Session.Ok(if (rows.isEmpty) header else header + "\n" + rows.mkString("\n"))
-          case None => MCP_Session.Ok(name + ": loaded theory (entities not available)")
-        }
-      /* filesystem tier and a wholly unrecognized name alike: no PIDE
-         snapshot and no image name-space to query, so both get the
-         same documented not-backed-yet text. */
-      case Some((_, FileSystemTier(_))) | None =>
-        MCP_Session.Error(
-          "Resource " + quote("isabelle://theory/" + name + "/entities") +
-          " is a documented template but not backed yet (filesystem theories need load_theory); " +
-          "see spec's resource templates section")
-    }
-  }
-
-  /* wave 2 (theory management): scala-side use_theories/purge_theories,
-     disjoint from the MCP.ir bridge -- Ir.load_theory's headless refusal
-     (KNOWN GAP, see the ir_bridge_tests test naming it) is deliberately
-     left alone; these three tools never call it. */
+  private[mcp] def current_root_selector(): BridgeResult[PideRootSelector] =
+    rootDocument.selector()
 
   /* unload_theory needs to resolve name -> Document.Node.Name the same
      way use_theories did (resources.import_name(qualifier, master_dir,
@@ -1169,99 +754,6 @@ class MCP_Session private(
      error path. */
   private val theory_master_dirs: Synchronized[Map[String, String]] =
     Synchronized(Map.empty)
-
-  /* scope_add/scope_remove state: an ordered, duplicate-free list of glob
-     patterns (S1, plans/scope_add). Insertion order is preserved for
-     stable scope_add/scope_remove replies; membership in resources/list
-     is the union of pattern matches with the implicit working set
-     (theory_master_dirs, checked independently below). */
-  private val scope_patterns: Synchronized[List[String]] = Synchronized(Nil)
-
-  /* the full known theory universe, tier-tagged, for scope_add's match
-     counting and resources/list's listing: image tier from the session
-     base, filesystem tier from D1's theory_map, loaded tier for anything
-     tracked in theory_master_dirs that isn't already image tier (checking
-     a filesystem theory promotes it to loaded, not the other way round). */
-  private def known_theory_tiers(): Map[String, Tier] = {
-    val image: Map[String, Tier] =
-      session.resources.session_base.loaded_theories.keys.map(_ -> ImageTier).toMap
-    val filesystem: Map[String, Tier] =
-      theory_map.keys.filterNot(image.contains).map(name => name -> FileSystemTier(theory_map(name)._2)).toMap
-    val loaded: Map[String, Tier] =
-      theory_master_dirs.value.keys.filterNot(k => image.contains(k) || filesystem.contains(k))
-        .map(_ -> LoadedTier).toMap
-    image ++ filesystem ++ loaded
-  }
-
-  def scope_add(patterns: List[String]): MCP_Session.Result = {
-    val universe = known_theory_tiers()
-    val current = scope_patterns.value
-    val distinct_patterns = patterns.distinct
-    val newly_added = distinct_patterns.filterNot(current.contains)
-    if (newly_added.nonEmpty) {
-      scope_patterns.change(_ ++ newly_added)
-      changed_handler.value("resources")
-    }
-    val lines =
-      distinct_patterns.map { p =>
-        val count = universe.keys.count(MCP_Session.glob_to_regex(p).matches)
-        val status = if (current.contains(p)) "already in scope" else "added"
-        p + ": " + status + " (" + count + " theories match)"
-      }
-    MCP_Session.Ok(lines.mkString("\n"))
-  }
-
-  def scope_remove(patterns: List[String]): MCP_Session.Result = {
-    val current = scope_patterns.value
-    val distinct_patterns = patterns.distinct
-    val present = distinct_patterns.filter(current.contains)
-    if (present.nonEmpty) {
-      scope_patterns.change(_.filterNot(present.contains))
-      changed_handler.value("resources")
-    }
-    val notes =
-      distinct_patterns.map { p =>
-        if (current.contains(p)) p + ": removed" else p + ": not in scope"
-      }
-    val remaining = scope_patterns.value
-    val remaining_line =
-      "remaining scope: " + (if (remaining.isEmpty) "(none)" else remaining.mkString(", "))
-    MCP_Session.Ok((notes :+ remaining_line).mkString("\n"))
-  }
-
-  def scope_show(): MCP_Session.Result =
-    scope_show_cancellable(McpApplication.Cancellation.Never)
-
-  override def scope_show_cancellable(
-      cancellation: McpApplication.Cancellation): MCP_Session.Result = {
-    val universe = known_theory_tiers()
-    val patterns = scope_patterns.value
-    val pattern_lines =
-      if (patterns.isEmpty) List("patterns: (none)")
-      else "patterns:" :: patterns.map { p =>
-        val count = universe.keys.count(MCP_Session.glob_to_regex(p).matches)
-        "  " + p + " (" + count + " theories match)"
-      }
-    val regexes = patterns.map(MCP_Session.glob_to_regex)
-    val pattern_matched = universe.keys.filter(name => regexes.exists(_.matches(name))).toSet
-    val scoped_theories = (theory_master_dirs.value.keySet ++ pattern_matched).toList.sorted
-    val theory_lines =
-      if (scoped_theories.isEmpty) List("theories: (none)")
-      else "theories:" :: scoped_theories.map { name =>
-        "  " + name + " (" + universe.getOrElse(name, LoadedTier).name + ")"
-      }
-    val repl_ids = active_repl_ids(cancellation)
-    val repl_lines =
-      if (repl_ids.isEmpty) List("repls: (none)")
-      else "repls:" :: repl_ids.map("  " + _)
-    val rows = ml_named_resources_cancellable(root_context_value(cancellation), cancellation)
-    val exposed = MCP_Server.exposure(rows.map(_._1))
-    val named_names = rows.flatMap { case (name, _) => exposed.get(name) }
-    val named_lines =
-      if (named_names.isEmpty) List("named resources: (none)")
-      else "named resources:" :: named_names.map("  " + _)
-    MCP_Session.Ok((pattern_lines ++ theory_lines ++ repl_lines ++ named_lines).mkString("\n"))
-  }
 
   private def render_messages(messages: List[(XML.Elem, Position.T)]): List[String] =
     messages.map({ case (tree, pos) =>
@@ -1291,7 +783,10 @@ class MCP_Session private(
             if (msgs.isEmpty) header else header + "\n" + msgs.map("  " + _).mkString("\n")
           }
         val text = lines.mkString("\n")
-        if (use_result.ok) MCP_Session.Ok(text) else MCP_Session.Error(text)
+        Exn.capture(rootDocument.load(new Progress)) match {
+          case Exn.Res(_) => if (use_result.ok) MCP_Session.Ok(text) else MCP_Session.Error(text)
+          case Exn.Exn(exn) => MCP_Session.Error(text + "\nMCP root refresh failed: " + MCP_Server.plain_message(exn))
+        }
       case Exn.Exn(exn) =>
         MCP_Session.Error(
           "Failed to load theory " + quote(name) + ": " + MCP_Server.plain_message(exn))
@@ -1321,10 +816,8 @@ class MCP_Session private(
      Resources' bookkeeping from it (see check_theory's comment for the
      corrupting alternative this replaced). Note clean_theories' purge
      step sweeps every currently-unrequired node, not just this one --
-     harmless in practice since MCP_Session never keeps a theory
-     "required" past the end of its own use_theories call (see
-     Headless.Session.use_theories' finally-block auto-unload), so
-     nothing else should be pinned required when this runs. */
+     the server root has a separate lifetime requirement, so its current
+     imported ancestors survive this ordinary cleanup. */
   def unload_theory(name: String): MCP_Session.Result =
     serialized_theory_mutation {
       if (image_tier(name)) {
@@ -1337,9 +830,14 @@ class MCP_Session private(
           val node_name =
             session.resources.import_name(
               Sessions.DRAFT, session.master_directory(master_dir), name)
-          session.resources.clean_theories(session, UUID.random(), List(node_name))
-          theory_master_dirs.change(_ - name)
-          MCP_Session.Ok("Unloaded " + quote(node_name.theory))
+          if (rootDocument.owns(node_name))
+            MCP_Session.Error("Cannot unload " + quote(node_name.theory) +
+              ": it is required by the MCP root")
+          else {
+            session.resources.clean_theories(session, UUID.random(), List(node_name))
+            theory_master_dirs.change(_ - name)
+            MCP_Session.Ok("Unloaded " + quote(node_name.theory))
+          }
       }
     }
 
@@ -1420,9 +918,7 @@ class MCP_Session private(
 
   /* doc_read (plans/doc_read): resolve `name` through the catalog
      doc_list serves, then dispatch on entry kind -- manual (source
-     session), plain (direct file), pdf only (no plain-text source). No
-     ir call: file reads only, through the deps path map (same shape as
-     the filesystem-tier theory resource read). */
+     session), plain (direct file), pdf only (no plain-text source). */
   def doc_read(name: String, section: String, lines: String): MCP_Session.Result = {
     if (section.nonEmpty && lines.nonEmpty)
       return MCP_Session.Error(
@@ -1501,9 +997,7 @@ class MCP_Session private(
       direct_operations.foreach(_.done.join)
     }
     finally {
-      MCP_Session.stopAndReportSessionTermination(
-        () => session.stop(),
-        () => bridge.sessionStopped())
+      MCP_Session.stopRootSession(session, Some(rootDocument), () => bridge.sessionStopped())
     }
     ()
   }

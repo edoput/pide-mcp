@@ -35,7 +35,7 @@ Maintenance rules:
 | ISA-001 | Prefer Isabelle-native conventions at the Isabelle boundary | Theory imports, Theory_Data, XML/YXML, Isar text, and Proof.context remain authoritative. |
 | ISA-002 | Make Isabelle extensions theory-local and inherited | New tools, bridge operations, and context resolvers compose through imports without a process-global dispatcher. |
 | ISA-003 | Treat a context locator as an address, not a context | Scala transports an opaque locator while ML parses it and resolves a fresh Proof.context at execution time. |
-| ISA-004 | Keep registry root separate from agent working context | Changing tool scope cannot silently change which implementations the server has loaded. |
+| ISA-004 | Keep registry root separate from agent working context | An invocation target cannot select another catalogue or implementation. |
 | ISA-005 | Keep bundle activation in Isar text | MCP clients cannot mutate Isabelle bundle state through a parallel network control surface. |
 | ISA-006 | Put reusable ML implementations in `.ML` files | Theory files declare imports and load reusable modules with `ML_file` instead of embedding large implementations. |
 | TST-001 | Test contracts against replaceable deterministic implementations | The same behavior can be exercised with stdio/scripted transport and bounded/sequential scheduling. |
@@ -154,7 +154,7 @@ XML/YXML bodies containing PIDE markup cross the envelope as `XML.body` /
 another YXML envelope.
 
 Review every codec pair symmetrically. The observed counterexample was a
-resource result whose markup made `XML.Decode.string` raise `XML_Body`; the
+structured result whose markup made `XML.Decode.string` raise `XML_Body`; the
 repair paired ML `XML.Encode.self` with Scala `XML.Decode.self`.
 
 ### CAP-001 — Make readiness prove the advertised capability surface
@@ -193,30 +193,29 @@ from the selected root theory.
 
 ### ISA-003 — Treat a context locator as an address, not a context
 
-The external form `isabelle://context/KIND/TARGET` names an existing context.
-Scala stores it opaquely. Isabelle/ML parses, canonicalizes, and resolves it to
-an ordinary Proof.context each time the operation executes, allowing live REPL
-state to evolve.
-
-Review Scala branches for `theory`, `repl`, or extension kinds; serialized
-context objects; stale cached Proof.context values; and APIs that accept bare
-special-case designations.
+A target URL names an existing context. Scala transports it opaquely; ML owns
+parsing and resolution to Proof.context at execution. Keep the resolver extension
+mechanism and avoid cached contexts or Scala branches on resolver kinds.
 
 ### ISA-004 — Keep registry root separate from agent working context
 
-The startup-selected registry-root theory determines available operations,
-resolvers, tools, and resources. The per-connection locator determines where
-an operation executes. Changing one must not silently change the other.
+The server always creates a private live PIDE wrapper importing exactly the -T
+selected theory. The wrapper determines the inherited catalogue and resolver
+registry and supplies default execution, for both image and source selections.
+Own it as a live PIDE document for the server lifetime. Require successful final
+end before Ready; drain before releasing the document and stopping. There is no
+heap-root fallback. Resolve its current theory value for each list/call. Select the actual ML tool
+value from the root, then invoke it in the resolved target context. A target
+must not substitute a same-named tool or change the advertised catalogue.
 
-Review calls that look up handlers in the selected working theory rather than
-the immutable registry root, or tool-scope changes that modify server
-capabilities.
+Imports merge ancestor declarations into descendants; notifications signal a
+refresh and do not update ancestors or rebuild descendants automatically.
 
 ### ISA-005 — Keep bundle activation in Isar text
 
 Bundles remain an Isabelle authoring mechanism. Users activate them with
 imports and Isar declarations. MCP schemas and bridge payloads contain no
-bundle list and expose no `tool_scope_include` mutation.
+bundle list or remote activation mutation.
 
 Review for network-controlled bundle names, request-time
 `Bundle.includes_cmd`, or duplicated bundle state in Scala.

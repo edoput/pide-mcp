@@ -61,8 +61,8 @@ object Doc_Catalog {
     }
   }
 
-  /* pattern: glob over entry names (MCP_Session.glob_to_regex), same
-     machinery scope_add/scope_remove use; empty pattern = everything
+  /* pattern: glob over entry names (MCP_Session.glob_to_regex);
+     empty pattern = everything
      (unlike search_sources' empty-returns-nothing -- this is a catalog
      listing, not a search over an unbounded universe). An unmatched
      pattern is a valid, empty listing (probe-safe), not an error. */

@@ -22,7 +22,7 @@ class MCP_Application_Tests extends MCP_Suite {
       operations = operations :+ operation
       cancellations = cancellations :+ cancellation.isCancelled
       operation match {
-        case Operation.ResourcesRead(_) => Outcome.InvalidParams("recorded invalid resource")
+        case Operation.ToolsCall("invalid", _) => Outcome.InvalidParams("recorded invalid arguments")
         case _ => Outcome.Result(JSON.Object("delegated" -> operation.toString))
       }
     }
@@ -40,10 +40,9 @@ class MCP_Application_Tests extends MCP_Suite {
     val listed = h.handle(request(Some(11), "tools/list", None)).getOrElse(fail("missing reply"))
     h.handle(request(Some(12), "tools/call",
       Some(JSON.Object("name" -> "named", "arguments" -> arguments)))).getOrElse(fail("missing reply"))
-    h.handle(request(Some(13), "resources/list", None)).getOrElse(fail("missing reply"))
-    h.handle(request(Some(14), "resources/templates/list", None)).getOrElse(fail("missing reply"))
-    val invalid = h.handle(request(Some(15), "resources/read",
-      Some(JSON.Object("uri" -> "isabelle://missing")))).getOrElse(fail("missing reply"))
+    val invalid = h.handle(request(Some(15), "tools/call",
+      Some(JSON.Object("name" -> "invalid", "arguments" -> JSON.Object()))))
+      .getOrElse(fail("missing reply"))
 
     assertEquals(JSON.value(listed, "id"), Some(11))
     assertEquals(get(invalid, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
@@ -52,10 +51,8 @@ class MCP_Application_Tests extends MCP_Suite {
       List(
         Operation.ToolsList,
         Operation.ToolsCall("named", arguments),
-        Operation.ResourcesList,
-        Operation.ResourceTemplatesList,
-        Operation.ResourcesRead("isabelle://missing")))
-    assertEquals(application.cancellations, List(false, false, false, false, false))
+        Operation.ToolsCall("invalid", JSON.Object())))
+    assertEquals(application.cancellations, List(false, false, false))
   }
 
   test("application port receives no wire identity and Handler keeps control operations") {

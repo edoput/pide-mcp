@@ -23,7 +23,7 @@ Worked example: `src/HOL/Examples/Commands.thy` — three commands
 (diagnostic, theory-level, local-theory-level) in ~100 lines.
 Local worked example: `mcp/Tools/MCP_Tools.thy` — Name_Space-backed
 registries in Generic_Data, add/del declaration attribute,
-clause-based commands (`mcp_tool`/`mcp_resource`), ML-hatch code
+clause-based commands (`mcp_tool`), ML-hatch code
 generation, and programmatic command execution, in one theory.
 
 Hard-won facts (2026-07-11, all hit while building `mcp_tool`):

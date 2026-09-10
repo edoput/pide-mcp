@@ -1,8 +1,8 @@
 theory MCP_Tools
   imports Pure
-  keywords "mcp_tool" "mcp_resource" "mcp_test" :: thy_decl
-    and "print_mcp_tools" "print_mcp_resources" :: diag
-    and "description" "params" "format" "run" "capture" "isar"
+  keywords "mcp_tool" "mcp_test" :: thy_decl
+    and "print_mcp_tools" :: diag
+    and "description" "params" "format" "run" "capture"
 begin
 
 section \<open>Context locators\<close>
@@ -18,7 +18,7 @@ plans/mcp_tool_command).\<close>
 
 section \<open>MCP registries: context entities with activation\<close>
 
-text \<open>Tools and resources are CONTEXT ENTITIES (spec phase 3, "the
+text \<open>Tools are CONTEXT ENTITIES (spec phase 3, "the
 pivot"): a \<^verbatim>\<open>Name_Space.table\<close> holds the registrations (so a
 tool has a position -- ctrl+click -- a theory-qualified name, and
 completion), and a name set holds the ACTIVATION state, both in
@@ -304,6 +304,11 @@ structure Registry =
 
 open Registry;
 
+fun declare binding (tool: tool) lthy =
+  if exists (fn p => #name p = "context") (#params tool)
+  then error "MCP tool parameter context is reserved for framework target selection"
+  else Registry.declare binding tool lthy;
+
 fun run ctxt name args = #run (get (Context.Proof ctxt) name) ctxt args;
 
 val _ =
@@ -322,64 +327,9 @@ val _ =
 end;
 \<close>
 
-section \<open>MCP named-resource registry\<close>
-
-text \<open>Backs isabelle://named/{name} (spec's "concrete resources"): a
-user-registered resource, listed concretely in resources/list since the
-names are known. An exact mirror of MCP_Tool by construction -- the same
-\<^verbatim>\<open>MCP_Registry\<close> instance shape, attribute, and print
-command.\<close>
-
-ML \<open>
-signature MCP_RESOURCE =
-sig
-  type resource = {description: string, read: Proof.context -> string}
-  val space_of: Context.generic -> Name_Space.T
-  val declare: binding -> resource -> local_theory -> string * local_theory
-  val check: Proof.context -> xstring * Position.T -> string
-  val get: Context.generic -> string -> resource
-  val defined: Context.generic -> string -> bool
-  val list: Context.generic -> (string * resource) list
-  val active: Context.generic -> (string * resource) list
-  val is_active: Context.generic -> string -> bool
-  val activate: string -> Context.generic -> Context.generic
-  val deactivate: string -> Context.generic -> Context.generic
-  val read: Proof.context -> string -> string
-end;
-
-structure MCP_Resource: MCP_RESOURCE =
-struct
-
-type resource = {description: string, read: Proof.context -> string};
-
-structure Registry =
-  MCP_Registry(
-    val kind = "mcp_resource" val changed = "MCP.resources_changed" type value = resource);
-
-open Registry;
-
-fun read ctxt name = #read (get (Context.Proof ctxt) name) ctxt;
-
-val _ =
-  Theory.setup
-    (Attrib.setup \<^binding>\<open>mcp_resources\<close> add_del_attribute
-      "activation of MCP resources in the context");
-
-val _ =
-  Outer_Syntax.command \<^command_keyword>\<open>print_mcp_resources\<close>
-    "print MCP resources available in the context (\"!\" includes inactive)"
-    (Parse.opt_bang >> (fn verbose =>
-      Toplevel.keep (fn st =>
-        print verbose (Toplevel.context_of st) (fn (_, resource) =>
-          [Pretty.str (": " ^ #description resource)]))));
-
-end;
-\<close>
-
 section \<open>Output capture\<close>
 
-text \<open>The routing substrate (moved here from MCP_Repl.thy, which now
-builds on this structure): a table from Future group id to output
+text \<open>The output routing substrate: a table from Future group id to output
 buffer, plus lazily installed \<^verbatim>\<open>Private_Output\<close> wrappers that append to
 the buffer of the calling task's group and FALL THROUGH to the original
 functions when no buffer is registered (transparent when idle — pinned
@@ -404,7 +354,7 @@ struct
 val buffers: (int * string list Synchronized.var) list Synchronized.var =
   Synchronized.var "MCP_Output.buffers" [];
 
-(*walk the worker's group ancestry, as ir/ml_repl.ML does*)
+(*walk the worker's group ancestry*)
 fun find_buffer () =
   (case Future.worker_group () of
     NONE => NONE
@@ -994,28 +944,9 @@ fun diag ctxt (cmd, pos) {description, params, format = fmt, constraints} : MCP_
       in exec_text (Proof_Context.theory_of run_ctxt) shift text end}
   end;
 
-(*capture form (plans/ml_builtin_migration): a run slot for writeln-style
-  ML functions (most naturally Ir-shaped: report via writeln/error,
-  return unit) that would otherwise have to hand-roll exec_text's
-  capture-and-join-errors block themselves. PLAIN print mode, not PIDE
-  -- run_tool_result (mcp_session.scala) does not strip yxml markup the
-  way the repl bridge's ir_result does, so captured text must already
-  be plain, the same reason exec_text uses Print_Mode.with_modes [].
-  PLAIN MODE ALONE IS NOT ENOUGH, though (plans/ml_builtin_migration
-  wave 1, found the hard way against Ir.show): some markup -- Sledgehammer's
-  Active.sendback, and Ir.render_isar_text's Markup.markups token
-  highlighting -- is emitted unconditionally, independent of the current
-  print mode. So the captured output is stripped through
-  XML.content_of o YXML.parse_body unconditionally before it is returned;
-  this is a safe identity on text that never had any yxml to strip.
-  ANNOTATIONS ARE MANDATORY here (D2, closed out plans/param_schema_v2's
-  follow-up): unlike diag_wrap (Keyword.is_diag proves read_only+
-  idempotent) or string_fun (one fixed param, no real behavior claim to
-  make), the form tag alone proves nothing about a capture tool's
-  behavior -- Ir.show is read-only, Ir.step mutating, Ir.remove
-  destructive, all one form -- so tool_cmd's Tool_Capture branch
-  requires an explicit (annotations ...) clause and errors at
-  registration if it is missing, rather than silently defaulting.*)
+(*Capture writeln-style functions under plain print mode and strip unconditional
+  markup before returning text. The declaration must supply annotations because
+  the capture form alone makes no claim about the function's effects.*)
 fun capture description params annotations constraints f : MCP_Tool.tool =
   let
     val params = map param params;
@@ -1051,11 +982,11 @@ fun arg_int args name = Value.parse_int (arg args name);
 end;
 \<close>
 
-section \<open>The mcp_tool / mcp_resource commands\<close>
+section \<open>The mcp_tool command\<close>
 
 text \<open>The no-ML user wiring (spec phase 2 "isar commands", phase 3
 "parameter spec language"): thin parsers over \<^verbatim>\<open>MCP_Combinators\<close>,
-registering through \<^verbatim>\<open>MCP_Tool.declare\<close> / \<^verbatim>\<open>MCP_Resource.declare\<close> like
+registering through \<^verbatim>\<open>MCP_Tool.declare\<close> like
 every other path. Forms:
 
 \<^verbatim>\<open>mcp_tool "find_consts" (description \<open>...\<close>)\<close> — wrap a diagnostic
@@ -1076,16 +1007,14 @@ full-power hatch with declared parameters.
   (params ...) (annotations idempotent_mutating)\<close> —
 for a writeln-style function (returns unit, reports via writeln/error);
 MCP_Combinators.capture runs it under MCP_Output.captured and returns
-what it printed (plans/ml_builtin_migration). Unlike the other forms,
+what it printed. Unlike the other forms,
 an \<^verbatim>\<open>(annotations ...)\<close> clause is MANDATORY here (plans/param_schema_v2
 D2): the form tag alone proves nothing about a capture tool's behavior
 (unlike diag_wrap, where Keyword.is_diag proves read_only+idempotent at
 registration), so omitting the clause is a registration-time error
 rather than a silent default.
 
-\<^verbatim>\<open>mcp_resource simps\<close> — a named/dynamic fact, pretty-printed at READ
-time (dynamic collections stay current); \<^verbatim>\<open>(isar \<open>print_simpset\<close>)\<close> —
-captured diagnostic output; \<^verbatim>\<open>= \<open>fn ctxt => ...\<close>\<close> — ML read function.\<close>
+\<close>
 
 ML \<open>
 local
@@ -1093,7 +1022,7 @@ local
 (* clauses: parenthesized keyword blocks, any order, at most once *)
 
 datatype clause =
-  Descr of string | Params of MCP_Tool.param list | Format of string | Isar of string
+  Descr of string | Params of MCP_Tool.param list | Format of string
 | Annot of MCP_Tool.annotations | Constr of MCP_Tool.constraint;
 
 (*(optional) sits after the type, matched with Args.$$$ (an ident/keyword
@@ -1215,26 +1144,20 @@ val clause =
   clause_block "description" Parse.embedded >> Descr ||
   clause_block "params" (Scan.repeat1 param_entry) >> Params ||
   clause_block "format" Parse.embedded >> Format ||
-  clause_block "isar" Parse.embedded >> Isar ||
   clause_block_ct "annotations" Parse.name >> (Annot o read_annotations) ||
   clause_block_ct "exactly_one" (Scan.repeat1 Parse.name) >> (Constr o MCP_Tool.Exactly_One);
 
-fun digest what allow_isar clauses =
+fun digest what clauses =
   let
     fun uniq g name =
       (case map_filter g clauses of
         [] => NONE
       | [x] => SOME x
       | _ => error ("Multiple (" ^ name ^ " ...) clauses for " ^ what));
-    val isar = uniq (fn Isar s => SOME s | _ => NONE) "isar";
-    val _ =
-      if is_some isar andalso not allow_isar
-      then error ("(isar ...) clause is not meaningful for " ^ what) else ();
   in
     {descr = uniq (fn Descr s => SOME s | _ => NONE) "description",
      params = uniq (fn Params ps => SOME ps | _ => NONE) "params",
      fmt = uniq (fn Format s => SOME s | _ => NONE) "format",
-     isar = isar,
      annot = uniq (fn Annot a => SOME a | _ => NONE) "annotations",
      constr = uniq (fn Constr c => SOME c | _ => NONE) "exactly_one"}
   end;
@@ -1290,7 +1213,7 @@ val tool_form =
 fun tool_cmd ((name, pos), (form, clauses)) lthy =
   let
     val what = "mcp_tool " ^ quote name;
-    val {descr, params, fmt, annot, constr, ...} = digest what false clauses;
+    val {descr, params, fmt, annot, constr, ...} = digest what clauses;
     val descr' = the_descr what pos descr;
   in
     (case form of
@@ -1349,12 +1272,7 @@ fun tool_cmd ((name, pos), (form, clauses)) lthy =
             if is_some fmt
             then error ("(format ...) clause is not meaningful for the capture form of " ^ what)
             else ();
-          (*(annotations ...) is MANDATORY here (plans/ml_builtin_migration
-            D2, closed out by plans/param_schema_v2's follow-up): the
-            capture form's tag alone proves nothing about a tool's
-            behavior -- Ir.show is read-only, Ir.step mutating, Ir.remove
-            destructive, all one form -- unlike diag_wrap, where
-            Keyword.is_diag proves read_only+idempotent at registration.*)
+          (*The capture form does not determine the tool's effects.*)
           val annot_ml =
             (case annot of
               SOME a => print_annotations a
@@ -1379,68 +1297,6 @@ val _ =
       >> tool_cmd);
 
 
-(* mcp_resource *)
-
-fun fact_resource name descr : MCP_Resource.resource =
-  {description = descr,
-   read = fn ctxt =>
-    Print_Mode.with_modes [] (fn () =>
-      Proof_Context.get_fact ctxt (Facts.named name)
-      |> map (Thm.pretty_thm ctxt)
-      |> Pretty.chunks |> Pretty.string_of) ()};
-
-fun isar_resource text descr : MCP_Resource.resource =
-  {description = descr,
-   read = fn ctxt =>
-    MCP_Combinators.exec_text (Proof_Context.theory_of ctxt) 0 text};
-
-fun resource_cmd ((name, pos), (form, clauses)) lthy =
-  let
-    val what = "mcp_resource " ^ quote name;
-    val {descr, params, fmt, isar, annot, constr} = digest what true clauses;
-    val _ =
-      if is_some params orelse is_some fmt orelse is_some annot orelse is_some constr
-      then error ("(params/format/annotations/exactly_one ...) clauses are not meaningful for " ^
-        what)
-      else ();
-    val binding = Binding.make (name, pos);
-  in
-    (case form of
-      NONE =>
-        (case isar of
-          SOME text =>
-            #2 (MCP_Resource.declare binding
-              (isar_resource text (the_descr what pos descr)) lthy)
-        | NONE =>
-            let
-              (*bare-name form: validate the fact reference NOW, read later*)
-              val _ = Proof_Context.get_fact lthy (Facts.Named ((name, pos), NONE));
-              val descr' =
-                the_default ("named fact " ^ quote name ^ " (read-time)") descr;
-            in #2 (MCP_Resource.declare binding (fact_resource name descr') lthy) end)
-    | SOME source =>
-        let
-          val _ =
-            if is_some isar
-            then error ("(isar ...) clause conflicts with the ML form of " ^ what)
-            else ();
-        in
-          ml_declaration
-            ("MCP_Resource.declare " ^ binding_ml (name, pos) ^
-              " {description = " ^ ML_Syntax.print_string (the_descr what pos descr) ^
-              ", read = (")
-            source ")}" lthy
-        end)
-  end;
-
-val _ =
-  Outer_Syntax.local_theory \<^command_keyword>\<open>mcp_resource\<close>
-    "register an MCP resource (named fact, diagnostic output, or ML read function)"
-    (Parse.position Parse.name --
-      (Scan.option (Parse.$$$ "=" |-- Parse.ML_source) -- Scan.repeat clause)
-      >> resource_cmd);
-
-
 (* mcp_test: keyword reserved now (spec phase 3), command in its own wave *)
 
 val _ =
@@ -1457,18 +1313,13 @@ section \<open>Protocol payloads\<close>
 text \<open>Pure domain codecs and operations, kept apart from the common
 bridge so they can be unit-tested without a PIDE transport.  The bridge
 resolves an opaque context locator first and supplies the resulting
-<^ML_type>\<open>Proof.context\<close>; these functions have no URL, registry-root, or
-connection-state knowledge.\<close>
+<^ML_type>\<open>Proof.context\<close>; tool selection uses the catalogue context and execution uses the target context.\<close>
 
 ML \<open>
 signature MCP_PROTOCOL =
 sig
   val tools_body: Proof.context -> XML.body
-  val empty_tools_body: XML.body
-  val theories_body: unit -> XML.body
   val run_tool: Proof.context -> string -> (string * string) list -> string * string
-  val resources_body: Proof.context -> XML.body
-  val read_resource: Proof.context -> string -> string * string
 end;
 
 structure MCP_Protocol: MCP_PROTOCOL =
@@ -1525,7 +1376,8 @@ fun encode_row (name, tool: MCP_Tool.tool) =
     pair string (pair string (pair string (pair (list encode_param) encode_annotations)))
       (name, (#description tool, (MCP_Tool.form_tag (#form tool),
         (map (fn p => (#name p, (#typ p, (#required p, (#default p, #description p)))))
-          (#params tool),
+          (#params tool @ [{name = "context", typ = MCP_Tool.String, required = false,
+            default = NONE, description = "Optional target context URL; defaults to the startup root"}]),
          #annotations tool))))
   end;
 
@@ -1552,53 +1404,26 @@ fun tools_body ctxt =
     let open XML.Encode in pair (list encode_row) (list encode_builtin) (ml_rows, builtin_rows) end
   end;
 
-(*The availability floor's empty shape (tools operation, context-locator
-  resolution failure):
-  still a PAIR -- the wire shape scala always expects -- with both
-  sections empty, so scala's decoder degrades to the full builtin
-  table (and zero ML tools) without a special-cased wire shape.*)
-val empty_tools_body : XML.body =
-  let open XML.Encode in pair (list encode_row) (list encode_builtin) ([], []) end;
-
-(*theories loaded in this session -- heap image theories plus anything
-  loaded on top of it; backs the isabelle://session resource*)
-fun theories_body () =
-  let open XML.Encode in list string (Thy_Info.get_names ()) end;
-
 (*(status, output) with status = "ok" | "error"; interrupts are reraised.
   Serving follows listing: a registered-but-inactive tool is not
   callable, matching its absence from tools_body.*)
-fun run_tool ctxt name args =
+fun run_tool catalogue name args =
   (case Exn.capture_body (fn () =>
       let
-        val context = Context.Proof ctxt;
-        val _ = MCP_Tool.get context name;
+        val context = Context.Proof catalogue;
+        val tool = MCP_Tool.get context name;
         val _ =
           MCP_Tool.is_active context name orelse
             error ("Inactive MCP tool " ^ quote name);
-      in MCP_Tool.run ctxt name args end) of
-    Exn.Res res => ("ok", res)
-  | Exn.Exn exn =>
-      if Exn.is_interrupt exn then Exn.reraise exn
-      else ("error", Runtime.exn_message exn));
-
-fun resources_body ctxt =
-  let open XML.Encode in
-    list (pair string string)
-      (map (fn (name, resource) => (name, #description resource))
-        (MCP_Resource.active (Context.Proof ctxt)))
-  end;
-
-(*mirrors run_tool's (status, output) shape and inactive policy*)
-fun read_resource ctxt name =
-  (case Exn.capture_body (fn () =>
-      let
-        val context = Context.Proof ctxt;
-        val _ = MCP_Resource.get context name;
-        val _ =
-          MCP_Resource.is_active context name orelse
-            error ("Inactive MCP resource " ^ quote name);
-      in MCP_Resource.read ctxt name end) of
+        val targets = map_filter (fn (key, value) => if key = "context" then SOME value else NONE) args;
+        val ctxt =
+          (case targets of
+            [] => catalogue
+          | [locator] => #2 (MCP_Context_Locator.resolve_string
+              (Proof_Context.theory_of catalogue) locator)
+          | _ => error "Duplicate framework context argument");
+        val tool_args = filter (fn (key, _) => key <> "context") args;
+      in #run tool ctxt tool_args end) of
     Exn.Res res => ("ok", res)
   | Exn.Exn exn =>
       if Exn.is_interrupt exn then Exn.reraise exn
@@ -1747,33 +1572,15 @@ fun encode_status (status, output) =
   XML.Encode.pair XML.Encode.string XML.Encode.self
     (status, YXML.parse_body output);
 
-fun resolve root locator = #2 (MCP_Context_Locator.resolve_string root locator);
-
-fun resolve_result root locator f =
-  (case Exn.capture_body (fn () => f (resolve root locator)) of
-    Exn.Res result => result
-  | Exn.Exn exn =>
-      if Exn.is_interrupt exn then Exn.reraise exn
-      else ("error", Runtime.exn_message exn));
-
 fun tools _ root payload =
-  let val locator = XML.Decode.string payload in
-    (case Exn.capture_body (fn () => MCP_Protocol.tools_body (resolve root locator)) of
-      Exn.Res body => body
-    | Exn.Exn exn =>
-        if Exn.is_interrupt exn then Exn.reraise exn
-        else MCP_Protocol.empty_tools_body)
-  end;
-
-fun theories _ _ payload =
-  (XML.Decode.unit payload; MCP_Protocol.theories_body ());
+  (XML.Decode.string payload; MCP_Protocol.tools_body (Proof_Context.init_global root));
 
 fun run_tool _ root payload =
   let
-    val (locator, (name, args)) =
+    val (_, (name, args)) =
       XML.Decode.pair XML.Decode.string
         (XML.Decode.pair XML.Decode.string decode_args) payload;
-  in encode_status (resolve_result root locator (fn ctxt => MCP_Protocol.run_tool ctxt name args)) end;
+  in encode_status (MCP_Protocol.run_tool (Proof_Context.init_global root) name args) end;
 
 fun check_context _ root payload =
   let
@@ -1789,38 +1596,20 @@ fun check_context _ root payload =
           else ("error", Runtime.exn_message exn));
   in encode_status result end;
 
-fun resources _ root payload =
-  let val locator = XML.Decode.string payload in
-    (case Exn.capture_body (fn () => MCP_Protocol.resources_body (resolve root locator)) of
-      Exn.Res body => body
-    | Exn.Exn exn => if Exn.is_interrupt exn then Exn.reraise exn else [])
-  end;
-
-fun read_resource _ root payload =
-  let
-    val (locator, name) = XML.Decode.pair XML.Decode.string XML.Decode.string payload;
-  in encode_status (resolve_result root locator (fn ctxt => MCP_Protocol.read_resource ctxt name)) end;
-
 end;
 \<close>
 
 setup \<open>MCP_Bridge.register \<^binding>\<open>tools\<close> MCP_Bridge_Base.tools\<close>
-setup \<open>MCP_Bridge.register \<^binding>\<open>theories\<close> MCP_Bridge_Base.theories\<close>
 setup \<open>MCP_Bridge.register \<^binding>\<open>run_tool\<close> MCP_Bridge_Base.run_tool\<close>
 setup \<open>MCP_Bridge.register \<^binding>\<open>check_context\<close> MCP_Bridge_Base.check_context\<close>
-setup \<open>MCP_Bridge.register \<^binding>\<open>resources\<close> MCP_Bridge_Base.resources\<close>
-setup \<open>MCP_Bridge.register \<^binding>\<open>read_resource\<close> MCP_Bridge_Base.read_resource\<close>
 
-section \<open>Demo tool and resource\<close>
+section \<open>Demo tool\<close>
 
 text \<open>Registered through the commands above — the production heap
 exercises the isar surface itself, not just the ML layer under it.\<close>
 
 mcp_tool shout = \<open>String.map Char.toUpper\<close>
   (description \<open>uppercase the input\<close>)
-
-mcp_resource greeting = \<open>K "hello from MCP_Resource"\<close>
-  (description \<open>a static demo resource\<close>)
 
 text \<open>A5 fixture (plans/param_schema_v2): one param per ptyp SCALAR
 constructor, declared here rather than in Tests/MCP_Tools_Tests.thy
@@ -1878,37 +1667,14 @@ val _ =
              annotations = MCP_Tool.default_annotations,
              run = fn _ => fn _ => error "builtin tool: dispatched Isabelle/Scala-side"}
         |> #2)
-      [("repl_list", "List all open REPL proof sessions."),
-       ("repl_init", "Create a new REPL proof session that imports the given theories."),
-       ("repl_init_from_source", "Create a new REPL rooted at a specific command inside an existing theory."),
-       ("repl_fork", "Fork a sub-REPL from an existing REPL at a given state index."),
-       ("repl_remove", "Remove a REPL and all sub-REPLs forked from it."),
-       ("repl_step", "Apply one Isar command to a REPL and print the resulting proof state."),
-       ("repl_state", "Print the proof/theory state of a REPL at a given index."),
-       ("repl_edit", "Replace a REPL step with new Isar text and re-execute from there."),
-       ("repl_replay", "Re-execute all stale steps in a REPL, in order."),
-       ("repl_truncate", "Discard all REPL steps after a given index."),
-       ("repl_merge", "Merge a sub-REPL back into its parent."),
-       ("repl_timeout", "Set the per-step timeout in seconds for one REPL."),
-       ("repl_pin", "Pin (snapshot) a REPL's current theory state."),
-       ("repl_unpin", "Remove a REPL's pin."),
-       ("repl_rebase", "Re-resolve a REPL's init specs against current pin versions."),
-       ("sledgehammer", "Run Sledgehammer on the REPL's current proof state."),
-       ("find_theorems", "Search for theorems by name, goal-relevance, or term pattern."),
-       ("find_definition", "Find where a name is defined across the prover's name spaces."),
-       ("load_theory", "Load and check a theory from disk into the running session."),
+      [("load_theory", "Load and check a theory from disk into the running session."),
        ("unload_theory", "Unload a theory that was loaded with load_theory."),
        ("check_theory", "Re-read a theory file from disk and check it."),
        ("list_sessions", "List all Isabelle sessions known to the server."),
        ("list_theories", "List all theories in a given Isabelle session."),
        ("search_sources", "Search for theories by substring match on their long name."),
-       ("scope_add", "Add theory-name patterns to the resource scope."),
-       ("scope_remove", "Remove theory-name patterns from the resource scope."),
-       ("scope_show", "Show the current resource scope, explicit and implicit."),
        ("doc_list", "List the Isabelle documentation catalog."),
-       ("doc_read", "Read Isabelle documentation from its plain-text sources."),
-       ("tool_scope_show", "Show the current tool scope (agent context)."),
-       ("tool_scope_set", "Set the tool scope to a context locator.")])));
+       ("doc_read", "Read Isabelle documentation from its plain-text sources.")])));
 \<close>
 
 end

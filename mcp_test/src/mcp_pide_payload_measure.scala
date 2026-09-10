@@ -6,7 +6,7 @@ Deterministic, fixture-backed measurements for the PIDE bridge envelopes.
 package isabelle.mcp
 
 import isabelle._
-import isabelle.mcp.pide.{BridgeOperation, PideBridgeV1}
+import isabelle.mcp.pide.{BridgeOperation, PideBridgeV1, PideRootSelector}
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{AtomicMoveNotSupportedException, Files, StandardCopyOption}
@@ -14,7 +14,7 @@ import java.nio.file.{AtomicMoveNotSupportedException, Files, StandardCopyOption
 
 object MCP_Pide_Payload_Measure {
   val schema = "isabelle-mcp.pide-bridge-payloads/v2"
-  val corpus_revision = "2026-09-07.1"
+  val corpus_revision = "2026-09-10.1"
   val large_request_source_text_bytes = 89332L
   val theory_source_reply_bytes = 380170L
 
@@ -66,7 +66,8 @@ object MCP_Pide_Payload_Measure {
 
   private def request(name: String, operation: BridgeOperation[?],
     source_text_bytes: Option[Long] = None): Case = {
-    val arguments = PideBridgeV1.call("measure:request", "HOL.Main", operation.name,
+    val arguments = PideBridgeV1.call("measure:request",
+      PideRootSelector("Draft.MCP_Root_measure", "/measure/MCP_Root_measure.thy", 42L, 107L), operation.name,
       operation.requestPayload).arguments
     require(arguments.lengthCompare(1) == 0,
       "PideBridgeV1 did not produce one canonical request argument")
@@ -99,20 +100,11 @@ object MCP_Pide_Payload_Measure {
         "string_fun", Nil, MCP_Session.Tool_Annotations.default))
     XML.Encode.pair(XML.Encode.list(encode_tool_row),
       XML.Encode.list(XML.Encode.pair(XML.Encode.string, XML.Encode.bool)))(
-        (rows, List("repl_list" -> true, "theory_read" -> false)))
+        (rows, List("list_sessions" -> true, "check_theory" -> false)))
   }
 
   private def status_text(text: String): XML.Body =
     XML.Encode.pair(XML.Encode.string, XML.Encode.string)(("ok", text))
-
-  private def theories_payload: XML.Body =
-    XML.Encode.list(XML.Encode.string)(List("HOL", "HOL.Main", "Fixture_Source"))
-
-  private def resources_payload: XML.Body =
-    XML.Encode.list(XML.Encode.pair(XML.Encode.string, XML.Encode.string))(
-      List(
-        "isabelle://resource/Fixture/one" -> "Fixture resource one",
-        "isabelle://resource/Fixture/two" -> "Fixture resource two"))
 
   private def reply(name: String, category: String, operation: BridgeOperation[?],
     payload: XML.Body, source_text_bytes: Option[Long] = None): Case = {
@@ -124,20 +116,14 @@ object MCP_Pide_Payload_Measure {
 
   def corpus: Corpus = {
     val large_request_source = deterministic_ascii_source(
-      "MCP_Repl_Tests.thy reviewed source-text basis", large_request_source_text_bytes)
+      "Large ML tool argument", large_request_source_text_bytes)
     val requests = List(
       request("request.check_context", McpBridgeOperations.checkContext(Some(context))),
-      request("request.ir", McpBridgeOperations.ir("term", List("term" -> "x + y"))),
-      request("request.read_resource", McpBridgeOperations.readResource(context, "isar-ref")),
-      request("request.ir_large_source_text",
-        McpBridgeOperations.ir("step", List(
-          "repl" -> "Fixture",
-          "isar_text" -> large_request_source)),
-        Some(large_request_source_text_bytes)),
-      request("request.resources", McpBridgeOperations.resources(context)),
-      request("request.run_tool", McpBridgeOperations.runTool(context, "check_theory",
-        List("theory" -> "HOL.Main"))),
-      request("request.theories", McpBridgeOperations.theories),
+      request("request.run_tool_large_source_text",
+        McpBridgeOperations.runTool(context, "Fixture.large_input",
+          List("input" -> large_request_source)), Some(large_request_source_text_bytes)),
+      request("request.run_tool", McpBridgeOperations.runTool(context, "Fixture.echo",
+        List("input" -> "hello"))),
       request("request.tools", McpBridgeOperations.tools(context)))
 
     val source_text = deterministic_ascii_source(
@@ -151,18 +137,12 @@ object MCP_Pide_Payload_Measure {
       reply("reply.check_context", "operation_reply",
         McpBridgeOperations.checkContext(Some(context)), status_text("HOL.Main")),
       reply("reply.documentation_text", "documentation_text",
-        McpBridgeOperations.readResource(context, "fixture-documentation"), status_text(documentation_text)),
-      reply("reply.ir", "operation_reply",
-        McpBridgeOperations.ir("term", List("term" -> "x + y")), status_text("x + y :: nat")),
-      reply("reply.resources", "operation_reply",
-        McpBridgeOperations.resources(context), resources_payload),
+        McpBridgeOperations.runTool(context, "Fixture.documentation", Nil), status_text(documentation_text)),
       reply("reply.structured_prover_output", "structured_prover_output",
         McpBridgeOperations.runTool(context, "fixture_prover", Nil), status_text(prover_output)),
       reply("reply.theory_source_text", "theory_source_text",
-        McpBridgeOperations.readResource(context, "Fixture_Source"), status_text(source_text),
+        McpBridgeOperations.runTool(context, "Fixture.source_text", Nil), status_text(source_text),
         Some(theory_source_reply_bytes)),
-      reply("reply.theories", "operation_reply",
-        McpBridgeOperations.theories, theories_payload),
       reply("reply.tool_catalog", "tool_catalog", McpBridgeOperations.tools(context), tool_catalog_payload))
     val all = (requests ::: replies).sortBy(_.name)
     validate(all)
@@ -232,12 +212,12 @@ object MCP_Pide_Payload_Measure {
       "provenance" -> JSON.Object(
         "large_request_source_text" -> JSON.Object(
           "bytes" -> large_request_source_text_bytes,
-          "observed_path" -> "mcp/Tools/HOL/Tests/MCP_Repl_Tests.thy",
-          "observation" -> "current largest repository theory; committed deterministic ASCII fixture"),
+          "fixture" -> "run_tool large string argument",
+          "observation" -> "deterministic ASCII request size measurement; request-byte enforcement is deferred"),
         "theory_source_reply" -> JSON.Object(
           "bytes" -> theory_source_reply_bytes,
           "observed_path" -> "HOL/Analysis/Henstock_Kurzweil_Integration.thy",
-          "observation" -> "current largest shipped Isabelle2025-2 theory; committed deterministic ASCII fixture"),
+          "observation" -> "deterministic ASCII stress fixture; size retained for reply-bound regression"),
         "default_rule" -> "next power of two at or above twice each serialized maximum"))) + "\n"
   }
 

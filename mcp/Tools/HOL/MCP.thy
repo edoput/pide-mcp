@@ -3,7 +3,7 @@ theory MCP
 begin
 
 text \<open>The HOL-anchored registration entry point: HOL developments that
-want the \<^verbatim>\<open>mcp_tool\<close> / \<^verbatim>\<open>mcp_resource\<close> commands should import THIS
+want the \<^verbatim>\<open>mcp_tool\<close> command should import THIS
 theory, not the Pure-based \<^verbatim>\<open>MCP-Tools.MCP_Tools\<close> directly.
 
 Importing a Pure-based theory into a HOL import list is a footgun:

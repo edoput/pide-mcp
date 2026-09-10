@@ -2,155 +2,108 @@
 schema: isabelle-mcp.plan/v1
 id: python_e2e
 title: Register deterministic procedural end-to-end tests
-status: done
+status: in_progress
 depends_on:
-  - verification_matrix
+- verification_matrix
 allowed_modules:
-  - mcp/test
-  - tools/planning_gate
+- mcp/test
+- tools/planning_gate
 invariants:
-  - id: INV1
-    statement: End-to-end discovery executes no test body and starts no Isabelle or MCP process.
-  - id: INV2
-    statement: Every registered end-to-end worker, client process group, and descendant is reaped on success, failure, timeout, or interruption.
+- id: INV1
+  statement: End-to-end discovery executes no test body and starts no Isabelle or
+    MCP process.
+- id: INV2
+  statement: Every registered end-to-end worker, client process group, and descendant
+    is reaped on success, failure, timeout, or interruption.
 claims:
-  - id: A1
-    kind: assumption
-    state: active
-    statement: A procedural process test exercises the shipped process and public protocol, not an in-process fake or an LLM agent.
-    layers: [e2e]
-  - id: A2
-    kind: assumption
-    state: active
-    statement: Metadata discovery is deterministic and has no process, network, prover, or test-body side effects.
-    layers: [tooling-unit]
-  - id: I1
-    kind: infrastructure
-    state: active
-    statement: All cases share one client, timeout, teardown, metadata, and result-reporting implementation instead of copying process code between scripts.
-    layers: [tooling-unit]
-  - id: D1
-    kind: design
-    statement: Agent usability is a separate evaluation concern; process-test links certify only deterministic procedural behavior.
-    category: design
-  - id: D2
-    kind: design
-    statement: Each worker owns a process session and each JSON-RPC client owns a process group inside that session, so client teardown is local while runner timeout cleanup remains transitive.
-    category: design
-  - id: T1
-    kind: test
-    state: active
-    statement: Registry fixtures reject malformed IDs, duplicate cases, duplicate links, unexpected layers, and executable files omitted from the registry.
-    layers: [tooling-unit]
-  - id: T2
-    kind: test
-    state: active
-    statement: Manifest discovery is byte-stable and a sentinel proves that no test body or Isabelle process ran.
-    layers: [tooling-unit]
-  - id: T3
-    kind: test
-    state: active
-    statement: The runner propagates assertion failure, timeout, interrupt, and fixture failure to a nonzero exit and always reaps its child process.
-    layers: [tooling-unit]
-  - id: T4
-    kind: test
-    state: active
-    statement: The migrated `test_mcp.py` workflows pass through the registry against the real Flatpak Isabelle server.
-    layers: [e2e]
-  - id: T5
-    kind: test
-    state: active
-    statement: The maintained concurrency, duplicate-session, and Scala-bridge reproductions run as registered focused cases selectable by name or plan ID.
-    layers: [e2e]
-  - id: T6
-    kind: test
-    state: active
-    statement: A fixture proves that filtered runs remain diagnostic only and cannot become completion evidence.
-    layers: [tooling-unit]
-  - id: T7
-    kind: test
-    state: active
-    statement: Client close and timeout reap the complete client process group while its identity remains pinned, unsafe cleanup after external reap is refused, and runner timeout reaps a client-owned subgroup within the worker session.
-    layers: [tooling-unit]
+- id: A1
+  kind: assumption
+  state: active
+  statement: A procedural process test exercises the shipped process and public protocol,
+    not an in-process fake or an LLM agent.
+  layers:
+  - e2e
+- id: A2
+  kind: assumption
+  state: active
+  statement: Metadata discovery is deterministic and has no process, network, prover,
+    or test-body side effects.
+  layers:
+  - tooling-unit
+- id: I1
+  kind: infrastructure
+  state: active
+  statement: All cases share one client, timeout, teardown, metadata, and result-reporting
+    implementation instead of copying process code between scripts.
+  layers:
+  - tooling-unit
+- id: D1
+  kind: design
+  statement: Agent usability is a separate evaluation concern; process-test links
+    certify only deterministic procedural behavior.
+  category: design
+- id: D2
+  kind: design
+  statement: Each worker owns a process session and each JSON-RPC client owns a process
+    group inside that session, so client teardown is local while runner timeout cleanup
+    remains transitive.
+  category: design
+- id: T1
+  kind: test
+  state: active
+  statement: Registry fixtures reject malformed IDs, duplicate cases, duplicate links,
+    unexpected layers, and executable files omitted from the registry.
+  layers:
+  - tooling-unit
+- id: T2
+  kind: test
+  state: active
+  statement: Manifest discovery is byte-stable and a sentinel proves that no test
+    body or Isabelle process ran.
+  layers:
+  - tooling-unit
+- id: T3
+  kind: test
+  state: active
+  statement: The runner propagates assertion failure, timeout, interrupt, and fixture
+    failure to a nonzero exit and always reaps its child process.
+  layers:
+  - tooling-unit
+- id: T4
+  kind: test
+  state: active
+  statement: The retained public workflows pass through the registry against the selected
+    real Isabelle server.
+  layers:
+  - e2e
+- id: T5
+  kind: test
+  state: active
+  statement: The maintained concurrency, duplicate-session, and Scala-bridge reproductions
+    run as registered focused cases selectable by name or plan ID.
+  layers:
+  - e2e
+- id: T6
+  kind: test
+  state: active
+  statement: A fixture proves that filtered runs remain diagnostic only and cannot
+    become completion evidence.
+  layers:
+  - tooling-unit
+- id: T7
+  kind: test
+  state: active
+  statement: Client close and timeout reap the complete client process group while
+    its identity remains pinned, unsafe cleanup after external reap is refused, and
+    runner timeout reaps a client-owned subgroup within the worker session.
+  layers:
+  - tooling-unit
 spec_refinements: []
 done_command:
-  - tools/planning-gate
-  - done
+- tools/planning-gate
+- done
 ---
 
-python_e2e — implementation plan
-================================
+Keep the Python black-box runner and cases for retained server behavior: initialization, tool listing/calling, readiness, declaration notifications, cancellation, EOF/shutdown, theory load/check/unload, discovery and documentation.
 
-The repository already has real-process Python clients (`test_mcp.py` and
-focused `repro_*.py` scripts), but their plan relationships live in docstrings
-and prose and there is no complete discovery/run registry.  They are the honest
-producer for deterministic end-to-end behavior until an agent-evaluation
-harness exists.
-
-goal
-----
-
-Provide Python end-to-end infrastructure parallel to MUnit and Isabelle theory
-tests: body-free metadata discovery, a complete registered runner, shared client
-fixtures, exact plan links, filters for development, and a full mode used by the
-single done command.
-
-meaning of end to end
----------------------
-
-An e2e case is a deterministic procedural client that starts the real
-`isabelle mcp_server`, speaks JSON-RPC over its real stdio transport, uses a
-real configured Isabelle session, and asserts client-visible results and
-process behavior.
-
-This can establish that following documented steps works.  It cannot establish
-that an LLM discovers or follows those steps.  Agent usability stays in
-`evals/` and may become a separate `agent-eval` layer only after its model,
-prompt, revision, and scoring protocol are reproducible.
-
-package and commands
---------------------
-
-Create `mcp/test/e2e/` as an import-safe Python package:
-
-    registry.py     decorators and typed case metadata
-    client.py       process, JSON-RPC, timeout, and cleanup fixtures
-    runner.py       selection, execution, reporting, exit status
-    __main__.py     manifest and run subcommands
-    cases/          lifecycle, concurrency, tools, resources, REPL workflows
-
-Commands:
-
-    python3 -m mcp.test.e2e manifest --output FILE
-    python3 -m mcp.test.e2e run [--filter PATTERN]
-    python3 -m mcp.test.e2e run --all
-
-`manifest` imports registrations but never starts Isabelle or evaluates test
-bodies.  `run --all` is the only mode admissible to the project done command.
-
-implementation sequence
------------------------
-
-1. Extract the reusable client/process machinery from `test_mcp.py` without
-   changing protocol behavior or timeouts.
-2. Add an `e2e_test(name, verifies=..., covers=...)` registry.  The layer is
-   fixed to e2e rather than repeated by each case.
-3. Emit the common verification-matrix producer schema with canonical relative
-   source locations and stable identities.
-4. Run registered cases with guaranteed server teardown on pass, assertion
-   failure, timeout, interrupt, and fixture error.  Aggregate failures and exit
-   nonzero.
-5. Migrate `test_mcp.py` and every maintained `repro_*.py` case.  Preserve thin
-   standalone wrappers only where they remain useful for diagnosis.
-6. Audit prose claims while migrating: a procedural workflow may cover an e2e
-   requirement, but a claim about agent discovery must be split or remain in
-   `evals/` rather than receiving a false e2e link.
-7. Make the runner inventory authoritative: an executable e2e file that is not
-   registered fails tooling-unit discovery.
-
-non-goals
----------
-
-- Calling an LLM or scoring agent behavior.
-- Translating the suite to Gherkin before the registry is stable.
-- Hiding cold-build costs by weakening timeouts or using a fake server.
+Use tiny ML fixture tools for concurrency/output checks. Remove cases whose asserted contract is retired. Run the e2e blocking layer with the selected Isabelle installation and private worktree state. Do not report source inspection as a live pass.

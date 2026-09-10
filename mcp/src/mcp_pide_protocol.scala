@@ -31,11 +31,13 @@ object PideBridgeReply {
 }
 
 
+final case class PideRootSelector(theory: String, node: String, command: Long, exec: Long)
+
 trait PideBridgeProtocol {
   def revision: String
   def resultFunctions: Set[String]
-  def hello(id: String, theory: String): PideTransport.Outbound
-  def call(id: String, theory: String, operation: String,
+  def hello(id: String, root: PideRootSelector): PideTransport.Outbound
+  def call(id: String, root: PideRootSelector, operation: String,
     payload: XML.Body): PideTransport.Outbound
   def cancel(id: String): PideTransport.Outbound
   def drain(id: String): PideTransport.Outbound
@@ -84,22 +86,24 @@ object PideBridgeV1 extends PideBridgeProtocol {
     }
   }
 
-  def hello(id: String, theory: String): PideTransport.Outbound =
+  private def rootProperties(root: PideRootSelector): Properties.T = List(
+    "theory" -> root.theory, "root_node" -> root.node,
+    "root_command" -> root.command.toString, "root_exec" -> root.exec.toString)
+
+  def hello(id: String, root: PideRootSelector): PideTransport.Outbound =
     outbound(List(
       "revision" -> revision,
       "kind" -> "hello",
       "id" -> id,
-      "theory" -> theory,
-      "operation" -> "hello"), Nil)
+      "operation" -> "hello") ::: rootProperties(root), Nil)
 
-  def call(id: String, theory: String, operation: String,
+  def call(id: String, root: PideRootSelector, operation: String,
     payload: XML.Body): PideTransport.Outbound =
     outbound(List(
       "revision" -> revision,
       "kind" -> "call",
       "id" -> id,
-      "theory" -> theory,
-      "operation" -> operation), payload)
+      "operation" -> operation) ::: rootProperties(root), payload)
 
   def cancel(id: String): PideTransport.Outbound =
     outbound(List("revision" -> revision, "kind" -> "cancel", "id" -> id), Nil)

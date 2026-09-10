@@ -479,7 +479,7 @@ private[mcp] final class PideBridge(
   callTimeout: PideBridgePolicy.PositiveDuration,
   drainTimeout: PideBridgePolicy.NonNegativeDuration,
   deadlineScheduler: DeadlineScheduler,
-  theory: String,
+  root: () => BridgeResult[PideRootSelector],
   operationNames: Set[String],
   bridgeProfile: McpBridgeProfile,
   protocol: PideBridgeProtocol,
@@ -529,7 +529,13 @@ private[mcp] final class PideBridge(
         return Left(ProtocolError("PIDE bridge startup hello is already in flight"))
       val entry = Hello(ids.next(), None)
       hello = Some(entry)
-      try transport.send(protocol.hello(BridgeCallId.value(entry.id), theory))
+      try root() match {
+        case Right(selector) => transport.send(protocol.hello(BridgeCallId.value(entry.id), selector))
+        case Left(failure) =>
+          entry.result = Some(Left(failure))
+          hello = None
+          state = State.Stopping
+      }
       catch {
         case NonFatal(exn) =>
           val failure = TransportFailed(
@@ -632,9 +638,15 @@ private[mcp] final class PideBridge(
         /* A replaceable transport may deliver synchronously from send().  Mark
            the call as sent first so a rejected reply can order its cancel
            after the call even before send returns. */
-        sent += id
-        transport.send(protocol.call(
-          BridgeCallId.value(id), theory, operation.name, operation.requestPayload))
+        root() match {
+          case Right(selector) =>
+            sent += id
+            transport.send(protocol.call(
+              BridgeCallId.value(id), selector, operation.name, operation.requestPayload))
+          case Left(failure) =>
+            pending.fail(id, failure)
+            clearDeadline(id)
+        }
       }
       catch {
         case NonFatal(exn) =>

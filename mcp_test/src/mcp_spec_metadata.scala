@@ -317,7 +317,7 @@ class MCP_Spec_Metadata_Tests extends MCP_Suite {
     assert(get_string(manifest, "test_jar_sha256").startsWith("sha256:"))
 
     val linked = get_list(manifest, "tests").filter(test => get_list(test, "links").nonEmpty)
-    assertEquals(linked.length, 6)
+    assertEquals(linked.length, 5)
     val initialize =
       linked.find(test => get_string(test, "name").startsWith("initialize never"))
         .getOrElse(fail("readiness initialize test missing from manifest"))

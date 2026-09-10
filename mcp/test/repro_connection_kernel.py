@@ -126,7 +126,7 @@ def run_lifecycle_readiness() -> int:
         tools = client.request("tools/list", timeout=60)
         assert isinstance(tools.get("result", {}).get("tools"), list), tools
         not_ready = client.request(
-            "tools/call", {"name": "repl_list", "arguments": {}}, timeout=60
+            "tools/call", {"name": "list_sessions", "arguments": {}}, timeout=60
         )
         assert tool_error(not_ready), not_ready
         assert " is not ready:" in tool_text(not_ready), not_ready
@@ -142,23 +142,6 @@ def run_lifecycle_readiness() -> int:
         assert not tool_error(ready), ready
         assert tool_text(ready) == "READY", ready
 
-        # Scope mutation followed by observation proves one application object
-        # owns state for this whole logical stdio client.
-        changed = client.request(
-            "tools/call",
-            {
-                "name": "tool_scope_set",
-                "arguments": {"theory": "MCP_Tools"},
-            },
-        )
-        assert not tool_error(changed), changed
-        shown = client.request(
-            "tools/call", {"name": "tool_scope_show", "arguments": {}}
-        )
-        assert (
-            not tool_error(shown)
-            and 'theory "MCP-Tools.MCP_Tools"' in tool_text(shown)
-        ), shown
     finally:
         returncode = client.close(timeout=30)
         shutil.rmtree(fixture, ignore_errors=True)
@@ -174,7 +157,7 @@ def run_lifecycle_readiness() -> int:
         failed: dict[str, Any] = {}
         while time.monotonic() < deadline:
             failed = failed_client.request(
-                "tools/call", {"name": "repl_list", "arguments": {}}, timeout=10
+                "tools/call", {"name": "list_sessions", "arguments": {}}, timeout=10
             )
             if " failed to start:" in tool_text(failed):
                 break
@@ -209,14 +192,6 @@ def _test_server(
     initialize(client)
     ready = wait_for_ready(client, probe_name="shout", probe_args={"input": "ready"})
     assert not tool_error(ready) and tool_text(ready) == "READY", ready
-    scoped = client.request(
-        "tools/call",
-        {
-            "name": "tool_scope_set",
-            "arguments": {"theory": "MCP-Tools-Tests.MCP_Tools_Tests"},
-        },
-    )
-    assert not tool_error(scoped), scoped
     tools = wait_for_capture_tools(client)
     return client, tools
 

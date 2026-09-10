@@ -81,12 +81,12 @@ def test_current_catalog_keeps_prose_inference_explicit() -> None:
     root = Path(__file__).resolve().parents[3]
     report = collect(root)
 
-    assert len(report.rows) == 363
-    assert report.inferred_ids == (
-        "find_definition#T6",
-        "repl_remove#T5",
-        "session_dirs_errors#A6",
-    )
+    assert len(report.rows) == 200
+    assert report.inferred_ids == ()
+    rows = {row.id: row for row in report.rows}
+    for ident in ("list_theories#T1", "session_structure#A3",
+                  "session_structure#A7", "session_structure#A8"):
+        assert rows[ident].layer == "bridge,scala-unit"
 
 
 def test_connection_kernel_checkpoint_1_fixture_is_staged_noncoverage() -> None:

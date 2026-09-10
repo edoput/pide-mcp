@@ -1,207 +1,61 @@
 An extensible Model Context Protocol server for Isabelle
-=========================================================
+=======================================================
 
-`isabelle mcp_server` lets an AI agent drive the Isabelle proof
-assistant over the Model Context Protocol (MCP): step through Isar
-proofs in server-side repls, run sledgehammer and find_theorems, load
-and verify theory files from disk, and explore the session library —
-all against one long-running prover session, so the agent never pays
-Isabelle's startup cost twice.
+isabelle mcp_server serves JSON-RPC over stdin/stdout and keeps one prover session
+for theory checking and user-declared ML tools. Progress goes to stderr.
 
-The server is also extensible from inside the logic: any theory can
-register new MCP tools and resources with the `mcp_tool` /
-`mcp_resource` commands (see "Extending the server" below), and they
-appear to the agent next to the builtins.
+Requirements and installation
+-----------------------------
+Use Isabelle2025-2 and register this repository's mcp component:
 
-Requirements
-------------
+    isabelle components -u /absolute/path/to/isabelle-mcp/mcp
+    isabelle build -b MCP-HOL
+    isabelle mcp_server -s MCP-HOL -T MCP
 
-- Isabelle2025-2. This repository bundles a Linux distribution at
-  `Isabelle2025-2_linux/Isabelle2025-2/bin/isabelle`; a standard
-  install works the same. Below, `isabelle` means whichever executable
-  you use — give your MCP client the absolute path if it is not on
-  PATH.
-- Python 3 (only for the optional smoke test).
+Supply -T THEORY to select the theory whose tools the server exposes. The server
+always creates a private temporary wrapper theory importing exactly that selected
+theory through PIDE, whether the selected theory is in the image or in source.
+The wrapper's context supplies the catalogue and default execution context.
+Bootstrap waits for its successful final end and validates the bridge before
+Ready. Its document requirement persists until shutdown; bridge work drains
+before release and session stop. Reprocessing ancestors and then the wrapper
+updates later catalogues. There is no source/image split or heap-root fallback.
+The bridge identifies the current wrapper evaluation on every hello/call; invalid
+or stale selections fail without falling back to an earlier catalogue.
 
-Installation
-------------
+Tools
+-----
+- load_theory and check_theory load/check disk theories with dependencies and
+  report positioned errors and warnings through headless session.use_theories.
+- unload_theory removes a loaded theory; image theories cannot be unloaded.
+- list_sessions and list_theories discover the session library.
+- search_sources searches theory names by substring, not source contents.
+- doc_list and doc_read discover and read documentation.
 
-1. Clone this repository.
+The server also advertises active ML tools declared with mcp_tool in the root's
+import chain. Keep ordinary Isabelle mcp_tools activation and bundles in theory
+text. Tool declaration changes emit notifications/tools/list_changed. The root
+selects the implementation; an ML-resolved invocation target supplies its
+Proof.context. Every ML tool automatically advertises an optional string argument
+named context. Supply its target URL in the ordinary arguments object; omit it
+to execute at the root. The framework resolves the URL and removes context before
+calling the unchanged ML implementation. Tool declarations cannot define their
+own context parameter. The eight Scala builtins do not receive this parameter.
 
-2. Register the `mcp/` component in user-space (once per user/machine):
+Testing
+-------
+Register mcp_test as another component to use isabelle mcp_test. Test layers are
+scala-unit, heap and bridge; -L all selects all three. ML theory tests and the
+Python e2e runner cover the other retained layers. Consult
+.agents/skills/isabelle-execution/SKILL.md for installation selection and private
+worktree state. The repository acceptance command is:
 
-       isabelle components -u /path/to/isabelle-mcp/mcp
+    tools/planning-gate done
 
-   This also makes the `MCP-Tools` and `MCP-HOL` sessions globally
-   known to Isabelle (the component carries a session catalog), so no
-   `-d` flags pointing into this repository are ever needed.
+Static metadata or a focused test run does not establish full acceptance.
+See SERVER_CARVE_OUT_PLAN.md for the approved cut and plans/ for surviving
+contracts. Replacement proof tooling and configurable availability are deferred.
 
-3. Pre-build the proving session so the first agent connection does
-   not wait for a full HOL build (the server builds missing heaps
-   itself, but HOL from scratch takes a while):
-
-       isabelle build -b MCP-HOL
-
-4. (Optional) smoke-test the installation end to end:
-
-       python3 mcp/test/test_mcp.py
-
-   and, if you also registered the `mcp_test/` component
-   (`isabelle components -u /path/to/isabelle-mcp/mcp_test`), run the
-   unit suites with `isabelle mcp_test`. Use `-L scala-unit`, `-L heap`, or
-   `-L bridge` to run one layer, and `-L all` for all three (`-b` remains a
-   compatibility alias for `-L all`). Every invocation first writes the
-   complete structured munit-to-plan metadata manifest to
-   `mcp_test/lib/munit-spec.json`; execution filters never filter this file.
-   `isabelle mcp_test -M FILE` writes it to an explicit destination without
-   running test bodies. After building the Isabelle theory-test sessions,
-   `isabelle mcp_theory_metadata` reads every `spec_test` export from the built
-   MCP-Tools-Tests and MCP-HOL-Tests sessions and writes
-   `mcp_test/lib/isabelle-spec.json`. Pass both files to
-   `tools/spec_gate.py --test-manifest MUNIT-FILE --theory-manifest ISABELLE-FILE`.
-   Test-layer roles and their machine-readable names are configured in
-   `mcp_test/etc/test_layers.json`; both exporters and the gate load that
-   registry.
-
-   The repository-level completion command is `tools/planning-gate done`.
-   It builds the catalogs, checks static plan coverage, runs every blocking
-   layer without filters, and rejects a run whose Git HEAD or tracked content
-   changes while it is executing. Individual diagnostic commands are listed by
-   `tools/planning-gate commands`.
-
-Running the server
-------------------
-
-    isabelle mcp_server -s MCP-HOL
-
-speaks newline-delimited JSON-RPC 2.0 (MCP) on stdin/stdout and logs
-progress to stderr; it exits when stdin closes. Your MCP client
-launches and owns this process — you rarely run it by hand.
-
-Options:
-
-    -d DIR       include a session directory (repeatable; only needed
-                 for your own sessions — MCP-Tools and MCP-HOL are
-                 always known once the component is registered)
-    -s SESSION   session to run (default: MCP-Tools, the minimal
-                 Pure-based registry — for actual proving you want
-                 MCP-HOL, which is HOL plus the repl/search tools)
-    -T THEORY    theory registering the MCP tools (default: MCP_Tools)
-
-Verifying your own theories
----------------------------
-
-The agent verifies local theories with the `load_theory` /
-`check_theory` tools; diagnostics, source and entities are served as
-`isabelle://theory/{name}` resources. Two setups, by how your
-theories are organized:
-
-**Plain directory of .thy files** (imports available in the running
-image, e.g. `Main`): no configuration needed. The agent calls
-
-    load_theory {"name": "MyTheory", "master_dir": "/path/to/dir"}
-
-which loads and checks the theory with its transitive dependencies
-and reports per-theory ok/error status with positions. After edits,
-`check_theory` re-verifies.
-
-**A project with a ROOT file** (its own session): start the server
-with your project directory added,
-
-    isabelle mcp_server -s MCP-HOL -d /path/to/your/project
-
-Your session then appears in the discovery tools
-— `list_sessions`, `list_theories`, `search_sources` — and theories
-load by session-qualified name: `load_theory {"name":
-"MySession.MyTheory"}`.
-
-Beyond batch verification, the repl tools (`repl_init`, `repl_step`,
-`repl_state`, ...) let the agent develop a proof interactively, with
-`sledgehammer` and `find_theorems` available at every step.
-
-Configuring the agent
----------------------
-
-Any MCP client that supports stdio servers works. For Claude Code,
-from your project directory:
-
-    claude mcp add isabelle -- isabelle mcp_server -s MCP-HOL -d .
-
-or equivalently in `.mcp.json`:
-
-    {
-      "mcpServers": {
-        "isabelle": {
-          "command": "isabelle",
-          "args": ["mcp_server", "-s", "MCP-HOL", "-d", "."]
-        }
-      }
-    }
-
-(drop `-d .` if the project has no ROOT file of its own — plain
-theory directories are reached through `load_theory`'s `master_dir`
-argument instead).
-
-Use an absolute path for `"command"` if `isabelle` is not on the
-client's PATH. The first connection blocks until the session heap is
-loaded (seconds when pre-built, see Installation step 3); clients
-with short startup timeouts may need that pre-build.
-
-Extending the server
---------------------
-
-MCP tools are Isabelle context entities: a theory registers them, and
-they are visible to the agent when the running session imports that
-theory. A minimal registration theory:
-
-    theory My_Tools
-      imports "MCP-HOL.MCP"
-    begin
-
-    (* import "MCP-HOL.MCP", not "MCP-Tools.MCP_Tools": the latter is
-       Pure-based, and a Pure-based import can silently become the
-       first merged parent of a HOL theory (Isabelle drops imports
-       subsumed by other imports), losing HOL's simplifier setup --
-       the next datatype/codatatype then fails with "Congruence not a
-       meta-equality". MCP-HOL.MCP is HOL-anchored and safe in any
-       import position; see its header for the full mechanism. *)
-
-    (* wrap a diagnostic Isar command as a tool; the description is
-       mandatory and the command name is quoted *)
-    mcp_tool "find_consts" (description \<open>Search for constants by
-      name pattern or type.\<close>)
-
-    (* expose a named fact collection as a read-time resource *)
-    mcp_resource simps
-
-    end
-
-Add the theory to a session of your own (based on `MCP-HOL` —
-usable as a parent in any ROOT file once the component is
-registered) and run the server with `-s YourSession -d
-/path/to/your/project`.
-
-Tools can also be registered ad hoc, without building a session: step
-the registration through a repl (`repl_init` with `MCP-HOL.MCP`
-among the imports, then `mcp_tool ...` via `repl_step`)
-and point the tool scope at it with `tool_scope_set`. Tools
-registered mid-session emit `tools/list_changed` notifications, so
-the agent picks them up live.
-There are further forms — string functions, ML run functions with
-typed parameters — documented in `mcp/Tools/MCP_Tools.thy`.
-
-Project layout
---------------
-
-    mcp/        the server component (Scala + the MCP-Tools/MCP-HOL sessions)
-    mcp_test/   munit test suites (`isabelle mcp_test`)
-    ir/         the I/R proving engine (reused verbatim by MCP-HOL)
-    spec        the full design record; CHANGELOG tracks decisions
-    plans/      per-tool implementation plans; evals/ agent evaluations
-
-Isabelle launcher configuration
--------------------------------
-
-All repository scripts use ISABELLE (a quoted command prefix), otherwise
-isabelle on PATH. See .agents/skills/isabelle-execution/SKILL.md for native, Flatpak, CI, and explicit
-worktree setup. The launcher never silently switches installations.
+Current boundary: reply-size, admission and lifecycle protections are retained.
+A request-byte guard was absent in the baseline and remains explicitly deferred;
+the carve-out does not claim that protection.

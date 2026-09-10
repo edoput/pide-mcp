@@ -35,7 +35,7 @@ principles:
       - A production scheduler instantiated inside request handling.
     decision_examples:
       - The composition root selects stdio versus scripted data planes and bounded versus sequential schedulers.
-      - Base and HOL bridge profiles replace a literal session-name heuristic.
+      - The composition root selects the required base bridge operations.
     anchors: [plans/connection_kernel, plans/pide_bridge]
 
   - id: ARC-003
@@ -95,7 +95,7 @@ principles:
       - String modes whose spelling selects semantic behavior.
     decision_examples:
       - ConnectionPolicy and PideBridgePolicy use checked value types.
-      - McpBridgeProfile makes base versus HOL readiness explicit.
+      - McpBridgeProfile makes required operation readiness explicit.
     anchors: [plans/connection_kernel, plans/pide_bridge]
 
   - id: PRO-001
@@ -109,7 +109,7 @@ principles:
       - List-change notifications remain separate fan-out events, not request replies.
     mismatch_examples:
       - Adding a new MCP.operation protocol command and promise map.
-      - Giving IR a nested Future group and cancellation registry.
+      - Giving an operation a second Future group and cancellation registry.
     decision_examples:
       - Seven miniature Scala-ML protocols were replaced by MCP.bridge and MCP.bridge_result.
     anchors: [plans/pide_bridge]
@@ -155,7 +155,7 @@ principles:
       - XML.Encode.string around a YXML serialization containing markup.
       - Applying Symbol.encode to an already assembled YXML envelope.
     decision_examples:
-      - Resource markup exposed the XML_Body failure and established the self/body codec rule.
+      - Structured tool output uses the self/body codec rule.
     anchors: [plans/pide_bridge, mcp/Tools/mcp_bridge.ML, mcp/src/mcp_bridge_operations.scala]
 
   - id: CAP-001
@@ -198,7 +198,7 @@ principles:
       - Duplicate registration fails with source positions.
       - Descendant theories can extend without editing a central dispatcher.
     mismatch_examples:
-      - A mutable callback installed by MCP_Repl into MCP_Tools.
+      - A mutable callback installed by a descendant into the root.
       - A process-global registry visible to unrelated theories.
     anchors: [plans/context_locator, plans/pide_bridge]
 
@@ -209,10 +209,10 @@ principles:
     intent: Scala carries an opaque address and ML resolves an ordinary Proof.context at execution time.
     review_checks:
       - ML owns parsing, canonicalization, resolver registration, and resolution.
-      - Live REPL locators resolve their latest state on every operation.
+      - Targets are resolved at execution time.
       - Scala does not branch on resolver kind.
     mismatch_examples:
-      - Scala parses repl prefixes or theory variants.
+      - Scala parses resolver-specific prefixes or theory variants.
       - A serialized Proof.context crosses the bridge.
     decision_examples:
       - isabelle://context/KIND/TARGET replaced historical designations.
@@ -222,14 +222,14 @@ principles:
     title: Keep registry root separate from agent working context
     category: isabelle
     status: active
-    intent: Implementation availability is immutable per connection while execution context may change.
+    intent: The selected import is fixed at startup; one private live PIDE wrapper supplies the current catalogue and default execution for every list and call.
     review_checks:
-      - The startup root owns inherited operation and resolver registries.
-      - Tool-scope changes affect only the locator.
-      - Loading or selecting a context cannot switch the registry root implicitly.
+      - The private live PIDE wrapper imports exactly the -T selected theory for both image and source cases; its document requirement lasts from startup through shutdown.
+      - Each invocation target supplies only the execution context; the selected tool value comes from the root.
+      - Successful root finalization precedes Ready; bridge drain precedes document release and session stop, without a heap fallback.
     mismatch_examples:
-      - Looking up bridge handlers in the current REPL theory.
-      - Changing tool scope changes server capabilities.
+      - Looking up the selected tool implementation again in the target theory.
+      - Changing an invocation target changes the catalogue.
     anchors: [plans/context_locator, plans/pide_bridge]
 
   - id: ISA-005
@@ -239,12 +239,12 @@ principles:
     intent: Theory authors control bundle activation through Isabelle syntax, not an MCP mutation API.
     review_checks:
       - No public schema or bridge payload contains bundle names.
-      - tool_scope_include is absent.
+      - No MCP API mutates activation bundles.
       - Isar bundle tests remain as user-owned activation evidence.
     mismatch_examples:
       - Request-time Bundle.includes_cmd.
       - A Scala bundle list stored per connection.
-    anchors: [plans/context_locator, plans/tool_scope]
+    anchors: [plans/context_locator]
 
   - id: ISA-006
     title: Put reusable ML implementations in standalone ML files

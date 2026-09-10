@@ -26,13 +26,8 @@ object MCP_Test {
       classOf[MCP_Protocol_Tests],
       classOf[MCP_Readiness_Tests],
       classOf[MCP_Tools_Tests],
-      classOf[MCP_Tool_Scope_Tests],
-      classOf[MCP_Resources_Tests],
-      classOf[MCP_Resource_Scope_Tests],
-      classOf[MCP_Scope_Show_Tests],
       classOf[MCP_Codec_Tests],
       classOf[MCP_Symbol_Tests],
-      classOf[MCP_Locator_Tests],
       classOf[MCP_Doc_Catalog_Tests],
       classOf[MCP_Doc_Read_Tests],
       classOf[MCP_Config_Tests])
@@ -45,14 +40,15 @@ object MCP_Test {
   val heap_suites: List[Class[? <: munit.Suite]] =
     List(
       classOf[MCP_Heap_Fixture_Tests],
-      classOf[MCP_Registry_Heap_Tests],
-      classOf[MCP_Tool_Scope_Heap_Tests])
+      classOf[MCP_Registry_Heap_Tests])
 
   val pide_suites: List[Class[? <: munit.Suite]] =
     List(
       classOf[MCP_Boot_Failure_Tests],
+      classOf[MCP_Root_Ownership_Tests],
+      classOf[MCP_Root_Selector_Tests],
       classOf[MCP_Bridge_Tests],
-      classOf[MCP_Ir_Bridge_Tests],
+      classOf[MCP_Theory_Bridge_Tests],
       classOf[MCP_Run_Tool_Async_Tests],
       classOf[MCP_Bridge_Shutdown_Tests])
 

@@ -164,7 +164,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     val resourceRead = JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       request(Some("3"), "resources/read", Some(JSON.Object("uri" -> "isabelle://session")))))
     assertEquals(rules.classify(resourceRead),
-      RevisionRules.Application(McpApplication.Operation.ResourcesRead("isabelle://session"), requestId(3)))
+      RevisionRules.Invalid(RevisionRules.ReplyId(requestId(3)), RevisionRules.MethodNotFound, "Method not found: resources/read"))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       request(None, "tools/list")))), RevisionRules.Ignored)
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
@@ -576,9 +576,9 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(plane.written.length, 1, "AwaitingInitialized must not emit list_changed")
 
     connection.handle(RevisionRules.Initialized)
-    connection.listChanged(ConnectionKernel.ListChanged.Resources)
+    connection.listChanged(ConnectionKernel.ListChanged.Tools)
     assertEquals(plane.written.length, 2)
-    assert(plane.written.last.contains("notifications/resources/list_changed"))
+    assert(plane.written.last.contains("notifications/tools/list_changed"))
 
     connection.beginClosing()
     connection.listChanged(ConnectionKernel.ListChanged.Tools)
@@ -590,7 +590,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     val inbound = List(
       request(Some("first"), "tools/list"),
       request(None, "notifications/unknown"),
-      request(Some("overload"), "resources/list"))
+      request(Some("overload"), "tools/list"))
     val plane = new ScriptedDataPlane(List(JSON.Format(inbound)))
     val scheduler = new ManualSequentialScheduler
     var executions = 0

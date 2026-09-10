@@ -8,6 +8,9 @@ signature MCP_BRIDGE =
 sig
   type handler = Future.group -> theory -> XML.body -> XML.body
 
+  type root_selector =
+    {theory: string, node: string, command_id: Document_ID.command, exec_id: Document_ID.exec}
+  val root_selector: Properties.T -> root_selector
   val revision: string
   val register: binding -> handler -> theory -> theory
   val registered: theory -> string list
@@ -138,20 +141,50 @@ fun remote_result id operation joined =
   | Exn.Exn exn => publish id operation "remote_error"
       (error_payload (Runtime.exn_message exn)));
 
-fun theory_by_name name =
-  (case try Thy_Info.get_theory name of
-    SOME thy => thy
-  | NONE =>
-      (case filter (fn candidate => Long_Name.base_name candidate = name)
-          (Thy_Info.get_names ()) of
-        [candidate] => Thy_Info.get_theory candidate
-      | [] => error ("Unknown MCP bridge registry-root theory " ^ quote name)
-      | candidates => error ("Ambiguous MCP bridge registry-root theory " ^
-          quote name ^ ": " ^ commas_quote candidates)));
+type root_selector =
+  {theory: string, node: string, command_id: Document_ID.command, exec_id: Document_ID.exec};
 
-fun execute_call id theory_name operation payload =
+fun root_selector properties : root_selector =
   let
-    val root = theory_by_name theory_name;
+    fun identity key =
+      let
+        val source = required_property properties key;
+        val value =
+          (case try Document_ID.parse source of
+            SOME value => value
+          | NONE => error ("Malformed MCP bridge " ^ key ^ " identity " ^ quote source));
+        val _ = value <> Document_ID.none andalso Document_ID.print value = source orelse
+          error ("Malformed MCP bridge " ^ key ^ " identity " ^ quote source);
+      in value end;
+  in
+    {theory = required_property properties "theory",
+     node = required_property properties "root_node",
+     command_id = identity "root_command", exec_id = identity "root_exec"}
+  end;
+
+fun document_root ({theory, node, command_id, exec_id}: root_selector) =
+  let
+    val execution =
+      (case try (fn () => Document.command_exec (Document.state ()) node command_id) () of
+        SOME (SOME (evaluation, _)) => evaluation
+      | _ => error ("Missing MCP bridge root command in " ^ quote node));
+    val _ = Command.eval_exec_id execution = exec_id orelse
+      error "Stale MCP bridge root execution";
+    val _ = Command.eval_finished execution orelse
+      error "MCP bridge root execution is not finished";
+    val state = Command.eval_result_state execution;
+    val _ = Toplevel.is_end_theory state orelse
+      error "MCP bridge root command has no completed theory end";
+    val root = Toplevel.end_theory Position.none state;
+    val actual = Context.theory_long_name root;
+    val _ = actual = theory orelse
+      error ("MCP bridge root theory mismatch: expected " ^ quote theory ^
+        ", found " ^ quote actual);
+  in root end;
+
+fun execute_call id selector operation payload =
+  let
+    val root = document_root selector;
     val _ =
       Symtab.defined (Operation_Data.get root) operation orelse
         error ("Unknown MCP bridge operation " ^ quote operation ^
@@ -163,9 +196,9 @@ fun execute_call id theory_name operation payload =
       (List.app publish_drain)
   end;
 
-fun execute_hello id theory_name =
+fun execute_hello id selector =
   let
-    val root = theory_by_name theory_name;
+    val root = document_root selector;
     val payload = XML.Encode.pair XML.Encode.string (XML.Encode.list XML.Encode.string)
       (revision, registered root);
   in publish id "hello" "ok" payload end;
@@ -196,20 +229,22 @@ fun dispatch_properties properties payload =
   in
     if kind = "hello" then
       let
-        val _ = check_properties ["revision", "kind", "id", "theory", "operation"] properties;
+        val _ = check_properties ["revision", "kind", "id", "theory", "operation",
+          "root_node", "root_command", "root_exec"] properties;
         val id = required_property properties "id";
-        val theory_name = required_property properties "theory";
+        val selector = root_selector properties;
         val operation = required_property properties "operation";
         val _ = operation = "hello" orelse error "Invalid MCP bridge hello operation";
         val _ = null payload orelse error "MCP bridge hello has a payload";
-      in execute_hello id theory_name end
+      in execute_hello id selector end
     else if kind = "call" then
       let
-        val _ = check_properties ["revision", "kind", "id", "theory", "operation"] properties;
+        val _ = check_properties ["revision", "kind", "id", "theory", "operation",
+          "root_node", "root_command", "root_exec"] properties;
         val id = required_property properties "id";
-        val theory_name = required_property properties "theory";
+        val selector = root_selector properties;
         val operation = check_operation (required_property properties "operation");
-      in execute_call id theory_name operation payload end
+      in execute_call id selector operation payload end
     else if kind = "cancel" then
       let
         val _ = check_properties ["revision", "kind", "id"] properties;

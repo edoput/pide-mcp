@@ -14,6 +14,7 @@ import java.nio.file.Files
 
 
 class MCP_Pide_Bridge_Tests extends MCP_Suite {
+  private val testRoot = PideRootSelector("MCP_Tools", "/test/MCP_Root.thy", 42L, 107L)
   private def positiveDuration(seconds: Double): PideBridgePolicy.PositiveDuration =
     PideBridgePolicy.PositiveDuration.checked("test timeout", seconds)
       .fold(message => fail(message), identity)
@@ -127,7 +128,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     deadlines: ManualDeadlineScheduler = new ManualDeadlineScheduler,
     drainTimeoutSeconds: Double = 0.0,
     maxReplyBytes: Long = 4096,
-    diagnostics: String => Unit = _ => ()): PideBridge = {
+    diagnostics: String => Unit = _ => (),
+    root: () => BridgeResult[PideRootSelector] = () => Right(testRoot)): PideBridge = {
     val configured = policy(maxPending, drainTimeoutSeconds, maxReplyBytes)
     val control = new PideBridge(
       transport,
@@ -136,7 +138,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       configured.timing.callTimeout,
       configured.timing.drainTimeout,
       deadlines,
-      "MCP_Tools",
+      root,
       McpBridgeOperations.baseOperationNames ++ Set("first", "second", "op"),
       McpBridgeProfile.base,
       PideBridgeV1,
@@ -152,7 +154,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
   private def startupBridge(transport: ScriptedTransport,
     bridgeProfile: McpBridgeProfile,
-    diagnostics: String => Unit = _ => ()): PideBridge =
+    diagnostics: String => Unit = _ => (),
+    knownOperations: Set[String] = McpBridgeOperations.operationNames): PideBridge =
     new PideBridge(
       transport,
       policy().maxPending,
@@ -160,8 +163,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       policy().timing.callTimeout,
       policy().timing.drainTimeout,
       new ManualDeadlineScheduler,
-      "MCP_Tools",
-      McpBridgeOperations.operationNames,
+      () => Right(testRoot),
+      knownOperations,
       bridgeProfile,
       PideBridgeV1,
       diagnostics)
@@ -342,24 +345,52 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assert(registry.register(secondId, TextOperation("op", "request")).isRight)
   }
 
-  test("all seven domain operations use the single v1 command and result function") {
+  test("all three domain operations use the single v1 command and result function") {
     assertEquals(McpBridgeOperations.operationNames,
-      Set("tools", "theories", "run_tool", "check_context", "ir",
-        "resources", "read_resource"))
+      Set("tools", "run_tool", "check_context"))
     assertEquals(PideBridgeV1.Command, "MCP.bridge")
     assertEquals(PideBridgeV1.resultFunctions, Set("MCP.bridge_result"))
 
     val outbound = PideBridgeV1.call(
-      "string-id", "MCP_Repl", "tools",
+      "string-id", testRoot, "tools",
       McpBridgeOperations.tools("isabelle://context/theory/HOL.Main").requestPayload)
     assertEquals(outbound.command, PideBridgeV1.Command)
     assertEquals(requestProperty(outbound, "id"), "string-id")
     assertEquals(requestProperty(outbound, "operation"), "tools")
+    assertEquals(requestProperty(outbound, "theory"), testRoot.theory)
+    assertEquals(requestProperty(outbound, "root_node"), testRoot.node)
+    assertEquals(requestProperty(outbound, "root_command"), "42")
+    assertEquals(requestProperty(outbound, "root_exec"), "107")
 
     val drain = PideBridgeV1.drain("drain-id")
     assertEquals(requestProperty(drain, "kind"), "drain")
     assertEquals(requestProperty(drain, "id"), "drain-id")
     assert(!requestProperties(drain).exists(_._1 == "operation"))
+  }
+
+  test("each call selects the current root and a failed selection leaves capacity reusable") {
+    val transport = new ScriptedTransport
+    var selected: BridgeResult[PideRootSelector] = Right(testRoot)
+    var selections = 0
+    val control = bridge(transport, maxPending = 1, root = () => {
+      selections += 1
+      selected
+    })
+    try {
+      assertEquals(selections, 1)
+      selected = Left(BridgeFailure.ProtocolError("root unavailable"))
+      assertEquals(control.call(TextOperation("op", "request"), NeverCancelled),
+        Left(BridgeFailure.ProtocolError("root unavailable")))
+      assertEquals(transport.sent.length, 0)
+      selected = Right(testRoot.copy(exec = 108L))
+      transport.onNextSend(message => {
+        assertEquals(requestProperty(message, "root_exec"), "108")
+        deliverResult(transport, requestProperty(message, "id"), "op", "fresh")
+      })
+      assertEquals(control.call(TextOperation("op", "request"), NeverCancelled), Right("fresh"))
+      assertEquals(selections, 3)
+    }
+    finally { control.beginStop(); control.sessionStopped() }
   }
 
   test("drain acknowledgements have an exact control-envelope shape") {
@@ -778,35 +809,24 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     control.sessionStopped()
   }
 
-  test("bridge profiles explicitly select the base or HOL startup requirements") {
+  test("the base profile requires exactly the surviving operations") {
     assertEquals(McpBridgeProfile.base.name, "base")
     assertEquals(McpBridgeProfile.base.requiredOperationNames,
-      McpBridgeOperations.baseOperationNames)
-    assertEquals(McpBridgeProfile.hol.name, "hol")
-    assertEquals(McpBridgeProfile.hol.requiredOperationNames,
-      McpBridgeOperations.holOperationNames)
-
-    val transport = new ScriptedTransport
-    val control = startupBridge(transport, McpBridgeProfile.hol)
-    val ready = Future.fork(control.awaitReady(positiveDuration(1.0)))
-    transport.awaitSent(1)
-    deliverHello(transport, requestProperty(transport.sent.head, "id"),
-      operations = McpBridgeOperations.baseOperationNames.toList.sorted)
-    assert(ready.join.left.exists(_.message.contains("ir")))
-    control.sessionStopped()
+      McpBridgeOperations.operationNames)
   }
 
   test("an operation omitted from hello is rejected locally without a call envelope") {
     val transport = new ScriptedTransport
-    val control = startupBridge(transport, McpBridgeProfile.base)
+    val control = startupBridge(transport, McpBridgeProfile.base,
+      knownOperations = McpBridgeOperations.operationNames + "fixture_extension")
     val ready = Future.fork(control.awaitReady(positiveDuration(1.0)))
     transport.awaitSent(1)
     deliverHello(transport, requestProperty(transport.sent.head, "id"),
       operations = McpBridgeOperations.baseOperationNames.toList.sorted)
     assertEquals(ready.join, Right(()))
 
-    assertEquals(control.call(TextOperation("ir", "request"), NeverCancelled),
-      Left(BridgeFailure.ProtocolError("bridge operation was not advertised by ML: ir")))
+    assertEquals(control.call(TextOperation("fixture_extension", "request"), NeverCancelled),
+      Left(BridgeFailure.ProtocolError("bridge operation was not advertised by ML: fixture_extension")))
     assertEquals(transport.sent.length, 1)
     control.beginStop()
     control.sessionStopped()
@@ -880,8 +900,8 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val marked = List(XML.Elem(Markup("block", Nil), List(XML.Text("marked text"))))
     val payload =
       XML.Encode.pair(XML.Encode.string, XML.Encode.self)(("ok", marked))
-    val operation = McpBridgeOperations.readResource(
-      "isabelle://context/theory/HOL.Main", "marked")
+    val operation = McpBridgeOperations.runTool(
+      "isabelle://context/theory/HOL.Main", "marked", Nil)
 
     assertEquals(operation.decodeReply(payload), Right(MCP_Session.Ok("marked text")))
   }
@@ -1392,14 +1412,14 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
 
   test("payload measurement retains reviewed large source-text bases through serialization") {
     val cases = MCP_Pide_Payload_Measure.corpus.cases
-    val large_request = cases.find(_.name == "request.ir_large_source_text")
+    val large_request = cases.find(_.name == "request.run_tool_large_source_text")
       .getOrElse(fail("missing large request fixture"))
     val theory_reply = cases.find(_.name == "reply.theory_source_text")
       .getOrElse(fail("missing theory-source reply fixture"))
 
     assertEquals(large_request.source_text_bytes,
       Some(MCP_Pide_Payload_Measure.large_request_source_text_bytes))
-    assertEquals(large_request.operation, "ir")
+    assertEquals(large_request.operation, "run_tool")
     assertEquals(theory_reply.source_text_bytes,
       Some(MCP_Pide_Payload_Measure.theory_source_reply_bytes))
     assert(large_request.bytes >= MCP_Pide_Payload_Measure.large_request_source_text_bytes)
@@ -1409,9 +1429,9 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
   test("payload measurement rejects incomplete request and reply operation coverage") {
     val cases = MCP_Pide_Payload_Measure.corpus.cases
     val missing_request = cases.filterNot(measured =>
-      measured.direction == "request" && measured.operation == "theories")
+      measured.direction == "request" && measured.operation == "tools")
     val missing_reply = cases.filterNot(measured =>
-      measured.direction == "reply" && measured.operation == "theories")
+      measured.direction == "reply" && measured.operation == "tools")
 
     intercept[IllegalArgumentException] { MCP_Pide_Payload_Measure.validate(missing_request) }
     intercept[IllegalArgumentException] { MCP_Pide_Payload_Measure.validate(missing_reply) }

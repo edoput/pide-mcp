@@ -2,7 +2,7 @@
 
 Unit suites over Fake_Backend -- fast, no prover: the JSON-RPC
 protocol surface, the tool surface (builtin table rows and their
-dispatch onto backend.ir), the resource surface, and the pure codecs.
+dispatch through backend handlers), and the pure codecs.
 */
 
 package isabelle.mcp
@@ -28,7 +28,7 @@ class MCP_Protocol_Tests extends MCP_Suite {
     assertEquals(get_string(reply, "result", "protocolVersion"), "TEST-VERSION")
     assertEquals(get_string(reply, "result", "serverInfo", "name"), MCP_Server.server_name)
     get(reply, "result", "capabilities", "tools")
-    get(reply, "result", "capabilities", "resources")
+    assertEquals(JSON.value(get(reply, "result", "capabilities"), "resources"), None)
   }
 
   test("initialize without params falls back to default version") {
@@ -130,7 +130,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
   spec_test("tools/call while not ready is isError (not a json-rpc error), naming the progress",
       verifies = List("readiness#A3"), covers = List("readiness#T3")) {
     val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
-    val reply = call_tool_on(handler, "repl_list", JSON.Object())
+    val reply = call_tool_on(handler, "list_sessions", JSON.Object())
     assert(JSON.value(reply, "id").isDefined, "reply must echo the request id")
     val text = assert_is_error(reply)
     assert(text.contains("building MCP-HOL"),
@@ -140,7 +140,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
   spec_test("Failed is reported distinctly from Not_Ready, carrying the failure message",
       verifies = List("readiness#A4"), covers = List("readiness#T4")) {
     val handler = new MCP_Server.Handler(() => MCP_Server.Failed("boom"))
-    val text = assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
+    val text = assert_is_error(call_tool_on(handler, "list_sessions", JSON.Object()))
     assert(text.contains("failed"), "expected \"failed\" in the failed-state text: " + text)
     assert(text.contains("boom"), "expected the failure message: " + text)
   }
@@ -149,50 +149,9 @@ class MCP_Readiness_Tests extends MCP_Suite {
       verifies = List("readiness#A5"), covers = List("readiness#T5")) {
     var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building")
     val handler = new MCP_Server.Handler(() => state)
-    assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
+    assert_is_error(call_tool_on(handler, "list_sessions", JSON.Object()))
     state = MCP_Server.Ready(new Fake_Backend)
-    assert_no_error(call_tool_on(handler, "repl_list", JSON.Object()))
-  }
-
-  spec_test("isabelle://session reports the readiness state, then the backend's text once ready",
-      verifies = List("readiness#A6"), covers = List("readiness#T6")) {
-    var state: MCP_Server.Readiness = MCP_Server.Not_Ready("building MCP-HOL")
-    val handler =
-      new MCP_Server.Handler(() => state,
-        session_name = "MCP-HOL", session_dirs = Nil, theory = "MCP_Repl")
-
-    val not_ready_text =
-      get_string(
-        get_list(rpc_on(handler, "resources/read", JSON.Object("uri" -> "isabelle://session")),
-          "result", "contents").head,
-        "text")
-    assert(not_ready_text.contains("session: MCP-HOL"), "missing session line: " + not_ready_text)
-    assert(not_ready_text.contains("theory: MCP_Repl"), "missing theory line: " + not_ready_text)
-    assert(not_ready_text.contains("not ready"), "missing not-ready status: " + not_ready_text)
-    assert(not_ready_text.contains("building MCP-HOL"), "missing progress string: " + not_ready_text)
-
-    state = MCP_Server.Ready(new Fake_Backend)
-    val ready_text =
-      get_string(
-        get_list(rpc_on(handler, "resources/read", JSON.Object("uri" -> "isabelle://session")),
-          "result", "contents").head,
-        "text")
-    assert(ready_text.contains("session: TEST"), "expected the real backend's own text: " + ready_text)
-  }
-
-  test("resources/list while not ready enumerates only isabelle://session") {
-    val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building"))
-    val resources = get_list(rpc_on(handler, "resources/list"), "result", "resources")
-    assertEquals(resources.map(r => get_string(r, "uri")), List("isabelle://session"))
-  }
-
-  test("resources/read on a non-session uri while not ready is a protocol error naming the state") {
-    val handler = new MCP_Server.Handler(() => MCP_Server.Not_Ready("building MCP-HOL"))
-    val reply =
-      rpc_on(handler, "resources/read", JSON.Object("uri" -> "isabelle://theory/Main"))
-    assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
-    val message = get_string(reply, "error", "message")
-    assert(message.contains("building MCP-HOL"), "expected the progress string: " + message)
+    assert_no_error(call_tool_on(handler, "list_sessions", JSON.Object()))
   }
 
   /* decode_message/plain_message -- no plan declares these, so they carry no
@@ -251,7 +210,7 @@ class MCP_Readiness_Tests extends MCP_Suite {
       "Duplicate session \"Scratch\"" + x + y + "position" + y + "line=1" + x +
       " (line 1)" + x + y + x
     val handler = new MCP_Server.Handler(() => MCP_Server.Failed(MCP_Server.plain_message(ERROR(raw))))
-    val text = assert_is_error(call_tool_on(handler, "repl_list", JSON.Object()))
+    val text = assert_is_error(call_tool_on(handler, "list_sessions", JSON.Object()))
     assert(text.contains("Duplicate session \"Scratch\" (line 1)"),
       "expected decoded failure text: " + text)
     assert(!text.exists(c => c == YXML.X_char || c == YXML.Y_char),
@@ -283,7 +242,6 @@ class MCP_Tools_Tests extends MCP_Suite {
       covers = List("connection_kernel#T4")) {
     class Cancellable_Backend extends Fake_Backend {
       var mlCancellation: Option[McpApplication.Cancellation] = None
-      var irCancellation: Option[McpApplication.Cancellation] = None
       var forwarded = List.empty[(String, McpApplication.Cancellation)]
 
       private def record(name: String, cancellation: McpApplication.Cancellation): Unit =
@@ -293,6 +251,11 @@ class MCP_Tools_Tests extends MCP_Suite {
           cancellation: McpApplication.Cancellation)(body: => A): A = {
         record("direct", cancellation)
         body
+      }
+
+      override def root_context_cancellable(cancellation: McpApplication.Cancellation): MCP_Session.Result = {
+        record("root", cancellation)
+        super.root_context()
       }
 
       override def ml_tools_cancellable(context: String,
@@ -309,36 +272,6 @@ class MCP_Tools_Tests extends MCP_Suite {
         super.ml_run(name, args, context)
       }
 
-      override def ir_cancellable(fname: String, args: List[(String, String)],
-          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
-        irCancellation = Some(cancellation)
-        record("ir", cancellation)
-        super.ir(fname, args)
-      }
-
-      override def check_context_cancellable(context: String,
-          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
-        record("context", cancellation)
-        super.check_context(context)
-      }
-
-      override def mcp_resources_cancellable(
-          cancellation: McpApplication.Cancellation): List[(String, String, String)] = {
-        record("resources-list", cancellation)
-        super.mcp_resources()
-      }
-
-      override def mcp_resource_read_cancellable(uri: String,
-          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
-        record("resources-read", cancellation)
-        super.mcp_resource_read(uri)
-      }
-
-      override def scope_show_cancellable(
-          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
-        record("scope-show", cancellation)
-        super.scope_show()
-      }
     }
 
     val cancellation = new McpApplication.Cancellation {
@@ -347,26 +280,17 @@ class MCP_Tools_Tests extends MCP_Suite {
     }
     val backend = new Cancellable_Backend
     val application = McpApplication.isabelle(
-      () => McpApplication.Ready(backend), "TEST", Nil, "MCP_Repl")
+      () => McpApplication.Ready(backend), "TEST", Nil, "MCP_Tools")
     application.execute(
       McpApplication.Operation.ToolsCall("shout", JSON.Object("input" -> "hello")),
       cancellation)
     application.execute(
-      McpApplication.Operation.ToolsCall("repl_list", JSON.Object()), cancellation)
+      McpApplication.Operation.ToolsCall("list_sessions", JSON.Object()), cancellation)
     application.execute(McpApplication.Operation.ToolsList, cancellation)
-    application.execute(McpApplication.Operation.ResourcesList, cancellation)
-    application.execute(
-      McpApplication.Operation.ResourcesRead("isabelle://session"), cancellation)
-    application.execute(
-      McpApplication.Operation.ToolsCall("tool_scope_show", JSON.Object()), cancellation)
-    application.execute(
-      McpApplication.Operation.ToolsCall("scope_show", JSON.Object()), cancellation)
     assert(backend.mlCancellation.exists(_ eq cancellation))
-    assert(backend.irCancellation.exists(_ eq cancellation))
     assertEquals(
       backend.forwarded.map(_._1).toSet,
-      Set("tools", "run", "ir", "resources-list", "resources-read", "context",
-        "scope-show", "direct"))
+      Set("root", "tools", "run", "direct"))
     assert(backend.forwarded.forall(_._2 eq cancellation))
   }
 
@@ -421,12 +345,47 @@ class MCP_Tools_Tests extends MCP_Suite {
     assert(text.contains("no_such_tool"), "error text does not name the tool: " + text)
   }
 
-  test("tools/list includes the repl_list builtin with its static metadata") {
-    val row = tool_row("repl_list")
-    assertEquals(get(row, "inputSchema"), JSON.Object("type" -> "object"))
-    assertEquals(annotation(row, "readOnlyHint"), true)
-    assertEquals(annotation(row, "idempotentHint"), true)
-    assertEquals(annotation(row, "openWorldHint"), false)
+  test("retired resource methods are unsupported") {
+    for (method <- List("resources/list", "resources/templates/list", "resources/read")) {
+      assertEquals(get(rpc(method, JSON.Object("uri" -> "isabelle://session")), "error", "code"),
+        MCP_Server.RPC.METHOD_NOT_FOUND)
+    }
+  }
+
+  test("builtin catalogue contains exactly the retained eight tools") {
+    assertEquals(MCP_Server.builtins.map(_.name).toSet,
+      Set("load_theory", "check_theory", "unload_theory", "list_sessions",
+        "list_theories", "search_sources", "doc_list", "doc_read"))
+  }
+
+  spec_test("the same Handler obtains a fresh root for every list and default ML call",
+      covers = List("context_locator#T5")) {
+    class RecordingRoot extends Fake_Backend {
+      var root = "isabelle://context/theory/First"
+      var listed = List.empty[String]
+      var executed = List.empty[String]
+      override def root_context(): MCP_Session.Result = MCP_Session.Ok(root)
+      override def ml_tools(context: String): MCP_Session.Tools_Reply = {
+        listed = listed :+ context
+        super.ml_tools(context)
+      }
+      override def ml_run(name: String, args: List[(String, String)], context: String): MCP_Session.Result = {
+        executed = executed :+ context
+        super.ml_run(name, args, context)
+      }
+    }
+    val backend = new RecordingRoot
+    val handler = new MCP_Server.Handler(backend)
+    rpc_on(handler, "tools/list")
+    assert_no_error(call_tool_on(handler, "shout", JSON.Object("input" -> "first")))
+    backend.root = "isabelle://context/theory/Second"
+    rpc_on(handler, "tools/list")
+    assert_no_error(call_tool_on(handler, "shout", JSON.Object("input" -> "second")))
+    assertEquals(backend.listed, List(
+      "isabelle://context/theory/First", "isabelle://context/theory/First",
+      "isabelle://context/theory/Second", "isabelle://context/theory/Second"))
+    assertEquals(backend.executed,
+      List("isabelle://context/theory/First", "isabelle://context/theory/Second"))
   }
 
   test("builtin names match the mcp tool-name regex") {
@@ -436,408 +395,6 @@ class MCP_Tools_Tests extends MCP_Suite {
     }
   }
 
-  /* MCP_Server.all_builtin_names (the drift gate's target, plans/
-     builtin_activation) sources the tool_scope trio from a hand-
-     maintained literal (tool_scope_builtin_names) rather than the
-     live per-connection Handler.tool_scope_builtins instances, since
-     those close over connection state and cannot be listed statically.
-     Weld the literal to reality here so a new connection-state tool
-     added without updating it (and so without a mirror) fails a test
-     immediately, rather than silently escaping the live-bridge gate. */
-  test("MCP_Server.tool_scope_builtin_names matches what a fresh Handler actually serves") {
-    /* everything tools/list serves beyond `builtins` and Fake_Backend's
-       one fixed ml row ("shout") MUST be exactly the tool_scope trio --
-       an extra connection-state tool added to Handler.tool_scope_builtins
-       without updating the literal (and so without a mirror) shows up
-       here as an unexpected name, caught before it could silently
-       escape the drift gate (which reads the literal, not the live
-       instances). */
-    val names = get_list(rpc("tools/list"), "result", "tools").map(get_string(_, "name")).toSet
-    val extra = names -- MCP_Server.builtins.map(_.name).toSet - "shout"
-    assertEquals(extra, MCP_Server.tool_scope_builtin_names.toSet)
-  }
-
-  test("tools/call repl_list reaches backend.ir with (\"repls\", Nil)") {
-    assert_dispatch("repl_list", JSON.Object(), "repls", Nil)
-  }
-
-  test("tools/list includes repl_init with its array-typed schema") {
-    val row = tool_row("repl_init")
-    assertEquals(required_args(row), List("repl", "theories"))
-    assertEquals(property_type(row, "theories"), "array")
-    assertEquals(annotation(row, "readOnlyHint"), false)
-  }
-
-  test("tools/call repl_init reaches backend.ir with repeated theories pairs") {
-    assert_dispatch("repl_init",
-      JSON.Object("repl" -> "T", "theories" -> List("A", "B")),
-      "init", List("repl" -> "T", "theories" -> "A", "theories" -> "B"))
-  }
-
-  test("tools/list includes repl_fork with an integer state_idx") {
-    val row = tool_row("repl_fork")
-    assertEquals(required_args(row), List("repl", "new_repl", "state_idx"))
-    assertEquals(property_type(row, "state_idx"), "integer")
-    assertEquals(annotation(row, "readOnlyHint"), false)
-  }
-
-  test("tools/call repl_fork reaches backend.ir with (\"fork\", [(\"repl\", ...), (\"new_repl\", ...), (\"state_idx\", ...)])") {
-    assert_dispatch("repl_fork",
-      JSON.Object("repl" -> "T", "new_repl" -> "T2", "state_idx" -> -1),
-      "fork", List("repl" -> "T", "new_repl" -> "T2", "state_idx" -> "-1"))
-  }
-
-  test("tools/list includes repl_remove with destructiveHint true") {
-    val row = tool_row("repl_remove")
-    assertEquals(required_args(row), List("repl"))
-    assertEquals(annotation(row, "readOnlyHint"), false)
-    assertEquals(annotation(row, "destructiveHint"), true)
-  }
-
-  test("tools/call repl_remove reaches backend.ir with (\"remove\", [(\"repl\", ...)])") {
-    assert_dispatch("repl_remove", JSON.Object("repl" -> "T"),
-      "remove", List("repl" -> "T"))
-  }
-
-  test("tools/list includes repl_step with its two required string args") {
-    val row = tool_row("repl_step")
-    assertEquals(required_args(row), List("repl", "isar_text"))
-    assertEquals(annotation(row, "readOnlyHint"), false)
-  }
-
-  test("tools/call repl_step reaches backend.ir with (\"step\", [(\"repl\", ...), (\"isar_text\", ...)])") {
-    assert_dispatch("repl_step", JSON.Object("repl" -> "T", "isar_text" -> "by simp"),
-      "step", List("repl" -> "T", "isar_text" -> "by simp"))
-  }
-
-  test("tools/list includes repl_state with an integer state_idx and readOnlyHint") {
-    val row = tool_row("repl_state")
-    assertEquals(required_args(row), List("repl", "state_idx"))
-    assertEquals(property_type(row, "state_idx"), "integer")
-    assertEquals(annotation(row, "readOnlyHint"), true)
-  }
-
-  test("tools/call repl_state reaches backend.ir with (\"state\", [(\"repl\", ...), (\"state_idx\", ...)])") {
-    assert_dispatch("repl_state", JSON.Object("repl" -> "T", "state_idx" -> -1),
-      "state", List("repl" -> "T", "state_idx" -> "-1"))
-  }
-
-  // repl_show/repl_text table-membership + dispatch assertions moved:
-  // plans/ml_builtin_migration wave 1 declares both as capture-form
-  // mcp_tools in MCP_Repl.thy, so there is no scala Builtin_Tool row
-  // left for Fake_Backend to serve here. Structural coverage (params,
-  // annotations) now lives in MCP_Repl_Tests.thy's "Wave 1" section;
-  // behavioral/wire coverage lives in mcp_bridge_tests.scala.
-
-  test("tools/list includes repl_edit with its idx/isar_text schema") {
-    val row = tool_row("repl_edit")
-    assertEquals(required_args(row), List("repl", "idx", "isar_text"))
-    assertEquals(property_type(row, "idx"), "integer")
-    assertEquals(annotation(row, "readOnlyHint"), false)
-  }
-
-  test("tools/call repl_edit reaches backend.ir with (\"edit\", [(\"repl\", ...), (\"idx\", ...), (\"isar_text\", ...)])") {
-    assert_dispatch("repl_edit",
-      JSON.Object("repl" -> "T", "idx" -> 0, "isar_text" -> "by auto"),
-      "edit", List("repl" -> "T", "idx" -> "0", "isar_text" -> "by auto"))
-  }
-
-  test("tools/list includes repl_replay with idempotentHint true") {
-    val row = tool_row("repl_replay")
-    assertEquals(required_args(row), List("repl"))
-    assertEquals(annotation(row, "readOnlyHint"), false)
-    assertEquals(annotation(row, "idempotentHint"), true)
-  }
-
-  test("tools/call repl_replay reaches backend.ir with (\"replay\", [(\"repl\", ...)])") {
-    assert_dispatch("repl_replay", JSON.Object("repl" -> "T"), "replay", List("repl" -> "T"))
-  }
-
-  test("tools/list includes repl_truncate with destructiveHint true") {
-    val row = tool_row("repl_truncate")
-    assertEquals(required_args(row), List("repl", "idx"))
-    assertEquals(annotation(row, "destructiveHint"), true)
-  }
-
-  test("tools/call repl_truncate reaches backend.ir with (\"truncate\", [(\"repl\", ...), (\"idx\", ...)])") {
-    assert_dispatch("repl_truncate", JSON.Object("repl" -> "T", "idx" -> -1),
-      "truncate", List("repl" -> "T", "idx" -> "-1"))
-  }
-
-  // repl_back table-membership + dispatch assertions moved: see the
-  // repl_show/repl_text note above -- repl_back is wave 1's third
-  // moved tool, same reasoning.
-
-  test("tools/list includes repl_merge with destructiveHint true and its {repl} schema") {
-    val row = tool_row("repl_merge")
-    assertEquals(required_args(row), List("repl"))
-    assertEquals(annotation(row, "destructiveHint"), true)
-  }
-
-  test("tools/call repl_merge reaches backend.ir with (\"merge\", [(\"repl\", ...)])") {
-    assert_dispatch("repl_merge", JSON.Object("repl" -> "T"), "merge", List("repl" -> "T"))
-  }
-
-  test("tools/list includes repl_timeout with idempotentHint true and its repl/secs schema") {
-    val row = tool_row("repl_timeout")
-    assertEquals(required_args(row), List("repl", "secs"))
-    assertEquals(annotation(row, "readOnlyHint"), false)
-    assertEquals(annotation(row, "idempotentHint"), true)
-  }
-
-  test("tools/call repl_timeout reaches backend.ir with (\"timeout\", [(\"repl\", ...), (\"secs\", ...)])") {
-    assert_dispatch("repl_timeout", JSON.Object("repl" -> "T", "secs" -> 5),
-      "timeout", List("repl" -> "T", "secs" -> "5"))
-  }
-
-  test("tools/list includes repl_pin with its {repl} schema, not idempotentHint") {
-    val row = tool_row("repl_pin")
-    assertEquals(required_args(row), List("repl"))
-    assertEquals(annotation(row, "idempotentHint"), false)
-  }
-
-  test("tools/call repl_pin reaches backend.ir with (\"pin\", [(\"repl\", ...)])") {
-    assert_dispatch("repl_pin", JSON.Object("repl" -> "T"), "pin", List("repl" -> "T"))
-  }
-
-  test("tools/list includes repl_unpin with its {repl} schema") {
-    val row = tool_row("repl_unpin")
-    assertEquals(required_args(row), List("repl"))
-  }
-
-  test("tools/call repl_unpin reaches backend.ir with (\"unpin\", [(\"repl\", ...)])") {
-    assert_dispatch("repl_unpin", JSON.Object("repl" -> "T"), "unpin", List("repl" -> "T"))
-  }
-
-  test("tools/list includes repl_rebase with idempotentHint true") {
-    val row = tool_row("repl_rebase")
-    assertEquals(required_args(row), List("repl"))
-    assertEquals(annotation(row, "idempotentHint"), true)
-  }
-
-  test("tools/call repl_rebase reaches backend.ir with (\"rebase\", [(\"repl\", ...)])") {
-    assert_dispatch("repl_rebase", JSON.Object("repl" -> "T"), "rebase", List("repl" -> "T"))
-  }
-
-  test("tools/list includes sledgehammer with an optional timeout_secs property (not in required)") {
-    val row = tool_row("sledgehammer")
-    assertEquals(required_args(row), List("repl"), "timeout_secs must not be in required")
-    assertEquals(property_type(row, "timeout_secs"), "integer")
-    assertEquals(annotation(row, "readOnlyHint"), true)
-    assertEquals(annotation(row, "idempotentHint"), false,
-      "sledgehammer should NOT be idempotentHint (ATP results vary run to run)")
-  }
-
-  /* T1 (plans/sledgehammer): the scala OMISSION path -- json_args only
-     emits pairs for keys present in the arguments object, so omitting
-     timeout_secs client-side must reach backend.ir as exactly
-     [(repl,T)], leaving the ML dispatcher's own default untouched. */
-  test("tools/call sledgehammer without timeout_secs reaches backend.ir with exactly [(\"repl\", ...)]") {
-    assert_dispatch("sledgehammer", JSON.Object("repl" -> "T"),
-      "sledgehammer", List("repl" -> "T"))
-  }
-
-  test("tools/call sledgehammer with timeout_secs reaches backend.ir with the pair present") {
-    assert_dispatch("sledgehammer", JSON.Object("repl" -> "T", "timeout_secs" -> 10),
-      "sledgehammer", List("repl" -> "T", "timeout_secs" -> "10"))
-  }
-
-  /* context promotion (plans/find_theorems "context promotion"): query
-     is the only required property now -- repl and theory are both
-     optional, mutually-exclusive context selectors. */
-  test("tools/list includes find_theorems with only query required; repl/theory/max_results optional") {
-    val row = tool_row("find_theorems")
-    assertEquals(required_args(row), List("query"))
-    assertEquals(property_type(row, "repl"), "string")
-    assertEquals(property_type(row, "theory"), "string")
-    assertEquals(property_type(row, "max_results"), "integer")
-  }
-
-  /* T1 (plans/find_theorems): query strings with quotes and
-     underscores must cross the wire intact -- this is the tool
-     where clients WILL send embedded double quotes. */
-  test("tools/call find_theorems with a quoted term pattern reaches backend.ir with the exact query string, quotes included") {
-    assert_dispatch("find_theorems",
-      JSON.Object("repl" -> "T", "query" -> "\"_ + _ = _\""),
-      "find_theorems", List("repl" -> "T", "query" -> "\"_ + _ = _\""))
-  }
-
-  test("tools/call find_theorems with max_results reaches backend.ir with the pair present") {
-    assert_dispatch("find_theorems",
-      JSON.Object("repl" -> "T", "query" -> "name:conjI", "max_results" -> 3),
-      "find_theorems", List("repl" -> "T", "query" -> "name:conjI", "max_results" -> "3"))
-  }
-
-  /* T7 (plans/find_theorems "context promotion"): theory is normalized
-     to the canonical Thy_Info key (Fake_Backend.resolve_context_theory
-     resolves both "Main" and the alternate spelling "HOL.Main" to
-     "Main") BEFORE crossing the bridge -- the fake only ever sees the
-     resolved key, never the client's original spelling. */
-  test("tools/call find_theorems with theory=Main reaches backend.ir with the resolved theory") {
-    assert_dispatch("find_theorems",
-      JSON.Object("theory" -> "Main", "query" -> "name:conjI"),
-      "find_theorems", List("theory" -> "Main", "query" -> "name:conjI"))
-  }
-
-  test("tools/call find_theorems with theory=HOL.Main (alternate spelling) reaches backend.ir with the canonical name Main") {
-    assert_dispatch("find_theorems",
-      JSON.Object("theory" -> "HOL.Main", "query" -> "name:conjI"),
-      "find_theorems", List("theory" -> "Main", "query" -> "name:conjI"))
-  }
-
-  test("tools/call find_theorems with an unknown theory is a status error naming the theory, nothing crosses the bridge") {
-    val backend = new Fake_Backend
-    val reply = call_tool("find_theorems", JSON.Object("theory" -> "Bogus", "query" -> "name:conjI"), backend)
-    assert_is_error(reply)
-    assertEquals(backend.last_ir, None, "nothing should cross the ir bridge on resolution failure")
-  }
-
-  /* T8: default context (neither repl nor theory) -- the headline use
-     case of the promotion, find_theorems reachable with zero repls. */
-  test("tools/call find_theorems with neither repl nor theory reaches backend.ir with just query (default context)") {
-    assert_dispatch("find_theorems",
-      JSON.Object("query" -> "name:conjI"),
-      "find_theorems", List("query" -> "name:conjI"))
-  }
-
-  /* T9: repl and theory together is a handler-side error naming both
-     keys; nothing crosses the bridge. */
-  test("tools/call find_theorems with both repl and theory is an error naming both, nothing crosses the bridge") {
-    val backend = new Fake_Backend
-    val reply =
-      call_tool("find_theorems",
-        JSON.Object("repl" -> "T", "theory" -> "Main", "query" -> "name:conjI"), backend)
-    val msg = assert_is_error(reply)
-    assertEquals(backend.last_ir, None, "nothing should cross the ir bridge when repl and theory are both given")
-    assert(msg.contains("repl") && msg.contains("theory"), "error should name both keys: " + msg)
-  }
-
-  /* find_definition (plans/find_definition): the context selector shape
-     (repl | theory, mutually exclusive, resolved via
-     resolve_context_theory) is exactly find_theorems' context
-     promotion, reused verbatim -- see T7..T9 above for the same
-     coverage pattern. */
-  test("tools/list includes find_definition with only name required; kind/repl/theory optional") {
-    val row = tool_row("find_definition")
-    assertEquals(required_args(row), List("name"))
-    assertEquals(property_type(row, "kind"), "string")
-    assertEquals(property_type(row, "repl"), "string")
-    assertEquals(property_type(row, "theory"), "string")
-    assertEquals(annotation(row, "readOnlyHint"), true)
-    assertEquals(annotation(row, "idempotentHint"), true)
-  }
-
-  test("tools/call find_definition with just name reaches backend.ir with exactly [(\"name\", ...)]") {
-    assert_dispatch("find_definition", JSON.Object("name" -> "rev"),
-      "find_definition", List("name" -> "rev"))
-  }
-
-  test("tools/call find_definition with kind reaches backend.ir with the pair present") {
-    assert_dispatch("find_definition", JSON.Object("name" -> "rev", "kind" -> "const"),
-      "find_definition", List("name" -> "rev", "kind" -> "const"))
-  }
-
-  test("tools/call find_definition with theory=HOL.Main (alternate spelling) reaches backend.ir with the canonical name Main") {
-    assert_dispatch("find_definition",
-      JSON.Object("name" -> "rev", "theory" -> "HOL.Main"),
-      "find_definition", List("name" -> "rev", "theory" -> "Main"))
-  }
-
-  test("tools/call find_definition with an unknown theory is a status error naming the theory, nothing crosses the bridge") {
-    val backend = new Fake_Backend
-    val reply = call_tool("find_definition", JSON.Object("name" -> "rev", "theory" -> "Bogus"), backend)
-    assert_is_error(reply)
-    assertEquals(backend.last_ir, None, "nothing should cross the ir bridge on resolution failure")
-  }
-
-  test("tools/call find_definition with both repl and theory is an error naming both, nothing crosses the bridge") {
-    val backend = new Fake_Backend
-    val reply =
-      call_tool("find_definition",
-        JSON.Object("name" -> "rev", "repl" -> "T", "theory" -> "Main"), backend)
-    val msg = assert_is_error(reply)
-    assertEquals(backend.last_ir, None, "nothing should cross the ir bridge when repl and theory are both given")
-    assert(msg.contains("repl") && msg.contains("theory"), "error should name both keys: " + msg)
-  }
-
-  /* repl_init_from_source (plans/repl_init_from_source): T1 (exactly-
-     one-locator, handler-side, same shape as find_theorems/
-     find_definition's repl/theory exclusivity) and T2's dispatch half
-     (theory resolves to what Fake_Backend.init_from_source sees) --
-     T2's pure resolver coverage (offset/pattern/index -> id, plus the
-     not-found/out-of-range error cases) is MCP_Locator_Tests below,
-     over MCP_Session.Locator directly (no backend needed at all). */
-  test("tools/list includes repl_init_from_source with repl/theory required; offset/pattern/index optional") {
-    val row = tool_row("repl_init_from_source")
-    assertEquals(required_args(row), List("repl", "theory"))
-    assertEquals(property_type(row, "offset"), "integer")
-    assertEquals(property_type(row, "pattern"), "string")
-    assertEquals(property_type(row, "index"), "integer")
-  }
-
-  test("tools/call repl_init_from_source with no locator is an error naming the rule, backend never called") {
-    val backend = new Fake_Backend
-    val reply =
-      call_tool("repl_init_from_source", JSON.Object("repl" -> "R", "theory" -> "Main"), backend)
-    val msg = assert_is_error(reply)
-    assertEquals(backend.last_ir, None, "nothing should reach the backend when no locator is given")
-    assert(msg.contains("exactly one"), "error should name the exactly-one-locator rule: " + msg)
-  }
-
-  test("tools/call repl_init_from_source with two locators is an error naming the rule, backend never called") {
-    val backend = new Fake_Backend
-    val reply =
-      call_tool("repl_init_from_source",
-        JSON.Object("repl" -> "R", "theory" -> "Main", "offset" -> 0, "pattern" -> "lemma"), backend)
-    val msg = assert_is_error(reply)
-    assertEquals(backend.last_ir, None, "nothing should reach the backend when two locators are given")
-    assert(msg.contains("exactly one"), "error should name the exactly-one-locator rule: " + msg)
-  }
-
-  test("tools/call repl_init_from_source with pattern reaches backend.init_from_source with the resolved locator") {
-    val backend = new Fake_Backend
-    val reply =
-      call_tool("repl_init_from_source",
-        JSON.Object("repl" -> "R", "theory" -> "Main", "pattern" -> "lemma foo"), backend)
-    assert_no_error(reply)
-    assertEquals(backend.last_ir,
-      Some(("init_from_source",
-        List("repl" -> "R", "theory" -> "Main", "locator" -> "pattern=lemma foo"))))
-  }
-
-  test("tools/call repl_init_from_source with offset reaches backend.init_from_source with the resolved locator") {
-    val backend = new Fake_Backend
-    val reply =
-      call_tool("repl_init_from_source",
-        JSON.Object("repl" -> "R", "theory" -> "Main", "offset" -> 42), backend)
-    assert_no_error(reply)
-    assertEquals(backend.last_ir,
-      Some(("init_from_source", List("repl" -> "R", "theory" -> "Main", "locator" -> "offset=42"))))
-  }
-
-  test("tools/call repl_init_from_source with index reaches backend.init_from_source with the resolved locator") {
-    val backend = new Fake_Backend
-    val reply =
-      call_tool("repl_init_from_source",
-        JSON.Object("repl" -> "R", "theory" -> "Main", "index" -> 0), backend)
-    assert_no_error(reply)
-    assertEquals(backend.last_ir,
-      Some(("init_from_source", List("repl" -> "R", "theory" -> "Main", "locator" -> "index=0"))))
-  }
-
-  test("tools/call repl_init_from_source on a filesystem-tier theory is a status error naming load_theory") {
-    val backend = new Fake_Backend
-    val reply =
-      call_tool("repl_init_from_source",
-        JSON.Object("repl" -> "R", "theory" -> "FSOnly", "index" -> 0), backend)
-    val msg = assert_is_error(reply)
-    assert(msg.contains("load_theory"), "error should point at load_theory: " + msg)
-  }
-
-  /* wave 2 (plans/load_theory, plans/unload_theory, plans/check_theory):
-     these three tools bypass the MCP.ir bridge entirely -- they call
-     backend.load_theory/unload_theory/check_theory directly, not
-     backend.ir, so backend.last_ir must stay untouched. */
   test("tools/list includes load_theory/unload_theory/check_theory") {
     val tools = get_list(rpc("tools/list"), "result", "tools")
     val names = tools.map(t => get_string(t, "name")).toSet
@@ -847,11 +404,10 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(required_args(tool_row("load_theory")), List("name"))
   }
 
-  test("tools/call load_theory reaches backend.load_theory, not backend.ir") {
+  test("tools/call load_theory reaches backend.load_theory") {
     val backend = new Fake_Backend
     val reply = call_tool("load_theory",
       JSON.Object("name" -> "Draft.Foo", "master_dir" -> "/tmp"), backend)
-    assert(backend.last_ir.isEmpty, "load_theory must not touch the ir bridge")
     assert(backend.loaded_theories.contains("Draft.Foo"),
       "backend.load_theory was not called with the right name")
     assert_no_error(reply)
@@ -876,17 +432,12 @@ class MCP_Tools_Tests extends MCP_Suite {
     assert_no_error(call_tool("unload_theory", JSON.Object("name" -> "Loaded")))
   }
 
-  test("tools/call check_theory reaches backend.check_theory, not backend.ir") {
+  test("tools/call check_theory reaches backend.check_theory") {
     val backend = new Fake_Backend
     val reply = call_tool("check_theory", JSON.Object("name" -> "Draft.Foo"), backend)
-    assert(backend.last_ir.isEmpty, "check_theory must not touch the ir bridge")
     assert_no_error(reply)
   }
 
-  /* wave 3 (plans/session_structure, plans/list_sessions, plans/list_theories,
-     plans/search_sources): library discovery tools. these three bypass the
-     MCP.ir bridge entirely, like wave 2, and call backend.list_sessions_info(),
-     backend.list_theories_info(), backend.search_sources() directly. */
 
   test("tools/list includes list_sessions with readOnlyHint and idempotentHint") {
     val row = tool_row("list_sessions")
@@ -896,10 +447,9 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(annotation(row, "openWorldHint"), false)
   }
 
-  test("tools/call list_sessions reaches backend.list_sessions_info, not backend.ir") {
+  test("tools/call list_sessions reaches backend.list_sessions_info") {
     val backend = new Fake_Backend
     val reply = call_tool("list_sessions", JSON.Object(), backend)
-    assert(backend.last_ir.isEmpty, "list_sessions must not touch the ir bridge")
     assert_no_error(reply)
     val content = get_list(reply, "result", "content")
     assert(content.nonEmpty, "result content should not be empty")
@@ -916,10 +466,9 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(annotation(row, "openWorldHint"), false)
   }
 
-  test("tools/call list_theories reaches backend.list_theories_info, not backend.ir") {
+  test("tools/call list_theories reaches backend.list_theories_info") {
     val backend = new Fake_Backend
     val reply = call_tool("list_theories", JSON.Object("session" -> "HOL"), backend)
-    assert(backend.last_ir.isEmpty, "list_theories must not touch the ir bridge")
     assert_no_error(reply)
     val content = get_list(reply, "result", "content")
     assert(content.nonEmpty, "result content should not be empty")
@@ -937,10 +486,9 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(annotation(row, "openWorldHint"), false)
   }
 
-  test("tools/call search_sources reaches backend.search_sources, not backend.ir") {
+  test("tools/call search_sources reaches backend.search_sources") {
     val backend = new Fake_Backend
     val reply = call_tool("search_sources", JSON.Object("pattern" -> "Main"), backend)
-    assert(backend.last_ir.isEmpty, "search_sources must not touch the ir bridge")
     assert_no_error(reply)
     val content = get_list(reply, "result", "content")
     assert(content.nonEmpty, "result content should not be empty")
@@ -949,10 +497,6 @@ class MCP_Tools_Tests extends MCP_Suite {
       "search_sources should return results or be non-empty")
   }
 
-  /* wave 5 (plans/doc_list): the documentation catalog tool. Like the
-     wave 3 tools above, bypasses the MCP.ir bridge and calls
-     backend.doc_list() directly; pattern is optional (empty = list
-     everything, unlike search_sources' empty-means-nothing). */
 
   test("tools/list includes doc_list with an optional pattern parameter") {
     val row = tool_row("doc_list")
@@ -963,10 +507,9 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(annotation(row, "openWorldHint"), false)
   }
 
-  test("tools/call doc_list reaches backend.doc_list, not backend.ir") {
+  test("tools/call doc_list reaches backend.doc_list") {
     val backend = new Fake_Backend
     val reply = call_tool("doc_list", JSON.Object(), backend)
-    assert(backend.last_ir.isEmpty, "doc_list must not touch the ir bridge")
     assert_no_error(reply)
     val content = get_list(reply, "result", "content")
     assert(content.nonEmpty, "result content should not be empty")
@@ -1000,23 +543,22 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(annotation(row, "openWorldHint"), false)
   }
 
-  test("tools/call doc_read reaches backend.doc_read, not backend.ir") {
+  test("tools/call doc_read reaches backend.doc_read") {
     val backend = new Fake_Backend
     val reply = call_tool("doc_read", JSON.Object("name" -> "isar-ref"), backend)
-    assert(backend.last_ir.isEmpty, "doc_read must not touch the ir bridge")
     assert_no_error(reply)
   }
 
-  test("tools/list: a colliding ML tool does not shadow the repl_list builtin") {
+  test("tools/list: a colliding ML tool does not shadow the list_sessions builtin") {
     val backend = new Fake_Backend
     backend.extra_ml_tools =
-      List(MCP_Session.Tool_Row("repl_list", "some unrelated ml tool", "string_fun", Nil,
+      List(MCP_Session.Tool_Row("list_sessions", "some unrelated ml tool", "string_fun", Nil,
         MCP_Session.Tool_Annotations.default))
     val tools = get_list(rpc("tools/list", backend = backend), "result", "tools")
-    val matches = tools.filter(t => get_string(t, "name") == "repl_list")
-    assertEquals(matches.length, 1, "expected exactly one repl_list entry")
+    val matches = tools.filter(t => get_string(t, "name") == "list_sessions")
+    assertEquals(matches.length, 1, "expected exactly one list_sessions entry")
     assertEquals(get_string(matches.head, "description"),
-      MCP_Server.repl_list_tool.description,
+      MCP_Server.list_sessions_tool.description,
       "colliding ml tool shadowed the builtin description")
   }
 
@@ -1033,19 +575,19 @@ class MCP_Tools_Tests extends MCP_Suite {
 
   test("tools/list: a builtin marked (name, false) is hidden from the listing") {
     val backend = new Fake_Backend
-    backend.builtin_activation = List("repl_list" -> false)
+    backend.builtin_activation = List("list_sessions" -> false)
     val names = get_list(rpc("tools/list", backend = backend), "result", "tools")
       .map(get_string(_, "name")).toSet
-    assert(!names("repl_list"), "repl_list should be hidden")
-    assert(names("repl_init"), "repl_init should still be listed (only repl_list was del'd)")
+    assert(!names("list_sessions"), "list_sessions should be hidden")
+    assert(names("list_theories"), "list_theories should still be listed (only list_sessions was del'd)")
   }
 
   test("tools/list: a builtin marked (name, true) is listed (no different from absent)") {
     val backend = new Fake_Backend
-    backend.builtin_activation = List("repl_list" -> true)
+    backend.builtin_activation = List("list_sessions" -> true)
     val names = get_list(rpc("tools/list", backend = backend), "result", "tools")
       .map(get_string(_, "name")).toSet
-    assert(names("repl_list"), "repl_list should be listed")
+    assert(names("list_sessions"), "list_sessions should be listed")
   }
 
   /* ASYMMETRIC CALLABILITY (A5): a hidden builtin dispatches exactly
@@ -1053,15 +595,11 @@ class MCP_Tools_Tests extends MCP_Suite {
      the merge filter (tools/list only) never touches it. */
   test("tools/call: a builtin hidden via (name, false) is still callable") {
     val backend = new Fake_Backend
-    backend.builtin_activation = List("repl_list" -> false)
-    val reply = call_tool("repl_list", JSON.Object(), backend)
-    assertEquals(backend.last_ir, Some(("repls", Nil)),
-      "backend did not see the expected repls args")
+    backend.builtin_activation = List("list_sessions" -> false)
+    val reply = call_tool("list_sessions", JSON.Object(), backend)
     assert_no_error(reply)
   }
 
-  /* exposure: the pure exposed-name function over full internal names
-     (plans/mcp_tool_registry; extended by plans/tool_scope) */
 
   test("exposure: unambiguous entries get their base name") {
     assertEquals(MCP_Server.exposure(List("MCP_Tools.shout")),
@@ -1075,11 +613,11 @@ class MCP_Tools_Tests extends MCP_Suite {
   }
 
   test("exposure: reserved (builtin) names force qualification or drop the entry") {
-    assertEquals(MCP_Server.exposure(List("Some_Thy.repl_list"), Set("repl_list")),
-      Map("Some_Thy.repl_list" -> "Some_Thy__repl_list"))
+    assertEquals(MCP_Server.exposure(List("Some_Thy.list_sessions"), Set("list_sessions")),
+      Map("Some_Thy.list_sessions" -> "Some_Thy__list_sessions"))
     /* an unqualified internal name that IS the builtin name has no
        fallback spelling left: dropped */
-    assertEquals(MCP_Server.exposure(List("repl_list"), Set("repl_list")), Map.empty)
+    assertEquals(MCP_Server.exposure(List("list_sessions"), Set("list_sessions")), Map.empty)
   }
 
   test("exposure: results always match the MCP tool-name regex") {
@@ -1107,6 +645,33 @@ class MCP_Tools_Tests extends MCP_Suite {
 
   /* schema expansion: declared params -> JSON schema (spec phase 3
      "schema over the bridge") */
+
+  spec_test("ML tools advertise optional context while Scala builtins retain their own schemas",
+      covers = List("context_locator#T4")) {
+    val row = tool_row("shout")
+    assertEquals(property_type(row, "context"), "string")
+    assertEquals(required_args(row), List("input"))
+    for (tool <- MCP_Server.builtins) {
+      val properties = JSON.value(tool.input_schema, "properties").getOrElse(JSON.Object())
+      assertEquals(JSON.value(properties, "context"), None)
+    }
+  }
+
+  spec_test("a context URL travels unchanged as a named argument while root selects the catalogue",
+      covers = List("context_locator#T4", "context_locator#T5")) {
+    class RecordingContext extends Fake_Backend {
+      var seen = Option.empty[(String, List[(String, String)], String)]
+      override def ml_run(name: String, args: List[(String, String)], context: String): MCP_Session.Result = {
+        seen = Some((name, args, context))
+        super.ml_run(name, args, context)
+      }
+    }
+    val backend = new RecordingContext
+    val target = "sorry://some/theory/1"
+    assert_no_error(call_tool("shout", JSON.Object("input" -> "hello", "context" -> target), backend))
+    assertEquals(backend.seen,
+      Some(("MCP_Tools.shout", List("input" -> "hello", "context" -> target), backend.fake_root_context)))
+  }
 
   test("tools/list expands declared params into typed schemas with defaults") {
     val backend = new Fake_Backend
@@ -1164,14 +729,15 @@ class MCP_Tools_Tests extends MCP_Suite {
     assertEquals(required_args(row), List("names"))
   }
 
-  test("tools/list gives a zero-param ML tool the bare object schema, " +
-      "not the mvp {input} shape (plans/ml_builtin_migration step 4)") {
+  test("tools/list gives a zero-param ML tool only the optional framework context") {
     val backend = new Fake_Backend
     backend.extra_ml_tools =
       List(MCP_Session.Tool_Row("Thy_A.no_args", "takes nothing", "string_fun", Nil,
         MCP_Session.Tool_Annotations.default))
     val row = tool_row("no_args", backend)
-    assertEquals(get(row, "inputSchema"), JSON.Object("type" -> "object"))
+    assertEquals(property_type(row, "context"), "string")
+    assertEquals(required_args(row), Nil)
+    assertEquals(get(row, "inputSchema", "properties").asInstanceOf[JSON.Object.T].keySet, Set("context"))
     /* a real func-form tool (declared params always non-empty) is unaffected */
     val shout = tool_row("shout", backend)
     assertEquals(required_args(shout), List("input"))
@@ -1216,10 +782,10 @@ class MCP_Tools_Tests extends MCP_Suite {
      half of the builtin-table item, closed by plans/mcp_tool_command
      step 5) */
 
-  test("initialize declares tools and resources listChanged") {
+  test("initialize declares only tools listChanged") {
     val reply = rpc("initialize")
     assertEquals(get(reply, "result", "capabilities", "tools", "listChanged"), true)
-    assertEquals(get(reply, "result", "capabilities", "resources", "listChanged"), true)
+    assertEquals(JSON.value(get(reply, "result", "capabilities"), "resources"), None)
   }
 
   test("serve emits list_changed through its live connection data plane") {
@@ -1472,576 +1038,28 @@ class MCP_Tools_Tests extends MCP_Suite {
 }
 
 
-/* tool_scope_show/set (plans/context_locator): the connection's tool
-   scope, distinct from the phase-2 RESOURCE scope (scope_add/...) --
-   resource scope filters resource LISTING, tool scope picks WHICH
-   CONTEXT DEFINES THE TOOL SET. every test here shares ONE Handler via
-   rpc_on/call_tool_on (the ordinary rpc()/call_tool() helpers build a
-   fresh, stateless Handler per call, wrong for scope persistence). */
-
-class MCP_Tool_Scope_Tests extends MCP_Suite {
-  test("tools/list includes locator-based tool_scope_show/set schemas") {
-    val show = tool_row("tool_scope_show")
-    assertEquals(annotation(show, "readOnlyHint"), true)
-    val set = tool_row("tool_scope_set")
-    assertEquals(required_args(set), List("context"))
-    assertEquals(property_type(set, "context"), "string")
-    assert(!MCP_Server.all_builtin_names.contains("tool_scope_include"))
-  }
-
-  test("tool_scope_show obtains the canonical default locator from the backend") {
-    val handler = new MCP_Server.Handler(new Fake_Backend)
-    val text = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
-    assert(text.contains("isabelle://context/theory/MCP_Tools"), text)
-    assert(text.contains("MCP_Tools.shout"), text)
-  }
-
-  test("tool_scope_show: a scope that goes stale after tool_scope_set reports BROKEN, not a silent zero") {
-    val backend = new Fake_Backend
-    val handler = new MCP_Server.Handler(backend)
-    assert_no_error(call_tool_on(handler, "tool_scope_set",
-      JSON.Object("context" -> "isabelle://context/repl/R")))
-    /* the repl existed at set-time (check_context passed) but is
-       gone by the time tool_scope_show reads it -- e.g. repl_remove'd
-       in between, so tool_scope_show checks before listing. */
-    backend.known_repls = Set.empty
-    val text = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
-    assert(text.contains("BROKEN"), text)
-    assert(text.contains("R"), text)
-  }
-
-  test("tool_scope_set: missing context is an error") {
-    val handler = new MCP_Server.Handler(new Fake_Backend)
-    assert_is_error(call_tool_on(handler, "tool_scope_set", JSON.Object()))
-  }
-
-  test("tool_scope_set: malformed locator is an isError and leaves state unchanged") {
-    val handler = new MCP_Server.Handler(new Fake_Backend)
-    val msg = assert_is_error(call_tool_on(handler, "tool_scope_set",
-      JSON.Object("context" -> "No_Such_Theory")))
-    assert(msg.contains("No_Such_Theory"), msg)
-    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
-    assert(show.contains("isabelle://context/theory/MCP_Tools"),
-      "scope should be unchanged: " + show)
-  }
-
-  test("tool_scope_set: theory locator round-trips through tool_scope_show") {
-    val handler = new MCP_Server.Handler(new Fake_Backend)
-    assert_no_error(call_tool_on(handler, "tool_scope_set",
-      JSON.Object("context" -> "isabelle://context/theory/HOL.Main")))
-    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
-    assert(show.contains("isabelle://context/theory/HOL.Main"), show)
-  }
-
-  test("tool_scope_set: unknown repl locator is an isError and leaves state unchanged") {
-    val handler = new MCP_Server.Handler(new Fake_Backend)
-    val msg = assert_is_error(call_tool_on(handler, "tool_scope_set",
-      JSON.Object("context" -> "isabelle://context/repl/NOPE")))
-    assert(msg.contains("NOPE"), msg)
-    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
-    assert(show.contains("isabelle://context/theory/MCP_Tools"),
-      "scope should be unchanged: " + show)
-  }
-
-  test("tool_scope_set: known repl locator round-trips through tool_scope_show") {
-    val handler = new MCP_Server.Handler(new Fake_Backend)
-    assert_no_error(call_tool_on(handler, "tool_scope_set",
-      JSON.Object("context" -> "isabelle://context/repl/R")))
-    val show = result_text(call_tool_on(handler, "tool_scope_show", JSON.Object()))
-    assert(show.contains("isabelle://context/repl/R"), show)
-  }
-
-  test("a colliding ML tool does not shadow tool_scope_show") {
-    val backend = new Fake_Backend
-    backend.extra_ml_tools =
-      List(MCP_Session.Tool_Row("Some_Theory.tool_scope_show", "not the real one",
-        "string_fun", Nil, MCP_Session.Tool_Annotations.default))
-    val row = tool_row("tool_scope_show", backend)
-    assert(get_string(row, "description").contains("Show the current context locator"),
-      get_string(row, "description"))
-  }
-}
-
-
-/* resources: list, read, templates */
-
-class MCP_Resources_Tests extends MCP_Suite {
-  test("resources/list reports the backend resources") {
-    /* a fresh Fake_Backend seeds loaded_theories = Set("Loaded") (a
-       fixture for the unload_theory error-path tests), which the S1
-       resource-scope implicit working set now surfaces as
-       isabelle://theory/Loaded -- see plans/scope_add. */
-    val resources = get_list(rpc("resources/list"), "result", "resources")
-    assertEquals(resources.length, 3,
-      "expected isabelle://session + isabelle://named/greeting + isabelle://theory/Loaded")
-    assertEquals(get_string(resources.head, "uri"), "isabelle://session")
-    assertEquals(get_string(resources.head, "name"), "session")
-    assertEquals(get_string(resources(1), "uri"), "isabelle://named/greeting")
-    assertEquals(get_string(resources(1), "name"), "greeting")
-    assertEquals(get_string(resources(2), "uri"), "isabelle://theory/Loaded")
-    assertEquals(get_string(resources(2), "description"), "theory (loaded)")
-  }
-
-  /* isabelle://named/{name}: MCP_Resource's registry (real backing:
-     mcp_session.scala's ml_named_resources/ml_read_resource dispatching
-     to MCP_Tools.thy's MCP_Resource, tested for real in
-     mcp_bridge_tests.scala; here just the routing through Fake_Backend). */
-  test("resources/read on isabelle://named/{name} dispatches to the named-resource registry") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://named/greeting"))
-    val contents = get_list(reply, "result", "contents")
-    assertEquals(get_string(contents.head, "text"), "a static demo resource")
-  }
-
-  test("resources/read on isabelle://named/{name} for an unknown name is an error") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://named/no_such_resource"))
-    assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
-  }
-
-  test("resources/read returns the resource contents") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://session"))
-    val contents = get_list(reply, "result", "contents")
-    assertEquals(get_string(contents.head, "uri"), "isabelle://session")
-    val text = get_string(contents.head, "text")
-    assert(text.contains("session: TEST"), "bad contents text: " + text)
-    assert(text.contains("theories: Fake_Theory"), "missing theories line: " + text)
-  }
-
-  test("resources/read on an unknown uri yields an error") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://no-such-resource"))
-    assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
-  }
-
-  test("resources/read without uri yields -32602") {
-    val reply = rpc("resources/read", JSON.Object())
-    assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
-  }
-
-  test("resources/templates/list contains the documented templates, incl. isabelle://repl/{id} and its /text sibling") {
-    val templates = get_list(rpc("resources/templates/list"), "result", "resourceTemplates")
-    val by_uri = templates.map(t => get_string(t, "uriTemplate")).toSet
-    assert(by_uri.contains("isabelle://repl/{id}"), "missing isabelle://repl/{id} template")
-    assert(by_uri.contains("isabelle://repl/{id}/text"),
-      "missing isabelle://repl/{id}/text template")
-    assert(by_uri.contains("isabelle://theory/{name}"), "missing isabelle://theory/{name}")
-    assert(by_uri.contains("isabelle://named/{name}"), "missing isabelle://named/{name}")
-    templates.foreach(t =>
-      assertEquals(get_string(t, "mimeType"), "text/plain",
-        "every template is text/plain: " + t))
-  }
-
-  /* isabelle://repl/{id} and .../text: thin dispatch onto the same
-     MCP.ir bridge repl_show/repl_text use (see Fake_Backend and, for
-     real, MCP_Session.mcp_resource_read). */
-  test("resources/read on isabelle://repl/{id} dispatches to ir show") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://repl/T"))
-    val contents = get_list(reply, "result", "contents")
-    assertEquals(get_string(contents.head, "uri"), "isabelle://repl/T")
-    assertEquals(get_string(contents.head, "text"), "REPL \"T\"", "did not reach ir show")
-  }
-
-  test("resources/read on isabelle://repl/{id}/text dispatches to ir text") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://repl/T/text"))
-    val contents = get_list(reply, "result", "contents")
-    assertEquals(get_string(contents.head, "uri"), "isabelle://repl/T/text")
-  }
-
-  test("resources/read on a documented-but-not-yet-backed template names the gap, not a bare unknown-resource error") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://theory/Main"))
-    assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
-    assert(get_string(reply, "error", "message").contains("not backed yet"),
-      "error should name the gap, not just say unknown: " + JSON.Format(reply))
-  }
-
-  /* isabelle://theory/{name}/diagnostics (plans/load_theory,
-     unblocked by wave 2): the spec's three-tier answer, distinct from
-     the other still-unbacked theory templates above. */
-  test("resources/read on isabelle://theory/{name}/diagnostics -- image tier reports checked at build time") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://theory/Image/diagnostics"))
-    val contents = get_list(reply, "result", "contents")
-    assertEquals(get_string(contents.head, "text"), "Image: checked at build time")
-  }
-
-  test("resources/read on isabelle://theory/{name}/diagnostics -- loaded tier reads live diagnostics") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://theory/Loaded/diagnostics"))
-    val contents = get_list(reply, "result", "contents")
-    assertEquals(get_string(contents.head, "text"), "Loaded: ok")
-  }
-
-  test("resources/read on isabelle://theory/{name}/diagnostics -- filesystem tier nudges to load_theory") {
-    val reply =
-      rpc("resources/read", JSON.Object("uri" -> "isabelle://theory/NeverLoaded/diagnostics"))
-    val contents = get_list(reply, "result", "contents")
-    assert(get_string(contents.head, "text").contains("load_theory to check"),
-      "filesystem-tier diagnostics should nudge to load_theory: " + JSON.Format(reply))
-  }
-
-  /* dispatch-routing only: Fake_Backend models what these would return
-     IF Ir.source/source_map's Thy_Info segments were reachable -- the
-     real MCP_Session hits a KNOWN GAP where they never are, against a
-     live headless process (see mcp_bridge_tests.scala's "KNOWN GAP"
-     test and mcp_session.scala's theory_source_uri/theory_commands_uri
-     comment). This test only pins that image-tier names route to the
-     ir bridge rather than the not_yet_backed_uri fallback. */
-  test("resources/read on isabelle://theory/{name} and .../commands -- image tier routes to the ir bridge, not the not-backed-yet fallback") {
-    val source = rpc("resources/read", JSON.Object("uri" -> "isabelle://theory/Image"))
-    assert(get_string(get_list(source, "result", "contents").head, "text").contains("theory Image"),
-      "image-tier source should route to the ir bridge: " + JSON.Format(source))
-
-    val commands = rpc("resources/read", JSON.Object("uri" -> "isabelle://theory/Image/commands"))
-    assert(get_string(get_list(commands, "result", "contents").head, "text").contains("idx"),
-      "image-tier commands should route to the ir bridge: " + JSON.Format(commands))
-  }
-
-  test("resources/read on isabelle://theory/{name} -- non-image tier still not backed") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://theory/NeverLoaded"))
-    assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
-    assert(get_string(reply, "error", "message").contains("not backed yet"),
-      "non-image theory source should still name the gap: " + JSON.Format(reply))
-  }
-
-  /* isabelle://theory/{name}/entities -- unlike /commands, this genuinely
-     works for image theories (Name_Space.theory_name reads heap-
-     serialized bookkeeping, not the process-local Thy_Info segments
-     /commands hits); see mcp_bridge_tests.scala for the real,
-     non-simulated confirmation against a live session. */
-  test("resources/read on isabelle://theory/{name}/entities -- image tier is backed for real") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://theory/Image/entities"))
-    assert(get_string(get_list(reply, "result", "contents").head, "text").contains("fact"),
-      "image-tier entities should route to the ir bridge: " + JSON.Format(reply))
-  }
-
-  test("resources/read on isabelle://theory/{name}/entities -- non-image tier still not backed") {
-    val reply = rpc("resources/read", JSON.Object("uri" -> "isabelle://theory/NeverLoaded/entities"))
-    assertEquals(get(reply, "error", "code"), MCP_Server.RPC.INVALID_PARAMS)
-    assert(get_string(reply, "error", "message").contains("not backed yet"),
-      "non-image theory entities should still name the gap: " + JSON.Format(reply))
-  }
-}
-
-
-/* scope_add/scope_remove (plans/scope_add, plans/scope_remove): the
-   phase-2 RESOURCE scope -- a set of theory-name glob patterns
-   controlling what resources/list enumerates, distinct from the
-   tool_scope_* family above (the agent CONTEXT). every test shares one
-   Fake_Backend so scope state persists across the add/remove/list
-   calls that make up a scenario. */
-class MCP_Resource_Scope_Tests extends MCP_Suite {
-  test("tools/list includes scope_add/scope_remove with their schemas") {
-    val add = tool_row("scope_add")
-    assertEquals(required_args(add), List("patterns"))
-    assertEquals(property_type(add, "patterns"), "array")
-    assertEquals(annotation(add, "readOnlyHint"), false)
-    assertEquals(annotation(add, "idempotentHint"), true)
-
-    val remove = tool_row("scope_remove")
-    assertEquals(required_args(remove), List("patterns"))
-    assertEquals(property_type(remove, "patterns"), "array")
-  }
-
-  /* T1 (plans/scope_add S1): fresh scope + Fake_Backend -> resources/list
-     shows only isabelle://session, isabelle://named/greeting and the
-     implicit isabelle://theory/Loaded (see the fixed "resources/list
-     reports the backend resources" test above) -- no pattern-matched
-     entries until scope_add runs. */
-  test("fresh scope: resources/list has no pattern-matched entries") {
-    val backend = new Fake_Backend
-    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    assert(!resources.exists(r => get_string(r, "uri") == "isabelle://theory/Image"),
-      "fresh scope should not list the image theory: " + resources.toString)
-  }
-
-  /* T2: match counts in the reply are computed against the full known
-     universe (Fake_Backend.theory_universe), tier included. */
-  test("scope_add reports match counts against the known theory universe") {
-    val backend = new Fake_Backend
-    val text = result_text(call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend))
-    assert(text.contains("HOL-Library.*: added (3 theories match)"),
-      "unexpected scope_add reply: " + text)
-  }
-
-  test("scope_add with a zero-match pattern is accepted, pinned as count 0, not an error") {
-    val backend = new Fake_Backend
-    val reply = call_tool("scope_add", JSON.Object("patterns" -> List("NoSuchPrefix.*")), backend)
-    assert_no_error(reply)
-    assert(result_text(reply).contains("NoSuchPrefix.*: added (0 theories match)"),
-      "zero-match scope_add should still report count 0: " + result_text(reply))
-  }
-
-  /* T3: idempotency -- adding the same pattern twice keeps the same
-     scope (no duplicate listing entries) and the second reply says
-     already present. */
-  test("scope_add is idempotent: adding the same pattern twice reports already-in-scope the second time") {
-    val backend = new Fake_Backend
-    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    val second = call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    assert(result_text(second).contains("HOL-Library.*: already in scope"),
-      "duplicate scope_add should say already in scope: " + result_text(second))
-    assertEquals(backend.scope_patterns, List("HOL-Library.*"), "no duplicate pattern stored")
-  }
-
-  /* the added pattern's matches appear in resources/list, tier-tagged. */
-  test("scope_add's matches appear in resources/list, tier-tagged") {
-    val backend = new Fake_Backend
-    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    val multiset = resources.find(r => get_string(r, "uri") == "isabelle://theory/HOL-Library.Multiset")
-      .getOrElse(fail("HOL-Library.Multiset missing from resources/list: " + resources.toString))
-    assertEquals(get_string(multiset, "description"), "theory (filesystem)")
-  }
-
-  test("scope_add on an image-tier pattern tags it image") {
-    val backend = new Fake_Backend
-    call_tool("scope_add", JSON.Object("patterns" -> List("Image")), backend)
-    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    val image = resources.find(r => get_string(r, "uri") == "isabelle://theory/Image")
-      .getOrElse(fail("Image missing from resources/list: " + resources.toString))
-    assertEquals(get_string(image, "description"), "theory (image)")
-  }
-
-  /* T1 (plans/scope_remove): add then remove restores the previous
-     resources/list exactly. */
-  test("scope_add then scope_remove of the same pattern restores the previous resources/list") {
-    val backend = new Fake_Backend
-    val before = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    call_tool("scope_remove", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    val after = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    assertEquals(after, before, "resources/list should be back to its pre-scope-add state")
-  }
-
-  /* T2 (plans/scope_remove): literal removal semantics -- removing a
-     theory name that happened to match an added glob does not remove
-     the glob itself; the glob remains and its matches stay listed. */
-  test("scope_remove is literal: removing a matched theory name, not the glob, is a no-op reported as not-in-scope") {
-    val backend = new Fake_Backend
-    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    val reply =
-      call_tool("scope_remove", JSON.Object("patterns" -> List("HOL-Library.Multiset")), backend)
-    assert(result_text(reply).contains("HOL-Library.Multiset: not in scope"),
-      "literal removal of a non-pattern name should say not in scope: " + result_text(reply))
-    assertEquals(backend.scope_patterns, List("HOL-Library.*"), "the glob itself must survive")
-    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    assert(resources.exists(r => get_string(r, "uri") == "isabelle://theory/HOL-Library.Multiset"),
-      "Multiset should still be listed: " + resources.toString)
-  }
-
-  /* T3 (plans/scope_remove): implicit members (theories loaded via
-     load_theory, tracked in loaded_theories here) are not removable by
-     scope_remove -- "Loaded" is in scope by load, not by pattern. */
-  test("scope_remove of an implicit (loaded) member's name does not delist it") {
-    val backend = new Fake_Backend
-    val reply = call_tool("scope_remove", JSON.Object("patterns" -> List("Loaded")), backend)
-    assert(result_text(reply).contains("Loaded: not in scope"),
-      "an implicit member's name was never a pattern: " + result_text(reply))
-    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    assert(resources.exists(r => get_string(r, "uri") == "isabelle://theory/Loaded"),
-      "the implicitly-loaded theory should still be listed: " + resources.toString)
-  }
-
-  /* T4 (plans/scope_add): load_theory auto-adds to the implicit working
-     set; unload removes it -- via Fake_Backend.loaded_theories, which
-     mcp_resources() folds into scope regardless of any pattern. */
-  test("load_theory auto-adds to the scope listing; unload_theory removes it") {
-    val backend = new Fake_Backend
-    call_tool("load_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
-    val listed = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    assert(listed.exists(r => get_string(r, "uri") == "isabelle://theory/HOL-Library.Rat"),
-      "load_theory should auto-add to resources/list: " + listed.toString)
-    call_tool("unload_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
-    val after_unload = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    assert(!after_unload.exists(r => get_string(r, "uri") == "isabelle://theory/HOL-Library.Rat"),
-      "unload_theory should remove it from resources/list: " + after_unload.toString)
-  }
-
-  /* list_changed: scope_add/scope_remove fire notifications/resources/
-     list_changed on an actual change; a no-op (duplicate add, absent
-     remove) fires nothing. */
-  test("scope_add fires resources list_changed on an actual change, not on a duplicate") {
-    val backend = new Fake_Backend
-    var seen: List[String] = Nil
-    backend.changed_handler = seen ::= _
-    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    assertEquals(seen, List("resources"), "first add should fire exactly one resources notification")
-    seen = Nil
-    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    assertEquals(seen, Nil, "duplicate add should not fire a notification")
-  }
-
-  test("scope_remove fires resources list_changed on an actual change, not on a no-op") {
-    val backend = new Fake_Backend
-    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    var seen: List[String] = Nil
-    backend.changed_handler = seen ::= _
-    call_tool("scope_remove", JSON.Object("patterns" -> List("NoSuchPattern")), backend)
-    assertEquals(seen, Nil, "removing an absent pattern should not fire a notification")
-    call_tool("scope_remove", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    assertEquals(seen, List("resources"), "removing a present pattern should fire exactly one notification")
-  }
-}
-
-
-/* scope_show (plans/scope_show): the read side of S1 -- explicit
-   patterns with match counts, plus every implicit member (loaded
-   theories, active repls, named resources). Zero-arg like repl_list. */
-class MCP_Scope_Show_Tests extends MCP_Suite {
-  test("tools/list includes scope_show with its schema") {
-    val show = tool_row("scope_show")
-    assertEquals(get(show, "inputSchema"), JSON.Object("type" -> "object"))
-    assertEquals(annotation(show, "readOnlyHint"), true)
-    assertEquals(annotation(show, "idempotentHint"), true)
-  }
-
-  /* T1: fresh state -> only the implicit working set (Fake_Backend's
-     "Loaded" theory, no patterns, no repls, the fixed "greeting" named
-     resource). */
-  spec_test("fresh state names only the implicit members",
-      covers = List("scope_show#T1")) {
-    val backend = new Fake_Backend
-    val text = result_text(call_tool("scope_show", JSON.Object(), backend))
-    assert(text.contains("patterns: (none)"), "no patterns yet: " + text)
-    assert(text.contains("theories:") && text.contains("  Loaded (loaded)"),
-      "the startup theory should be listed as loaded: " + text)
-    assert(text.contains("repls: (none)"), "no repls yet: " + text)
-    assert(text.contains("named resources:") && text.contains("  greeting"),
-      "the fixed named resource should be listed: " + text)
-  }
-
-  /* T2 (patterns): scope_add's pattern shows up with its match count;
-     scope_remove makes it disappear again. */
-  spec_test("a scope_add pattern appears in scope_show; scope_remove removes it",
-      covers = List("scope_show#T2")) {
-    val backend = new Fake_Backend
-    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    val added = result_text(call_tool("scope_show", JSON.Object(), backend))
-    assert(added.contains("  HOL-Library.* (3 theories match)"),
-      "the added pattern should be listed with its match count: " + added)
-    call_tool("scope_remove", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    val removed = result_text(call_tool("scope_show", JSON.Object(), backend))
-    assert(removed.contains("patterns: (none)"), "the removed pattern should disappear: " + removed)
-  }
-
-  /* T2 (repls): Fake_Backend.active_repls is the settable stand-in for
-     the real backend's ir("repls")-derived list -- a created/removed
-     repl shows up/disappears the same way a loaded theory does. */
-  spec_test("an active repl appears in scope_show; its removal makes it disappear",
-      covers = List("scope_show#T2")) {
-    val backend = new Fake_Backend
-    backend.active_repls = List("R")
-    val present = result_text(call_tool("scope_show", JSON.Object(), backend))
-    assert(present.contains("repls:") && present.contains("  R"), "R should be listed: " + present)
-    backend.active_repls = Nil
-    val absent = result_text(call_tool("scope_show", JSON.Object(), backend))
-    assert(absent.contains("repls: (none)"), "R should be gone: " + absent)
-  }
-
-  /* T2 (load_theory): the implicit working set tracked via
-     load_theory/check_theory shows up the same way. */
-  spec_test("load_theory's implicit member appears in scope_show; unload_theory removes it",
-      covers = List("scope_show#T2")) {
-    val backend = new Fake_Backend
-    call_tool("load_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
-    val loaded = result_text(call_tool("scope_show", JSON.Object(), backend))
-    assert(loaded.contains("  HOL-Library.Rat (filesystem)"),
-      "load_theory's theory should be listed, tier-tagged: " + loaded)
-    call_tool("unload_theory", JSON.Object("name" -> "HOL-Library.Rat"), backend)
-    val unloaded = result_text(call_tool("scope_show", JSON.Object(), backend))
-    assert(!unloaded.contains("HOL-Library.Rat"), "unload_theory should remove it: " + unloaded)
-  }
-
-  /* T3: agreement with resources/list -- every theory/repl scope_show
-     names is also listed by resources/list (as a uri), and vice versa
-     (restricting resources/list to the theory/repl uris it shares with
-     scope_show's vocabulary). */
-  spec_test("scope_show's theories and repls agree with resources/list",
-      covers = List("scope_show#T3")) {
-    val backend = new Fake_Backend
-    backend.active_repls = List("R")
-    call_tool("scope_add", JSON.Object("patterns" -> List("HOL-Library.*")), backend)
-    val shown = result_text(call_tool("scope_show", JSON.Object(), backend))
-    val shown_theories =
-      shown.linesIterator.dropWhile(_ != "theories:").drop(1).takeWhile(_.startsWith("  "))
-        .map(_.trim.takeWhile(_ != ' ')).toSet
-    val shown_repls =
-      shown.linesIterator.dropWhile(_ != "repls:").drop(1).takeWhile(_.startsWith("  "))
-        .map(_.trim).toSet
-    val resources = get_list(rpc("resources/list", backend = backend), "result", "resources")
-    val listed_theories =
-      resources.flatMap(r => get_string(r, "uri").stripPrefix("isabelle://theory/") match {
-        case s if s != get_string(r, "uri") => Some(s)
-        case _ => None
-      }).toSet
-    val listed_repls =
-      resources.flatMap(r => get_string(r, "uri").stripPrefix("isabelle://repl/") match {
-        case s if s != get_string(r, "uri") => Some(s)
-        case _ => None
-      }).toSet
-    assertEquals(shown_theories, listed_theories, "theories must agree between scope_show and resources/list")
-    assertEquals(shown_repls, listed_repls, "repls must agree between scope_show and resources/list")
-  }
-}
-
-
-/* pure codecs: tools/call json conversion, MCP.ir yxml argument encoding */
-
 class MCP_Codec_Tests extends MCP_Suite {
   test("json_args: a json array becomes repeated pairs in array order") {
     val args =
       MCP_Server.json_args(
-        JSON.Object("repl" -> "T", "theories" -> List("HOL.Main", "HOL-Library.Multiset")))
+        JSON.Object("label" -> "T", "theories" -> List("HOL.Main", "HOL-Library.Multiset")))
     assertEquals(args,
-      List("repl" -> "T", "theories" -> "HOL.Main", "theories" -> "HOL-Library.Multiset"))
+      List("label" -> "T", "theories" -> "HOL.Main", "theories" -> "HOL-Library.Multiset"))
   }
 
   test("json_args: a json integer becomes a bare (unquoted) string pair") {
-    val args = MCP_Server.json_args(JSON.Object("repl" -> "T", "state_idx" -> -1))
-    assertEquals(args, List("repl" -> "T", "state_idx" -> "-1"))
+    val args = MCP_Server.json_args(JSON.Object("label" -> "T", "index" -> -1))
+    assertEquals(args, List("label" -> "T", "index" -> "-1"))
   }
 
-  test("MCP.ir args: empty argument object encodes to the empty pair list") {
-    val encoded = MCP_Session.encode_args(Nil)
-    assertEquals(MCP_Session.decode_args(YXML.parse_body(YXML.Source(encoded))),
-      Nil: List[(String, String)])
-  }
-
-  /* was "round-trip byte-clean" before the client-edge recoding boundary
-     landed: encode_args now carries recode = Symbol.encode, so the
-     property splits in two -- ascii symbol notation is still byte-clean
-     (this test), unicode is normalized INTO symbol notation on the wire
-     (the next one, and MCP_Symbol_Tests). */
-  test("MCP.ir args: repeated keys, newlines and ascii symbol notation round-trip byte-clean") {
-    val args =
-      List(
-        "repl" -> "T",
-        "theories" -> "HOL.Main",
-        "theories" -> "HOL-Library.Multiset",
-        "isar_text" -> "lemma \"x + y = y + (x::nat)\"\n  by simp",
-        "isar_text" -> "have \"A \\<Longrightarrow> A\" \\<Rightarrow> \\<alpha>")
-    val decoded =
-      MCP_Session.decode_args(YXML.parse_body(YXML.Source(MCP_Session.encode_args(args))))
-    assertEquals(decoded, args)
-  }
-
-  test("MCP.ir args: unicode is normalized to symbol notation on the wire") {
-    val decoded =
-      MCP_Session.decode_args(YXML.parse_body(YXML.Source(
-        MCP_Session.encode_args(List("isar_text" -> "have \"A ⟹ A\" ⇒ α ‹inner›")))))
-    assertEquals(decoded,
-      List("isar_text" ->
-        "have \"A \\<Longrightarrow> A\" \\<Rightarrow> \\<alpha> \\<open>inner\\<close>"))
-  }
 }
 
-
-/* the client-edge recoding boundary (spec: "symbol recoding at the
-   client edge"). ML speaks symbol notation, the mcp client speaks
-   unicode, and the protocol channel the bridge rides recodes in NEITHER
-   direction (Pure/PIDE/prover.scala skips Symbol.decode for PROTOCOL
-   chunks and protocol_command_raw skips Symbol.encode_yxml), so the
-   mcp server does it itself: Symbol.decode in text_result /
-   resource_contents, recode = Symbol.encode in encode_args /
-   encode_names. */
-
 class MCP_Symbol_Tests extends MCP_Suite {
+  private val echo_backend = new Fake_Backend {
+    override def ml_run(name: String, args: List[(String, String)], context: String): MCP_Session.Result =
+      MCP_Session.Ok(args.collectFirst { case ("input", value) => value }.getOrElse(""))
+  }
+
   private val unicode = "have \"A ⟹ A\" ⇒ α ‹inner›"
   private val notation = "have \"A \\<Longrightarrow> A\" \\<Rightarrow> \\<alpha> \\<open>inner\\<close>"
 
@@ -2090,12 +1108,6 @@ class MCP_Symbol_Tests extends MCP_Suite {
     assertEquals(get(result, "isError"), true)
   }
 
-  test("resource_contents decodes symbol notation for the client") {
-    assertEquals(
-      get_string(get_list(MCP_Server.resource_contents("isabelle://repl/T", notation),
-        "contents").head, "text"),
-      unicode)
-  }
 
   test("text_result leaves already-unicode text alone") {
     assertEquals(
@@ -2103,92 +1115,20 @@ class MCP_Symbol_Tests extends MCP_Suite {
       unicode)
   }
 
-  /* end to end over the handler: repl_step's fake echoes isar_text back,
-     so what the client sees is exactly what the outbound edge produced.
-     Note this exercises the OUTBOUND half only -- the fake backend is
-     handed the args before encode_args runs (that lives in the real
-     MCP_Session), which is why the inbound half is asserted at the
-     codec level above. */
+
   test("tools/call: symbol notation coming back from the prover reaches the client as unicode") {
-    val reply = call_tool("repl_step", JSON.Object("repl" -> "T", "isar_text" -> notation))
+    val reply = call_tool("shout", JSON.Object("input" -> notation), echo_backend)
     assert_no_error(reply)
     assertEquals(result_text(reply), unicode)
   }
 
   test("tools/call: unicode sent by the model survives the round trip as unicode") {
-    val reply = call_tool("repl_step", JSON.Object("repl" -> "T", "isar_text" -> unicode))
+    val reply = call_tool("shout", JSON.Object("input" -> unicode), echo_backend)
     assert_no_error(reply)
     assertEquals(result_text(reply), unicode)
   }
 }
 
-
-/* MCP_Session.Locator (plans/repl_init_from_source step 2): the PURE
-   half of command-target resolution -- offset/pattern/index against a
-   canned command list, no prover needed. Mirrors the shape (and error
-   wording expectations) of the ML-side init_from_segment resolver in
-   MCP_Repl.thy, which the bridge tests exercise instead (segment text
-   is only ever available in the process that recorded it). */
-class MCP_Locator_Tests extends MCP_Suite {
-  private val items =
-    List(
-      MCP_Session.Locator.Item(1L, 0, 10, "lemma foo"),
-      MCP_Session.Locator.Item(2L, 10, 8, "by simp"),
-      MCP_Session.Locator.Item(3L, 18, 15, "lemma bar: True"))
-
-  test("exactly_one: zero locators is an error") {
-    assertEquals(MCP_Session.Locator.exactly_one(None, None, None).isLeft, true)
-  }
-
-  test("exactly_one: two locators is an error") {
-    assertEquals(MCP_Session.Locator.exactly_one(Some(0), Some("x"), None).isLeft, true)
-    assertEquals(MCP_Session.Locator.exactly_one(Some(0), None, Some(0)).isLeft, true)
-    assertEquals(MCP_Session.Locator.exactly_one(None, Some("x"), Some(0)).isLeft, true)
-  }
-
-  test("exactly_one: exactly one locator is accepted") {
-    assertEquals(MCP_Session.Locator.exactly_one(Some(0), None, None), Right(()))
-    assertEquals(MCP_Session.Locator.exactly_one(None, Some("x"), None), Right(()))
-    assertEquals(MCP_Session.Locator.exactly_one(None, None, Some(0)), Right(()))
-  }
-
-  test("resolve: offset picks the containing command") {
-    assertEquals(MCP_Session.Locator.resolve(items, Some(12), None, None), Right(2L))
-    assertEquals(MCP_Session.Locator.resolve(items, Some(0), None, None), Right(1L))
-    assertEquals(MCP_Session.Locator.resolve(items, Some(32), None, None), Right(3L))
-  }
-
-  test("resolve: offset outside every command is an error") {
-    assertEquals(MCP_Session.Locator.resolve(items, Some(1000), None, None).isLeft, true)
-  }
-
-  test("resolve: pattern picks the first command whose source contains it") {
-    assertEquals(MCP_Session.Locator.resolve(items, None, Some("lemma"), None), Right(1L))
-    assertEquals(MCP_Session.Locator.resolve(items, None, Some("simp"), None), Right(2L))
-    assertEquals(MCP_Session.Locator.resolve(items, None, Some("bar"), None), Right(3L))
-  }
-
-  test("resolve: pattern not found is an error") {
-    assertEquals(MCP_Session.Locator.resolve(items, None, Some("no_such_text"), None).isLeft, true)
-  }
-
-  test("resolve: index picks the nth command, negative indices count from the end") {
-    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(0)), Right(1L))
-    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(2)), Right(3L))
-    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(-1)), Right(3L))
-  }
-
-  test("resolve: index out of range is an error") {
-    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(3)).isLeft, true)
-    assertEquals(MCP_Session.Locator.resolve(items, None, None, Some(-4)).isLeft, true)
-  }
-}
-
-
-/* wave 5 (plans/doc_list): Doc_Catalog is a pure function of
-   Sessions.Structure -- runs against the REAL bundled distribution's
-   structure and Doc.contents(), no fake catalog, no headless PIDE
-   session needed (Sessions.load_structure alone is cheap). */
 
 class MCP_Doc_Catalog_Tests extends MCP_Suite {
   private def real_structure(): Sessions.Structure =

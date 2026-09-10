@@ -122,7 +122,7 @@ class MCP_Connection_Runtime_Tests extends MCP_Suite {
   spec_test("MCP Ready is independent from Isabelle backend readiness",
       covers = List("connection_kernel#T9")) {
     var readiness: McpApplication.Readiness = McpApplication.Not_Ready("building MCP-HOL")
-    val application = McpApplication.isabelle(() => readiness, "MCP-HOL", Nil, "MCP_Repl")
+    val application = McpApplication.isabelle(() => readiness, "MCP-HOL", Nil, "MCP")
     val plane = new ScriptedDataPlane(Nil)
     val connection = ConnectionKernel(
       policy = policy(),
@@ -141,7 +141,7 @@ class MCP_Connection_Runtime_Tests extends MCP_Suite {
 
     def call(id: String): JSON.T = {
       connection.handle(RevisionRules.Application(
-        McpApplication.Operation.ToolsCall("repl_list", JSON.Object()), RequestId.string(id)))
+        McpApplication.Operation.ToolsCall("list_sessions", JSON.Object()), RequestId.string(id)))
       assertEquals(connection.phase, ConnectionLifecycle.Ready,
         "backend readiness changed MCP lifecycle acceptance")
       JSON.Format.unapply(plane.written.last).getOrElse(fail("missing readiness response"))

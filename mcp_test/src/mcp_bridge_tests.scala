@@ -1,8 +1,7 @@
 /*  Title:      mcp_test/src/mcp_bridge_tests.scala
 
 Bridge suites against real headless PIDE sessions (isabelle mcp_test
--L bridge): typed operations over MCP-Tools and the IR dispatcher over
-MCP-HOL/MCP_Repl -- the one layer
+-L bridge): typed operations over Pure and HOL registration foundations -- the layer
 Fake_Backend cannot cover.
 */
 
@@ -13,6 +12,7 @@ import isabelle.mcp.connection._
 import isabelle.mcp.control.ManualDeadlineScheduler
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.protocol.JsonRpc
+import isabelle.mcp.pide.PideBridgeV1
 import isabelle.mcp.transport.ScriptedDataPlane
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import scala.concurrent.duration.{Duration, DurationInt}
@@ -40,10 +40,154 @@ class MCP_Boot_Failure_Tests extends MCP_Suite {
     try assertEquals(recovered.bridge_operation_names, McpBridgeOperations.baseOperationNames)
     finally recovered.stop()
   }
+  spec_test("reprocessed ancestor declarations reach the freshly resolved startup root",
+      verifies = List("context_locator#A3"), covers = List("context_locator#T6")) {
+    val options = MCP_Test_Config.options
+    val repositoryDirs = MCP_Test_Config.session_dirs
+    MCP_Session.build(options, "MCP-Tools", repositoryDirs, MCP_Test_Config.progress)
+    Isabelle_System.with_tmp_dir("mcp-root-reload") { dir =>
+      File.write(dir + Path.basic("ROOT"),
+        "session CarveReloadFixtures = \"MCP-Tools\" +\n  theories CarveRoot\n")
+      def ancestor(version: String): String =
+        Symbol.encode(s"""theory CarveAncestor imports "MCP-Tools.MCP_Tools" begin
+mcp_tool inherited_probe = ‹K "$version"› (description ‹$version›)
+end
+""")
+      val root = "theory CarveRoot imports CarveAncestor begin\nend\n"
+      File.write(dir + Path.basic("CarveAncestor.thy"), ancestor("version-one"))
+      File.write(dir + Path.basic("CarveRoot.thy"), root)
+      val backend = MCP_Session.boot(options, "MCP-Tools", dir :: repositoryDirs,
+        "CarveRoot", McpBridgeProfile.base, MCP_Test_Config.progress)
+      try {
+        def inherited = backend.ml_tools().rows.find(_.name.endsWith(".inherited_probe"))
+          .getOrElse(fail("root catalogue lost the ancestor tool"))
+        val before = inherited
+        assertEquals(before.description, "version-one")
+        assertEquals(backend.ml_run(before.name, List("input" -> "ignored")),
+          MCP_Session.Ok("version-one"))
+        File.write(dir + Path.basic("CarveAncestor.thy"), ancestor("version-two"))
+        assert(backend.check_theory("CarveAncestor", File.standard_path(dir)).ok)
+        val after = inherited
+        assertEquals(after.description, "version-two")
+        assertEquals(backend.ml_run(after.name, List("input" -> "ignored")),
+          MCP_Session.Ok("version-two"))
+      }
+      finally backend.stop()
+    }
+  }
+
 }
 
 
-/* Common protocol bridge: typed tool and resource operations over MCP-Tools. */
+class MCP_Root_Ownership_Tests extends MCP_Suite {
+  override def munitTimeout: Duration = 10.minutes
+
+  test("generated root wrapper imports an image theory and owns its temporary files") {
+    val resources = Headless.Resources.make(MCP_Test_Config.options, "MCP-Tools",
+      session_dirs = MCP_Test_Config.session_dirs, progress = MCP_Test_Config.progress)
+    val session = resources.start_session(progress = MCP_Test_Config.progress)
+    val imported = Document.Node.Name.loaded_theory("MCP-Tools.MCP_Tools")
+    val root = MCP_Session.RootDocument.create(session, imported)
+    val other = MCP_Session.RootDocument.create(session, imported)
+    val directory = root.node.path.dir
+    try {
+      assert(root.node.path.is_file)
+      assert(root.node.theory != other.node.theory)
+      assert(Long_Name.base_name(root.node.theory).matches("MCP_Root_[0-9a-f]{32}"))
+      assert(File.read(root.node.path).contains("imports \"MCP-Tools.MCP_Tools\""))
+      root.load(MCP_Test_Config.progress)
+      resources.clean_theories(session, UUID.random(), List(root.node))
+      val (_, retained) = resources.purge_theories(None)
+      assert(retained.contains(root.node), "ordinary cleanup removed the wrapper")
+      root.release()
+      assert(root.node.path.is_file, "release removed files before session termination")
+      other.release()
+    }
+    finally {
+      try { root.release(); other.release() }
+      finally {
+        try session.stop()
+        finally { root.dispose(); other.dispose() }
+      }
+    }
+    assert(!directory.is_dir)
+    root.dispose()
+  }
+
+  test("generated root wrapper imports an exact source path and reprocesses its ancestors") {
+    Isabelle_System.with_tmp_dir("mcp-root-source") { dir =>
+      val source = dir + Path.basic("WrapperAncestor.thy")
+      def text(body: String): String =
+        "theory WrapperAncestor imports \"MCP-Tools.MCP_Tools\" begin\n" + body + "\nend\n"
+      File.write(source, text(""))
+      val resources = Headless.Resources.make(MCP_Test_Config.options, "MCP-Tools",
+        session_dirs = MCP_Test_Config.session_dirs, progress = MCP_Test_Config.progress)
+      val session = resources.start_session(progress = MCP_Test_Config.progress)
+      val imported = resources.import_name(Sessions.DRAFT, File.standard_path(dir), "WrapperAncestor")
+      val root = MCP_Session.RootDocument.create(session, imported)
+      val directory = root.node.path.dir
+      try {
+        assert(File.read(root.node.path).contains(Outer_Syntax.quote_string(File.standard_path(source.drop_ext))))
+        root.load(MCP_Test_Config.progress)
+        resources.clean_theories(session, UUID.random(), List(imported))
+        val (_, retained) = resources.purge_theories(None)
+        assert(retained.contains(root.node))
+        assert(retained.contains(imported), "root did not protect the source ancestor")
+        File.write(source, text("ML \\<open>error \"reprocessed ancestor\"\\<close>"))
+        intercept[Throwable] { root.load(MCP_Test_Config.progress) }
+        assert(root.selector().isLeft, "failed root refresh retained an available selector")
+        File.write(source, text(""))
+        root.load(MCP_Test_Config.progress)
+        assert(root.selector().isRight, "repaired root did not regain a live selector")
+      }
+      finally {
+        try root.release()
+        finally {
+          try session.stop()
+          finally root.dispose()
+        }
+      }
+      assert(!directory.is_dir)
+      assert(source.is_file, "wrapper disposal deleted user source")
+      root.dispose()
+    }
+  }
+
+  test("a dedicated root requirement survives ordinary cleanup and releases explicitly") {
+    Isabelle_System.with_tmp_dir("mcp-root-owner") { dir =>
+      File.write(dir + Path.basic("OwnerAncestor.thy"),
+        "theory OwnerAncestor imports \"MCP-Tools.MCP_Tools\" begin end")
+      File.write(dir + Path.basic("OwnerRoot.thy"),
+        "theory OwnerRoot imports OwnerAncestor begin end")
+      val resources = Headless.Resources.make(MCP_Test_Config.options, "MCP-Tools",
+        session_dirs = MCP_Test_Config.session_dirs, progress = MCP_Test_Config.progress)
+      val session = resources.start_session(progress = MCP_Test_Config.progress)
+      val master = File.standard_path(dir)
+      val node = resources.import_name(Sessions.DRAFT, session.master_directory(master), "OwnerRoot")
+      val root = new MCP_Session.RootDocument(session, node, master)
+      try {
+        root.load(MCP_Test_Config.progress)
+        // Normal clean uses a different owner and cannot remove the root/imports.
+        resources.clean_theories(session, UUID.random(), List(node))
+        val (purged, retained) = resources.purge_theories(None)
+        assertEquals(purged, Nil)
+        assert(retained.exists(_.theory.endsWith("OwnerRoot")))
+        assert(retained.exists(_.theory.endsWith("OwnerAncestor")))
+        root.release()
+        root.release()
+        // No further document execution follows this state-level probe.
+        val (released, _) = resources.purge_theories(None)
+        assert(released.contains(node))
+      }
+      finally {
+        try root.release() finally session.stop()
+      }
+    }
+  }
+}
+
+
+/* Common protocol bridge: typed tool operations over MCP-Tools. */
 
 class MCP_Bridge_Tests extends MCP_Session_Suite(
   "MCP-Tools", "MCP_Tools", McpBridgeProfile.base) {
@@ -56,14 +200,72 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
      (shortened) names exist only in the scala layer above
      (MCP_Server.exposure, unit-tested in mcp_handler_tests.scala) */
   spec_test("bridge layer executes against a live PIDE session",
-      covers = List("planning_gate#T8")) {
+      verifies = List("pide_bridge#I1"),
+      covers = List("planning_gate#T8", "pide_bridge#T9")) {
+    val root = expect_ok(session.root_context())
+    assertEquals(session.check_context(root), MCP_Session.Ok(root))
+    assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> "base"), root), MCP_Session.Ok("BASE"))
     val tools = session.ml_tools().rows
     val shout = tools.find(_.name == "MCP_Tools.shout")
       .getOrElse(fail("MCP_Tools.shout not in " + tools.toString))
     assertEquals(shout.description, "uppercase the input")
     assertEquals(shout.form, "string_fun")
     assertEquals(shout.params.map(p => (p.name, p.typ, p.required)),
-      List(("input", MCP_Session.Ptyp_String, true)))
+      List(("input", MCP_Session.Ptyp_String, true), ("context", MCP_Session.Ptyp_String, false)))
+  }
+
+  spec_test("base bridge accepts an exact reply limit, reports correlated TooLarge, and recovers",
+      covers = List("pide_bridge#T12")) {
+    val options = MCP_Test_Config.options + "mcp_bridge_max_reply_bytes=1024"
+    val bounded = MCP_Session.boot(options, "MCP-Tools", MCP_Test_Config.session_dirs,
+      "MCP_Tools", McpBridgeProfile.base, MCP_Test_Config.progress)
+    try {
+      val limit = 1024L
+      // Hello is :0; the first two ordinary calls have equally sized :1/:2 ids.
+      val id = "00000000-0000-0000-0000-000000000000:1"
+      def status(text: String): XML.Body =
+        XML.Encode.pair(XML.Encode.string, XML.Encode.self)(("ok", List(XML.Text(text))))
+      val empty = PideBridgeV1.result(id, "run_tool", "ok", status(""))
+      val exactText = "x" * (limit - empty.body.size).toInt
+      assertEquals(PideBridgeV1.result(id, "run_tool", "ok", status(exactText)).body.size.toLong, limit)
+      val root = "isabelle://context/theory/MCP_Tools"
+      assertEquals(bounded.ml_run("MCP_Tools.shout", List("input" -> exactText), root),
+        MCP_Session.Ok(exactText.toUpperCase))
+      val message = expect_error(bounded.ml_run("MCP_Tools.shout", List("input" -> (exactText + "x")), root))
+      assert(message.contains("reply bridge envelope has " + (limit + 1L)), message)
+      assert(message.contains("limit is " + limit), message)
+      assertEquals(bounded.ml_run("MCP_Tools.shout", List("input" -> "ok"), root), MCP_Session.Ok("OK"))
+    }
+    finally bounded.stop()
+  }
+
+  spec_test("tool declarations notify independently while a document load is pending",
+      covers = List("pide_bridge#T9")) {
+    val changed = new CountDownLatch(1)
+    session.set_changed_handler(event => if (event == "tools") changed.countDown())
+    try {
+      Isabelle_System.with_tmp_dir("bridge-declaration") { dir =>
+        val name = "BridgeDeclaration"
+        File.write(dir + Path.basic(name + ".thy"),
+          "theory " + name + "\nimports \"MCP-Tools.MCP_Tools\"\nbegin\n" +
+          "mcp_tool document_probe = \\<open>fn s => s\\<close> " +
+          "(description \\<open>document fixture\\<close>)\n" +
+          "ML \\<open>OS.Process.sleep (Time.fromReal 2.0)\\<close>\nend\n")
+        val loading = Future.fork(session.load_theory(name, File.standard_path(dir)))
+        try {
+          assert(changed.await(5, TimeUnit.SECONDS), "declaration notification was not delivered")
+          assert(!loading.is_finished, "declaration notification waited for document load completion")
+          assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> "pending")), MCP_Session.Ok("PENDING"))
+          assert(session.ml_tools().rows.exists(_.name == "MCP_Tools.shout"))
+          expect_ok(loading.join)
+        }
+        finally {
+          loading.join_result
+          expect_ok(session.unload_theory(name))
+        }
+      }
+    }
+    finally session.set_changed_handler(_ => ())
   }
 
   /* A5 (plans/param_schema_v2): the discriminating tag-order check.
@@ -91,7 +293,8 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
         "p_bool" -> MCP_Session.Ptyp_Bool,
         "p_term" -> MCP_Session.Ptyp_Term,
         "p_typ" -> MCP_Session.Ptyp_Typ,
-        "p_fact" -> MCP_Session.Ptyp_Fact))
+        "p_fact" -> MCP_Session.Ptyp_Fact,
+        "context" -> MCP_Session.Ptyp_String))
     assertEquals(fixture.annotations,
       MCP_Session.Tool_Annotations(Some(false), Some(false), Some(true), Some(false)))
   }
@@ -106,32 +309,29 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
       containing = "no_such_tool")
   }
 
-  test("bridge: canonical root context equals an explicitly validated locator") {
+  spec_test("bridge: canonical root context equals an explicitly validated locator",
+      verifies = List("context_locator#A2", "context_locator#I1")) {
     /* Thy_Info keying mixes qualified and unqualified names, so take the
        canonical spelling from the session itself */
-    val thy_name =
-      session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools")
-        .getOrElse(fail("MCP_Tools not in ml_theories"))
-    val locator = "isabelle://context/theory/" + thy_name
+    val locator = expect_ok(session.root_context())
     assertEquals(session.check_context(locator), MCP_Session.Ok(locator))
     assertEquals(session.ml_tools(locator), session.ml_tools())
   }
 
-  test("bridge: unknown context is a typed error, not an exception") {
+  spec_test("bridge: unknown context is a typed error, not an exception",
+      covers = List("context_locator#T3", "context_locator#T4")) {
     expect_error(
-      session.ml_run("MCP_Tools.shout", List("input" -> "x"),
-        "isabelle://context/theory/No_Such_Theory"),
+      session.ml_run("MCP_Tools.shout", List("input" -> "x",
+        "context" -> "isabelle://context/theory/No_Such_Theory")),
       containing = "No_Such_Theory")
+    for (target <- List("bad-url", "isabelle://context/unknown_kind/x")) {
+      expect_error(session.ml_run("MCP_Tools.shout", List("input" -> "x", "context" -> target)))
+    }
   }
 
-  /* AVAILABILITY FLOOR (plans/builtin_activation): context resolution
-     failure degrades to the empty pair in the operation payload (both
-     sections empty), not the bare "[]" the old flat shape used --
-     decoding remains total and tools/list cannot hang. */
-  test("bridge: ml_tools on an unknown context does not hang") {
-    val tools = session.ml_tools("isabelle://context/theory/No_Such_Theory")
-    assertEquals(tools.rows, Nil)
-    assertEquals(tools.builtin_activation, Nil)
+  spec_test("bridge: target input does not change the root catalogue",
+      covers = List("context_locator#T5")) {
+    assertEquals(session.ml_tools("isabelle://context/theory/No_Such_Theory"), session.ml_tools())
   }
 
   /* DRIFT GATE (plans/builtin_activation, A4): the ML mirror name set
@@ -146,49 +346,6 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
     assertEquals(mirrors, MCP_Server.all_builtin_names.toSet)
   }
 
-  test("bridge: isabelle://session resource reads the loaded theory") {
-    val text = expect_ok(session.mcp_resource_read("isabelle://session"))
-    assert(text.contains("MCP_Tools"), "session resource missing theory name: " + text)
-  }
-
-  test("bridge: isabelle://session resource lists loaded theories") {
-    val text = expect_ok(session.mcp_resource_read("isabelle://session"))
-    assert(text.contains("theories:"), "session resource missing theories field: " + text)
-    assert(text.contains("MCP_Tools"),
-      "session resource theories list missing MCP_Tools: " + text)
-  }
-
-  /* isabelle://named/{name}: MCP_Resource's own registry (MCP_Tools.thy),
-     mirroring MCP_Tool exactly -- "greeting" is the demo resource
-     registered there alongside the "shout" demo tool. */
-  test("bridge: ml_named_resources lists greeting under its full internal name") {
-    val resources = session.ml_named_resources()
-    assert(resources.exists(_._1 == "MCP_Tools.greeting"),
-      "MCP_Tools.greeting not in " + resources.toString)
-  }
-
-  test("bridge: ml_read_resource round trip") {
-    assertEquals(session.ml_read_resource("MCP_Tools.greeting"),
-      MCP_Session.Ok("hello from MCP_Resource"))
-  }
-
-  test("bridge: ml_read_resource unknown name is an error") {
-    expect_error(session.ml_read_resource("no_such_resource"), containing = "no_such_resource")
-  }
-
-  test("bridge: mcp_resources lists isabelle://named/greeting alongside isabelle://session") {
-    val resources = session.mcp_resources()
-    assert(resources.exists(_._1 == "isabelle://session"), "missing isabelle://session")
-    assert(resources.exists(_._1 == "isabelle://named/greeting"),
-      "missing isabelle://named/greeting: " + resources.toString)
-  }
-
-  test("bridge: isabelle://named/{name} resources/read dispatches to MCP_Resource") {
-    val text = expect_ok(session.mcp_resource_read("isabelle://named/greeting"))
-    assertEquals(text, "hello from MCP_Resource")
-    expect_error(session.mcp_resource_read("isabelle://named/no_such_resource"),
-      containing = "no_such_resource")
-  }
 
   /* T5 (plans/doc_list): the full chain over a live server -- tools/list
      advertises doc_list, tools/call reaches the real Doc_Catalog built
@@ -230,393 +387,16 @@ class MCP_Bridge_Tests extends MCP_Session_Suite(
 }
 
 
-/* MCP.ir bridge: the dispatcher over the I/R engine (MCP-HOL/MCP_Repl) */
 
-class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
-  "MCP-HOL", "MCP_Repl", McpBridgeProfile.hol) {
-  test("startup hello advertises inherited base operations plus ir for MCP-HOL") {
-    assertEquals(session.bridge_operation_names, McpBridgeOperations.holOperationNames)
+class MCP_Theory_Bridge_Tests extends MCP_Session_Suite(
+  "MCP-HOL", "MCP", McpBridgeProfile.base) {
+
+  test("image theories cannot be unloaded and discovery remains usable") {
+    expect_error(session.unload_theory("Main"), containing = "image")
+    assert(expect_ok(session.list_sessions_info()).contains("MCP-HOL"))
+    assert(expect_ok(session.list_theories_info("MCP-HOL")).contains("MCP"))
+    assert(expect_ok(session.search_sources("MCP")).contains("MCP"))
   }
-
-  spec_test("common v1 envelope executes all seven typed operations and reply codecs",
-      verifies = List("pide_bridge#I1")) {
-    val tools = session.ml_tools()
-    assert(tools.rows.exists(_.name == "MCP_Tools.shout"))
-
-    val theories = session.ml_theories()
-    val replTheory = theories.find(Long_Name.base_name(_) == "MCP_Repl")
-      .getOrElse(fail("MCP_Repl not in " + theories.mkString(", ")))
-
-    assertEquals(session.ml_run("MCP_Tools.shout", List("input" -> "bridge")),
-      MCP_Session.Ok("BRIDGE"))
-    assert(session.check_context("isabelle://context/theory/" + replTheory).ok)
-    assert(session.ir("repls", Nil).ok)
-
-    val resources = session.ml_named_resources()
-    assert(resources.exists(_._1 == "MCP_Tools.greeting"))
-    assertEquals(session.ml_read_resource("MCP_Tools.greeting"),
-      MCP_Session.Ok("hello from MCP_Resource"))
-
-    assert(!session.ml_run("no_such_tool", Nil).ok)
-    assert(!session.ir("no_such_function", Nil).ok)
-    assert(!session.ml_read_resource("no_such_resource").ok)
-  }
-
-  spec_test("REPL creation returns an ML-generated canonical context locator",
-      covers = List("context_locator#T3", "context_locator#T7")) {
-    val repl = "Locator_Result"
-    val main = session.ml_theories().find(Long_Name.base_name(_) == "Main")
-      .getOrElse(fail("Main not present in loaded theories"))
-    val expected = "isabelle://context/repl/Locator_Result"
-    try {
-      session.ir("init", List("repl" -> repl, "theories" -> main)) match {
-        case MCP_Session.Ok(text) => assert(text.contains("Context: " + expected), text)
-        case error => fail("REPL creation failed: " + error)
-      }
-      assertEquals(session.check_context(expected), MCP_Session.Ok(expected))
-    }
-    finally session.ir("remove", List("repl" -> repl))
-  }
-
-  spec_test("ir bridge cancellation returns promptly, releases the claim, and leaves the session usable",
-      covers = List("connection_kernel#T4")) {
-    with_repl("CancelledIR") {
-      val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
-      val requestId = RequestId.string("live-ir-cancel")
-      val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
-        case value: RequestRegistry.Admitted => value
-        case other => fail("could not admit live IR cancellation fixture: " + other)
-      }
-      val slow = Future.fork(session.ir_cancellable("step",
-        List("repl" -> "CancelledIR",
-          "isar_text" -> "ML_command \\<open>OS.Process.sleep (seconds 5.0)\\<close>"),
-        admitted.cancellation))
-      await_busy("CancelledIR")
-
-      val before = Time.now()
-      assert(registry.cancel(requestId, Some("bridge fixture"))
-        .isInstanceOf[RequestRegistry.Cancelled])
-      expect_error(slow.join, containing = "cancelled")
-      assert(Time.now() - before < Time.seconds(1.0),
-        "Scala IR bridge promise did not return promptly after cancellation")
-      eventually("cancelled IR operation retained the REPL claim", Time.seconds(2.0)) {
-        session.ir("repls", Nil) match {
-          case MCP_Session.Ok(text) => text.contains("CancelledIR") && !text.contains("busy")
-          case _ => false
-        }
-      }
-      expect_ok(session.ir("state", List("repl" -> "CancelledIR", "state_idx" -> "-1")),
-        "IR session was unusable after cancellation")
-    }
-  }
-
-  test("ir bridge: repls on an empty table returns ok") {
-    expect_ok(session.ir("repls", Nil))
-  }
-
-  test("ir bridge: repls reflects a created and removed repl") {
-    expect_ok(session.ir("init", List("repl" -> "BT", "theories" -> "Main")), "init BT")
-    assert(repl_listing().contains("BT"), "listing missing BT")
-    expect_ok(session.ir("remove", List("repl" -> "BT")), "remove BT")
-    assert(!repl_listing().contains("BT"), "listing still shows removed BT")
-  }
-
-  test("ir bridge: unknown fname is an error naming it") {
-    expect_error(session.ir("no_such_fname", Nil), containing = "no_such_fname")
-  }
-
-  /* KNOWN GAP (found while testing T6, plans/repl_init): Ir.load_theory
-     refuses to run whenever Ir.is_interactive_session () is true (it
-     reads Printer.show_markup_default, meant to distinguish jEdit
-     from batch `isabelle build`). Our own MCP_Session backend runs a
-     Headless.Session, which -- like jEdit -- goes through
-     init_options_interactive and sets that ref true. So load_theory,
-     and by extension repl_init's "Thy:idx" segment-spec path (which
-     needs a theory loaded with record_theories via load_theory
-     first), cannot currently be exercised from the live MCP server
-     at all. This regression test pins the current (broken) behavior
-     so a future fix to Ir.is_interactive_session's detection is
-     forced to update this test, rather than the gap going unnoticed;
-     see plans/repl_init T6 and plans/load_theory. */
-  test("ir bridge: KNOWN GAP -- load_theory refuses to run from a headless MCP_Session (blocks repl_init's Thy:idx segment path)") {
-    session.ir("load_theory", List("theory_name" -> "MCP_Repl_Dyn_Source")) match {
-      case MCP_Session.Error(msg) =>
-        assert(msg.contains("interactive"),
-          "expected the is_interactive_session error, got: " + msg)
-      case result =>
-        fail("load_theory unexpectedly succeeded from a headless session " +
-          "-- if this gap was fixed, replace this test with the positive " +
-          "Thy:idx segment-spec case (T6, plans/repl_init): " + result.toString)
-    }
-  }
-
-  test("ir bridge: async — a slow call does not block a concurrent fast one, and repl_list's busy annotation is transient") {
-    with_repl("Slow") {
-      val slow = slow_step("Slow")
-      val fast = session.ir("repls", Nil)
-      assert(fast.ok, "fast call did not return ok while slow call was in flight")
-      assert(!slow.is_finished, "slow call finished before the fast reply arrived")
-
-      await_busy("Slow")
-
-      slow.join
-      val text = repl_listing()
-      assert(text.contains("Slow") && !text.contains("busy"),
-        "Slow still shows busy after the step completed: " + text)
-      expect_ok(session.ir("remove", List("repl" -> "Slow")), "remove Slow")
-    }
-  }
-
-  spec_test("ir bridge: a slow step on one REPL does not delay a concurrent step on another",
-      covers = List("repl_step#T5")) {
-    with_repl("StepA") {
-      with_repl("StepB") {
-        val slow = slow_step("StepA")
-        val fast = session.ir("step", List("repl" -> "StepB", "isar_text" -> "lemma True"))
-        assert(fast.ok, "step on StepB did not return ok while StepA's step was in flight")
-        assert(!slow.is_finished, "the slow step finished before the fast one returned")
-        slow.join
-      }
-    }
-  }
-
-  spec_test("ir bridge: byte fidelity survives the scala-side yxml stripping (symbols, doubled spaces, embedded newline)",
-      covers = List("repl_text#T1")) {
-    with_repl("Texted") {
-      val step_text = "lemma \"x \\<longrightarrow> x\"\n  by  simp"
-      expect_ok(session.ir("step", List("repl" -> "Texted", "isar_text" -> step_text)),
-        "step on Texted")
-      assertEquals(expect_ok(session.ir("text", List("repl" -> "Texted"))), step_text,
-        "text did not round-trip byte-clean")
-    }
-  }
-
-  spec_test("ir bridge: show on a busy REPL errors \"is busy\", not a stale read",
-      covers = List("repl_show#T2")) {
-    with_repl("Shown") {
-      val slow = slow_step("Shown")
-      eventually("show on Shown never errored \"busy\" while the step was in flight") {
-        session.ir("show", List("repl" -> "Shown")) match {
-          case MCP_Session.Error(msg) => msg.contains("busy")
-          case _ => false
-        }
-      }
-      slow.join
-      expect_ok(session.ir("show", List("repl" -> "Shown")),
-        "show on Shown failed once the step completed")
-    }
-  }
-
-  spec_test("ir bridge: full chain, init/step/fork/step fork/repls shows both with origins",
-      covers = List("repl_fork#T6")) {
-    with_repl("Fork6") {
-      expect_ok(session.ir("step",
-        List("repl" -> "Fork6", "isar_text" -> "lemma fork6: True")), "step 0 on Fork6")
-
-      expect_ok(session.ir("fork",
-        List("repl" -> "Fork6", "new_repl" -> "Fork6C", "state_idx" -> "-1")),
-        "fork Fork6C from Fork6")
-
-      expect_ok(session.ir("step",
-        List("repl" -> "Fork6C", "isar_text" -> "by simp")), "step 0 on Fork6C")
-
-      val listing = repl_listing()
-      assert(listing.contains("Fork6"), "listing missing parent Fork6: " + listing)
-      assert(listing.contains("Fork6C"), "listing missing fork Fork6C: " + listing)
-      /* ir.ML's origin_str renders a From_REPL origin as `REPL "<parent>"
-         state <i>` (Ir.repls) -- check the child's entry actually names
-         its parent as origin, not just that both ids happen to appear */
-      assert(listing.contains("from REPL \"Fork6\" state"),
-        "Fork6C's listing entry does not mention its parent as origin: " + listing)
-
-      /* the fork's own step never touched the parent -- parent still
-         has exactly its one step */
-      val parent_show = expect_ok(session.ir("show", List("repl" -> "Fork6")),
-        "show Fork6 after stepping the fork")
-      assert(parent_show.contains("1 steps"),
-        "parent Fork6 changed by stepping its fork: " + parent_show)
-
-      expect_ok(session.ir("remove", List("repl" -> "Fork6C")), "remove Fork6C")
-    }
-  }
-
-  spec_test("ir bridge: a busy orphan blocks the whole truncate, nothing is half-removed",
-      covers = List("repl_truncate#T4")) {
-    with_repl("Trunc") {
-      expect_ok(session.ir("step",
-        List("repl" -> "Trunc", "isar_text" -> "lemma trsu1: True")), "step 0 on Trunc")
-      expect_ok(session.ir("step",
-        List("repl" -> "Trunc", "isar_text" -> "by simp")), "step 1 on Trunc")
-      expect_ok(session.ir("step",
-        List("repl" -> "Trunc", "isar_text" -> "lemma trsu2: True")), "step 2 on Trunc")
-      expect_ok(session.ir("fork",
-        List("repl" -> "Trunc", "new_repl" -> "TruncChild", "state_idx" -> "3")),
-        "fork TruncChild")
-
-      val slow = slow_step("TruncChild")
-      await_busy("TruncChild")
-
-      expect_error(session.ir("truncate", List("repl" -> "Trunc", "idx" -> "1")),
-        containing = "busy")
-
-      slow.join
-      expect_ok(session.ir("truncate", List("repl" -> "Trunc", "idx" -> "1")),
-        "truncate Trunc failed once TruncChild was no longer busy")
-      assert(!repl_listing().contains("TruncChild"),
-        "listing still shows TruncChild after its orphaning truncate")
-    }
-  }
-
-  spec_test("ir bridge: a busy parent blocks merge without corrupting the child",
-      covers = List("repl_merge#T4")) {
-    with_repl("MPar") {
-      expect_ok(session.ir("fork",
-        List("repl" -> "MPar", "new_repl" -> "MChild", "state_idx" -> "0")), "fork MChild")
-      expect_ok(session.ir("step",
-        List("repl" -> "MChild", "isar_text" -> "lemma mmg1: True")), "step 0 on MChild")
-      expect_ok(session.ir("step",
-        List("repl" -> "MChild", "isar_text" -> "by simp")), "step 1 on MChild")
-
-      val slow = slow_step("MPar")
-      await_busy("MPar")
-
-      expect_error(session.ir("merge", List("repl" -> "MChild")), containing = "busy")
-
-      slow.join
-      expect_ok(session.ir("merge", List("repl" -> "MChild")),
-        "merge MChild into MPar failed once MPar was no longer busy")
-      assert(!repl_listing().contains("MChild"),
-        "listing still shows MChild after a successful merge")
-    }
-  }
-
-  spec_test("ir bridge: the full chain sets and reports a per-REPL timeout",
-      covers = List("repl_timeout#T4")) {
-    with_repl("Tmo") {
-      val text = expect_ok(session.ir("timeout", List("repl" -> "Tmo", "secs" -> "5")))
-      assert(text.contains("5s"), "unexpected reply: " + text)
-      val shown = expect_ok(session.ir("show", List("repl" -> "Tmo")))
-      assert(shown.contains("timeout=5s"), "unexpected show: " + shown)
-    }
-  }
-
-  /* T3 (plans/sledgehammer): the happy path. Tolerant of prover
-     flakiness per the plan -- accept either a "Try this" line or
-     a no-proof-found message, never a crash; only step the
-     suggestion when one actually came back. */
-  spec_test("ir bridge: happy path finds a proof for a trivial goal (tolerant of prover flakiness)",
-      covers = List("sledgehammer#T3")) {
-    with_repl("Sh3") {
-      expect_ok(session.ir("step",
-        List("repl" -> "Sh3", "isar_text" -> "lemma \"x + y = y + (x::nat)\"")), "step Sh3")
-      session.ir("sledgehammer", List("repl" -> "Sh3")) match {
-        case MCP_Session.Ok(text) =>
-          val tries = text.linesIterator.filter(_.contains("Try this")).toList
-          if (tries.nonEmpty) {
-            val suggestion =
-              tries.head.replaceFirst(".*Try this:\\s*", "")
-                .replaceFirst("\\s*\\([0-9.]+\\s*m?s\\)\\s*$", "").trim
-            expect_ok(session.ir("step", List("repl" -> "Sh3", "isar_text" -> suggestion)),
-              "the suggested one-liner did not close the goal: " + suggestion)
-          }
-        case MCP_Session.Error(msg) =>
-          fail("sledgehammer crashed instead of returning a no-proof-found message: " + msg)
-      }
-    }
-  }
-
-  /* T4 (plans/sledgehammer): concurrency decision recorded in
-     ir.ML (Ir.with_sledgehammer_lock) and plans/sledgehammer's
-     status block -- calls are serialized via a global blocking
-     lock rather than a busy error, so two concurrent calls on
-     different REPLs must both return sane, uncrossed results. */
-  spec_test("ir bridge: two concurrent calls on different REPLs never cross outputs",
-      covers = List("sledgehammer#T4")) {
-    with_repl("Sh4A") {
-      with_repl("Sh4B") {
-        expect_ok(session.ir("step",
-          List("repl" -> "Sh4A", "isar_text" -> "lemma \"x + y = y + (x::nat)\"")),
-          "step Sh4A")
-        expect_ok(session.ir("step",
-          List("repl" -> "Sh4B", "isar_text" -> "lemma \"True \\<and> True\"")),
-          "step Sh4B")
-
-        val a = Future.fork(session.ir("sledgehammer", List("repl" -> "Sh4A")))
-        val b = Future.fork(session.ir("sledgehammer", List("repl" -> "Sh4B")))
-        (a.join, b.join) match {
-          case (MCP_Session.Ok(_), MCP_Session.Ok(_)) => ()
-          case (ra, rb) =>
-            fail("expected both concurrent sledgehammer calls to return Ok: " +
-              ra.toString + " / " + rb.toString)
-        }
-      }
-    }
-  }
-
-  /* T5 (plans/sledgehammer): async under load, shared pattern with
-     plans/repl_step T5 -- a fast call on another REPL returns
-     while sledgehammer is still in flight on this one. */
-  spec_test("ir bridge: async under load, a fast call on another repl returns while sledgehammer is in flight",
-      covers = List("sledgehammer#T5")) {
-    with_repl("Sh5") {
-      expect_ok(session.ir("step",
-        List("repl" -> "Sh5", "isar_text" -> "lemma \"x + y = y + (x::nat)\"")), "step Sh5")
-      val slow = Future.fork(session.ir("sledgehammer", List("repl" -> "Sh5")))
-      val fast = session.ir("repls", Nil)
-      assert(fast.ok, "fast call did not return ok while sledgehammer was in flight")
-      slow.join
-    }
-  }
-
-  /* T6 (plans/find_theorems): interactive-fast, unlike
-     sledgehammer -- no async gymnastics needed, but it must not
-     block behind a slow call on another REPL either. */
-  spec_test("ir bridge: returns promptly on B during a slow step on A",
-      covers = List("find_theorems#T6")) {
-    with_repl("FtA") {
-      with_repl("FtB") {
-        val slow = slow_step("FtA")
-        val fast = session.ir("find_theorems", List("repl" -> "FtB", "query" -> "name:conjI"))
-        assert(fast.ok, "find_theorems did not return ok while FtA's step was in flight")
-        assert(!slow.is_finished, "the slow step finished before the fast find_theorems reply")
-        slow.join
-      }
-    }
-  }
-
-  test("ir bridge: isabelle://repl/{id} and .../text resources dispatch to the real ir show/text against a live REPL") {
-    with_repl("Res") {
-      expect_ok(session.ir("step",
-        List("repl" -> "Res", "isar_text" -> "lemma \"True\" by simp")), "step Res")
-      val shown = expect_ok(session.mcp_resource_read("isabelle://repl/Res"))
-      assert(shown.contains("Res"), "repl resource missing the repl id: " + shown)
-      val text = expect_ok(session.mcp_resource_read("isabelle://repl/Res/text"))
-      assert(text.contains("lemma \"True\" by simp"),
-        "repl-text resource missing the stepped isar text: " + text)
-      expect_error(session.mcp_resource_read("isabelle://repl/NoSuchRepl"))
-    }
-  }
-
-  spec_test("ir bridge: the pin/unpin round trip",
-      covers = List("repl_unpin#T3")) {
-    with_repl("Upn") {
-      expect_ok(session.ir("pin", List("repl" -> "Upn")), "pin Upn")
-      val pinned = expect_ok(session.ir("show", List("repl" -> "Upn")))
-      assert(pinned.contains("pinned"), "unexpected show: " + pinned)
-      expect_ok(session.ir("unpin", List("repl" -> "Upn")), "unpin Upn")
-      val unpinned = expect_ok(session.ir("show", List("repl" -> "Upn")))
-      assert(!unpinned.contains("pinned"), "still shows pinned after unpin: " + unpinned)
-    }
-  }
-
-  /* wave 2 (plans/load_theory, plans/unload_theory, plans/check_theory):
-     session.load_theory/unload_theory/check_theory over Headless
-     use_theories/purge_theories -- disjoint from the MCP.ir dispatcher
-     (the KNOWN GAP test above), so these call session.* directly, not
-     session.ir(...). fixtures are written to a fresh tmp dir per test
-     (Isabelle_System.with_tmp_dir) rather than checked-in files, since
-     check_theory's staleness case (T1) needs to edit a fixture on disk
-     between calls. */
 
   private def wave2_theory(name: String, body: String): String =
     "theory " + name + "\n  imports Main\nbegin\n\n" + body + "\n\nend\n"
@@ -630,57 +410,6 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
       for ((name, content) <- files) File.write(dir + Path.basic(name + ".thy"), content)
       body(dir)
     }
-
-  /* theory-resource tier matrix (isabelle://theory/{name}[/diagnostics|
-     /entities|/commands]): three of the four tiers are fixed, reusable
-     names -- image and filesystem-but-never-loaded need no per-test
-     setup, only "loaded" is inherently dynamic (load_theory needs a
-     fresh fixture dir per test) and stays inline where it's used.
-
-     tier_image ("MCP_Repl", this suite's own -T theory) was built WITH
-     record_theories (mcp/Tools/ROOT), so it exercises the full feature
-     on /commands and bare /theory, not just diagnostics/entities.
-
-     tier_filesystem ("MCP-HOL-Tests.MCP_Fixture_Nav") is a real,
-     on-disk theory from the sibling MCP-HOL-Tests session: known to
-     THIS session's theory_map (same -d mcp/Tools catalog) but never
-     loaded here, so it is a genuine filesystem-tier example -- unlike
-     the "Wave2Res*Never" names this matrix replaces, which were never
-     real theory_map entries at all and so silently tested the `None`
-     (wholly unrecognized) case while claiming to test "filesystem".
-     Passing it to bare /theory also exercises the FileSystemTier
-     real-file-read code path with real content for the first time.
-
-     tier_unknown matches nothing anywhere: the genuinely-unrecognized
-     case, kept separate and explicit so it can never again masquerade
-     as "filesystem" by accident. */
-  private val tier_image = "MCP_Repl"
-  private val tier_filesystem = "MCP-HOL-Tests.MCP_Fixture_Nav"
-  private val tier_unknown = "NoSuchTheoryWhatsoever12345"
-
-  /* ok=true with contains="" only asserts a non-empty Ok reply (some
-     tiers' exact wording isn't the point of the matrix, e.g. image's
-     raw segment dump); every row still gets an explicit, visible
-     expectation, so a missing/wrong case fails right here instead of
-     going untested -- exactly the shape of bug this matrix exists to
-     catch (see mcp_session.scala's theory_diagnostics/theory_entities/
-     theory_commands_uri/theory_source_uri, and CHANGELOG's "fix:
-     theory resource reads for loaded/unrecognized names"). */
-  private case class Tier_Expect(ok: Boolean, contains: String = "")
-
-  private def assert_tier(suffix: String, tier: String, name: String, expect: Tier_Expect)
-      (implicit loc: munit.Location): Unit = {
-    val uri = "isabelle://theory/" + name + suffix
-    if (expect.ok) {
-      val text = expect_ok(session.mcp_resource_read(uri), tier + " tier (" + uri + ")")
-      if (expect.contains.nonEmpty) {
-        assert(text.contains(expect.contains),
-          tier + " tier: unexpected reply for " + uri + ": " + text)
-      }
-      else assert(text.nonEmpty, tier + " tier: empty reply for " + uri)
-    }
-    else expect_error(session.mcp_resource_read(uri), containing = expect.contains)
-  }
 
   spec_test("wave 2: a well-formed fixture under master_dir loads and reports ok",
       covers = List("load_theory#T1")) {
@@ -739,7 +468,7 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
         val rules = new Mcp2025RevisionRules
         val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
         val application = McpApplication.isabelle(
-          () => McpApplication.Ready(session), "MCP-HOL", Nil, "MCP_Repl")
+          () => McpApplication.Ready(session), "MCP-HOL", Nil, "MCP")
         val kernel = ConnectionKernel(
           policy = policy,
           dataPlane = plane,
@@ -862,658 +591,62 @@ class MCP_Ir_Bridge_Tests extends MCP_Session_Suite(
     }
   }
 
-  test("wave 2 resources: isabelle://theory/{name}/diagnostics -- all four tiers") {
-    assert_tier("/diagnostics", "image", tier_image, Tier_Expect(true, "checked at build time"))
-    /* filesystem and unknown are DELIBERATELY the same expectation:
-       diagnostics never fails just because a theory hasn't been
-       indexed, so both get the same optimistic "try load_theory"
-       text -- see mcp_session.scala's theory_diagnostics. */
-    assert_tier("/diagnostics", "filesystem", tier_filesystem,
-      Tier_Expect(true, "not checked; load_theory to check"))
-    assert_tier("/diagnostics", "unknown", tier_unknown,
-      Tier_Expect(true, "not checked; load_theory to check"))
-
-    with_fixture_dir(
-      "Wave2ResOk" -> wave2_theory("Wave2ResOk", wave2_good),
-      "Wave2ResErr" -> wave2_theory("Wave2ResErr", wave2_bad)
-    ) { dir =>
-      val master_dir = File.standard_path(dir)
-      expect_ok(session.load_theory("Wave2ResOk", master_dir), "load Wave2ResOk")
-      val ok_diag = expect_ok(session.mcp_resource_read("isabelle://theory/Wave2ResOk/diagnostics"))
-      assert(ok_diag.contains("Wave2ResOk: ok"), "loaded/ok tier: unexpected reply: " + ok_diag)
-
-      /* load_theory itself returns Error for a broken theory (still
-         recorded in theory_master_dirs -- see mcp_session.scala), so
-         the diagnostics resource must still answer for it, live, with
-         "error" and the position, read-time-evaluated straight off
-         the same snapshot load_theory's own reply came from. */
-      session.load_theory("Wave2ResErr", master_dir)
-      val err_diag =
-        expect_ok(session.mcp_resource_read("isabelle://theory/Wave2ResErr/diagnostics"))
-      assert(err_diag.contains("Wave2ResErr: error") && err_diag.contains("line"),
-        "loaded/error tier: unexpected reply: " + err_diag)
-    }
-  }
-
-  test("wave 2 resources: isabelle://theory/{name}/entities -- image tier lists real name-space entries, filtered to the defining theory") {
-    /* "HOL" (image tier, Name_Space.theory_name-filterable -- unlike
-       /commands' Thy_Info segments, this does NOT hit the process-local
-       KNOWN GAP above) defines conjI as a fact directly -- Main and its
-       other ancestors don't redefine it, so it is a clean marker that
-       filtering by defining theory (not just "is it in scope") works. */
-    val text = expect_ok(session.mcp_resource_read("isabelle://theory/HOL.HOL/entities"))
-    assert(text.contains("fact") && text.contains("conjI"),
-      "HOL's entities should list conjI as a fact: " + text)
-    assert(!text.contains("  rev\n") && !text.split("\\s+").contains("rev"),
-      "entities must be filtered to HOL's own definitions, not include List.rev: " + text)
-  }
-
-  test("wave 2 resources: isabelle://theory/{name}/entities -- all four tiers") {
-    /* image tier's own content correctness (conjI, filtering) is the
-       test above; this one is purely about tier coverage, so the
-       empty-table image example (MCP_Repl, an ML-only theory) is fine
-       -- entities always prints its header even with no rows. */
-    assert_tier("/entities", "image", tier_image, Tier_Expect(true, "kind"))
-    /* filesystem and unknown are DELIBERATELY the same expectation --
-       see mcp_session.scala's theory_entities. */
-    assert_tier("/entities", "filesystem", tier_filesystem, Tier_Expect(false, "not backed yet"))
-    assert_tier("/entities", "unknown", tier_unknown, Tier_Expect(false, "not backed yet"))
-  }
-
-  /* image-tier name normalization (mcp_session.scala's image_theory):
-     loaded_theories/Thy_Info key by canonical long names, and that
-     keying mixes qualified and unqualified entries ("HOL.Wellfounded"
-     vs plain "Main"), so client spellings must be resolved -- verbatim,
-     session-qualified, then unique base-name match -- and the RESOLVED
-     name is what crosses the ir bridge. Before the fix, "MCP_Repl"
-     passed the tier gate but died in ML with "Theory loader: undefined
-     entry", and "Wellfounded"/"HOL.Main" fell through to "not backed
-     yet" although both theories sit in the image. */
-  test("wave 2 resources: isabelle://theory/{name}/entities -- image-tier names are normalized to the canonical Thy_Info key") {
-    /* the session's own -T theory by its natural base name; canonical
-       key is MCP-HOL.MCP_Repl (empty table is correct: ML-only theory) */
-    expect_ok(session.mcp_resource_read("isabelle://theory/MCP_Repl/entities"),
-      "base-name spelling of the -T theory must resolve, not hit a raw Thy_Info error")
-    /* unique base-name match across the image; canonical key is HOL.Wellfounded */
-    val base = expect_ok(session.mcp_resource_read("isabelle://theory/Wellfounded/entities"),
-      "unique base name of a foreign-session image theory must resolve")
-    assert(base.contains("Wellfounded.wf"),
-      "normalized base-name read should list Wellfounded's own entities: " + base)
-    /* foreign-qualified spelling of a canonically unqualified theory (key is plain "Main") */
-    expect_ok(session.mcp_resource_read("isabelle://theory/HOL.Main/entities"),
-      "HOL.Main must resolve to the canonical unqualified key Main")
-  }
-
-  test("wave 2 resources: isabelle://theory/{name}/entities -- loaded tier reads live entity-def markup from the snapshot") {
-    with_fixture_dir(
-      "Wave2ResEnt" ->
-        wave2_theory("Wave2ResEnt",
-          "definition wave2_ent_const :: nat where \"wave2_ent_const = 42\"")
-    ) { dir =>
-      expect_ok(session.load_theory("Wave2ResEnt", File.standard_path(dir)), "load Wave2ResEnt")
-      val text = expect_ok(session.mcp_resource_read("isabelle://theory/Wave2ResEnt/entities"))
-      assert(text.contains("wave2_ent_const"),
-        "loaded-tier entities should list the definition command's own constant: " + text)
-    }
-  }
-
-  /* RETRACTED KNOWN GAP (2026-07-10): an earlier version of this test
-     pinned "No recorded segments" for MCP_Repl and concluded that
-     Thy_Info segments never survive into a fresh headless process.
-     That diagnosis was FALSE -- an artifact of the name-normalization
-     bug: the scala side forwarded the client's base spelling
-     "MCP_Repl" to ML, Thy_Info.get_theory errored "undefined entry",
-     and ir.ML's find_source swallowed that ERROR and rewrote it as
-     "No recorded segments". With image_theory resolving to the
-     canonical key (MCP-HOL.MCP_Repl), segments recorded at build time
-     (record_theories in mcp/Tools/ROOT) DO survive the saved heap and
-     the resource answers with real source from a live server. The
-     genuine remaining error case is a theory whose session was built
-     WITHOUT record_theories (the stock HOL heap): that one really has
-     no segments, and Isabelle's actionable rebuild hint is the right
-     reply. */
-  test("wave 2 resources: isabelle://theory/{name} and .../commands -- recorded segments survive into the live server (retracted KNOWN GAP: the old failure was the name bug)") {
-    val source = expect_ok(session.mcp_resource_read("isabelle://theory/MCP_Repl"),
-      "the -T theory was built with record_theories; its source must be readable")
-    assert(source.contains("theory MCP_Repl"),
-      "source read should return the theory text: " + source.take(200))
-    val commands = expect_ok(session.mcp_resource_read("isabelle://theory/MCP_Repl/commands"),
-      "commands map for the -T theory must be readable")
-    assert(commands.nonEmpty, "commands map should not be empty")
-    /* a theory from a heap built without record_theories still errors,
-       with Isabelle's own rebuild hint */
-    expect_error(session.mcp_resource_read("isabelle://theory/HOL.Wellfounded"),
-      containing = "No recorded segments")
-  }
-
-  test("wave 2 resources: isabelle://theory/{name}/commands -- all four tiers") {
-    /* image: MCP_Repl has real recorded segments (see the retracted-
-       KNOWN-GAP test above for the detailed regression pin); this row
-       only asserts the tier dispatches to a non-empty Ok. */
-    assert_tier("/commands", "image", tier_image, Tier_Expect(true))
-    /* filesystem is its OWN case here (unlike diagnostics/entities): a
-       real, on-disk, never-loaded theory gets an actionable stub, not
-       an error -- see mcp_session.scala's theory_commands_uri. */
-    assert_tier("/commands", "filesystem", tier_filesystem,
-      Tier_Expect(true, "command map needs load_theory"))
-    /* loaded and unknown are DELIBERATELY the same expectation here:
-       a headless use_theories load has no Thy_Info-recorded segments
-       either, same as a name theory_map has never heard of. */
-    assert_tier("/commands", "unknown", tier_unknown, Tier_Expect(false, "not backed yet"))
-
-    with_fixture_dir("Wave2ResCmd" -> wave2_theory("Wave2ResCmd", wave2_good)) { dir =>
-      expect_ok(session.load_theory("Wave2ResCmd", File.standard_path(dir)), "load Wave2ResCmd")
-      assert_tier("/commands", "loaded", "Wave2ResCmd", Tier_Expect(false, "not backed yet"))
-    }
-  }
-
-  test("wave 2 resources: bare isabelle://theory/{name} (source) -- all four tiers") {
-    assert_tier("", "image", tier_image, Tier_Expect(true, "theory MCP_Repl"))
-    /* filesystem genuinely reads the file off disk here -- MCP_Fixture_Nav
-       is a real theory on this session's search path, never loaded, so
-       this is the FileSystemTier code path with real content, not a
-       stand-in for "unknown name" (see mcp_session.scala's
-       theory_source_uri and the CHANGELOG entry this matrix follows). */
-    assert_tier("", "filesystem", tier_filesystem, Tier_Expect(true, "theory MCP_Fixture_Nav"))
-    assert_tier("", "unknown", tier_unknown, Tier_Expect(false, "not backed yet"))
-
-    with_fixture_dir("Wave2ResSrc" -> wave2_theory("Wave2ResSrc", wave2_good)) { dir =>
-      expect_ok(session.load_theory("Wave2ResSrc", File.standard_path(dir)), "load Wave2ResSrc")
-      /* loaded (not image) -- still not backed: Thy_Info has no
-         recorded segments for a headless use_theories load, only for
-         the classical batch-mode loader (see mcp_session.scala's
-         comment on theory_source_uri/theory_commands_uri). */
-      assert_tier("", "loaded", "Wave2ResSrc", Tier_Expect(false, "not backed yet"))
-    }
-  }
-
-  spec_test("ir bridge: a busy descendant blocks removal, nothing is half-removed",
-      covers = List("repl_remove#T4")) {
-    with_repl("Par") {
-      expect_ok(session.ir("fork",
-        List("repl" -> "Par", "new_repl" -> "Child", "state_idx" -> "0")), "fork Child")
-      val slow = slow_step("Child")
-
-      /* wait until Child is observably busy before touching remove --
-         remove is destructive, so calling it before the step has
-         claimed the repl would delete Par/Child outright instead of
-         exercising the busy-guard */
-      await_busy("Child")
-
-      expect_error(session.ir("remove", List("repl" -> "Par")), containing = "busy")
-
-      slow.join
-      expect_ok(session.ir("remove", List("repl" -> "Par")),
-        "remove Par failed once Child was no longer busy")
-      val text = repl_listing()
-      assert(!text.contains("Par") && !text.contains("Child"),
-        "listing still shows Par or Child after removal: " + text)
-    }
-  }
-
-  /* plans/tool_scope: the SELF-EXTENSION HINGE -- a tool registered by
-     the agent itself, mid-session, via repl_step, becomes callable once
-     the connection's tool scope is pointed at that repl. Exercised
-     through MCP_Server.Handler (the JSON-RPC layer), not session.ir
-     directly, since the scope is Handler-owned connection state. */
-  test("tool_scope bridge: a repl-registered tool becomes servable through its context locator") {
-    /* the mcp_tool command keyword is only active in theories that
-       (transitively) import MCP_Tools -- Main does not, so this repl is
-       rooted in MCP_Repl itself (the session's own base theory) rather
-       than the with_repl default, exactly so the self-extension step
-       below can use the ordinary Isar declaration syntax. */
-    with_repl("ScopeSelf", theories = List("MCP-HOL.MCP_Repl")) {
-      expect_ok(
-        session.ir("step",
-          List("repl" -> "ScopeSelf",
-            "isar_text" -> "mcp_tool scoped_tool = \\<open>String.map Char.toUpper\\<close> (description \\<open>uppercase\\<close>)")),
-        "registering scoped_tool via repl_step")
-
-      val handler = new MCP_Server.Handler(session)
-      assert_no_error(call_tool_on(handler, "tool_scope_set",
-        JSON.Object("context" -> "isabelle://context/repl/ScopeSelf")))
-
-      val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
-      assert(tools.exists(t => get_string(t, "name") == "scoped_tool"),
-        "scoped_tool missing from tools/list: " + tools.toString)
-
-      val reply = call_tool_on(handler, "scoped_tool", JSON.Object("input" -> "hi"))
-      assert_no_error(reply)
-      assertEquals(result_text(reply), "HI")
-    }
-  }
-
-  /* Bundles remain an Isabelle/Isar mechanism. The network scope contains
-     only a locator; changing the REPL's Isar context changes what that same
-     locator resolves to. */
-  test("tool_scope bridge: bundle activation comes from Isar text, not a network mutation") {
-    with_repl("ScopeBundle", theories = List("MCP-HOL.MCP_Repl")) {
-      expect_ok(
-        session.ir("step",
-          List("repl" -> "ScopeBundle",
-            "isar_text" -> "mcp_tool bundle_tool = \\<open>String.map Char.toUpper\\<close> (description \\<open>uppercase\\<close>)")),
-        "registering bundle_tool via repl_step")
-      expect_ok(
-        session.ir("step",
-          List("repl" -> "ScopeBundle", "isar_text" -> "declare [[mcp_tools del: bundle_tool]]")),
-        "deactivating bundle_tool")
-      expect_ok(
-        session.ir("step",
-          List("repl" -> "ScopeBundle",
-            "isar_text" -> "bundle exploration = [[mcp_tools add: bundle_tool]]")),
-        "defining the exploration bundle")
-      expect_ok(
-        session.ir("step",
-          List("repl" -> "ScopeBundle",
-            "isar_text" -> "context includes exploration begin")),
-        "opening the bundle in Isar text")
-
-      val handler = new MCP_Server.Handler(session)
-      assert_no_error(
-        call_tool_on(handler, "tool_scope_set",
-          JSON.Object("context" -> "isabelle://context/repl/ScopeBundle")))
-
-      def tool_names(): List[String] =
-        get_list(rpc_on(handler, "tools/list"), "result", "tools").map(get_string(_, "name"))
-
-      assert(tool_names().contains("bundle_tool"),
-        "bundle_tool missing from the Isar context: " + tool_names())
-
-      expect_ok(
-        session.ir("step", List("repl" -> "ScopeBundle", "isar_text" -> "end")),
-        "closing the Isar context")
-      assert(!tool_names().contains("bundle_tool"),
-        "bundle_tool remained active after leaving the Isar context: " + tool_names())
-    }
-  }
-
-  /* ASYMMETRIC CALLABILITY (plans/builtin_activation, A5): a del'd
-     builtin mirror is unlisted but still callable -- Isabelle/Scala
-     dispatches builtin names BEFORE consulting activation (tools/call
-     precedence), unlike a del'd ML tool (refused, "Inactive MCP
-     tool"). The del here is LOCAL to this repl's context (an ordinary
-     [[mcp_tools del: ...]] declaration), so it never touches the
-     shared MCP_Tools theory other tests read. */
-  test("tool_scope bridge: a del'd builtin mirror is unlisted but stays callable") {
-    with_repl("ScopeBuiltinDel", theories = List("MCP-HOL.MCP_Repl")) {
-      expect_ok(
-        session.ir("step",
-          List("repl" -> "ScopeBuiltinDel", "isar_text" -> "declare [[mcp_tools del: repl_list]]")),
-        "deactivating the repl_list builtin mirror")
-
-      val handler = new MCP_Server.Handler(session)
-      assert_no_error(
-        call_tool_on(handler, "tool_scope_set",
-          JSON.Object("context" -> "isabelle://context/repl/ScopeBuiltinDel")))
-
-      val tools = get_list(rpc_on(handler, "tools/list"), "result", "tools")
-      assert(!tools.exists(t => get_string(t, "name") == "repl_list"),
-        "repl_list still listed after del: " + tools.toString)
-
-      val reply = call_tool_on(handler, "repl_list", JSON.Object())
-      assert_no_error(reply)
-    }
-  }
-
-  /* scope_add/scope_remove (plans/scope_add, plans/scope_remove): the
-     phase-2 RESOURCE scope against a real headless session -- match
-     counting over the real theory universe (D1's structure/deps maps),
-     and the load_theory/unload_theory retrofit (T4). Each test uses its
-     own patterns/fixture names so they don't interfere with each other
-     via the session-wide scope state. */
-
-  /* the session is shared across every test in this class (beforeAll
-     starts it once) -- and so is scope state, unlike a fresh
-     Fake_Backend per call. Each test below removes what it added, the
-     same discipline with_repl's finally-teardown uses for repls. */
-  test("scope_add#T2: match counts are computed against the real theory universe (image tier)") {
-    val handler = new MCP_Server.Handler(session)
-    try {
-      val text =
-        result_text(call_tool_on(handler, "scope_add", JSON.Object("patterns" -> List("HOL.Wellf*"))))
-      assert(text.contains("HOL.Wellf*: added ("), "unexpected scope_add reply: " + text)
-      assert(!text.contains("(0 theories match)"),
-        "HOL.Wellf* should match at least HOL.Wellfounded in the real image: " + text)
-    }
-    finally call_tool_on(handler, "scope_remove", JSON.Object("patterns" -> List("HOL.Wellf*")))
-  }
-
-  test("scope_add zero-match pattern against the real universe is pinned, not an error") {
-    val handler = new MCP_Server.Handler(session)
-    val reply =
-      call_tool_on(handler, "scope_add", JSON.Object("patterns" -> List("NoSuchScopeBridgeThy.*")))
-    assert_no_error(reply)
-    assert(result_text(reply).contains("NoSuchScopeBridgeThy.*: added (0 theories match)"),
-      "unexpected scope_add reply: " + result_text(reply))
-  }
-
-  /* T4 (plans/scope_add / plans/unload_theory): load_theory auto-adds a
-     filesystem-tier fixture to the resources/list working set, tagged
-     loaded; unload_theory removes it again. */
-  spec_test("bridge: load_theory auto-adds to resources/list; unload_theory removes it",
-      covers = List("scope_add#T4")) {
-    with_fixture_dir("ScopeBridgeLoad" -> wave2_theory("ScopeBridgeLoad", wave2_good)) { dir =>
-      val handler = new MCP_Server.Handler(session)
-      expect_ok(session.load_theory("ScopeBridgeLoad", File.standard_path(dir)), "load")
-
-      val listed = get_list(rpc_on(handler, "resources/list"), "result", "resources")
-      val entry = listed.find(r => get_string(r, "uri") == "isabelle://theory/ScopeBridgeLoad")
-        .getOrElse(fail("ScopeBridgeLoad missing from resources/list: " + listed.toString))
-      assertEquals(get_string(entry, "description"), "theory (loaded)")
-
-      expect_ok(session.unload_theory("ScopeBridgeLoad"), "unload")
-      val after_unload = get_list(rpc_on(handler, "resources/list"), "result", "resources")
-      assert(!after_unload.exists(r => get_string(r, "uri") == "isabelle://theory/ScopeBridgeLoad"),
-        "ScopeBridgeLoad should be gone from resources/list after unload: " + after_unload.toString)
-    }
-  }
-
-  /* T5 (plans/scope_add): full chain -- scope_add, resources/list
-     reflects it, list_changed fires. */
-  test("scope_add#T5 bridge: scope_add's pattern match appears in resources/list and fires list_changed") {
-    val handler = new MCP_Server.Handler(session)
-    var seen: List[String] = Nil
-    session.set_changed_handler(seen ::= _)
-    assert_no_error(
-      call_tool_on(handler, "scope_add", JSON.Object("patterns" -> List("HOL.Wellfounded"))))
-    assertEquals(seen, List("resources"), "scope_add should fire exactly one resources notification")
-
-    val listed = get_list(rpc_on(handler, "resources/list"), "result", "resources")
-    val entry = listed.find(r => get_string(r, "uri") == "isabelle://theory/HOL.Wellfounded")
-      .getOrElse(fail("HOL.Wellfounded missing from resources/list: " + listed.toString))
-    assertEquals(get_string(entry, "description"), "theory (image)")
-
-    seen = Nil
-    assert_no_error(
-      call_tool_on(handler, "scope_remove", JSON.Object("patterns" -> List("HOL.Wellfounded"))))
-    assertEquals(seen, List("resources"), "scope_remove should fire exactly one resources notification")
-    val after_remove = get_list(rpc_on(handler, "resources/list"), "result", "resources")
-    assert(!after_remove.exists(r => get_string(r, "uri") == "isabelle://theory/HOL.Wellfounded"),
-      "HOL.Wellfounded should be delisted after scope_remove: " + after_remove.toString)
-  }
-
-  /* T2 (plans/scope_show): a real repl (via with_repl) and a real
-     load_theory fixture both show up in scope_show against a live
-     session -- the one thing Fake_Backend's scala-unit T2 cases
-     (Fake_Backend.active_repls, a settable stand-in) can't cover:
-     active_repl_ids() actually parsing session.ir("repls", Nil)'s real
-     text output. Removal of both makes them disappear again. */
-  spec_test("bridge: a real repl and a real load_theory both appear, and disappear on removal",
-      covers = List("scope_show#T2")) {
-    val handler = new MCP_Server.Handler(session)
-    with_repl("ScopeShowRepl") {
-      val with_repl_text = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
-      assert(with_repl_text.contains("repls:") && with_repl_text.contains("  ScopeShowRepl"),
-        "the live repl should be listed by scope_show: " + with_repl_text)
-
-      with_fixture_dir("ScopeShowLoad" -> wave2_theory("ScopeShowLoad", wave2_good)) { dir =>
-        expect_ok(session.load_theory("ScopeShowLoad", File.standard_path(dir)), "load")
-        val both = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
-        assert(both.contains("  ScopeShowLoad (loaded)"),
-          "the loaded theory should be listed, tier-tagged: " + both)
-        assert(both.contains("  ScopeShowRepl"), "the repl should still be listed: " + both)
-
-        expect_ok(session.unload_theory("ScopeShowLoad"), "unload")
-        val after_unload = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
-        assert(!after_unload.contains("ScopeShowLoad"),
-          "unload_theory should remove it from scope_show: " + after_unload)
-      }
-    }
-    val after_remove = result_text(call_tool_on(handler, "scope_show", JSON.Object()))
-    assert(!after_remove.contains("ScopeShowRepl"),
-      "repl_remove (with_repl's teardown) should remove it from scope_show: " + after_remove)
-  }
-
-  /* repl_init_from_source (plans/repl_init_from_source): T3, T4, T5.
-     T1 (exactly-one-locator) and T2 (the pure resolver) are covered
-     scala-unit only (mcp_handler_tests.scala's dispatch tests and
-     MCP_Locator_Tests) -- everything below needs a live PIDE session or
-     this suite's own -T theory's recorded segments. */
-
-  /* T3: Ir.init_from_document requires the command to be executed and
-     finished. load_theory is synchronous (use_theories blocks until the
-     whole document is checked), so every command our own resolver can
-     ever pick is already finished -- there is no public way to reach a
-     genuinely "still being evaluated" command through session.
-     init_from_source. What IS reachable, and what this pins instead, is
-     the sibling guard one layer down: an inaccessible command_id (never
-     assigned in this node at all) is caught by init_from_document's own
-     Exn.capture branch and reported as a clean status error, not a
-     hang or an uncaught exception -- extracting a real node_name from a
-     successful attach (the engine echoes it back in "from document ...
-     command N") rather than guessing Isabelle's node-naming convention. */
-  spec_test("an inaccessible command_id is a status error, not a hang",
-      covers = List("repl_init_from_source#T3")) {
-    with_fixture_dir(
-      "InitFromSrcT3" -> wave2_theory("InitFromSrcT3", "lemma init_from_src_t3: \"True\" by simp")
-    ) { dir =>
-      expect_ok(session.load_theory("InitFromSrcT3", File.standard_path(dir)), "load")
-      val created =
-        expect_ok(
-          session.init_from_source("T3a", "InitFromSrcT3", None, Some("lemma init_from_src_t3"), None),
-          "attach by pattern")
-      expect_ok(session.ir("remove", List("repl" -> "T3a")))
-
-      val node_name =
-        """from document "([^"]+)" command""".r.findFirstMatchIn(created)
-          .getOrElse(fail("could not extract node_name from create reply: " + created)).group(1)
-
-      expect_error(
-        session.ir("init_from_document",
-          List("repl" -> "T3b", "node_name" -> node_name, "command_id" -> "0")),
-        containing = "Cannot access command")
-    }
-  }
-
-  /* T4: the image-tier segment fallback (MCP_Repl.thy's
-     init_from_segment) against this suite's own -T theory, whose
-     segments were recorded at build time (record_theories, tier_image
-     above) and DO survive into this live process (the retracted-gap
-     test above). offset 0 always lands in segment 0 regardless of its
-     exact text, so it needs no fragile byte-offset arithmetic; pattern
-     targets a command known to appear exactly once. */
-  spec_test("image-tier segment fallback resolves offset/pattern/index against recorded segments",
-      covers = List("repl_init_from_source#T4")) {
-    val by_pattern =
-      expect_ok(
-        session.init_from_source("SegPat", "MCP_Repl", None, Some("Ir.set_self_theory"), None),
-        "attach by pattern to a segment")
-    assert(by_pattern.contains("Created REPL"), "unexpected reply: " + by_pattern)
-    expect_ok(session.ir("step", List("repl" -> "SegPat", "isar_text" -> "lemma segpat_t4: True")))
-    expect_ok(session.ir("step", List("repl" -> "SegPat", "isar_text" -> "by simp")))
-    val listing = repl_listing()
-    assert(listing.contains("SegPat"), "SegPat missing from repl_list: " + listing)
-    expect_ok(session.ir("remove", List("repl" -> "SegPat")))
-
-    expect_ok(session.init_from_source("SegIdx", "MCP_Repl", None, None, Some(0)), "attach by index 0")
-    expect_ok(session.ir("remove", List("repl" -> "SegIdx")))
-
-    expect_ok(session.init_from_source("SegOff", "MCP_Repl", Some(0), None, None), "attach by offset 0")
-    expect_ok(session.ir("remove", List("repl" -> "SegOff")))
-
-    expect_error(
-      session.init_from_source("SegBad", "MCP_Repl", None, Some("no_such_segment_text_xyz"), None),
-      containing = "not found")
-  }
-
-  /* T5: full chain over the PIDE-snapshot (loaded-tier) branch -- load
-     a fixture whose lemma and its proof are separate commands, attach
-     by pattern to the lemma statement (AFTER semantics: the open-goal
-     state right after that command, before its own on-disk "by"), step
-     the SAME closing tactic through the fresh REPL, and confirm it is
-     listed, steppable, its text readable, and removable. */
-  spec_test("e2e attach-by-pattern on a loaded theory, step, text, remove",
-      covers = List("repl_init_from_source#T5")) {
-    with_fixture_dir(
-      "InitFromSrcT5" ->
-        wave2_theory("InitFromSrcT5",
-          "definition init_src_t5_const :: nat where \"init_src_t5_const = 1\"\n\n" +
-          "lemma init_src_t5_lemma: \"init_src_t5_const = 1\"\n" +
-          "  by (simp add: init_src_t5_const_def)")
-    ) { dir =>
-      expect_ok(session.load_theory("InitFromSrcT5", File.standard_path(dir)), "load")
-
-      val created =
-        expect_ok(
-          session.init_from_source("T5", "InitFromSrcT5", None, Some("lemma init_src_t5_lemma"), None),
-          "attach by pattern")
-      assert(created.contains("Created REPL") && created.contains("[proof]"),
-        "attach should land right after the lemma statement, mid-proof: " + created)
-
-      expect_ok(
-        session.ir("step",
-          List("repl" -> "T5", "isar_text" -> "by (simp add: init_src_t5_const_def)")),
-        "closing the goal from the attach point")
-
-      val listing = repl_listing()
-      assert(listing.contains("T5"), "T5 missing from repl_list: " + listing)
-
-      val text = expect_ok(session.ir("text", List("repl" -> "T5")))
-      assert(text.contains("by (simp"), "repl_text should include the step: " + text)
-
-      expect_ok(session.ir("remove", List("repl" -> "T5")))
-    }
-  }
-
-  /* plans/ml_builtin_migration wave 1: repl_show/repl_text/repl_back move
-     from Builtin_Tool rows + dispatcher cases to capture-form mcp_tools
-     declared in MCP_Repl.thy. This is the wave's one bridge exemplar
-     (per the plan's "test migration": one exemplar per wave, not one per
-     tool) -- tools/list shows the moved names with the right schema and
-     annotations, and tools/call repl_show round-trips against a live
-     repl with no yxml markup in the result (A3). repl_show/repl_text
-     ALSO keep a surviving MCP.ir dispatcher case above (resource reads);
-     this exercises the NEW mcp_tool entry point instead, over
-     MCP.run_tool. */
-  test("wave 1: tools/list shows repl_show/repl_text/repl_back as capture tools with their {repl} schema and annotations") {
-    val rows = session.ml_tools().rows
-    def row(name: String): MCP_Session.Tool_Row =
-      rows.find(_.name == "MCP_Repl." + name)
-        .getOrElse(fail("MCP_Repl." + name + " not in ml_tools: " + rows.map(_.name)))
-
-    val show = row("repl_show")
-    val text = row("repl_text")
-    val back = row("repl_back")
-
-    for (r <- List(show, text, back)) {
-      assertEquals(r.form, "capture")
-      assertEquals(r.params.map(p => (p.name, p.typ, p.required)),
-        List(("repl", MCP_Session.Ptyp_String, true)))
-    }
-    assertEquals(show.annotations.read_only, Some(true))
-    assertEquals(text.annotations.read_only, Some(true))
-    assertEquals(back.annotations.destructive, Some(true))
-  }
-
-  test("wave 1: tools/call repl_show round-trips against a live repl with no yxml markup") {
-    with_repl("Wave1Show") {
-      expect_ok(session.ir("step", List("repl" -> "Wave1Show", "isar_text" -> "lemma True")),
-        "step on Wave1Show")
-
-      val result = session.ml_run("MCP_Repl.repl_show", List("repl" -> "Wave1Show"))
-      val text = expect_ok(result, "repl_show on Wave1Show")
-      assert(text.contains("Wave1Show"), "repl_show output missing the repl id: " + text)
-      assert(!text.exists(c => c < ' ' && c != '\n' && c != '\t' && c != '\r'),
-        "repl_show output must contain no yxml control characters: " + text)
-    }
-  }
 }
 
-
-/* run_tool async (plans/ml_builtin_migration step 5, A4/A5): the same
-   two-future shape as MCP.ir above, over the capture-form test tools
-   declared in MCP_Tools_Tests.thy (MCP-Tools has no genuinely slow tool of
-   its own to exercise this with). A6's own bridge case -- two capture
-   tools concurrently against two DIFFERENT repls -- needs a real
-   repl-designated capture tool, which does not exist until wave 1 lands
-   (and wave 1 was blocked on the S1 context decision); this suite
-   is the adjacent claim available today: two DIFFERENT capture tools
-   running concurrently under one context do not cross outputs. */
 class MCP_Run_Tool_Async_Tests
   extends MCP_Session_Suite(
     "MCP-Tools-Tests", "MCP_Tools_Tests", McpBridgeProfile.base) {
 
-  /* These test tools live in the test theory, so select its explicit context
-     rather than the connection's MCP_Tools registry-root context. */
-  lazy val test_theory: String =
-    "isabelle://context/theory/" +
-      session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
-        .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
 
-  spec_test("single bridge registry correlates a fast reply before an earlier slow reply",
-      covers = List("pide_bridge#T1", "pide_bridge#T8")) {
-    val slow = Future.fork(
-      session.ml_read_resource("MCP_Tools_Tests.slow_resource", test_theory))
-    Thread.sleep(100)
-    assert(!slow.is_finished, "slow resource completed before the fast call")
-
-    val fast = session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory)
-    assert(fast.ok, "fast resource failed while the earlier call remained pending: " + fast)
-    assert(!slow.is_finished, "earlier slow call completed before the later fast reply")
-    assert(slow.join.ok, "slow resource did not receive its own eventual reply")
-  }
-
-  spec_test("bridge routes correlate concurrent distinguishable catalogs and resources",
-      covers = List("connection_kernel#T11")) {
-    /* Keep this correlation probe at the configured default maxPending (8).
-       Immediate overload beyond the bound has its own deterministic test. */
-    val probes: List[(String, () => Boolean)] = List(
-      "valid tools" -> (() =>
-        session.ml_tools(test_theory).rows.exists(_.name == "MCP_Tools_Tests.capture_ok")),
-      "invalid tools" -> (() => session.ml_tools("No_Such_Theory").rows.isEmpty),
-      "valid resources" -> (() =>
-        session.ml_named_resources(test_theory)
-          .exists(_._1 == "MCP_Tools_Tests.slow_resource")),
-      "invalid resources" -> (() => session.ml_named_resources("No_Such_Theory").isEmpty),
-      "valid context" -> (() =>
-        session.check_context(test_theory).isInstanceOf[MCP_Session.Ok]),
-      "invalid context" -> (() =>
-        session.check_context("isabelle://context/theory/No_Such_Theory")
-          .isInstanceOf[MCP_Session.Error]),
-      "valid resource read" -> (() =>
-        session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory).ok),
-      "invalid resource read" -> (() =>
-        !session.ml_read_resource("MCP_Tools_Tests.no_such_resource", test_theory).ok))
-
-    val ready = new CountDownLatch(probes.length)
-    val release = new CountDownLatch(1)
-    val results = probes.zipWithIndex.map { case ((label, probe), index) =>
-      label -> Future.thread(name = "bridge-route-probe-" + index, daemon = true) {
-        ready.countDown()
-        if (!release.await(5, TimeUnit.SECONDS)) error("bridge route start barrier timed out")
-        probe()
+  spec_test("base bridge deadline interrupts a started ML tool and recovers",
+      covers = List("pide_bridge#T4")) {
+    Isabelle_System.with_tmp_dir("bridge-deadline") { dir =>
+      val theory = "BridgeDeadlineFixture"
+      val sessionName = "MCP-Bridge-Deadline-Fixture"
+      File.write(dir + Path.basic("ROOT"),
+        "session \"" + sessionName + "\" = \"MCP-Tools\" +\n  theories " + theory + "\n")
+      File.write(dir + Path.basic(theory + ".thy"),
+        "theory " + theory + "\nimports \"MCP-Tools.MCP_Tools\"\nbegin\n" +
+        "ML \\<open>val lifecycle = Synchronized.var \"deadline lifecycle\" \"idle\";\\<close>\n" +
+        "mcp_tool slow = run \\<open>fn _ => fn _ => let " +
+        "val _ = Synchronized.change lifecycle (K \"started\"); " +
+        "val result = Exn.capture_body (fn () => (OS.Process.sleep (Time.fromReal 5.0); \"done\")); " +
+        "val _ = Thread_Attributes.uninterruptible_body (fn _ => Synchronized.change lifecycle " +
+        "(K (if (case result of Exn.Exn exn => Exn.is_interrupt exn | Exn.Res _ => false) then \"interrupted\" else \"finished\"))); " +
+        "in Exn.release result end\\<close> (description \\<open>slow fixture\\<close>) (annotations mutating)\n" +
+        "mcp_tool state = run \\<open>fn _ => fn _ => Synchronized.value lifecycle\\<close> " +
+        "(description \\<open>lifecycle fixture\\<close>) (annotations read_only)\nend\n")
+      val timed = MCP_Session.start(MCP_Test_Config.options + "mcp_request_timeout=1.0",
+        sessionName, MCP_Test_Config.session_dirs :+ dir, theory, McpBridgeProfile.base,
+        MCP_Test_Config.progress)
+      val root = "isabelle://context/theory/" + sessionName + "." + theory
+      def state(): MCP_Session.Result = timed.ml_run(theory + ".state", Nil, root)
+      try {
+        val slow = Future.fork(timed.ml_run(theory + ".slow", Nil, root))
+        eventually("deadline fixture did not start", Time.seconds(0.8)) {
+          state() == MCP_Session.Ok("started")
+        }
+        val timeout = intercept[MCP_Session.BridgeTimedOut] { slow.join }
+        assertEquals(timeout.delay, 1.seconds)
+        eventually("deadline did not interrupt admitted ML work", Time.seconds(3.0)) {
+          state() == MCP_Session.Ok("interrupted")
+        }
+        assertEquals(timed.ml_run("MCP_Tools.shout", List("input" -> "after"), root), MCP_Session.Ok("AFTER"))
       }
-    }
-    assert(ready.await(5, TimeUnit.SECONDS), "concurrent bridge probes did not reach barrier")
-    release.countDown()
-    results.foreach { case (label, result) =>
-      assert(result.join, label + " received another request's bridge reply")
+      finally timed.stop()
     }
   }
 
-  spec_test("named-resource bridge cancellation returns promptly and remains usable",
-      covers = List("connection_kernel#T11", "connection_kernel#T4")) {
-    val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
-    val requestId = RequestId.string("live-resource-cancel")
-    val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
-      case value: RequestRegistry.Admitted => value
-      case other => fail("could not admit live resource cancellation fixture: " + other)
-    }
-    val slow = Future.fork(session.ml_read_resource_cancellable(
-      "MCP_Tools_Tests.slow_resource", test_theory, admitted.cancellation))
-    Thread.sleep(100)
-    assert(!slow.is_finished, "slow resource fixture completed before cancellation")
+  lazy val test_theory: String = expect_ok(session.root_context())
 
-    val before = Time.now()
-    assert(registry.cancel(requestId, Some("bridge fixture"))
-      .isInstanceOf[RequestRegistry.Cancelled])
-    expect_error(slow.join, containing = "cancelled")
-    assert(Time.now() - before < Time.seconds(1.0),
-      "Scala resource bridge promise did not return promptly after cancellation")
-    assertEquals(
-      session.ml_read_resource("MCP_Tools_Tests.test_collection", test_theory).ok,
-      true,
-      "resource bridge was unusable after cancellation")
+  spec_test("framework context executes a root-only tool in an ancestor target",
+      covers = List("context_locator#T4", "context_locator#T5")) {
+    val target = expect_ok(session.check_context("isabelle://context/theory/MCP_Tools"))
+    val rootResult = expect_ok(run("target_probe"))
+    assert(rootResult.split('.').last.startsWith("MCP_Root_"), rootResult)
+    val targetResult = expect_ok(run("target_probe", List("context" -> target)))
+    assert(targetResult.endsWith("MCP_Tools") && !targetResult.endsWith("MCP_Tools_Tests"))
+    assertEquals(session.ml_tools(target), session.ml_tools())
   }
 
   spec_test("direct Scala backend work is interrupted without poisoning the reused worker",
@@ -1543,7 +676,7 @@ class MCP_Run_Tool_Async_Tests
       "direct cancellation poisoned later worker work")
   }
 
-  spec_test("live connection kernel cancels a named-resource read and remains usable",
+  spec_test("live connection kernel cancels an ML tool and remains usable",
       covers = List("connection_kernel#T4", "connection_kernel#T11")) {
     def checked[A](value: Either[String, A]): A = value.fold(error, identity)
     val policy = ConnectionPolicy(
@@ -1557,22 +690,13 @@ class MCP_Run_Tool_Async_Tests
     val rules = new Mcp2025RevisionRules
     val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
     val testTheory = test_theory
-    val backend = new Fake_Backend {
-      override def mcp_resource_read_cancellable(uri: String,
-          cancellation: McpApplication.Cancellation): MCP_Session.Result = {
-        val name =
-          if (uri.endsWith("/slow_resource")) "MCP_Tools_Tests.slow_resource"
-          else "MCP_Tools_Tests.test_collection"
-        session.ml_read_resource_cancellable(name, testTheory, cancellation)
-      }
-    }
     val application = McpApplication.isabelle(
-      () => McpApplication.Ready(backend), "MCP-Tools-Tests", Nil, "MCP_Tools_Tests")
+      () => McpApplication.Ready(session), "MCP-Tools-Tests", Nil, "MCP_Tools_Tests")
     val kernel = ConnectionKernel(
       policy = policy,
       dataPlane = plane,
       revisionRules = rules,
-      scheduler = new BoundedConcurrentScheduler(1, "live-resource-kernel"),
+      scheduler = new BoundedConcurrentScheduler(1, "live-tool-kernel"),
       deadlineScheduler = new ManualDeadlineScheduler,
       registry = registry,
       application = application,
@@ -1590,24 +714,27 @@ class MCP_Run_Tool_Async_Tests
       kernel.handle(request(Some("init"), "initialize",
         Some(JSON.Object("protocolVersion" -> ProtocolRevision.V2025_03_26.value))))
       kernel.handle(request(None, "notifications/initialized"))
-      kernel.handle(request(Some("slow"), "resources/read",
-        Some(JSON.Object("uri" -> "isabelle://named/slow_resource"))))
+      kernel.handle(request(Some("slow"), "tools/call",
+        Some(JSON.Object("name" -> "capture_slow", "arguments" -> JSON.Object()))))
       Thread.sleep(100)
+      assert(!plane.written.exists(line =>
+        JSON.Format.unapply(line).flatMap(JSON.string(_, "id")).contains("slow")),
+        "slow tool completed before cancellation")
       kernel.handle(request(None, "notifications/cancelled",
         Some(JSON.Object("requestId" -> "slow", "reason" -> "bridge fixture"))))
-      eventually("cancelled resource worker retained connection capacity", Time.seconds(2.0)) {
+      eventually("cancelled tool worker retained connection capacity", Time.seconds(2.0)) {
         registry.snapshot.activeIds.isEmpty
       }
 
-      kernel.handle(request(Some("fast"), "resources/read",
-        Some(JSON.Object("uri" -> "isabelle://named/test_collection"))))
-      eventually("connection did not answer after resource cancellation", Time.seconds(2.0)) {
+      kernel.handle(request(Some("fast"), "tools/call",
+        Some(JSON.Object("name" -> "capture_ok", "arguments" -> JSON.Object("x" -> "after-cancel")))))
+      eventually("connection did not answer after tool cancellation", Time.seconds(2.0)) {
         plane.written.exists(line =>
           JSON.Format.unapply(line).flatMap(JSON.string(_, "id")).contains("fast"))
       }
       assert(!plane.written.exists(line =>
         JSON.Format.unapply(line).flatMap(JSON.string(_, "id")).contains("slow")),
-        "client-cancelled resource read emitted a response: " + plane.written.mkString(" | "))
+        "client-cancelled tool call emitted a response: " + plane.written.mkString(" | "))
     }
     finally kernel.drainAndClose()
   }
@@ -1616,7 +743,7 @@ class MCP_Run_Tool_Async_Tests
     session.ml_run("MCP_Tools_Tests." + name, args, test_theory)
 
   spec_test("run-tool bridge cancellation unblocks Scala and leaves later calls usable",
-      covers = List("connection_kernel#T4")) {
+      covers = List("connection_kernel#T4", "pide_bridge#T3")) {
     val registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast)
     val requestId = RequestId.string("live-run-tool-cancel")
     val admitted = registry.admit(requestId, RequestRegistry.AdmissionKind.Ordinary) match {
@@ -1639,7 +766,8 @@ class MCP_Run_Tool_Async_Tests
       MCP_Session.Ok("got:after-cancel"))
   }
 
-  test("bridge: run_tool async -- a slow capture tool does not block a concurrent fast one") {
+  spec_test("bridge: run_tool async -- a slow capture tool does not block a concurrent fast one",
+      covers = List("pide_bridge#T1", "pide_bridge#T8")) {
     val slow = Future.fork(run("capture_slow"))
     val fast = run("capture_ok", List("x" -> "hi"))
 
@@ -1651,7 +779,7 @@ class MCP_Run_Tool_Async_Tests
   }
 
   spec_test("bridge: run_tool async -- concurrent capture tools do not cross outputs",
-      verifies = List("ml_builtin_migration#A5", "ml_builtin_migration#A6")) {
+      covers = List("pide_bridge#T1")) {
     val slow = Future.fork(run("capture_slow"))
     val fast = run("capture_ok", List("x" -> "hi"))
     val slow_result = slow.join
@@ -1682,26 +810,23 @@ class MCP_Bridge_Shutdown_Tests
   override def afterAll(): Unit = if (!stopped) super.afterAll()
 
   spec_test("backend stop cancels every pending bridge and joins direct Scala work",
-      covers = List("connection_kernel#T4", "connection_kernel#T11", "connection_kernel#T12")) {
-    val testTheory =
-      "isabelle://context/theory/" +
-        session.ml_theories().find(n => Long_Name.base_name(n) == "MCP_Tools_Tests")
-          .getOrElse(fail("MCP_Tools_Tests not in ml_theories"))
-    val resource = Future.fork(session.ml_read_resource_cancellable(
-      "MCP_Tools_Tests.slow_resource", testTheory, McpApplication.Cancellation.Never))
+      covers = List("pide_bridge#T6", "connection_kernel#T4", "connection_kernel#T11", "connection_kernel#T12")) {
+    val testTheory = expect_ok(session.root_context())
+    val pending = Future.fork(session.ml_run_cancellable(
+      "MCP_Tools_Tests.capture_slow", Nil, testTheory, McpApplication.Cancellation.Never))
     val direct = Future.fork(session.direct_cancellable(McpApplication.Cancellation.Never) {
       Thread.sleep(5000)
       "unexpected completion"
     })
     Thread.sleep(100)
-    assert(!resource.is_finished && !direct.is_finished,
+    assert(!pending.is_finished && !direct.is_finished,
       "shutdown fixtures completed before backend stop")
 
     session.stop()
     stopped = true
-    assert(resource.is_finished && direct.is_finished,
+    assert(pending.is_finished && direct.is_finished,
       "backend stop returned before pending work terminated")
-    expect_error(resource.join, containing = "session stopped")
+    expect_error(pending.join, containing = "session stopped")
     assert(Exn.is_exn(direct.join_result), "direct work escaped backend stop")
   }
 }

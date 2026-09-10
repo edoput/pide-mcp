@@ -24,8 +24,6 @@ private[mcp] final case class McpBridgeProfile private (
 private[mcp] object McpBridgeProfile {
   val base: McpBridgeProfile =
     McpBridgeProfile("base", McpBridgeOperations.baseOperationNames)
-  val hol: McpBridgeProfile =
-    McpBridgeProfile("hol", McpBridgeOperations.holOperationNames)
 }
 
 
@@ -57,12 +55,6 @@ private[mcp] object McpBridgeOperations {
         MCP_Session.decode_tools_reply(payload)
     }
 
-  def theories: BridgeOperation[List[String]] =
-    new Operation[List[String]]("theories", XML.Encode.unit(())) {
-      protected def decode(payload: XML.Body): List[String] =
-        MCP_Session.decode_theories(payload)
-    }
-
   def runTool(context: String, name: String,
     args: List[(String, String)]): BridgeOperation[MCP_Session.Result] =
     statusText(
@@ -73,27 +65,6 @@ private[mcp] object McpBridgeOperations {
   /** None asks ML for the canonical registry-root context. */
   def checkContext(context: Option[String]): BridgeOperation[MCP_Session.Result] =
     statusText("check_context", XML.Encode.option(XML.Encode.string)(context))
-
-  def ir(fname: String, args: List[(String, String)]): BridgeOperation[MCP_Session.Result] =
-    new Operation[MCP_Session.Result](
-      "ir", XML.Encode.pair(XML.Encode.string, encodeArgs)((fname, args))) {
-      protected def decode(payload: XML.Body): MCP_Session.Result = {
-        val (status, body) =
-          XML.Decode.pair(XML.Decode.string, XML.Decode.self)(payload)
-        statusResult(status, XML.content(body))
-      }
-    }
-
-  def resources(context: String): BridgeOperation[List[(String, String)]] =
-    new Operation[List[(String, String)]]("resources", XML.Encode.string(context)) {
-      protected def decode(payload: XML.Body): List[(String, String)] =
-        MCP_Session.decode_resources(payload)
-    }
-
-  def readResource(context: String, name: String): BridgeOperation[MCP_Session.Result] =
-    statusText(
-      "read_resource",
-      XML.Encode.pair(XML.Encode.string, XML.Encode.string)((context, name)))
 
   private def statusText(operation: String,
     request: XML.Body): BridgeOperation[MCP_Session.Result] =
@@ -107,13 +78,6 @@ private[mcp] object McpBridgeOperations {
   private def statusResult(status: String, text: String): MCP_Session.Result =
     if (status == "ok") MCP_Session.Ok(text) else MCP_Session.Error(text)
 
-  val operationNames: Set[String] =
-    Set("tools", "theories", "run_tool", "check_context", "ir",
-      "resources", "read_resource")
-
-  /* Startup requirements are bridge-operation names, not public MCP tool
-     names.  The ML registry is extensible, so a hello may advertise more. */
-  val baseOperationNames: Set[String] =
-    Set("tools", "theories", "run_tool", "check_context", "resources", "read_resource")
-  val holOperationNames: Set[String] = baseOperationNames + "ir"
+  val operationNames: Set[String] = Set("tools", "run_tool", "check_context")
+  val baseOperationNames: Set[String] = operationNames
 }

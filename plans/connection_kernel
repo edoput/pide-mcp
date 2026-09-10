@@ -4,182 +4,277 @@ id: connection_kernel
 title: Replaceable MCP connection kernel with bounded request ownership
 status: done
 depends_on:
-  - planning_gate
-  - readiness
+- planning_gate
+- readiness
 allowed_modules:
-  - spec
-  - plans
-  - CHANGELOG
-  - mcp/etc
-  - mcp/src
-  - mcp/Tools
-  - mcp_test/src
-  - mcp/test
-  - tools/planning_gate/tests
+- spec
+- plans
+- CHANGELOG
+- mcp/etc
+- mcp/src
+- mcp/Tools
+- mcp_test/src
+- mcp/test
+- tools/planning_gate/tests
 invariants:
-  - id: INV1
-    statement: The data plane owns byte transport, framing, JSON encoding, and complete writes but no MCP lifecycle, scheduling, or Isabelle behavior.
-  - id: INV2
-    statement: The connection kernel alone owns MCP lifecycle, admission, request identities, cancellation races, terminal dispositions, and shutdown drain.
-  - id: INV3
-    statement: Every admitted request reaches exactly one terminal disposition and emits at most one response; client-cancelled work emits no response and no late result can escape.
-  - id: INV4
-    statement: MCP connection lifecycle and Isabelle backend readiness are independent state machines joined only by the application boundary.
-  - id: INV5
-    statement: Production and deterministic test implementations obey the same typed data-plane, revision, scheduler, application, and invariant-policy contracts.
-  - id: INV6
-    statement: Duplicate or unknown completion is always detected as an invariant violation; its operational reaction is selected by connection composition rather than application code.
+- id: INV1
+  statement: The data plane owns byte transport, framing, JSON encoding, and complete
+    writes but no MCP lifecycle, scheduling, or Isabelle behavior.
+- id: INV2
+  statement: The connection kernel alone owns MCP lifecycle, admission, request identities,
+    cancellation races, terminal dispositions, and shutdown drain.
+- id: INV3
+  statement: Every admitted request reaches exactly one terminal disposition and emits
+    at most one response; client-cancelled work emits no response and no late result
+    can escape.
+- id: INV4
+  statement: MCP connection lifecycle and Isabelle backend readiness are independent
+    state machines joined only by the application boundary.
+- id: INV5
+  statement: Production and deterministic test implementations obey the same typed
+    data-plane, revision, scheduler, application, and invariant-policy contracts.
+- id: INV6
+  statement: Duplicate or unknown completion is always detected as an invariant violation;
+    its operational reaction is selected by connection composition rather than application
+    code.
 claims:
-  - id: A1
-    kind: assumption
-    state: active
-    statement: One connection observes one immutable validated policy snapshot; changing process configuration cannot partially reconfigure an active connection.
-    layers: [scala-unit]
-  - id: A2
-    kind: assumption
-    state: active
-    statement: One stdio server process serves one logical MCP client and owns one Isabelle application instance for the lifetime of that connection.
-    layers: [scala-unit, e2e]
-  - id: I1
-    kind: infrastructure
-    state: active
-    statement: DataPlane, RevisionRules, RequestScheduler, McpApplication, and InvariantViolationPolicy are narrow replaceable ports selected only at the composition root.
-    layers: [scala-unit]
-  - id: I2
-    kind: infrastructure
-    state: active
-    statement: Production uses a bounded concurrent scheduler with immediate rejection and no application waiting queue, while tests can use a deterministic sequential scheduler over the same kernel.
-    layers: [scala-unit]
-  - id: D1
-    kind: design
-    statement: Client-visible protocol guarantees live in the specification; ownership, package boundaries, and execution strategy live in this implementation plan.
-    category: design
-  - id: D2
-    kind: design
-    statement: Lifecycle, cancellation, ping, admission, and completion bookkeeping run on the connection control path and do not consume application worker capacity.
-    category: design
-  - id: D3
-    kind: design
-    statement: Policy is a nested Scala value with named construction, validated opaque leaf types, no correctness-affecting defaults, and one options-to-policy composition function.
-    category: design
-  - id: D4
-    kind: design
-    statement: Registry invariant detection is fixed inside the connection kernel; FailFast, LogAndClose, and MarkBroken reactions are replaceable control-plane policies, with the composition root choosing the mode.
-    category: design
-  - id: D5
-    kind: design
-    statement: The implementation remains on MCP revision 2025-03-26 and accepts JSON-RPC batches only because that revision requires batch reception; no product behavior depends on batching.
-    category: design
-  - id: D6
-    kind: design
-    statement: Every concurrently callable Scala-to-ML round trip has a request-unique internal route; a reply completes only that route, and cancellation or shutdown removes every pending route without relying on FIFO arrival order.
-    category: design
-  - id: Q1
-    kind: question
-    state: resolved
-    statement: Which MCP revision and batch behavior does this remediation target?
-    resolution: Retain MCP 2025-03-26 and implement its required JSON-RPC batch reception without adding revision negotiation or newer transport behavior to this work package.
-    resolved_on: "2026-08-27"
-  - id: T1
-    kind: test
-    state: active
-    statement: Protocol fixtures cover valid and invalid requests, notifications, IDs, parameters, malformed JSON, and MCP 2025-03-26 wire responses without starting Isabelle.
-    layers: [scala-unit]
-  - id: T2
-    kind: test
-    state: active
-    statement: A lifecycle transition table accepts only initialize in Fresh, initialized notification and ping in AwaitingInitialized, normal operations in Ready, and no new work in Closing or Closed.
-    layers: [scala-unit, e2e]
-  - id: T3
-    kind: test
-    state: active
-    statement: Saturating maxInFlight admits exactly the configured bound, immediately returns structured overload errors for additional requests, creates no waiting application work, and recovers capacity after termination.
-    layers: [scala-unit]
-  - id: T4
-    kind: test
-    state: active
-    statement: Cancellation during saturation reaches cooperative Scala and ML work, promptly removes and resolves the Scala bridge route, emits no response when cancellation wins, releases capacity once, and suppresses a result already racing toward completion.
-    layers: [scala-unit, ml-unit, bridge, e2e]
-  - id: T5
-    kind: test
-    state: active
-    statement: Success, application error, exception, client cancellation, timeout, and shutdown each produce exactly one recorded terminal disposition and never more than one wire response.
-    layers: [scala-unit]
-  - id: T6
-    kind: test
-    state: active
-    statement: A second completion attempt and an unknown or forged completion token emit an invariant event, never emit a second response, and exercise FailFast, LogAndClose, and inspectable MarkBroken policies.
-    layers: [scala-unit]
-  - id: T7
-    kind: test
-    state: active
-    statement: EOF with zero, one, and many in-flight requests drains replies including reverse completion order until one configured deadline, then cancels remaining work before backend teardown.
-    layers: [scala-unit, e2e]
-  - id: T8
-    kind: test
-    state: active
-    statement: Contract suites run unchanged against stdio and scripted data planes and against bounded-concurrent and deterministic-sequential schedulers.
-    layers: [scala-unit]
-  - id: T9
-    kind: test
-    state: active
-    statement: MCP Ready can coexist with Isabelle NotReady, Ready, or Failed; lifecycle acceptance is unchanged while application results truthfully report backend readiness.
-    layers: [scala-unit, e2e]
-  - id: T10
-    kind: test
-    state: active
-    statement: Batch fixtures cover mixed requests and notifications, notification-only and empty batches, initialize-in-batch rejection, per-element admission limits, cancellation omission, and one aggregate response after all response-producing elements terminate.
-    layers: [scala-unit, e2e]
-  - id: T11
-    kind: test
-    state: active
-    statement: Concurrent tool catalogs, theory catalogs, named-resource catalogs, resource reads, and designation checks retain request-unique routes; distinguishable replies cannot cross, and representative catalog/resource cancellation leaves later requests usable.
-    layers: [scala-unit, bridge]
-  - id: T12
-    kind: test
-    state: active
-    statement: Concurrent load, check, and unload operations are serialized around PIDE document mutation, cancellation while waiting is interruptible, and backend shutdown joins any admitted direct operation before stopping the Isabelle session.
-    layers: [bridge]
+- id: A1
+  kind: assumption
+  state: active
+  statement: One connection observes one immutable validated policy snapshot; changing
+    process configuration cannot partially reconfigure an active connection.
+  layers:
+  - scala-unit
+- id: A2
+  kind: assumption
+  state: active
+  statement: One stdio server process serves one logical MCP client and owns one Isabelle
+    application instance for the lifetime of that connection.
+  layers:
+  - scala-unit
+  - e2e
+- id: I1
+  kind: infrastructure
+  state: active
+  statement: DataPlane, RevisionRules, RequestScheduler, McpApplication, and InvariantViolationPolicy
+    are narrow replaceable ports selected only at the composition root.
+  layers:
+  - scala-unit
+- id: I2
+  kind: infrastructure
+  state: active
+  statement: Production uses a bounded concurrent scheduler with immediate rejection
+    and no application waiting queue, while tests can use a deterministic sequential
+    scheduler over the same kernel.
+  layers:
+  - scala-unit
+- id: D1
+  kind: design
+  statement: Client-visible protocol guarantees live in the specification; ownership,
+    package boundaries, and execution strategy live in this implementation plan.
+  category: design
+- id: D2
+  kind: design
+  statement: Lifecycle, cancellation, ping, admission, and completion bookkeeping
+    run on the connection control path and do not consume application worker capacity.
+  category: design
+- id: D3
+  kind: design
+  statement: Policy is a nested Scala value with named construction, validated opaque
+    leaf types, no correctness-affecting defaults, and one options-to-policy composition
+    function.
+  category: design
+- id: D4
+  kind: design
+  statement: Registry invariant detection is fixed inside the connection kernel; FailFast,
+    LogAndClose, and MarkBroken reactions are replaceable control-plane policies,
+    with the composition root choosing the mode.
+  category: design
+- id: D5
+  kind: design
+  statement: The implementation remains on MCP revision 2025-03-26 and accepts JSON-RPC
+    batches only because that revision requires batch reception; no product behavior
+    depends on batching.
+  category: design
+- id: D6
+  kind: design
+  statement: Every concurrently callable Scala-to-ML round trip has a request-unique
+    internal route; a reply completes only that route, and cancellation or shutdown
+    removes every pending route without relying on FIFO arrival order.
+  category: design
+- id: Q1
+  kind: question
+  state: resolved
+  statement: Which MCP revision and batch behavior does this remediation target?
+  resolution: Retain MCP 2025-03-26 and implement its required JSON-RPC batch reception
+    without adding revision negotiation or newer transport behavior to this work package.
+  resolved_on: '2026-08-27'
+- id: T1
+  kind: test
+  state: active
+  statement: Protocol fixtures cover valid and invalid requests, notifications, IDs,
+    parameters, malformed JSON, and MCP 2025-03-26 wire responses without starting
+    Isabelle.
+  layers:
+  - scala-unit
+- id: T2
+  kind: test
+  state: active
+  statement: A lifecycle transition table accepts only initialize in Fresh, initialized
+    notification and ping in AwaitingInitialized, normal operations in Ready, and
+    no new work in Closing or Closed.
+  layers:
+  - scala-unit
+  - e2e
+- id: T3
+  kind: test
+  state: active
+  statement: Saturating maxInFlight admits exactly the configured bound, immediately
+    returns structured overload errors for additional requests, creates no waiting
+    application work, and recovers capacity after termination.
+  layers:
+  - scala-unit
+- id: T4
+  kind: test
+  state: active
+  statement: Cancellation during saturation reaches cooperative Scala and ML work,
+    promptly removes and resolves the Scala bridge route, emits no response when cancellation
+    wins, releases capacity once, and suppresses a result already racing toward completion.
+  layers:
+  - scala-unit
+  - ml-unit
+  - bridge
+  - e2e
+- id: T5
+  kind: test
+  state: active
+  statement: Success, application error, exception, client cancellation, timeout,
+    and shutdown each produce exactly one recorded terminal disposition and never
+    more than one wire response.
+  layers:
+  - scala-unit
+- id: T6
+  kind: test
+  state: active
+  statement: A second completion attempt and an unknown or forged completion token
+    emit an invariant event, never emit a second response, and exercise FailFast,
+    LogAndClose, and inspectable MarkBroken policies.
+  layers:
+  - scala-unit
+- id: T7
+  kind: test
+  state: active
+  statement: EOF with zero, one, and many in-flight requests drains replies including
+    reverse completion order until one configured deadline, then cancels remaining
+    work before backend teardown.
+  layers:
+  - scala-unit
+  - e2e
+- id: T8
+  kind: test
+  state: active
+  statement: Contract suites run unchanged against stdio and scripted data planes
+    and against bounded-concurrent and deterministic-sequential schedulers.
+  layers:
+  - scala-unit
+- id: T9
+  kind: test
+  state: active
+  statement: MCP Ready can coexist with Isabelle NotReady, Ready, or Failed; lifecycle
+    acceptance is unchanged while application results truthfully report backend readiness.
+  layers:
+  - scala-unit
+  - e2e
+- id: T10
+  kind: test
+  state: active
+  statement: Batch fixtures cover mixed requests and notifications, notification-only
+    and empty batches, initialize-in-batch rejection, per-element admission limits,
+    cancellation omission, and one aggregate response after all response-producing
+    elements terminate.
+  layers:
+  - scala-unit
+  - e2e
+- id: T11
+  kind: test
+  state: active
+  statement: Concurrent tool catalogues, tool execution and context checks retain
+    request-unique routes; distinguishable replies cannot cross, and cancellation
+    leaves later requests usable.
+  layers:
+  - scala-unit
+  - bridge
+- id: T12
+  kind: test
+  state: active
+  statement: Concurrent load, check, and unload operations are serialized around PIDE
+    document mutation, cancellation while waiting is interruptible, and backend shutdown
+    joins any admitted direct operation before stopping the Isabelle session.
+  layers:
+  - bridge
 spec_refinements:
-  - id: R1
-    state: folded
-    folded_on: "2026-08-27"
-    statement: Replace the MVP pre-initialize allowance with the MCP 2025-03-26 lifecycle and add the revision's required JSON-RPC batch reception rules.
-    spec_ids: [D-undated-architecture-decisions]
-  - id: R2
-    state: folded
-    folded_on: "2026-08-27"
-    statement: Replace unbounded per-request threads with configurable bounded admission, no application waiting queue, explicit terminal ownership, and one bounded shutdown deadline.
-    spec_ids: [D-2026-08-20-concurrent-serve-loop, S-concurrent-serve-how]
-  - id: R3
-    state: folded
-    folded_on: "2026-08-27"
-    statement: Specify MCP lifecycle separately from Isabelle backend readiness so protocol admission never depends on prover startup state.
-    spec_ids: [D-2026-07-21-server-startup-readiness, D-2026-07-30-catalog-long-pole-build]
-  - id: R4
-    state: folded
-    folded_on: "2026-08-27"
-    statement: Bring cancellation into scope with propagation to cooperative work, a no-response client-cancelled terminal disposition, and race-safe late-result suppression.
-    spec_ids: [S-out-scope]
-  - id: R5
-    state: folded
-    folded_on: "2026-08-27"
-    statement: "The resolved server-boundary contract accepts only string request IDs. No precision-preserving numeric parser is introduced and no safe-integer exception exists: every numeric ID is rejected as InvalidRequest before admission. This is a deliberate compatibility limitation from MCP 2025-03-26's unrestricted integer domain. Project-owned Python/e2e clients generate string IDs."
-    spec_ids: [D-undated-architecture-decisions]
-  - id: R6
-    state: folded
-    folded_on: "2026-08-28"
-    statement: Define the previously unspecified client-visible result when the configured per-request deadline wins the terminal race.
-    spec_ids: [D-2026-08-20-concurrent-serve-loop]
-  - id: R7
-    state: folded
-    folded_on: "2026-08-28"
-    statement: Replace the stale IR-only cancellation note with one shared internal bridge command, Scala-owned terminal linearization, prompt bridge-promise removal, and cooperative Isabelle future-group interruption.
-    spec_ids: [S-out-scope, D-2026-07-13-mcp-tools]
+- id: R1
+  state: folded
+  folded_on: '2026-08-27'
+  statement: Replace the MVP pre-initialize allowance with the MCP 2025-03-26 lifecycle
+    and add the revision's required JSON-RPC batch reception rules.
+  spec_ids:
+  - D-undated-architecture-decisions
+- id: R2
+  state: folded
+  folded_on: '2026-08-27'
+  statement: Replace unbounded per-request threads with configurable bounded admission,
+    no application waiting queue, explicit terminal ownership, and one bounded shutdown
+    deadline.
+  spec_ids:
+  - D-2026-08-20-concurrent-serve-loop
+  - S-concurrent-serve-how
+- id: R3
+  state: folded
+  folded_on: '2026-08-27'
+  statement: Specify MCP lifecycle separately from Isabelle backend readiness so protocol
+    admission never depends on prover startup state.
+  spec_ids:
+  - D-2026-07-21-server-startup-readiness
+  - D-2026-07-30-catalog-long-pole-build
+- id: R4
+  state: folded
+  folded_on: '2026-08-27'
+  statement: Bring cancellation into scope with propagation to cooperative work, a
+    no-response client-cancelled terminal disposition, and race-safe late-result suppression.
+  spec_ids:
+  - S-out-scope
+- id: R5
+  state: folded
+  folded_on: '2026-08-27'
+  statement: 'The resolved server-boundary contract accepts only string request IDs.
+    No precision-preserving numeric parser is introduced and no safe-integer exception
+    exists: every numeric ID is rejected as InvalidRequest before admission. This
+    is a deliberate compatibility limitation from MCP 2025-03-26''s unrestricted integer
+    domain. Project-owned Python/e2e clients generate string IDs.'
+  spec_ids:
+  - D-undated-architecture-decisions
+- id: R6
+  state: folded
+  folded_on: '2026-08-28'
+  statement: Define the previously unspecified client-visible result when the configured
+    per-request deadline wins the terminal race.
+  spec_ids:
+  - D-2026-08-20-concurrent-serve-loop
+- id: R7
+  state: folded
+  folded_on: '2026-08-28'
+  statement: Replace the old cancellation note with one shared internal bridge command,
+    Scala-owned terminal linearization, prompt bridge-promise removal, and cooperative
+    Isabelle future-group interruption.
+  spec_ids:
+  - S-out-scope
+  - D-2026-07-13-mcp-tools
 done_command:
-  - tools/planning-gate
-  - done
+- tools/planning-gate
+- done
 ---
+
 
 connection_kernel — implementation plan
 =======================================
@@ -226,7 +321,7 @@ The connection kernel owns:
 - bounded shutdown drain and connection health; and
 - serialization of outbound writes through the data-plane contract.
 
-The application maps an accepted MCP operation to tools, resources, and
+The application maps an accepted MCP operation to tools and
 Isabelle behavior.  It sees an application request and cancellation handle,
 but never a JSON-RPC request ID, output stream, lifecycle state, scheduler, or
 completion token.  Isabelle `Not_Ready`, `Ready`, and `Failed` remain an
@@ -298,7 +393,7 @@ application worker slot.  This is an implementation choice that preserves
 liveness under saturation, not an MCP requirement that such messages use a
 particular thread.
 
-Accepted tool and resource operations run through the scheduler and may finish
+Accepted tool operations run through the scheduler and may finish
 out of order.  Clients that require ordering await the earlier response.  The
 kernel does not create a request-ordering queue.
 

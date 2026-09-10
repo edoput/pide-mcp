@@ -249,7 +249,6 @@ final class ConnectionKernel private (
     lifecycle0.whileReady {
       val what = change match {
         case ConnectionKernel.ListChanged.Tools => "tools"
-        case ConnectionKernel.ListChanged.Resources => "resources"
       }
       sendOutbound(JsonRpc.Outbound.Single(JSON.Object(
         "jsonrpc" -> "2.0", "method" -> ("notifications/" + what + "/list_changed"))))
@@ -318,8 +317,7 @@ final class ConnectionKernel private (
           JSON.Object(
             "protocolVersion" -> policy.revision.value,
             "capabilities" -> JSON.Object(
-              "tools" -> JSON.Object("listChanged" -> true),
-              "resources" -> JSON.Object("listChanged" -> true)),
+              "tools" -> JSON.Object("listChanged" -> true)),
             "serverInfo" -> JSON.Object("name" -> serverInfo.name, "version" -> serverInfo.version))), sink)
         lifecycle0.initializeCompleted()
         accepted
@@ -686,12 +684,10 @@ object ConnectionKernel {
   sealed trait ListChanged
   object ListChanged {
     case object Tools extends ListChanged
-    case object Resources extends ListChanged
 
     def fromBackend(value: String): Option[ListChanged] =
       value match {
         case "tools" => Some(Tools)
-        case "resources" => Some(Resources)
         case _ => None
       }
   }

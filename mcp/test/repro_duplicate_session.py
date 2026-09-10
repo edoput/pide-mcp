@@ -122,23 +122,17 @@ class Client:
         return self.rpc.request(method, params, timeout=timeout)
 
     def session_status(self):
-        """Readiness per isabelle://session: 'not ready ...' / 'failed ...' / 'ready'.
-
-        Only the pre-readiness placeholder (MCP_Server.Handler.session_state_text)
-        emits a 'status:' line. Once Ready the live backend answers with the
-        session/dirs/theory/theories overview and no status line at all -- so
-        "has a theories: line, has no status: line" IS the ready signal.
-        """
-        reply = self.call("resources/read", {"uri": "isabelle://session"})
+        """Probe the retained builtin through the unchanged readiness gate."""
+        reply = self.call("tools/call", {"name": "list_sessions", "arguments": {}})
         if "error" in reply:
             return "rpc-error: " + reply["error"].get("message", "")
-        text = reply["result"]["contents"][0]["text"]
-        for line in text.splitlines():
-            if line.startswith("status:"):
-                return line.split(":", 1)[1].strip()
-        if any(l.startswith("theories:") for l in text.splitlines()):
+        result = reply.get("result", {})
+        if not result.get("isError", False):
             return "ready"
-        return text.strip()
+        text = result.get("content", [{}])[0].get("text", "")
+        if " is not ready:" in text:
+            return "not ready: " + text
+        return "failed: " + text
 
     def await_terminal(self, timeout):
         """Poll until the server leaves the transient 'not ready' state."""
@@ -177,7 +171,7 @@ def tool_text(reply):
 
 def run_case(label, dirs, base):
     """CONTROL shape: a valid multi-root config that must still come up and
-    serve. Drives initialize/resources/tools_call over JSON-RPC like a real
+    serve. Drives initialize/tools_call over JSON-RPC like a real
     client would."""
     print("\n" + "=" * 72)
     print("%s: -d %s" % (label, "  -d ".join(dirs)))
@@ -189,7 +183,7 @@ def run_case(label, dirs, base):
         print("  initialize ....... ok (the handshake never waits on the prover)")
 
         status = client.await_terminal(TIMEOUT)
-        print("  isabelle://session status: %s" % scrub(status))
+        print("  session readiness: %s" % scrub(status))
 
         # list_sessions needs the catalog only -- no prover round trip
         is_error, text = tool_text(

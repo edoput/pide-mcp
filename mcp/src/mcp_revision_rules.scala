@@ -78,11 +78,6 @@ final class Mcp2025RevisionRules extends RevisionRules {
                 case Some("tools/list") =>
                   request(requestId, id => Application(McpApplication.Operation.ToolsList, id))
                 case Some("tools/call") => toolsCall(objectValue, requestId)
-                case Some("resources/list") =>
-                  request(requestId, id => Application(McpApplication.Operation.ResourcesList, id))
-                case Some("resources/templates/list") =>
-                  request(requestId, id => Application(McpApplication.Operation.ResourceTemplatesList, id))
-                case Some("resources/read") => resourcesRead(objectValue, requestId)
                 case Some(method) =>
                   request(requestId, id => Invalid(ReplyId(id), MethodNotFound,
                     "Method not found: " + method))
@@ -132,15 +127,6 @@ final class Mcp2025RevisionRules extends RevisionRules {
               case _ => JSON.Object()
             }
           Application(McpApplication.Operation.ToolsCall(name, arguments), id)
-      }
-    })
-
-  private def resourcesRead(json: JSON.Object.T, requestId: Option[RequestId]): Message =
-    request(requestId, id => {
-      val params = JSON.value(json, "params").getOrElse(JSON.Object())
-      JSON.string(params, "uri") match {
-        case Some(uri) => Application(McpApplication.Operation.ResourcesRead(uri), id)
-        case None => Invalid(ReplyId(id), InvalidParams, "Missing resource uri")
       }
     })
 
