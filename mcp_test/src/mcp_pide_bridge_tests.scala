@@ -1131,6 +1131,22 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     assertEquals(order, List("session-stop", "bridge-stopped"))
   }
 
+  test("owned root files are disposed after a failed stop without claiming termination") {
+    val directory = Files.createTempDirectory("mcp-root-stop-test")
+    val source = directory.resolve("Root.thy")
+    Files.writeString(source, "theory Root imports Pure begin end")
+    var order = List.empty[String]
+    interceptMessage[RuntimeException]("session stop failed") {
+      MCP_Session.stopOwnedRoot(
+        () => order :+= "release",
+        () => { order :+= "stop"; throw new RuntimeException("session stop failed") },
+        () => order :+= "reported",
+        () => { order :+= "dispose"; Files.delete(source); Files.delete(directory); () })
+    }
+    assertEquals(order, List("release", "stop", "dispose"))
+    assert(!Files.exists(directory))
+  }
+
   spec_test("drain timeout requires session termination before Stopped",
       covers = List("pide_bridge#T6")) {
     val diagnostics = collection.mutable.ListBuffer.empty[String]

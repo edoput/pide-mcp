@@ -173,31 +173,32 @@ object MCP_Session {
       }
     }
 
-    /** Release may precede session termination; disposal follows termination
+    /** Release may precede session termination; disposal follows the stop attempt
       * and removes only the private wrapper, never an imported source file.
       */
     def dispose(): Unit = synchronized {
       if (!disposed) {
-        release()
-        ownedDirectory.foreach(Isabelle_System.rm_tree)
-        disposed = true
+        try release()
+        finally {
+          ownedDirectory.foreach(Isabelle_System.rm_tree)
+          disposed = true
+        }
       }
     }
   }
 
   private[mcp] def stopRootSession(session: Headless.Session,
-      root: Option[RootDocument], reportStopped: () => Unit): Unit = {
-    try root.foreach(_.release())
+      root: Option[RootDocument], reportStopped: () => Unit): Unit =
+    stopOwnedRoot(() => root.foreach(_.release()), () => { session.stop(); () },
+      reportStopped, () => root.foreach(_.dispose()))
+
+  private[mcp] def stopOwnedRoot(release: () => Unit, stop: () => Unit,
+      reportStopped: () => Unit, dispose: () => Unit): Unit =
+    try release()
     finally {
-      var terminated = false
-      try {
-        session.stop()
-        terminated = true
-        reportStopped()
-      }
-      finally if (terminated) root.foreach(_.dispose())
+      try stopAndReportSessionTermination(stop, reportStopped)
+      finally dispose()
     }
-  }
 
   sealed abstract class Result { def ok: Boolean }
   case class Ok(text: String) extends Result { def ok = true }

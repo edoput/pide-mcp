@@ -100,8 +100,7 @@ private[application] final class IsabelleMcpApplication(
       case McpApplication.Ready(backend) =>
         val builtin_names = builtins.map(_.name).toSet
         backend.root_context_cancellable(cancellation) match {
-          case MCP_Session.Error(_) =>
-            Outcome.Result(JSON.Object("tools" -> builtins.map(tool_json)))
+          case MCP_Session.Error(message) => error(message)
           case MCP_Session.Ok(context) =>
             val reply = backend.ml_tools_cancellable(context, cancellation)
             val hidden = reply.builtin_activation.collect({ case (name, false) => name }).toSet

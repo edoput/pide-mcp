@@ -70,4 +70,57 @@ class MCP_Application_Tests extends MCP_Suite {
     assertEquals(get(initialized, "result", "serverInfo", "name"), MCP_Server.server_name)
     assertEquals(get(ping, "result"), JSON.Object())
   }
+  test("failed ready root listing emits one correlated error without a fallback catalogue") {
+    import isabelle.mcp.connection._
+    import isabelle.mcp.control.ManualDeadlineScheduler
+    import isabelle.mcp.transport.ScriptedDataPlane
+
+    var catalogueCalls = 0
+    val backend = new Fake_Backend {
+      override def root_context(): MCP_Session.Result =
+        MCP_Session.Error("live root evaluation failed")
+      override def ml_tools(context: String): MCP_Session.Tools_Reply = {
+        catalogueCalls += 1
+        super.ml_tools(context)
+      }
+    }
+    val app = McpApplication.isabelle(() => McpApplication.Ready(backend),
+      "MCP-Tools", Nil, "MCP_Tools")
+    val failure = intercept[Throwable] {
+      app.execute(Operation.ToolsList, Cancellation.Never)
+    }
+    assert(Exn.message(failure).contains("live root evaluation failed"))
+
+    def checked[A](value: Either[String, A]): A = value.fold(fail(_), identity)
+    val plane = new ScriptedDataPlane(Nil)
+    val scheduler = new ManualSequentialScheduler
+    val connection = ConnectionKernel(
+      policy = ConnectionPolicy(
+        revision = ProtocolRevision.V2025_03_26,
+        admission = ConnectionPolicy.AdmissionPolicy(
+          checked(ConnectionPolicy.MaxInFlight.checked(1))),
+        timing = ConnectionPolicy.TimingPolicy(
+          checked(ConnectionPolicy.RequestTimeout.checked(5.0)),
+          checked(ConnectionPolicy.ShutdownDrain.checked(0.0)))),
+      dataPlane = plane,
+      revisionRules = new Mcp2025RevisionRules,
+      scheduler = scheduler,
+      deadlineScheduler = new ManualDeadlineScheduler,
+      registry = new RequestRegistry(RequestRegistry.InvariantViolationPolicy.FailFast),
+      application = app,
+      serverInfo = ConnectionKernel.ServerInfo("test", "test"))
+    connection.handle(RevisionRules.Initialize(RequestId.string("init"),
+      ProtocolRevision.V2025_03_26.value))
+    connection.handle(RevisionRules.Initialized)
+    connection.handle(RevisionRules.Application(Operation.ToolsList, RequestId.string("failed-root")))
+    assert(scheduler.runPending())
+    val replies = plane.written.flatMap(JSON.Format.unapply)
+      .filter(value => JSON.value(value, "id").contains("failed-root"))
+    assertEquals(replies.length, 1)
+    assertEquals(get(replies.head, "error", "code"), ConnectionKernel.InternalError)
+    assertEquals(JSON.value(replies.head, "result"), None)
+    assertEquals(connection.registry.snapshot.activeCapacity, 0)
+    assertEquals(catalogueCalls, 0)
+  }
+
 }
