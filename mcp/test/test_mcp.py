@@ -197,11 +197,29 @@ def test_live_root_refresh():
                 verdict(f"live wrapper execution {version}", not is_err(reply) and text_of(reply) == version, reply)
 
 
+def test_startup_diagnostics():
+    with tempfile.TemporaryFile(mode="w+") as stderr:
+        with Client(ISABELLE + ["mcp_server", "-v", "-s", "MCP-HOL", "-T", "MCP-HOL.MCP"],
+                    stderr=stderr.fileno()) as client:
+            initialize(client)
+            verdict("verbose startup preserves JSON-RPC", client.request("ping").get("result") == {})
+        stderr.seek(0)
+        log = stderr.read()
+        verdict("verbose startup reports library-resolved heap inputs",
+                "Resolved heap input: " in log and "Session: MCP-HOL" in log, log)
+        verdict("verbose startup reports resolved registry theory",
+                "Registry theory: MCP-HOL.MCP" in log, log)
+        verdict("startup reports image check outcome",
+                "Session image MCP-HOL: reused" in log or
+                "Session image MCP-HOL: build completed" in log, log)
+
+
 def main():
     if not ISABELLE or shutil.which(ISABELLE[0]) is None:
         print("FAIL setup -- Isabelle command not found")
         return 1
     test_public_protocol()
+    test_startup_diagnostics()
     test_theory_tools_and_context()
     test_live_root_refresh()
     print(f"{failures} failure(s)")

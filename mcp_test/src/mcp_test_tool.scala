@@ -40,7 +40,8 @@ object MCP_Test {
   val heap_suites: List[Class[? <: munit.Suite]] =
     List(
       classOf[MCP_Heap_Fixture_Tests],
-      classOf[MCP_Registry_Heap_Tests])
+      classOf[MCP_Registry_Heap_Tests],
+      classOf[MCP_Heap_Diagnostics_Tests])
 
   val pide_suites: List[Class[? <: munit.Suite]] =
     List(

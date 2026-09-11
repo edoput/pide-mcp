@@ -23,6 +23,29 @@ updates later catalogues. There is no source/image split or heap-root fallback.
 The bridge identifies the current wrapper evaluation on every hello/call; invalid
 or stale selections fail without falling back to an earlier catalogue.
 
+Startup diagnostics
+-------------------
+Run with -v to include Isabelle-resolved heap inputs on stderr:
+
+    isabelle mcp_server -v -s MCP-HOL -T MCP-HOL.MCP
+
+"reused" means Isabelle's no-build check accepted the saved session image and
+its dependencies. "build required" means that check did not succeed; the normal
+Isabelle build then runs. "build completed" reports successful completion of
+that build operation, not whether an image was missing versus outdated.
+
+Verbose output reports the installation, session source directory, selected
+theory and ordered heap input paths through Isabelle's APIs. The paths use the
+same resource Store and session background as headless startup; they report
+resolved inputs, not an observation of operating-system file opens. MCP-HOL
+includes the MCP-Tools theories but does not load a separate MCP-Tools parent
+heap. No build UUID or invalidation reason is guessed or read from a database.
+
+A reused image still requires prover startup and processing of the temporary
+bridge-root theory. This is not a rebuild of the saved MCP session. Unexpected
+heap paths should be investigated using the same Isabelle launcher and user
+settings as the server. stdout remains exclusively the JSON-RPC channel.
+
 Tools
 -----
 - load_theory and check_theory load/check disk theories with dependencies and

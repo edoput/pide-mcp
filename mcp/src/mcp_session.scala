@@ -330,12 +330,41 @@ object MCP_Session {
     session_dirs: List[Path],
     progress: Progress = new Progress
   ): Unit = {
-    val build_results =
-      Build.build(options, selection = Sessions.Selection.session(session_name),
+    progress.echo("Checking session image " + session_name + " ...")
+    /* Follow Isabelle Build.build_logic: no_build is the library's validity
+       check, not a filesystem/database probe or a timing-based heuristic. */
+    val checked = Build.build(options,
+      selection = Sessions.Selection.session(session_name),
+      build_heap = true, no_build = true, dirs = session_dirs)
+    if (checked.ok) progress.echo("Session image " + session_name + ": reused")
+    else {
+      progress.echo("Session image " + session_name + ": build required")
+      val built = Build.build(options,
+        selection = Sessions.Selection.session(session_name),
         progress = progress, build_heap = true, dirs = session_dirs)
-    if (!build_results.ok) {
-      error("Failed to build session " + quote(session_name) + ": " +
-        Process_Result.RC.print(build_results.rc))
+      if (!built.ok) {
+        progress.echo("Session image " + session_name + ": build failed")
+        error("Failed to build session " + quote(session_name) + ": " +
+          Process_Result.RC.print(built.rc))
+      }
+      progress.echo("Session image " + session_name + ": build completed")
+    }
+  }
+
+  private[mcp] def report_heap_inputs(
+    resources: Headless.Resources, progress: Progress
+  ): Unit = {
+    if (progress.verbose) {
+      val background = resources.session_background
+      progress.echo("Isabelle installation: " + quote(Isabelle_System.getenv("ISABELLE_HOME")))
+      progress.echo("Session: " + background.session_name)
+      progress.echo("Session sources: " +
+        quote(File.platform_path(resources.sessions_structure(background.session_name).dir)))
+      /* Identical library resolver and resource Store used by start_session.
+         These are resolved inputs, not a claim to observe OS file opens. */
+      resources.store.session_heaps(background, logic = background.session_name).foreach { path =>
+        progress.echo("Resolved heap input: " + quote(File.platform_path(path)))
+      }
     }
   }
 
@@ -375,6 +404,7 @@ object MCP_Session {
       NonNegativeDuration.checked(
         "mcp_shutdown_drain", options.real("mcp_shutdown_drain")).fold(error, identity)
 
+    report_heap_inputs(resources, progress)
     val session = resources.start_session(progress = progress)
     var ownedSession: Option[MCP_Session] = None
     var ownedRoot: Option[RootDocument] = None
@@ -395,6 +425,7 @@ object MCP_Session {
         case Some(name) => Document.Node.Name.loaded_theory(name)
         case None => resources.import_name(Sessions.DRAFT, session.master_directory(master), theory)
       }
+      progress.echo("Registry theory: " + imported.theory, verbose = true)
       val root = RootDocument.create(session, imported)
       ownedRoot = Some(root)
       root.load(progress)
