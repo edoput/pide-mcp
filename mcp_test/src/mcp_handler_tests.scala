@@ -1327,16 +1327,17 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
     assert(Doc_Catalog.plain_read(news_path, "not-a-range").isLeft)
   }
 
-  /* T5: truncation -- a chapter-level section (the toplevel chapter
-     heading itself, spanning the whole file) truncates at the window with
-     the "narrow" note. */
-  spec_test("a chapter-sized section read truncates with a narrow-the-section note",
+  /* T5: windowing -- a chapter-level section (the toplevel chapter
+     heading itself, spanning the whole file) is windowed at the default
+     limit (Window, mcp/src/utils.scala) with a "narrow the section" note
+     alongside the offset continuation hint. */
+  spec_test("a chapter-sized section read windows with a narrow-the-section note",
       covers = List("doc_read#T5")) {
     val chapter = isar_ref_toc.find(_.level == 0).getOrElse(fail("no chapter heading found"))
     val in_file = isar_ref_toc.filter(_.file == chapter.file)
     val text = Doc_Catalog.section_text(in_file, chapter)
-    assert(text.contains("truncated") && text.contains("narrow the section"),
-      "a whole-chapter read should exceed the window and truncate: " + text.takeRight(200))
+    assert(text.contains("showing") && text.contains("narrow the section"),
+      "a whole-chapter read should exceed the window and get windowed: " + text.takeRight(200))
   }
 
   /* T6 (D1a canary): every heading-command occurrence in the bundled

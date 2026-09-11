@@ -52,12 +52,30 @@ trait MCP_Backend {
     check_context(context)
   /* Declaration events trigger tools/list_changed notifications. */
   def set_changed_handler(handler: String => Unit): Unit = ()
-  def load_theory(name: String, master_dir: String): MCP_Session.Result
+  /* range-windowing (Window, mcp/src/utils.scala): offset/limit slice the
+     rendered rows/diagnostic lines; include_output additionally gates
+     writeln/tracing/information proof-trace noise into load_theory/
+     check_theory's report. Each fixed-arity overload below is a plain
+     forwarding convenience (not a default-argument override, which Scala
+     forbids redeclaring on an overriding method) so existing callers with
+     fewer arguments keep compiling unchanged. */
+  def load_theory(name: String, master_dir: String, include_output: Boolean,
+    offset: Int, limit: Int): MCP_Session.Result
+  def load_theory(name: String, master_dir: String): MCP_Session.Result =
+    load_theory(name, master_dir, false, 0, Window.default_limit)
   def unload_theory(name: String): MCP_Session.Result
-  def check_theory(name: String, master_dir: String): MCP_Session.Result
-  def list_sessions_info(): MCP_Session.Result
-  def list_theories_info(session: String): MCP_Session.Result
-  def search_sources(pattern: String): MCP_Session.Result
+  def check_theory(name: String, master_dir: String, include_output: Boolean,
+    offset: Int, limit: Int): MCP_Session.Result
+  def check_theory(name: String, master_dir: String): MCP_Session.Result =
+    check_theory(name, master_dir, false, 0, Window.default_limit)
+  def list_sessions_info(offset: Int, limit: Int): MCP_Session.Result
+  def list_sessions_info(): MCP_Session.Result = list_sessions_info(0, Window.default_limit)
+  def list_theories_info(session: String, offset: Int, limit: Int): MCP_Session.Result
+  def list_theories_info(session: String): MCP_Session.Result =
+    list_theories_info(session, 0, Window.default_limit)
+  def search_sources(pattern: String, offset: Int, limit: Int): MCP_Session.Result
+  def search_sources(pattern: String): MCP_Session.Result =
+    search_sources(pattern, 0, Window.default_limit)
   /* doc_list (plans/doc_list, wave 5, spec "documentation for the agent"):
      the Doc.contents() catalog joined to doc sessions, computed once at
      startup (Doc_Catalog.make). */
@@ -67,7 +85,10 @@ trait MCP_Backend {
      it, that section's source text with it); lines addresses plain
      entries (NEWS, examples); the two are mutually exclusive, enforced
      by the handler before any catalog lookup. */
-  def doc_read(name: String, section: String, lines: String): MCP_Session.Result
+  def doc_read(name: String, section: String, lines: String, offset: Int,
+    limit: Int): MCP_Session.Result
+  def doc_read(name: String, section: String, lines: String): MCP_Session.Result =
+    doc_read(name, section, lines, 0, Window.default_limit)
   def stop(): Unit
 }
 
@@ -776,19 +797,61 @@ class MCP_Session private(
   private val theory_master_dirs: Synchronized[Map[String, String]] =
     Synchronized(Map.empty)
 
-  private def render_messages(messages: List[(XML.Elem, Position.T)]): List[String] =
-    messages.map({ case (tree, pos) =>
-      val line = Position.Line.get(pos)
-      val kind = if (Protocol.is_error(tree)) "error" else "warning"
-      "line " + line + " (" + kind + "): " + XML.content(List(tree))
-    })
+  /* message-kind classification (Isabelle's own Protocol/protocol.scala
+     canonical priority order): error/warning are diagnostics, always
+     reported; information/tracing/writeln are "the output channel" --
+     ordinary proof noise (solve_direct hints, have/show echoes), gated
+     behind include_output so it never again gets dumped as fake warnings
+     (the HOL-Cardinals.Bounded_Set incident: every non-error message was
+     mislabeled "warning"). is_state (goal display) is interactive-only
+     and inert in headless use_theories, so it is not classified here. */
+  private def classify(tree: XML.Elem): Option[String] =
+    if (Protocol.is_error(tree)) Some("error")
+    else if (Protocol.is_warning_or_legacy(tree)) Some("warning")
+    else if (Protocol.is_information(tree)) Some("information")
+    else if (Protocol.is_tracing(tree)) Some("tracing")
+    else if (Protocol.is_writeln(tree)) Some("writeln")
+    else None
+
+  private val output_kinds = Set("information", "tracing", "writeln")
+
+  private def render_messages(
+    messages: List[(XML.Elem, Position.T)],
+    include_output: Boolean,
+    offset: Int,
+    limit: Int
+  ): String = {
+    val diags =
+      for {
+        (tree, pos) <- messages
+        kind <- classify(tree)
+        if include_output || !output_kinds(kind)
+      } yield (kind, Position.Line.get(pos), XML.content(List(tree)))
+
+    if (diags.isEmpty) ""
+    else {
+      val counts = diags.groupBy(_._1).view.mapValues(_.size).toMap
+      val summary =
+        List("error", "warning", "information", "tracing", "writeln")
+          .flatMap(k => counts.get(k).map(n => n + " " + k + (if (n == 1) "" else "s")))
+          .mkString("(", ", ", ")")
+      val lines = diags.map { case (kind, line, text) => "  line " + line + " (" + kind + "): " + text }
+      summary + "\n" + Window(lines, offset, limit)
+    }
+  }
 
   /* shared by load_theory and check_theory: run use_theories and render a
      per-node status report; isError only on genuine errors (server_commands.
      scala's Use_Theories reference idiom for messages/positions), never on
      warnings alone -- pinned as the warning policy (plans/check_theory
      step 1). */
-  private def use_theories_result(name: String, master_dir: String): MCP_Session.Result = {
+  private def use_theories_result(
+    name: String,
+    master_dir: String,
+    include_output: Boolean,
+    offset: Int,
+    limit: Int
+  ): MCP_Session.Result = {
     val result =
       Exn.capture {
         session.use_theories(List(name), master_dir = master_dir, progress = new Progress)
@@ -799,9 +862,9 @@ class MCP_Session private(
         val lines =
           for ((node_name, status) <- use_result.nodes) yield {
             val snapshot = use_result.snapshot(node_name)
-            val msgs = render_messages(snapshot.messages)
+            val msgs = render_messages(snapshot.messages, include_output, offset, limit)
             val header = node_name.theory + ": " + (if (status.ok) "ok" else "error")
-            if (msgs.isEmpty) header else header + "\n" + msgs.map("  " + _).mkString("\n")
+            if (msgs.isEmpty) header else header + "\n" + msgs
           }
         val text = lines.mkString("\n")
         Exn.capture(rootDocument.load(new Progress)) match {
@@ -814,7 +877,13 @@ class MCP_Session private(
     }
   }
 
-  def load_theory(name: String, master_dir: String): MCP_Session.Result =
+  def load_theory(
+    name: String,
+    master_dir: String,
+    include_output: Boolean,
+    offset: Int,
+    limit: Int
+  ): MCP_Session.Result =
     serialized_theory_mutation {
       val resolved_master_dir =
         if (master_dir.isEmpty) {
@@ -826,7 +895,7 @@ class MCP_Session private(
           }
         }
         else master_dir
-      use_theories_result(name, resolved_master_dir)
+      use_theories_result(name, resolved_master_dir, include_output, offset, limit)
     }
 
   /* unlike check_theory, unload_theory needs an actual document-level
@@ -875,7 +944,13 @@ class MCP_Session private(
      syntax errors). use_theories reads the file fresh and diffs against
      its OWN correctly-tracked prior content on every call, so a plain
      re-run already picks up on-disk edits with no purge needed. */
-  def check_theory(name: String, master_dir: String): MCP_Session.Result =
+  def check_theory(
+    name: String,
+    master_dir: String,
+    include_output: Boolean,
+    offset: Int,
+    limit: Int
+  ): MCP_Session.Result =
     serialized_theory_mutation {
       val resolved_master_dir =
         if (master_dir.isEmpty) {
@@ -887,14 +962,14 @@ class MCP_Session private(
           }
         }
         else master_dir
-      use_theories_result(name, resolved_master_dir)
+      use_theories_result(name, resolved_master_dir, include_output, offset, limit)
     }
 
   /* wave 3 library discovery tools: pure functions over structure/deps
      maps and store (no prover) */
 
   /* list_sessions: return all known sessions as text report with metadata. */
-  def list_sessions_info(): MCP_Session.Result = {
+  def list_sessions_info(offset: Int, limit: Int): MCP_Session.Result = {
     val sessions = sessions_map
       .map { case (name, (chapter, description, theories)) =>
         val heap_present = store.get_session(name).defined
@@ -908,28 +983,28 @@ class MCP_Session private(
       val base_marker = if (is_base) " [BASE]" else ""
       "%-18s %-12s  %s      %3d%s".format(name, chapter, heap_marker, count, base_marker)
     }
-    MCP_Session.Ok(if (rows.isEmpty) header else header + "\n" + rows.mkString("\n"))
+    MCP_Session.Ok(if (rows.isEmpty) header else header + "\n" + Window(rows, offset, limit))
   }
 
   /* list_theories: return theories in a given session with file paths. */
-  def list_theories_info(sess: String): MCP_Session.Result = {
+  def list_theories_info(sess: String, offset: Int, limit: Int): MCP_Session.Result = {
     sessions_map.get(sess) match {
       case None =>
         MCP_Session.Error("Unknown session " + quote(sess) + "; use list_sessions to discover")
       case Some((_, _, theories)) =>
         val header = "   theory name"
-        val rows = theories.sorted
-        MCP_Session.Ok(if (rows.isEmpty) header else header + "\n" + rows.map("   " + _).mkString("\n"))
+        val rows = theories.sorted.map("   " + _)
+        MCP_Session.Ok(if (rows.isEmpty) header else header + "\n" + Window(rows, offset, limit))
     }
   }
 
   /* search_sources: find theories by name pattern. */
-  def search_sources(pattern: String): MCP_Session.Result = {
+  def search_sources(pattern: String, offset: Int, limit: Int): MCP_Session.Result = {
     val matches =
       if (pattern.isEmpty) Nil
-      else theory_map.keys.filter(_.contains(pattern)).toList.sorted
+      else theory_map.keys.filter(_.contains(pattern)).toList.sorted.map("   " + _)
     val header = "   matching theories"
-    MCP_Session.Ok(if (matches.isEmpty) header + " (no matches)" else header + "\n" + matches.map("   " + _).mkString("\n"))
+    MCP_Session.Ok(if (matches.isEmpty) header + " (no matches)" else header + "\n" + Window(matches, offset, limit))
   }
 
   /* doc_list: the memoized catalog, glob-filtered and rendered -- see
@@ -940,7 +1015,8 @@ class MCP_Session private(
   /* doc_read (plans/doc_read): resolve `name` through the catalog
      doc_list serves, then dispatch on entry kind -- manual (source
      session), plain (direct file), pdf only (no plain-text source). */
-  def doc_read(name: String, section: String, lines: String): MCP_Session.Result = {
+  def doc_read(name: String, section: String, lines: String, offset: Int,
+      limit: Int): MCP_Session.Result = {
     if (section.nonEmpty && lines.nonEmpty)
       return MCP_Session.Error(
         "doc_read: \"section\" and \"lines\" are mutually exclusive -- section addresses " +
@@ -967,7 +1043,7 @@ class MCP_Session private(
             "doc_read: " + quote(name) + " is a plain-text entry -- it has no sections " +
             "(use \"lines\" to window it, or omit both for the first window)")
         else
-          Doc_Catalog.plain_read(entry.path, lines) match {
+          Doc_Catalog.plain_read(entry.path, lines, offset, limit) match {
             case Right(text) => MCP_Session.Ok(text)
             case Left(msg) => MCP_Session.Error("doc_read: " + msg)
           }
@@ -984,7 +1060,7 @@ class MCP_Session private(
             Doc_Catalog.find_section(toc, section) match {
               case Doc_Catalog.Unique(heading) =>
                 val headings_in_file = toc.filter(_.file == heading.file)
-                MCP_Session.Ok(Doc_Catalog.section_text(headings_in_file, heading))
+                MCP_Session.Ok(Doc_Catalog.section_text(headings_in_file, heading, offset, limit))
               case Doc_Catalog.Ambiguous(candidates) =>
                 MCP_Session.Ok(
                   "ambiguous section " + quote(section) + ", matches:\n" +

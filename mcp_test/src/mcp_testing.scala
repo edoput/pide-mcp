@@ -65,7 +65,8 @@ class Fake_Backend extends MCP_Backend {
     else MCP_Session.Error("Malformed MCP context locator " + quote(context))
 
   var loaded_theories: Set[String] = Set("Loaded")
-  def load_theory(name: String, master_dir: String): MCP_Session.Result = {
+  def load_theory(name: String, master_dir: String, include_output: Boolean,
+      offset: Int, limit: Int): MCP_Session.Result = {
     loaded_theories += name
     MCP_Session.Ok(name + ": ok")
   }
@@ -79,15 +80,16 @@ class Fake_Backend extends MCP_Backend {
       MCP_Session.Ok("Unloaded " + quote(name))
     }
     else MCP_Session.Error("Cannot unload " + quote(name) + ": it was not loaded")
-  def check_theory(name: String, master_dir: String): MCP_Session.Result = {
+  def check_theory(name: String, master_dir: String, include_output: Boolean,
+      offset: Int, limit: Int): MCP_Session.Result = {
     loaded_theories += name
     MCP_Session.Ok(name + ": ok")
   }
-  def list_sessions_info(): MCP_Session.Result =
+  def list_sessions_info(offset: Int, limit: Int): MCP_Session.Result =
     MCP_Session.Ok("   session       chapter  heap  theories\n   HOL           main     ✓      42\n   HOL-Library   main     ✓      18")
-  def list_theories_info(session: String): MCP_Session.Result =
+  def list_theories_info(session: String, offset: Int, limit: Int): MCP_Session.Result =
     MCP_Session.Ok("   theory name\n   HOL.Main\n   HOL.Nat")
-  def search_sources(pattern: String): MCP_Session.Result =
+  def search_sources(pattern: String, offset: Int, limit: Int): MCP_Session.Result =
     MCP_Session.Ok("   matching theories\n   HOL.Main")
   private val fake_doc_catalog: List[Doc_Catalog.Section] =
     List(Doc_Catalog.Section("Isabelle Reference Manuals",
@@ -98,7 +100,8 @@ class Fake_Backend extends MCP_Backend {
   def doc_list(pattern: String): MCP_Session.Result =
     MCP_Session.Ok(Doc_Catalog.render(fake_doc_catalog, pattern))
 
-  def doc_read(name: String, section: String, lines: String): MCP_Session.Result =
+  def doc_read(name: String, section: String, lines: String, offset: Int,
+      limit: Int): MCP_Session.Result =
     MCP_Session.Ok("doc_read is not backed by " + getClass.getSimpleName)
   def stop(): Unit = stopped = true
 }
@@ -116,14 +119,17 @@ class Throwing_Backend extends MCP_Backend {
   def ml_run(name: String, args: List[(String, String)],
       context: String): MCP_Session.Result = boom
   def check_context(context: String): MCP_Session.Result = boom
-  def load_theory(name: String, master_dir: String): MCP_Session.Result = boom
+  def load_theory(name: String, master_dir: String, include_output: Boolean,
+      offset: Int, limit: Int): MCP_Session.Result = boom
   def unload_theory(name: String): MCP_Session.Result = boom
-  def check_theory(name: String, master_dir: String): MCP_Session.Result = boom
-  def list_sessions_info(): MCP_Session.Result = boom
-  def list_theories_info(session: String): MCP_Session.Result = boom
-  def search_sources(pattern: String): MCP_Session.Result = boom
+  def check_theory(name: String, master_dir: String, include_output: Boolean,
+      offset: Int, limit: Int): MCP_Session.Result = boom
+  def list_sessions_info(offset: Int, limit: Int): MCP_Session.Result = boom
+  def list_theories_info(session: String, offset: Int, limit: Int): MCP_Session.Result = boom
+  def search_sources(pattern: String, offset: Int, limit: Int): MCP_Session.Result = boom
   def doc_list(pattern: String): MCP_Session.Result = boom
-  def doc_read(name: String, section: String, lines: String): MCP_Session.Result = boom
+  def doc_read(name: String, section: String, lines: String, offset: Int,
+      limit: Int): MCP_Session.Result = boom
   def stop(): Unit = boom
 }
 

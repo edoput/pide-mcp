@@ -165,6 +165,25 @@ object MCP_Server {
   def pass_arg(args: List[(String, String)], key: String): String =
     args.collectFirst({ case (`key`, v) => v }).getOrElse("")
 
+  def pass_int_arg(args: List[(String, String)], key: String, default: Int): Int =
+    args.collectFirst({ case (`key`, v) => v }).flatMap(Value.Int.unapply).getOrElse(default)
+
+  def pass_bool_arg(args: List[(String, String)], key: String, default: Boolean): Boolean =
+    args.collectFirst({ case (`key`, v) => v }).flatMap(Value.Boolean.unapply).getOrElse(default)
+
+  /* offset/limit input-schema properties shared by every list-shaped tool
+     (Window, mcp/src/utils.scala): one convention, copied here rather than
+     each tool schema spelling it out differently. */
+  val offset_limit_properties: JSON.Object.T =
+    JSON.Object(
+      "offset" -> JSON.Object("type" -> "integer",
+        "description" -> "0-based row to start from. Omit to start from the beginning.",
+        "default" -> 0),
+      "limit" -> JSON.Object("type" -> "integer",
+        "description" -> "Maximum rows to return. Omit for the default window; " +
+          "a footer names the offset to continue from when more rows remain.",
+        "default" -> Window.default_limit))
+
   val builtins: List[Builtin_Tool] =
     List(tools.LoadTheory.load_theory_tool, tools.UnloadTheory.unload_theory_tool,
       tools.CheckTheory.check_theory_tool, tools.ListSessions.list_sessions_tool,
