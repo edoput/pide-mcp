@@ -46,6 +46,13 @@ bridge-root theory. This is not a rebuild of the saved MCP session. Unexpected
 heap paths should be investigated using the same Isabelle launcher and user
 settings as the server. stdout remains exclusively the JSON-RPC channel.
 
+Library discovery is initialized on demand. The first tool needing full-library
+session/theory information performs dependency analysis; later calls reuse it.
+The documentation catalogue initializes independently on its first use. Reading
+a manual may also require dependency analysis. Concurrent callers share each
+successful initialization; a failed initialization can be retried by a later call.
+The selected session's own build checks and PIDE preparation still run at startup.
+
 Tools
 -----
 - load_theory and check_theory load/check disk theories with dependencies and

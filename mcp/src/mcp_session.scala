@@ -384,10 +384,9 @@ object MCP_Session {
       Headless.Resources.make(options, session_name, session_dirs = session_dirs,
         progress = progress)
 
-    /* wave 3 shared infrastructure: load_structure + deps + store, compute
-       derived maps for library discovery (session_structure umbrella plan) */
+    /* Keep the session structure available, but defer full-library dependency
+       analysis until a tool needs it. The constructor accepts it by name. */
     val structure = Sessions.load_structure(options, dirs = session_dirs)
-    val deps = Sessions.deps(structure, progress = progress)
     val store = Store(options)
 
     val bridgeMaxPending =
@@ -431,7 +430,8 @@ object MCP_Session {
       root.load(progress)
 
       val mcpSession = new MCP_Session(session, session_name, session_dirs, theory,
-        structure, deps, store, bridgeMaxPending, bridgeMaxReplyBytes, bridgeCallTimeout,
+        structure, Sessions.deps(structure, progress = progress), store,
+        bridgeMaxPending, bridgeMaxReplyBytes, bridgeCallTimeout,
         bridgeDrainTimeout, bridgeProfile, root)
       ownedSession = Some(mcpSession)
 
@@ -479,7 +479,7 @@ class MCP_Session private(
   val session_dirs: List[Path],
   val theory: String,
   val structure: Sessions.Structure,
-  val deps: Sessions.Deps,
+  deps_init: => Sessions.Deps,
   val store: Store,
   bridgeMaxPending: PideBridgePolicy.MaxPending,
   bridgeMaxReplyBytes: PideBridgePolicy.PositiveBytes,
@@ -488,6 +488,10 @@ class MCP_Session private(
   bridgeProfile: McpBridgeProfile,
   private val rootDocument: MCP_Session.RootDocument
 ) extends MCP_Backend {
+  /* Successful initialization is shared by concurrent callers. A failed or
+     interrupted initializer may be retried on the next access (Scala lazy val). */
+  lazy val deps: Sessions.Deps = deps_init
+
   private final class DirectOperation {
     val id: String = UUID.random().toString
     val thread: Thread = Thread.currentThread()
@@ -556,9 +560,9 @@ class MCP_Session private(
     }
     finally theory_mutation_lock.unlock()
   }
-  /* wave 3 infrastructure: derived maps over structure + deps (computed
-     once at startup for library discovery) */
-  private val sessions_map: Map[String, (String, String, List[String])] = {
+  /* Derived maps must also be lazy: eager construction would force full-library
+     dependency discovery during startup. Each map is retained after success. */
+  private lazy val sessions_map: Map[String, (String, String, List[String])] = {
     structure.imports_graph.keys.foldLeft(Map.empty[String, (String, String, List[String])]) {
       case (acc, name) =>
         val info = structure(name)
@@ -571,7 +575,7 @@ class MCP_Session private(
     }
   }
 
-  private val theory_map: Map[String, (String, Path)] = {
+  private lazy val theory_map: Map[String, (String, Path)] = {
     structure.imports_graph.keys.foldLeft(Map.empty[String, (String, Path)]) {
       case (acc, sess_name) =>
         deps.get(sess_name) match {
@@ -584,14 +588,13 @@ class MCP_Session private(
     }
   }
 
-  private val base_names: Map[String, List[String]] = {
+  private lazy val base_names: Map[String, List[String]] = {
     theory_map.keys.groupBy(Long_Name.base_name).view.mapValues(_.toList.sorted).toMap
   }
 
-  /* wave 5 (plans/doc_list): the documentation catalog, computed once at
-     startup alongside the maps above (same lifecycle, same rationale --
-     pure parsing, no heaps). */
-  private val doc_catalog: List[Doc_Catalog.Section] = Doc_Catalog.make(structure)
+  /* Independent of dependency analysis: documentation discovery pays for this
+     catalog on first use; reading a manual may additionally require deps. */
+  private lazy val doc_catalog: List[Doc_Catalog.Section] = Doc_Catalog.make(structure)
 
   /* wave 5 (plans/doc_read): a manual's chapter toc, memoized per source
      session -- the sources are read-only distribution files, so scanning
