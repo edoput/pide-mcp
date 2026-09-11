@@ -147,7 +147,6 @@ object PideBridgePolicy {
   )
 
   final case class Envelopes(
-    maxRequestBytes: PositiveBytes,
     maxReplyBytes: PositiveBytes
   )
 
@@ -155,22 +154,20 @@ object PideBridgePolicy {
     maxPending: Int,
     callTimeoutSeconds: Double,
     drainTimeoutSeconds: Double,
-    maxRequestBytes: Long,
     maxReplyBytes: Long
   ): Either[List[String], PideBridgePolicy] = {
     val pending = MaxPending.checked(maxPending)
     val call = PositiveDuration.checked("callTimeout", callTimeoutSeconds)
     val drain = NonNegativeDuration.checked("drainTimeout", drainTimeoutSeconds)
-    val request = PositiveBytes.checked("maxRequestBytes", maxRequestBytes)
     val reply = PositiveBytes.checked("maxReplyBytes", maxReplyBytes)
-    val errors = List(pending, call, drain, request, reply).collect { case Left(error) => error }
+    val errors = List(pending, call, drain, reply).collect { case Left(error) => error }
 
     if (errors.nonEmpty) Left(errors)
     else
       Right(PideBridgePolicy(
         maxPending = pending.toOption.get,
         timing = Timing(call.toOption.get, drain.toOption.get),
-        envelopes = Envelopes(request.toOption.get, reply.toOption.get)))
+        envelopes = Envelopes(reply.toOption.get)))
   }
 }
 

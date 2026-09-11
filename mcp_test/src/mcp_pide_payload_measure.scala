@@ -32,7 +32,6 @@ object MCP_Pide_Payload_Measure {
     cases: List[Case],
     request_bytes: Long,
     reply_bytes: Long,
-    maxRequestBytes: Long,
     maxReplyBytes: Long)
 
   private val request_category = "operation_request"
@@ -153,7 +152,7 @@ object MCP_Pide_Payload_Measure {
       case measured if measured.direction == "reply" => measured.bytes
     }.max
     Corpus(corpus_revision, PideBridgeV1.revision, all, request_maximum, reply_maximum,
-      default_for(request_maximum), default_for(reply_maximum))
+      default_for(reply_maximum))
   }
 
   def validate(cases: List[Case]): Unit = {
@@ -189,9 +188,8 @@ object MCP_Pide_Payload_Measure {
     }.max
     require(value.request_bytes == request_maximum && value.reply_bytes == reply_maximum,
       "payload maxima must agree with cases")
-    require(value.maxRequestBytes == default_for(request_maximum) &&
-      value.maxReplyBytes == default_for(reply_maximum),
-      "payload defaults must derive from maxima")
+    require(value.maxReplyBytes == default_for(reply_maximum),
+      "payload reply default must derive from reply maximum")
     JSON.Format(JSON.Object(
       "schema" -> schema,
       "bridge_revision" -> value.bridge_revision,
@@ -206,9 +204,7 @@ object MCP_Pide_Payload_Measure {
       "maxima" -> JSON.Object(
         "request_bytes" -> value.request_bytes,
         "reply_bytes" -> value.reply_bytes),
-      "defaults" -> JSON.Object(
-        "maxRequestBytes" -> value.maxRequestBytes,
-        "maxReplyBytes" -> value.maxReplyBytes),
+      "defaults" -> JSON.Object("maxReplyBytes" -> value.maxReplyBytes),
       "provenance" -> JSON.Object(
         "large_request_source_text" -> JSON.Object(
           "bytes" -> large_request_source_text_bytes,

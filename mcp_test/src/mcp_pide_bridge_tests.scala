@@ -175,7 +175,6 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       maxPending = maxPending,
       callTimeoutSeconds = 5.0,
       drainTimeoutSeconds = drainTimeoutSeconds,
-      maxRequestBytes = 1024,
       maxReplyBytes = maxReplyBytes).fold(errors => fail(errors.mkString(", ")), identity)
 
   private final case class TextOperation(name: String, request: String)
@@ -231,7 +230,6 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
         maxPending = 0,
         callTimeoutSeconds = Double.NaN,
         drainTimeoutSeconds = Double.PositiveInfinity,
-        maxRequestBytes = 0,
         maxReplyBytes = -1).swap.getOrElse(fail("invalid policy was accepted"))
 
     assertEquals(errors,
@@ -239,7 +237,6 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
         "maxPending must be positive",
         "callTimeout must be finite and positive",
         "drainTimeout must be finite and non-negative",
-        "maxRequestBytes must be positive",
         "maxReplyBytes must be positive"))
   }
 
@@ -1420,9 +1417,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
       first.cases.filter(_.direction == "request").map(_.bytes).max)
     assertEquals(first.reply_bytes,
       first.cases.filter(_.direction == "reply").map(_.bytes).max)
-    assertEquals(first.maxRequestBytes, MCP_Pide_Payload_Measure.default_for(first.request_bytes))
     assertEquals(first.maxReplyBytes, MCP_Pide_Payload_Measure.default_for(first.reply_bytes))
-    assertEquals(first.maxRequestBytes, 262144L)
     assertEquals(first.maxReplyBytes, 1048576L)
   }
 
