@@ -109,3 +109,46 @@ class MCP_Heap_Fixture_Tests extends MCP_Heap_Suite("Pure") {
     assert(result.out.contains("heap fixture boom"), result.out)
   }
 }
+
+class MCP_Heap_Diagnostics_Tests extends MCP_Suite {
+  override def munitTimeout: scala.concurrent.duration.Duration =
+    scala.concurrent.duration.Duration(10, "minutes")
+
+  test("heap diagnostics use Isabelle validity checks and resolved heap inputs") {
+    val options = MCP_Test_Config.options
+    val dirs = MCP_Test_Config.session_dirs
+    val lines = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+    val progress = new Progress {
+      override def verbose = true
+      override def output(messages: Progress.Output): Unit =
+        messages.foreach(message => lines.add(message.message.text))
+    }
+    def output: String = lines.toArray.mkString("\n")
+    Isabelle_System.with_tmp_dir("mcp-heap-diagnostics") { dir =>
+      val name = "MCP-Diagnostics-" + java.util.UUID.randomUUID().toString
+      File.write(dir + Path.basic("ROOT"), "session \"" + name + "\" = Pure +\n")
+      MCP_Session.build(options, name, dir :: dirs, progress)
+      assert(output.contains("Session image " + name + ": build required"), output)
+      assert(output.contains("Session image " + name + ": build completed"), output)
+      lines.clear()
+      MCP_Session.build(options, name, dir :: dirs, progress)
+      assert(output.contains("Session image " + name + ": reused"), output)
+      assert(!output.contains(": build required"), output)
+    }
+    MCP_Session.build(options, "MCP-HOL", dirs, progress)
+    val resources = Headless.Resources.make(options, "MCP-HOL", session_dirs = dirs)
+    lines.clear()
+    MCP_Session.report_heap_inputs(resources, progress)
+    val expected = resources.store.session_heaps(resources.session_background, logic = "MCP-HOL")
+    expected.foreach(path => assert(output.contains("Resolved heap input: " +
+      quote(File.platform_path(path))), output))
+    assert(!expected.exists(_.file_name == "MCP-Tools"), expected.toString)
+    assert(output.contains("Session: MCP-HOL"), output)
+    lines.clear()
+    MCP_Session.report_heap_inputs(resources, new Progress {
+      override def output(messages: Progress.Output): Unit =
+        messages.foreach(message => lines.add(message.message.text))
+    })
+    assertEquals(output, "")
+  }
+}

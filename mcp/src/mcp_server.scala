@@ -605,7 +605,7 @@ object MCP_Server {
       readiness: Readiness,
       changed_sender: Option[String => Unit],
       shutting_down: Boolean)
-    val cell = Synchronized(State(Not_Ready("building " + session_name), None, false))
+    val cell = Synchronized(State(Not_Ready("checking session image " + session_name), None, false))
 
     /* fire-and-forget: Command_Line.tool (the isabelle launcher) calls
        sys.exit once run() returns, which happens as soon as serve() sees
@@ -644,7 +644,7 @@ object MCP_Server {
     }
 
     progress.echo(
-      "Serving stdin; session " + quote(session_name) + " building in the background ...")
+      "Serving stdin; session " + quote(session_name) + " checking session image in the background ...")
     ConnectionRuntime.stdio(
       () => cell.value.readiness, progress,
       sessionName = session_name, sessionDirs = session_dirs, theory = theory,
