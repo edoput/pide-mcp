@@ -471,10 +471,7 @@ trait BridgeCancellation {
   */
 private[mcp] final class PideBridge(
   transport: PideTransport,
-  maxPending: PideBridgePolicy.MaxPending,
-  maxReplyBytes: PideBridgePolicy.PositiveBytes,
-  callTimeout: PideBridgePolicy.PositiveDuration,
-  drainTimeout: PideBridgePolicy.NonNegativeDuration,
+  policy: PideBridgePolicy,
   deadlineScheduler: DeadlineScheduler,
   root: () => BridgeResult[PideRootSelector],
   operationNames: Set[String],
@@ -495,7 +492,7 @@ private[mcp] final class PideBridge(
   )
 
   private val ids = BridgeCallIdGenerator.random()
-  private val pending = new PendingRegistry(maxPending, new Diagnostics {
+  private val pending = new PendingRegistry(policy.maxPending, new Diagnostics {
     def report(diagnostic: Diagnostic): Unit =
       diagnostics("Unowned PIDE bridge reply for " + diagnostic.operation +
         " id " + BridgeCallId.value(diagnostic.id))
@@ -593,7 +590,7 @@ private[mcp] final class PideBridge(
   }
 
   private def armDeadline(id: BridgeCallId): Unit = {
-    val handle = deadlineScheduler.schedule(callTimeout,
+    val handle = deadlineScheduler.schedule(policy.timing.callTimeout,
       () => timeout(id))
     deadlines += id -> handle
   }
@@ -614,7 +611,8 @@ private[mcp] final class PideBridge(
     /* Firing removes itself from ManualDeadlineScheduler, but also remove our
       * ownership entry before settling the terminal race. */
     deadlines -= id
-    val owned = pending.fail(id, TimedOut(PideBridgePolicy.PositiveDuration.duration(callTimeout)))
+    val owned = pending.fail(id,
+      TimedOut(PideBridgePolicy.PositiveDuration.duration(policy.timing.callTimeout)))
     val wasSent = sent.contains(id)
     sent -= id
     if (owned && wasSent) sendCancel(id)
@@ -721,11 +719,11 @@ private[mcp] final class PideBridge(
   }
 
   private def receive(reply: PideTransport.Inbound): Unit = synchronized {
-    if (reply.body.size > PideBridgePolicy.PositiveBytes.value(maxReplyBytes)) {
+    if (reply.body.size > PideBridgePolicy.PositiveBytes.value(policy.envelopes.maxReplyBytes)) {
       protocol.oversized(reply) match {
         case PideBridgeReply.Oversized(Some(rawId), operation, _) =>
           receiveOversized(rawId, operation, reply.body.size,
-            PideBridgePolicy.PositiveBytes.value(maxReplyBytes))
+            PideBridgePolicy.PositiveBytes.value(policy.envelopes.maxReplyBytes))
         case PideBridgeReply.Oversized(None, _, detail) =>
           diagnostics("Uncorrelated oversized PIDE bridge result: " + detail)
         case PideBridgeReply.Malformed(id, operation, detail) =>
@@ -827,13 +825,13 @@ private[mcp] final class PideBridge(
       }
     }
 
-    val timeoutNanos = PideBridgePolicy.NonNegativeDuration.duration(drainTimeout).toNanos
+    val timeoutNanos = PideBridgePolicy.NonNegativeDuration.duration(policy.timing.drainTimeout).toNanos
     synchronized {
       while (waiting.result.isEmpty && state == State.Stopping) {
         val remaining = timeoutNanos - (System.nanoTime() - waiting.startedAtNanos)
         if (remaining <= 0L)
           settleDrainFailure(waiting,
-            TimedOut(PideBridgePolicy.NonNegativeDuration.duration(drainTimeout)))
+            TimedOut(PideBridgePolicy.NonNegativeDuration.duration(policy.timing.drainTimeout)))
         else {
           val millis = remaining / 1000000L
           val nanos = (remaining % 1000000L).toInt

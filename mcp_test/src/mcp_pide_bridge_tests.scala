@@ -133,10 +133,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     val configured = policy(maxPending, drainTimeoutSeconds, maxReplyBytes)
     val control = new PideBridge(
       transport,
-      configured.maxPending,
-      configured.envelopes.maxReplyBytes,
-      configured.timing.callTimeout,
-      configured.timing.drainTimeout,
+      configured,
       deadlines,
       root,
       McpBridgeOperations.baseOperationNames ++ Set("first", "second", "op"),
@@ -158,10 +155,7 @@ class MCP_Pide_Bridge_Tests extends MCP_Suite {
     knownOperations: Set[String] = McpBridgeOperations.operationNames): PideBridge =
     new PideBridge(
       transport,
-      policy().maxPending,
-      policy().envelopes.maxReplyBytes,
-      policy().timing.callTimeout,
-      policy().timing.drainTimeout,
+      policy(),
       new ManualDeadlineScheduler,
       () => Right(testRoot),
       knownOperations,

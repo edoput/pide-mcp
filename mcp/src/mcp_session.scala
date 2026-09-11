@@ -14,7 +14,6 @@ import isabelle.mcp.pide.{BridgeDrainOutcome, BridgeFailure, BridgeResult,
   PideBridge, PideBridgePolicy, PideBridgeV1, PideRootSelector, SessionPideTransport}
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.control.ScheduledDeadlineScheduler
-import isabelle.mcp.control.NonNegativeDuration
 
 import scala.util.control.NonFatal
 import scala.concurrent.duration.FiniteDuration
@@ -390,19 +389,13 @@ object MCP_Session {
     val deps = Sessions.deps(structure, progress = progress)
     val store = Store(options)
 
-    val bridgeMaxPending =
-      PideBridgePolicy.MaxPending.checked(options.int("mcp_max_in_flight"))
-        .fold(error, identity)
-    val bridgeMaxReplyBytes =
-      PideBridgePolicy.PositiveBytes.checked(
-        "mcp_bridge_max_reply_bytes", options.int("mcp_bridge_max_reply_bytes").toLong)
-        .fold(error, identity)
-    val bridgeCallTimeout =
-      PideBridgePolicy.PositiveDuration.checked(
-        "mcp_request_timeout", options.real("mcp_request_timeout")).fold(error, identity)
-    val bridgeDrainTimeout =
-      NonNegativeDuration.checked(
-        "mcp_shutdown_drain", options.real("mcp_shutdown_drain")).fold(error, identity)
+    val bridgePolicy =
+      PideBridgePolicy.checked(
+        maxPending = options.int("mcp_max_in_flight"),
+        callTimeoutSeconds = options.real("mcp_request_timeout"),
+        drainTimeoutSeconds = options.real("mcp_shutdown_drain"),
+        maxReplyBytes = options.int("mcp_bridge_max_reply_bytes").toLong)
+        .fold(errors => error(errors.mkString("; ")), identity)
 
     report_heap_inputs(resources, progress)
     val session = resources.start_session(progress = progress)
@@ -431,11 +424,10 @@ object MCP_Session {
       root.load(progress)
 
       val mcpSession = new MCP_Session(session, session_name, session_dirs, theory,
-        structure, deps, store, bridgeMaxPending, bridgeMaxReplyBytes, bridgeCallTimeout,
-        bridgeDrainTimeout, bridgeProfile, root)
+        structure, deps, store, bridgePolicy, bridgeProfile, root)
       ownedSession = Some(mcpSession)
 
-      mcpSession.await_bridge_ready(bridgeCallTimeout) match {
+      mcpSession.await_bridge_ready(bridgePolicy.timing.callTimeout) match {
         case Right(()) => ()
         case Left(failure) =>
           error("PIDE bridge startup hello failed: " + failure.message)
@@ -481,10 +473,7 @@ class MCP_Session private(
   val structure: Sessions.Structure,
   val deps: Sessions.Deps,
   val store: Store,
-  bridgeMaxPending: PideBridgePolicy.MaxPending,
-  bridgeMaxReplyBytes: PideBridgePolicy.PositiveBytes,
-  bridgeCallTimeout: PideBridgePolicy.PositiveDuration,
-  bridgeDrainTimeout: PideBridgePolicy.NonNegativeDuration,
+  bridgePolicy: PideBridgePolicy,
   bridgeProfile: McpBridgeProfile,
   private val rootDocument: MCP_Session.RootDocument
 ) extends MCP_Backend {
@@ -641,10 +630,7 @@ class MCP_Session private(
   private val bridge =
     new PideBridge(
       new SessionPideTransport(session, PideBridgeV1.resultFunctions),
-      bridgeMaxPending,
-      bridgeMaxReplyBytes,
-      bridgeCallTimeout,
-      bridgeDrainTimeout,
+      bridgePolicy,
       new ScheduledDeadlineScheduler("mcp-pide-bridge-deadline"),
       () => current_root_selector(),
       McpBridgeOperations.operationNames,
