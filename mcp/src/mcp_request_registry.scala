@@ -23,13 +23,24 @@ object RequestId {
     def json: JSON.T = value
   }
 
+  final case class NumberId private[connection] (value: Long) extends RequestId {
+    def json: JSON.T = value
+  }
+
+  /* JSON-RPC 2.0 / MCP 2025-03-26 request ids are a string or an integer,
+     never null, never fractional. isabelle.JSON parses every number as a
+     Double, so an integral id (7, 7.0, ...) still arrives through
+     Value.Long; a genuinely fractional id (7.5) does not match it and
+     falls through to rejection, same as null/bool/object/array. */
   def fromJson(json: JSON.T): Either[String, RequestId] =
     json match {
       case value: String => Right(StringId(value))
-      case _ => Left("id must be a string")
+      case JSON.Value.Long(value) => Right(NumberId(value))
+      case _ => Left("id must be a string or integer")
     }
 
   def string(value: String): RequestId = StringId(value)
+  def number(value: Long): RequestId = NumberId(value)
 }
 
 

@@ -155,7 +155,7 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       JSON.Object("jsonrpc" -> "2.0", "id" -> null, "method" -> "ping")))),
       RevisionRules.Invalid(RevisionRules.NullReply, RevisionRules.InvalidRequest,
-        "id must be a string"))
+        "id must be a string or integer"))
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       request(Some("2"), "tools/call")))),
       RevisionRules.Invalid(RevisionRules.ReplyId(requestId(2)), RevisionRules.InvalidParams, "Missing tool name"))
@@ -185,7 +185,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
       request(None, "notifications/cancelled", Some(JSON.Object("requestId" -> 2, "reason" -> 3)))))
     assertEquals(rules.classify(cancelledWithWireId), RevisionRules.Ignored)
     assertEquals(rules.classify(cancelledWithFraction), RevisionRules.Ignored)
-    assertEquals(rules.classify(cancelledWithNumericTarget), RevisionRules.Ignored)
+    assertEquals(rules.classify(cancelledWithNumericTarget),
+      RevisionRules.Cancelled(RequestId.number(2L), Some("client left")))
     assertEquals(rules.classify(cancelledWithBadReason), RevisionRules.Ignored)
     assertEquals(rules.classify(JsonRpc.Inbound.Decoded(JsonRpc.Envelope.Single(
       request(None, "not/a/method")))), RevisionRules.Ignored)
@@ -335,13 +336,21 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(connection.phase, ConnectionLifecycle.Closed)
   }
 
-  spec_test("request ids accept strings and reject every non-string value",
+  spec_test("request ids accept strings and integers, reject fractional numbers and null",
       covers = List("connection_kernel#T1")) {
     val string = checked(RequestId.fromJson("alpha"))
     assertEquals(string, RequestId.string("alpha"))
     assertEquals(string.json, "alpha")
-    List(null, 7, 7.0, 7.5, 9007199254740992.0).foreach { value =>
-      assertEquals(RequestId.fromJson(value), Left("id must be a string"))
+
+    List[(JSON.T, Long)](7 -> 7L, 7.0 -> 7L, 9007199254740992.0 -> 9007199254740992L).foreach {
+      case (value, expected) =>
+        val number = checked(RequestId.fromJson(value))
+        assertEquals(number, RequestId.number(expected))
+        assertEquals(number.json, expected)
+    }
+
+    List[JSON.T](null, 7.5, true).foreach { value =>
+      assertEquals(RequestId.fromJson(value), Left("id must be a string or integer"))
     }
   }
 
@@ -545,14 +554,14 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(decodedInteger, Some(7.0))
     val integerConnection = kernel(List(integerIdLine))
     assertEquals(integerConnection.receive().map(_.decision),
-      Some(ConnectionLifecycle.Rejected(RevisionRules.NullReply, RevisionRules.InvalidRequest,
-        "id must be a string")))
+      Some(ConnectionLifecycle.Rejected(RevisionRules.ReplyId(RequestId.number(7L)), RevisionRules.InvalidRequest,
+        "ping is not valid in Fresh")))
 
     val fractionalIdLine = """{"jsonrpc":"2.0","id":7.5,"method":"ping"}"""
     val fractionalConnection = kernel(List(fractionalIdLine))
     assertEquals(fractionalConnection.receive().map(_.decision),
       Some(ConnectionLifecycle.Rejected(RevisionRules.NullReply, RevisionRules.InvalidRequest,
-        "id must be a string")))
+        "id must be a string or integer")))
 
     val largeIdLine = """{"jsonrpc":"2.0","id":9007199254740993,"method":"ping"}"""
     val decodedLarge = JSON.Format.unapply(largeIdLine).flatMap(JSON.value(_, "id"))
@@ -560,8 +569,8 @@ class MCP_Connection_Kernel_Tests extends MCP_Suite {
     assertEquals(decodedLarge, Some(9007199254740992.0))
     val largeConnection = kernel(List(largeIdLine))
     assertEquals(largeConnection.receive().map(_.decision),
-      Some(ConnectionLifecycle.Rejected(RevisionRules.NullReply, RevisionRules.InvalidRequest,
-        "id must be a string")))
+      Some(ConnectionLifecycle.Rejected(RevisionRules.ReplyId(RequestId.number(9007199254740992L)),
+        RevisionRules.InvalidRequest, "ping is not valid in Fresh")))
   }
 
   test("typed list_changed notifications are emitted only after Ready") {
