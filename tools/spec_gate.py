@@ -542,7 +542,7 @@ for index, test in enumerate(tests):
         manifest_require(ident in known_ids,
                          f"{suite}::{name} cites unknown plan id {ident}")
         if relation == "covers":
-            # An obligation may declare SEVERAL layers -- plans/scope_show T2 is
+            # An obligation may declare SEVERAL layers -- a plan's T-label can be
             # covered partly by a scala-unit test and partly by a bridge one.
             # The registry records them comma-joined, so the binding is
             # membership, not equality. This still refuses a link that claims a
