@@ -11,6 +11,19 @@ import isabelle.JSON
 
 
 object JsonRpc {
+  object ErrorCode {
+    val ParseError = -32700
+    val InvalidRequest = -32600
+    val MethodNotFound = -32601
+    val InvalidParams = -32602
+    val InternalError = -32603
+    /* JSON-RPC reserves -32000 through -32099 for implementation-specific
+       server errors; these MCP server values are defined by this application. */
+    val Rejected = -32000
+    val Overloaded = -32001
+    val RequestTimedOut = -32002
+  }
+
   sealed trait Envelope
 
   object Envelope {

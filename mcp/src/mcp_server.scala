@@ -11,13 +11,14 @@ package isabelle.mcp
 import isabelle._
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.connection._
+import isabelle.mcp.protocol.JsonRpc
 
 import java.io.{BufferedReader, PrintStream}
 
 object MCP_Server {
   val server_name = "isabelle-mcp"
   val server_version = "0.1.0"
-  val default_protocol_version = "2025-03-26"
+  val default_protocol_version = ProtocolRevision.V2025_03_26.value
 
   /* declared params -> JSON schema (spec phase 3 "schema over the
      bridge"): nat/int -> integer, bool -> boolean, everything else
@@ -356,10 +357,10 @@ object MCP_Server {
   /* json-rpc 2.0 */
 
   object RPC {
-    val PARSE_ERROR = -32700
-    val INVALID_REQUEST = -32600
-    val METHOD_NOT_FOUND = -32601
-    val INVALID_PARAMS = -32602
+    val PARSE_ERROR = JsonRpc.ErrorCode.ParseError
+    val INVALID_REQUEST = JsonRpc.ErrorCode.InvalidRequest
+    val METHOD_NOT_FOUND = JsonRpc.ErrorCode.MethodNotFound
+    val INVALID_PARAMS = JsonRpc.ErrorCode.InvalidParams
 
     def response(id: JSON.T, result: JSON.T): JSON.Object.T =
       JSON.Object("jsonrpc" -> "2.0", "id" -> id, "result" -> result)

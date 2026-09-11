@@ -18,10 +18,10 @@ trait RevisionRules {
 
 
 object RevisionRules {
-  val ParseError = -32700
-  val InvalidRequest = -32600
-  val MethodNotFound = -32601
-  val InvalidParams = -32602
+  val ParseError = JsonRpc.ErrorCode.ParseError
+  val InvalidRequest = JsonRpc.ErrorCode.InvalidRequest
+  val MethodNotFound = JsonRpc.ErrorCode.MethodNotFound
+  val InvalidParams = JsonRpc.ErrorCode.InvalidParams
 
   sealed trait Message
   sealed trait ReplyTarget

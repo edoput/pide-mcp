@@ -395,7 +395,7 @@ final class ConnectionKernel private (
               case request: RequestRegistry.Admitted => ConnectionKernel.Accepted(decision, request, Some(permit))
               case RequestRegistry.Broken(_) =>
                 scheduler.abandon(permit)
-                ConnectionKernel.Decided(ConnectionLifecycle.Rejected(RevisionRules.ReplyId(id), -32000,
+                ConnectionKernel.Decided(ConnectionLifecycle.Rejected(RevisionRules.ReplyId(id), ConnectionKernel.Rejected,
                   "Connection is broken"))
               case RequestRegistry.DuplicateId(_) =>
                 scheduler.abandon(permit)
@@ -408,7 +408,7 @@ final class ConnectionKernel private (
         registry.admitReserved(reservation, kind) match {
           case request: RequestRegistry.Admitted => ConnectionKernel.Accepted(decision, request, None)
           case RequestRegistry.Broken(_) =>
-            ConnectionKernel.Decided(ConnectionLifecycle.Rejected(RevisionRules.ReplyId(id), -32000,
+            ConnectionKernel.Decided(ConnectionLifecycle.Rejected(RevisionRules.ReplyId(id), ConnectionKernel.Rejected,
               "Connection is broken"))
           case RequestRegistry.DuplicateId(_) =>
             error("request registry disagrees about request-id reuse")
@@ -675,9 +675,10 @@ final class ConnectionKernel private (
 
 
 object ConnectionKernel {
-  val Overloaded = -32001
-  val RequestTimedOut = -32002
-  val InternalError = -32603
+  val Rejected = JsonRpc.ErrorCode.Rejected
+  val Overloaded = JsonRpc.ErrorCode.Overloaded
+  val RequestTimedOut = JsonRpc.ErrorCode.RequestTimedOut
+  val InternalError = JsonRpc.ErrorCode.InternalError
   final case class ServerInfo(name: String, version: String)
   final case class DrainResult(drained: Boolean, cancelled: List[RequestRegistry.Tombstone])
 
