@@ -12,6 +12,7 @@ import isabelle._
 import isabelle.mcp.application.McpApplication
 import isabelle.mcp.connection._
 import isabelle.mcp.protocol.JsonRpc
+import isabelle.mcp.tools
 
 import java.io.{BufferedReader, PrintStream}
 
@@ -164,181 +165,22 @@ object MCP_Server {
   def pass_arg(args: List[(String, String)], key: String): String =
     args.collectFirst({ case (`key`, v) => v }).getOrElse("")
 
-  val load_theory_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "load_theory",
-      description =
-        "Load and check a theory from disk (with its transitive " +
-        "dependencies) into the running session, by session-qualified " +
-        "long name (\"HOL-Library.Multiset\") or by path via " +
-        "master_dir. Replies with per-theory " +
-        "ok/error status; errors carry positions. Loading is the " +
-        "expensive promotion -- a deep import chain outside the base " +
-        "image can take minutes; see list_theories for what is " +
-        "already available.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" ->
-            JSON.Object(
-              "name" -> JSON.Object("type" -> "string"),
-              "master_dir" -> JSON.Object("type" -> "string")),
-          "required" -> List("name")),
-      annotations = idempotent_mutating_annotations,
-      handler_fn = (backend, args, _) =>
-        backend.load_theory(pass_arg(args, "name"), pass_arg(args, "master_dir")))
-
-  val unload_theory_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "unload_theory",
-      description =
-        "Unload a theory that was loaded with load_theory: removes " +
-        "its PIDE document and purges the snapshot. " +
-        "Cannot unload theories baked into the base image.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" -> JSON.Object("name" -> JSON.Object("type" -> "string")),
-          "required" -> List("name")),
-      annotations = mutating_annotations,
-      handler_fn = (backend, args, _) => backend.unload_theory(pass_arg(args, "name")))
-
-  val check_theory_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "check_theory",
-      description =
-        "Re-read a theory file from disk and check it, then report " +
-        "its diagnostics (errors and warnings with positions). Use " +
-        "this after editing the file to verify it as it now stands. " +
-        "Equivalent to unload_theory followed by " +
-        "load_theory. A clean reply means the theory checks; errors " +
-        "carry line positions for the next edit round.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" ->
-            JSON.Object(
-              "name" -> JSON.Object("type" -> "string"),
-              "master_dir" -> JSON.Object("type" -> "string")),
-          "required" -> List("name")),
-      annotations = idempotent_mutating_annotations,
-      handler_fn = (backend, args, _) =>
-        backend.check_theory(pass_arg(args, "name"), pass_arg(args, "master_dir")))
-
-  val list_sessions_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "list_sessions",
-      description =
-        "List all Isabelle sessions known to the server, enumerated " +
-        "from ROOT files on the configured session directories " +
-        "(distribution, AFP if registered, etc.). Each entry shows " +
-        "session name, chapter, whether a built heap exists, and " +
-        "theory count. Mark the session the server is running as base " +
-        "image. Sessions are coarse-grained units: theories in the base " +
-        "image are queryable now; others require load_theory (slow) or " +
-        "a heap rebuild + server restart (fast, coarse). Follow with " +
-        "list_theories to see what is in a session.",
-      input_schema = JSON.Object("type" -> "object", "properties" -> JSON.Object.empty, "required" -> List()),
-      annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
-      handler_fn = (backend, _, _) => backend.list_sessions_info())
-
-  val list_theories_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "list_theories",
-      description =
-        "List all theories in a given Isabelle session (by name, as " +
-        "shown by list_sessions). Each entry is a long theory name; " +
-        "use load_theory to load one, search_sources for a name search.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" -> JSON.Object("session" -> JSON.Object("type" -> "string")),
-          "required" -> List("session")),
-      annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
-      handler_fn = (backend, args, _) =>
-        backend.list_theories_info(pass_arg(args, "session")))
-
-  val search_sources_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "search_sources",
-      description =
-        "Search for theories by substring match. Scans all theories " +
-        "across all sessions and returns long names that contain the " +
-        "given pattern. Empty pattern returns no results (use " +
-        "list_theories for a full enumeration of one session).",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" -> JSON.Object("pattern" -> JSON.Object("type" -> "string")),
-          "required" -> List("pattern")),
-      annotations = JSON.Object("readOnlyHint" -> true, "idempotentHint" -> true, "openWorldHint" -> false),
-      handler_fn = (backend, args, _) => backend.search_sources(pass_arg(args, "pattern")))
-
-  /* wave 5 (plans/doc_list, spec "documentation for the agent"): the
-     Doc.contents() catalog (manuals, release notes, examples), joined per
-     entry to the doc session doc_read will serve chapters from. */
-  val doc_list_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "doc_list",
-      description =
-        "List the Isabelle documentation catalog: the manuals, release " +
-        "notes, and examples shipped with the distribution (what " +
-        "`isabelle doc` shows). Each entry reports name, title, its " +
-        "catalog section, and how it is readable: manuals name the " +
-        "source session whose theory files doc_read serves (chapter-" +
-        "level plain text -- never the pdf); plain-text entries (NEWS, " +
-        "examples) are read directly. Find theory names with " +
-        "search_sources. Glob `pattern` " +
-        "filters entry names.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" -> JSON.Object("pattern" -> JSON.Object("type" -> "string")),
-          "required" -> List()),
-      annotations = read_only_annotations,
-      handler_fn = (backend, args, _) => backend.doc_list(pass_arg(args, "pattern")))
-
-  /* wave 5 (plans/doc_read, spec "documentation for the agent"): reads a
-     doc_list entry from its plain-text source -- manuals resolve through
-     the catalog to their src/Doc session's chapter .thy files (toc
-     without `section`, that section's source text with it); NEWS/examples
-     are plain files (`lines` windows them). Never the pdf. */
-  val doc_read_tool: Builtin_Tool =
-    Builtin_Tool(
-      name = "doc_read",
-      description =
-        "Read Isabelle documentation from its plain-text sources. `name` " +
-        "is a doc_list entry (e.g. \"isar-ref\", \"system\", \"NEWS\"). " +
-        "For manuals: without `section`, returns the table of contents -- " +
-        "chapter and section headings with their source file and line; " +
-        "with `section`, returns that section's source text (substring " +
-        "match on headings; an ambiguous match lists the candidates). " +
-        "Manual text is Isar theory source -- prose with antiquotations " +
-        "-- not the rendered pdf. For plain-text entries (NEWS, examples), " +
-        "returns file content; `lines` (e.g. \"120-180\") windows it. Long " +
-        "sections are truncated with a note; narrow with a more specific " +
-        "`section` or use search_sources over the manual's source " +
-        "session. `section` and `lines` are mutually exclusive -- section " +
-        "addresses manuals, lines addresses plain entries.",
-      input_schema =
-        JSON.Object(
-          "type" -> "object",
-          "properties" ->
-            JSON.Object(
-              "name" -> JSON.Object("type" -> "string"),
-              "section" -> JSON.Object("type" -> "string"),
-              "lines" -> JSON.Object("type" -> "string")),
-          "required" -> List("name")),
-      annotations = read_only_annotations,
-      handler_fn = (backend, args, _) =>
-        backend.doc_read(
-          pass_arg(args, "name"), pass_arg(args, "section"), pass_arg(args, "lines")))
-
   val builtins: List[Builtin_Tool] =
-    List(load_theory_tool, unload_theory_tool, check_theory_tool,
-      list_sessions_tool, list_theories_tool, search_sources_tool,
-      doc_list_tool, doc_read_tool)
+    List(tools.LoadTheory.load_theory_tool, tools.UnloadTheory.unload_theory_tool,
+      tools.CheckTheory.check_theory_tool, tools.ListSessions.list_sessions_tool,
+      tools.ListTheories.list_theories_tool, tools.SearchSources.search_sources_tool,
+      tools.DocList.doc_list_tool, tools.DocRead.doc_read_tool)
 
+  /* Compatibility aliases for callers that use the historical composition
+     root names.  Implementations live in isabelle.mcp.tools. */
+  val load_theory_tool: Builtin_Tool = tools.LoadTheory.load_theory_tool
+  val unload_theory_tool: Builtin_Tool = tools.UnloadTheory.unload_theory_tool
+  val check_theory_tool: Builtin_Tool = tools.CheckTheory.check_theory_tool
+  val list_sessions_tool: Builtin_Tool = tools.ListSessions.list_sessions_tool
+  val list_theories_tool: Builtin_Tool = tools.ListTheories.list_theories_tool
+  val search_sources_tool: Builtin_Tool = tools.SearchSources.search_sources_tool
+  val doc_list_tool: Builtin_Tool = tools.DocList.doc_list_tool
+  val doc_read_tool: Builtin_Tool = tools.DocRead.doc_read_tool
   val all_builtin_names: List[String] = builtins.map(_.name)
 
   /* JSON arrays become repeated named arguments in array order. */

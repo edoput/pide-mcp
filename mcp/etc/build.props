@@ -29,6 +29,14 @@ sources = \
   src/mcp_pide_bridge.scala \
   src/mcp_bridge_operations.scala \
   src/mcp_session.scala \
+  src/tools/load_theory.scala \
+  src/tools/unload_theory.scala \
+  src/tools/check_theory.scala \
+  src/tools/list_sessions.scala \
+  src/tools/list_theories.scala \
+  src/tools/search_sources.scala \
+  src/tools/doc_list.scala \
+  src/tools/doc_read.scala \
   src/mcp_server.scala
 
 # service providers: subclasses of isabelle.Isabelle_System.Service,
