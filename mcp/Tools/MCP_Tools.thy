@@ -1669,7 +1669,6 @@ val _ =
         |> #2)
       [("load_theory", "Load and check a theory from disk into the running session."),
        ("unload_theory", "Unload a theory that was loaded with load_theory."),
-       ("check_theory", "Re-read a theory file from disk and check it."),
        ("list_sessions", "List all Isabelle sessions known to the server."),
        ("list_theories", "List all theories in a given Isabelle session."),
        ("search_sources", "Search for theories by substring match on their long name."),

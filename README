@@ -55,8 +55,10 @@ The selected session's own build checks and PIDE preparation still run at startu
 
 Tools
 -----
-- load_theory and check_theory load/check disk theories with dependencies and
-  report positioned errors and warnings through headless session.use_theories.
+- load_theory loads/re-checks disk theories with dependencies and reports
+  positioned errors and warnings through headless session.use_theories; it
+  re-reads the file fresh on every call, so calling it again after an edit
+  is already a "check" -- there is no separate check_theory.
 - unload_theory removes a loaded theory; image theories cannot be unloaded.
 - list_sessions and list_theories discover the session library.
 - search_sources searches theory names by substring, not source contents.
@@ -70,7 +72,7 @@ Proof.context. Every ML tool automatically advertises an optional string argumen
 named context. Supply its target URL in the ordinary arguments object; omit it
 to execute at the root. The framework resolves the URL and removes context before
 calling the unchanged ML implementation. Tool declarations cannot define their
-own context parameter. The eight Scala builtins do not receive this parameter.
+own context parameter. The seven Scala builtins do not receive this parameter.
 
 Testing
 -------

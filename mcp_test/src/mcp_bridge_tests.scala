@@ -66,7 +66,7 @@ end
         assertEquals(backend.ml_run(before.name, List("input" -> "ignored")),
           MCP_Session.Ok("version-one"))
         File.write(dir + Path.basic("CarveAncestor.thy"), ancestor("version-two"))
-        assert(backend.check_theory("CarveAncestor", File.standard_path(dir)).ok)
+        assert(backend.load_theory("CarveAncestor", File.standard_path(dir)).ok)
         val after = inherited
         assertEquals(after.description, "version-two")
         assertEquals(backend.ml_run(after.name, List("input" -> "ignored")),
@@ -517,31 +517,31 @@ class MCP_Theory_Bridge_Tests extends MCP_Session_Suite(
             JSON.Object("name" -> "SerializedMutation", "master_dir" -> masterDir))
           assert(entered.await(5, TimeUnit.SECONDS), "load_theory did not enter mutation gate")
 
-          call("cancelled-check", "check_theory",
+          call("cancelled-recheck", "load_theory",
             JSON.Object("name" -> "SerializedMutation", "master_dir" -> masterDir))
-          eventually("check_theory was not admitted behind load_theory", Time.seconds(2.0)) {
-            registry.snapshot.activeIds.contains(RequestId.string("cancelled-check"))
+          eventually("second load_theory was not admitted behind the first", Time.seconds(2.0)) {
+            registry.snapshot.activeIds.contains(RequestId.string("cancelled-recheck"))
           }
           kernel.handle(request(None, "notifications/cancelled",
-            Some(JSON.Object("requestId" -> "cancelled-check", "reason" -> "gate fixture"))))
+            Some(JSON.Object("requestId" -> "cancelled-recheck", "reason" -> "gate fixture"))))
           eventually("cancelled lock waiter retained connection capacity", Time.seconds(2.0)) {
-            !registry.snapshot.activeIds.contains(RequestId.string("cancelled-check"))
+            !registry.snapshot.activeIds.contains(RequestId.string("cancelled-recheck"))
           }
           release.countDown()
 
           eventually("load_theory did not complete after releasing mutation gate",
               Time.seconds(5.0)) { successful("load") }
-          call("check", "check_theory",
+          call("recheck", "load_theory",
             JSON.Object("name" -> "SerializedMutation", "master_dir" -> masterDir))
-          eventually("check_theory did not run after cancelled waiter", Time.seconds(5.0)) {
-            successful("check")
+          eventually("load_theory did not run after cancelled waiter", Time.seconds(5.0)) {
+            successful("recheck")
           }
           call("unload", "unload_theory", JSON.Object("name" -> "SerializedMutation"))
-          eventually("unload_theory did not run after check_theory", Time.seconds(5.0)) {
+          eventually("unload_theory did not run after the second load_theory", Time.seconds(5.0)) {
             successful("unload")
           }
-          assert(response("cancelled-check").isEmpty,
-            "client-cancelled check_theory emitted a response")
+          assert(response("cancelled-recheck").isEmpty,
+            "client-cancelled load_theory emitted a response")
         }
         finally {
           release.countDown()
@@ -551,43 +551,48 @@ class MCP_Theory_Bridge_Tests extends MCP_Session_Suite(
     }
   }
 
-  spec_test("wave 2: THE staleness case: purge-before-reload picks up an on-disk edit",
-      covers = List("check_theory#T1")) {
+  /* check_theory retired 2026-09-12 (spec D-2026-09-12-retire-check-theory):
+     it was the identical call with identical parameters as load_theory, so
+     "re-checking after an edit" below is just calling load_theory again --
+     the tests and their claims (migrated from check_theory#T1-T3 to
+     load_theory#T7-T9) are unchanged. */
+  spec_test("wave 2: THE staleness case: re-loading picks up an on-disk edit",
+      covers = List("load_theory#T7")) {
     with_fixture_dir("Wave2Stale" -> wave2_theory("Wave2Stale", wave2_good)) { dir =>
       val master_dir = File.standard_path(dir)
       val file = dir + Path.basic("Wave2Stale.thy")
       expect_ok(session.load_theory("Wave2Stale", master_dir), "initial load")
 
       File.write(file, wave2_theory("Wave2Stale", wave2_bad))
-      val err = expect_error(session.check_theory("Wave2Stale", master_dir))
+      val err = expect_error(session.load_theory("Wave2Stale", master_dir))
       assert(err.contains("line"),
-        "check_theory did not pick up the on-disk edit (purge-before-reload regressed): " + err)
+        "load_theory did not pick up the on-disk edit (purge-before-reload regressed): " + err)
 
       File.write(file, wave2_theory("Wave2Stale", wave2_good))
-      expect_ok(session.check_theory("Wave2Stale", master_dir),
-        "check_theory did not recover once the fixture was fixed")
+      expect_ok(session.load_theory("Wave2Stale", master_dir),
+        "load_theory did not recover once the fixture was fixed")
     }
   }
 
-  spec_test("wave 2: checking a never-loaded filesystem theory works (purge no-op path)",
-      covers = List("check_theory#T2")) {
+  spec_test("wave 2: loading a never-loaded filesystem theory works (purge no-op path)",
+      covers = List("load_theory#T8")) {
     with_fixture_dir("Wave2Fresh" -> wave2_theory("Wave2Fresh", wave2_good)) { dir =>
-      expect_ok(session.check_theory("Wave2Fresh", File.standard_path(dir)))
+      expect_ok(session.load_theory("Wave2Fresh", File.standard_path(dir)))
     }
   }
 
   spec_test("wave 2: warnings are ok, errors are isError (the pinned warning policy)",
-      covers = List("check_theory#T3")) {
+      covers = List("load_theory#T9")) {
     with_fixture_dir(
       "Wave2Warn" -> wave2_theory("Wave2Warn", wave2_warn),
       "Wave2Err" -> wave2_theory("Wave2Err", wave2_bad)
     ) { dir =>
       val master_dir = File.standard_path(dir)
-      val warn_text = expect_ok(session.check_theory("Wave2Warn", master_dir),
+      val warn_text = expect_ok(session.load_theory("Wave2Warn", master_dir),
         "a sorry-only fixture must be ok, not isError")
       assert(warn_text.contains("warning"),
-        "check_theory ok reply on a sorry fixture should still mention the warning: " + warn_text)
-      expect_error(session.check_theory("Wave2Err", master_dir))
+        "load_theory ok reply on a sorry fixture should still mention the warning: " + warn_text)
+      expect_error(session.load_theory("Wave2Err", master_dir))
     }
   }
 

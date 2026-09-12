@@ -99,7 +99,7 @@ end
           original.copy(command = first.id, exec = firstExec))), "no completed theory end")
 
         File.write(source, ancestor("after"))
-        val checked = backend.check_theory("SelectorAncestor", File.standard_path(dir))
+        val checked = backend.load_theory("SelectorAncestor", File.standard_path(dir))
         assert(checked.ok, checked.toString)
         val current = selector(backend)
         assert(current.exec != original.exec, "ancestor change did not reexecute the wrapper end")

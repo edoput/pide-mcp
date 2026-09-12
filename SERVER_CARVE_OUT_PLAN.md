@@ -70,6 +70,12 @@ Scala builtins: `load_theory`, `check_theory`, `unload_theory`, `list_sessions`,
 `list_theories`, `search_sources`, `doc_list`, `doc_read`. User-declared ML tools
 remain extensible; they are not a hard-coded eight-tool catalogue.
 
+> Superseded 2026-09-12: `check_theory` is retired (see CHANGELOG and spec
+> D-2026-09-12-retire-check-theory). It was never distinct from
+> `load_theory` -- both called the same `use_theories_result` with the same
+> parameters. The catalogue is now seven builtins, not eight; this
+> historical record is left as written above rather than rewritten.
+
 Delete all MCP resources, mutable resource/tool scopes, existing REPLs, old
 `sledgehammer`, `find_theorems`, `find_definition`, their source/navigation
 attachments, and the IR bridge/engine. Do not migrate retired tools first.
@@ -289,7 +295,15 @@ tests/history from accidentally surviving implementation.
 
 `load_theory` and `check_theory` presently duplicate directory resolution and
 both call headless `session.use_theories`; retain both public tools. A private
-helper is optional if edits touch that duplication anyway. `search_sources`
+helper is optional if edits touch that duplication anyway.
+
+> Superseded 2026-09-12: the duplication was total, not partial -- both
+> methods were the same call with the same parameters, confirmed by
+> identical replies from the running server. `check_theory` is retired
+> rather than deduplicated internally; see CHANGELOG and spec
+> D-2026-09-12-retire-check-theory.
+
+`search_sources`
 currently uses name `.contains(pattern)`, not content grep; retain its name and
 behavior. Discovery/docs could later run before the prover. Public readiness
 responses remain as-is, with the approved live-root finalization check before Ready. Query_Operation/with_overlay, richer Toplevel.state results,

@@ -40,6 +40,14 @@ signals
   the agent transcribe positions accurately?
 - second load of the same theory (agents often retry): sensible
   no-op or confusing error?
+- the edit-verify loop (migrated from the retired check_theory eval,
+  2026-09-12: check_theory was identical to load_theory, so this is
+  now load_theory's own staleness test): after the agent fixes a file
+  ON DISK, does it call load_theory again to get a genuinely fresh
+  verdict, or does it report success from stale pre-edit diagnostics
+  (or its own eyeballing of the diff)? load_theory re-reads the file
+  fresh on every call, so a second call is the correct and sufficient
+  re-check -- there is no separate "check" tool to reach for.
 
 reflection
 ----------

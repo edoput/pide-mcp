@@ -352,9 +352,9 @@ class MCP_Tools_Tests extends MCP_Suite {
     }
   }
 
-  test("builtin catalogue contains exactly the retained eight tools") {
+  test("builtin catalogue contains exactly the retained seven tools") {
     assertEquals(MCP_Server.builtins.map(_.name).toSet,
-      Set("load_theory", "check_theory", "unload_theory", "list_sessions",
+      Set("load_theory", "unload_theory", "list_sessions",
         "list_theories", "search_sources", "doc_list", "doc_read"))
   }
 
@@ -395,12 +395,13 @@ class MCP_Tools_Tests extends MCP_Suite {
     }
   }
 
-  test("tools/list includes load_theory/unload_theory/check_theory") {
+  test("tools/list includes load_theory/unload_theory, and no check_theory") {
     val tools = get_list(rpc("tools/list"), "result", "tools")
     val names = tools.map(t => get_string(t, "name")).toSet
     assert(names.contains("load_theory"), "missing load_theory")
     assert(names.contains("unload_theory"), "missing unload_theory")
-    assert(names.contains("check_theory"), "missing check_theory")
+    assert(!names.contains("check_theory"),
+      "check_theory should be retired -- it was identical to load_theory")
     assertEquals(required_args(tool_row("load_theory")), List("name"))
   }
 
@@ -431,13 +432,6 @@ class MCP_Tools_Tests extends MCP_Suite {
   test("tools/call unload_theory on a loaded theory succeeds") {
     assert_no_error(call_tool("unload_theory", JSON.Object("name" -> "Loaded")))
   }
-
-  test("tools/call check_theory reaches backend.check_theory") {
-    val backend = new Fake_Backend
-    val reply = call_tool("check_theory", JSON.Object("name" -> "Draft.Foo"), backend)
-    assert_no_error(reply)
-  }
-
 
   test("tools/list includes list_sessions with readOnlyHint and idempotentHint") {
     val row = tool_row("list_sessions")
@@ -1327,16 +1321,17 @@ class MCP_Doc_Read_Tests extends MCP_Suite {
     assert(Doc_Catalog.plain_read(news_path, "not-a-range").isLeft)
   }
 
-  /* T5: truncation -- a chapter-level section (the toplevel chapter
-     heading itself, spanning the whole file) truncates at the window with
-     the "narrow" note. */
-  spec_test("a chapter-sized section read truncates with a narrow-the-section note",
+  /* T5: windowing -- a chapter-level section (the toplevel chapter
+     heading itself, spanning the whole file) is windowed at the default
+     limit (Window, mcp/src/utils.scala) with a "narrow the section" note
+     alongside the offset continuation hint. */
+  spec_test("a chapter-sized section read windows with a narrow-the-section note",
       covers = List("doc_read#T5")) {
     val chapter = isar_ref_toc.find(_.level == 0).getOrElse(fail("no chapter heading found"))
     val in_file = isar_ref_toc.filter(_.file == chapter.file)
     val text = Doc_Catalog.section_text(in_file, chapter)
-    assert(text.contains("truncated") && text.contains("narrow the section"),
-      "a whole-chapter read should exceed the window and truncate: " + text.takeRight(200))
+    assert(text.contains("showing") && text.contains("narrow the section"),
+      "a whole-chapter read should exceed the window and get windowed: " + text.takeRight(200))
   }
 
   /* T6 (D1a canary): every heading-command occurrence in the bundled

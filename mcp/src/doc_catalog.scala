@@ -92,23 +92,11 @@ object Doc_Catalog {
 
   /* the window cap for oversized reads (spec "large reads are sliceable...
      a read without parameters on an oversized resource returns the first
-     window ... instead of the full payload" -- the spec pins the RULE but
-     no concrete size anywhere in the codebase; this is the first tool to
-     implement it, so DOC_READ_WINDOW is established HERE, not reused from
-     elsewhere (there is nothing to reuse yet). Chapter-sized manual
-     sections and NEWS are both meant to truncate under this cap; narrowing
-     the request (a more specific section, an explicit lines= window) is
-     the documented way past it. */
-  val window_lines: Int = 200
-
-  private def truncate(all_lines: List[String], note_hint: String): String = {
-    if (all_lines.length <= window_lines) all_lines.mkString("\n")
-    else {
-      val shown = all_lines.take(window_lines)
-      shown.mkString("\n") +
-        "\n\n[truncated, " + (all_lines.length - window_lines) + " more lines; " + note_hint + "]"
-    }
-  }
+     window ... instead of the full payload"): shared with every other
+     list-shaped tool via Window.default_limit (mcp/src/utils.scala) rather
+     than a doc_read-only cap -- offset/limit narrow an oversized read the
+     same way they narrow list_sessions/list_theories/search_sources;
+     `section` remains the doc_read-specific way to narrow further. */
 
   /* D1a: line-anchored heading scan (the outer-syntax-span spike never
      landed, per the plan's own decision rule -- ship (a) with the line-
@@ -178,7 +166,8 @@ object Doc_Catalog {
      same file, or the end of the file if none -- a nested subsection
      stays inside its parent's slice. Every bundled manual chapter is one
      file (D1's assumption), so cross-file spans are not needed. */
-  def section_text(headings_in_file: List[Heading], heading: Heading): String = {
+  def section_text(headings_in_file: List[Heading], heading: Heading,
+      offset: Int = 0, limit: Int = Window.default_limit): String = {
     val content = split_lines(File.read(heading.file))
     val start = heading.line - 1
     val end =
@@ -188,18 +177,19 @@ object Doc_Catalog {
         .sorted
         .headOption
         .getOrElse(content.length)
-    truncate(content.slice(start, end), "narrow the section")
+    Window(content.slice(start, end), offset, limit, Some("narrow the section"))
   }
 
   /* plain-entry reads (NEWS, COPYRIGHT, examples): `lines` windows exactly
      like the spec's isabelle://theory/{name}?lines=120-180 -- a 1-based,
-     inclusive "start-stop" range. No `lines` given: the oversized-read
-     rule (first window_lines + truncation note) applies, same as an
-     unparameterized manual section read; an explicit `lines` request is
-     never truncated further -- the caller asked for exactly that. */
-  def plain_read(path: Path, lines: String): Either[String, String] = {
+     inclusive "start-stop" range, kept for that exact contract (plans/
+     doc_read T4). No `lines` given: offset/limit apply instead, same as
+     every other list-shaped tool; an explicit `lines` request is never
+     windowed further -- the caller asked for exactly that. */
+  def plain_read(path: Path, lines: String, offset: Int = 0,
+      limit: Int = Window.default_limit): Either[String, String] = {
     val content = split_lines(File.read(path))
-    if (lines.isEmpty) Right(truncate(content, "use lines=\"" + (window_lines + 1) + "-...\""))
+    if (lines.isEmpty) Right(Window(content, offset, limit, Some("or use lines=\"start-stop\"")))
     else
       lines match {
         case Lines_Range(from_s, to_s) =>
