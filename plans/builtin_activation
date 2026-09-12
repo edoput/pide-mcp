@@ -3,9 +3,9 @@ builtin_activation — retained server obligations
 
 Status: retained contract; current carve-out verification pending.
 
-Keep one ML activation layer for advertising the Scala builtins. The exact builtin rows are load_theory, check_theory, unload_theory, list_sessions, list_theories, search_sources, doc_list and doc_read.
+Keep one ML activation layer for advertising the Scala builtins. The exact builtin rows are load_theory, unload_theory, list_sessions, list_theories, search_sources, doc_list and doc_read.
 
-Scala retains descriptions, schemas and implementations. The eight Scala builtin schemas do not receive the reserved ML-tool context parameter. ML builtin rows affect listing; preserve the existing empty-row availability fallback and direct Scala call dispatch. ML tools must be registered and active in the root catalogue to be invoked. Static configurable availability policy is deferred.
+Scala retains descriptions, schemas and implementations. The seven Scala builtin schemas do not receive the reserved ML-tool context parameter. ML builtin rows affect listing; preserve the existing empty-row availability fallback and direct Scala call dispatch. ML tools must be registered and active in the root catalogue to be invoked. Static configurable availability policy is deferred.
 
 Verify exact equality between Scala builtin names and ML builtin activation names, inactive builtin listing behavior, empty-row fallback and inactive ML rejection. No mutable connection catalogue or activation control exists.
 

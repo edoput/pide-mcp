@@ -3,7 +3,7 @@ recap — retained server obligations
 
 Status: retained contract; current carve-out verification pending.
 
-The approved server boundary is SERVER_CARVE_OUT_PLAN.md. The retained Scala tools are load_theory, check_theory, unload_theory, list_sessions, list_theories, search_sources, doc_list and doc_read. ML tools remain extensible through declarations.
+The approved server boundary is SERVER_CARVE_OUT_PLAN.md. The retained Scala tools are load_theory, unload_theory, list_sessions, list_theories, search_sources, doc_list and doc_read (check_theory retired 2026-09-12: identical to load_theory). ML tools remain extensible through declarations.
 
 Implementation and acceptance are incomplete until the retained runtime checks pass at a fixed revision. Retired contracts are deleted rather than counted as missing coverage. Replacement proof tooling, diagnostic queries, resolver result changes and static availability policy are deferred.
 

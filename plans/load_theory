@@ -3,7 +3,7 @@ load_theory — retained server obligations
 
 Status: retained contract; current carve-out verification pending.
 
-Load a theory and its dependencies through Headless.Session.use_theories. Resolve session-qualified names through the session structure or use master_dir. Return per-theory status and positioned messages. Preserve cancellation and document-mutation serialization. No resource registration or source attachment follows loading.
+Load a theory and its dependencies through Headless.Session.use_theories. Resolve session-qualified names through the session structure or use master_dir. Return per-theory status and positioned messages. Preserve cancellation and document-mutation serialization. No resource registration or source attachment follows loading. Also the sole re-check path: use_theories re-reads the file fresh on every call, so calling load_theory again after an on-disk edit is already "check_theory" -- there is no separate tool or method for it (retired 2026-09-12, see CHANGELOG and spec D-2026-09-12-retire-check-theory).
 
 Verification obligations
 ------------------------
@@ -17,3 +17,11 @@ T3 [bridge] Session-qualified names resolve without master_dir through the start
 T4 [bridge] Loading an unchanged theory succeeds.
 
 T6 [e2e] Load a filesystem fixture, edit it, and check the edited file through the retained public tools.
+
+T7 [bridge] Load a valid fixture, edit it to introduce an error, load again and observe that error, then fix and load again successfully. (migrated from the retired check_theory#T1: load_theory re-reads the file fresh on every call, so re-checking after an edit is the same call, not a separate tool.)
+
+T8 [bridge] Loading a never-loaded filesystem theory succeeds when the source is valid. (migrated from check_theory#T2.)
+
+T9 [bridge] Warnings remain diagnostics without becoming fatal errors; errors make loading fail. (migrated from check_theory#T3.)
+
+T10 [e2e] The public tool workflow loads, edits and re-loads a theory and reports the changed source accurately. (migrated from check_theory#T4.)
