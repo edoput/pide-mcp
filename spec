@@ -3,7 +3,7 @@ Isabelle MCP server specification
 id: S-isabelle-mcp-server-specification
 
 The product is an extensible MCP server for Isabelle. Scala owns JSON-RPC,
-transport, lifecycle and eight builtins. Isabelle/ML owns tool declarations,
+transport, lifecycle and seven builtins. Isabelle/ML owns tool declarations,
 activation, tool implementation, target resolution and execution contexts.
 
 Public surface
@@ -14,13 +14,28 @@ tools/call and the existing lifecycle/cancellation notifications. Resources,
 templates, resource notifications, mutable scopes, REPL implementations, the IR
 engine and the old proof-search/navigation tools are retired without shims.
 
-The Scala tools are load_theory, check_theory, unload_theory, list_sessions,
-list_theories, search_sources, doc_list and doc_read. The first two use headless
-session.use_theories and report theory status/messages. Unload preserves the
+The Scala tools are load_theory, unload_theory, list_sessions,
+list_theories, search_sources, doc_list and doc_read. load_theory uses headless
+session.use_theories and reports theory status/messages; re-reading and
+re-checking an already-loaded theory is the same call with the same result,
+so there is no separate check_theory. Unload preserves the
 image guard. Discovery uses the existing session catalogue; search_sources is a
 theory-name substring search. Documentation uses the existing Scala catalogue.
 Keep existing public readiness responses and parameter contracts; the live-root
 readiness proof below is required before entering Ready.
+
+Retired check_theory
+---------------------
+id: D-2026-09-12-retire-check-theory
+check_theory is removed without a shim. It was never anything but load_theory
+under another name: both called the identical use_theories_result with
+identical parameters, confirmed empirically (byte-identical replies for the
+same theory and arguments) and structurally (mcp_session.scala's two method
+bodies were the same call). load_theory already re-reads the theory file
+fresh on every call and reports its current diagnostics, which is the whole
+of what check_theory's "re-check after an edit" framing needed. Removing it
+frees the name "check_theory" for a community mcp_tool declaration, since it
+is no longer a reserved Scala builtin name.
 
 Root catalogue and invocation target
 ------------------------------------
@@ -83,14 +98,15 @@ Verification and deferred work
 id: S-verification-and-deferred-work
 Keep transport race/output tests, root-versus-target conflicting-tool fixtures,
 ancestor reprocessing, resolver extensions, imported/sibling isolation, HOL
-registration, declaration notifications and the eight builtin workflows. Remove
+registration, declaration notifications and the seven builtin workflows. Remove
 obsolete contracts and their tests instead of preserving compatibility. Static
 metadata is not runtime evidence; tools/planning-gate done is the acceptance
 command and must run at a stable revision with the selected installation.
 
 Replacement proof-search tools, Query_Operation/with_overlay, richer target
 states, fine-grained checking, static availability policy, notification batching,
-pre-prover discovery and load/check consolidation remain deferred.
+and pre-prover discovery remain deferred. load/check consolidation is done
+(see D-2026-09-12-retire-check-theory above), not deferred.
 
 Stable refinement anchors
 -------------------------

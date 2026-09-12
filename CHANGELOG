@@ -1,3 +1,17 @@
+2026-09-12 — retire check_theory
+================================
+
+Remove check_theory: it was never distinct from load_theory. Both methods
+called the identical use_theories_result with identical parameters
+(mcp_session.scala), and calling load_theory then check_theory on the same
+theory with the same arguments produced byte-identical replies against the
+running server. load_theory already re-reads the theory file fresh on every
+call, which is the whole of what check_theory's "re-check after an edit"
+framing needed. No shim; the server now advertises seven Scala builtins.
+Removing the reserved name also frees "check_theory" for a community
+mcp_tool declaration. check_theory#T1-T4's claims migrate to
+load_theory#T7-T10 (plans/load_theory); plans/check_theory is deleted.
+
 2026-09-10 — approved server carve-out
 ====================================
 
