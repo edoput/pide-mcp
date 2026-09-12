@@ -10,7 +10,7 @@ import isabelle._
 
 
 /* Range-windowing shared by every list-shaped tool result (list_sessions,
-   list_theories, search_sources, load_theory/check_theory diagnostics,
+   list_theories, search_sources, load_theory diagnostics,
    doc_read's oversized-read fallback): an agent-controlled offset/limit
    over already-formatted rows, mirroring this harness's own file-reading
    tool's offset/limit convention rather than each tool inventing its own

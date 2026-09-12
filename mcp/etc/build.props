@@ -32,7 +32,6 @@ sources = \
   src/mcp_session.scala \
   src/tools/load_theory.scala \
   src/tools/unload_theory.scala \
-  src/tools/check_theory.scala \
   src/tools/list_sessions.scala \
   src/tools/list_theories.scala \
   src/tools/search_sources.scala \

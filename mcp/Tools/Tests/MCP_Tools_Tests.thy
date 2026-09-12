@@ -251,7 +251,7 @@ val (_, (_, (_, (_, ptyp_fixture_annot)))) =
   never reach exposure-name computation.*)
 \<^assert> (not (exists (fn (n, _, _) => n = "MCP_Tools.list_sessions") rows));
 \<^assert> (member (op =) builtin_rows ("list_sessions", true));
-\<^assert> (member (op =) builtin_rows ("check_theory", true));
+\<^assert> (member (op =) builtin_rows ("unload_theory", true));
 \<^assert> (MCP_Tool.is_active (Context.Proof \<^context>) "MCP_Tools.list_sessions");
 \<^assert> (Exn.is_exn (Exn.capture_body (fn () =>
   MCP_Tool.run \<^context> "MCP_Tools.list_sessions" [])));

@@ -3,8 +3,10 @@ Retained tool evaluations
 
 These task prompts assess whether an agent selects and reads the retained tools
 correctly. They complement executable tests and do not establish runtime
-acceptance. Retained cases cover load/check/unload, session/theory discovery and
-theory-name substring search. Documentation and user-declared ML tool behavior
+acceptance. Retained cases cover load/unload, session/theory discovery and
+theory-name substring search. check_theory is retired (2026-09-12): it was
+identical to load_theory, and its edit-verify-loop signal now lives in
+evals/load_theory. Documentation and user-declared ML tool behavior
 can be evaluated with small fixtures using the same prompt/success format.
 
 Do not require retired interfaces in a surviving evaluation. Report tool output

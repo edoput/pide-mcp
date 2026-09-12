@@ -54,20 +54,18 @@ trait MCP_Backend {
   def set_changed_handler(handler: String => Unit): Unit = ()
   /* range-windowing (Window, mcp/src/utils.scala): offset/limit slice the
      rendered rows/diagnostic lines; include_output additionally gates
-     writeln/tracing/information proof-trace noise into load_theory/
-     check_theory's report. Each fixed-arity overload below is a plain
-     forwarding convenience (not a default-argument override, which Scala
-     forbids redeclaring on an overriding method) so existing callers with
-     fewer arguments keep compiling unchanged. */
+     writeln/tracing/information proof-trace noise into load_theory's
+     report (also the re-check path: it re-reads from disk on every call,
+     so there is no separate check_theory -- retired 2026-09-12, spec
+     D-2026-09-12-retire-check-theory). Each fixed-arity overload below is
+     a plain forwarding convenience (not a default-argument override,
+     which Scala forbids redeclaring on an overriding method) so existing
+     callers with fewer arguments keep compiling unchanged. */
   def load_theory(name: String, master_dir: String, include_output: Boolean,
     offset: Int, limit: Int): MCP_Session.Result
   def load_theory(name: String, master_dir: String): MCP_Session.Result =
     load_theory(name, master_dir, false, 0, Window.default_limit)
   def unload_theory(name: String): MCP_Session.Result
-  def check_theory(name: String, master_dir: String, include_output: Boolean,
-    offset: Int, limit: Int): MCP_Session.Result
-  def check_theory(name: String, master_dir: String): MCP_Session.Result =
-    check_theory(name, master_dir, false, 0, Window.default_limit)
   def list_sessions_info(offset: Int, limit: Int): MCP_Session.Result
   def list_sessions_info(): MCP_Session.Result = list_sessions_info(0, Window.default_limit)
   def list_theories_info(session: String, offset: Int, limit: Int): MCP_Session.Result
@@ -840,11 +838,11 @@ class MCP_Session private(
     }
   }
 
-  /* shared by load_theory and check_theory: run use_theories and render a
-     per-node status report; isError only on genuine errors (server_commands.
-     scala's Use_Theories reference idiom for messages/positions), never on
-     warnings alone -- pinned as the warning policy (plans/check_theory
-     step 1). */
+  /* load_theory's core, including its re-check use: run use_theories and
+     render a per-node status report; isError only on genuine errors
+     (server_commands.scala's Use_Theories reference idiom for messages/
+     positions), never on warnings alone -- pinned as the warning policy
+     (plans/load_theory T9, migrated from the retired check_theory#T3). */
   private def use_theories_result(
     name: String,
     master_dir: String,
@@ -877,6 +875,23 @@ class MCP_Session private(
     }
   }
 
+  /* load_theory is also the sole re-check path (check_theory retired
+     2026-09-12: it was the identical call with identical parameters --
+     see CHANGELOG and spec D-2026-09-12-retire-check-theory). Calling
+     load_theory again after an on-disk edit does NOT purge first (a
+     correction of an earlier "purge before re-reading" assumption,
+     pinned here after two corrupting experiments -- see CHANGELOG).
+     Headless.Resources.purge_theories only updates its own bookkeeping
+     and never pushes purge_edits via session.update, so a manual purge
+     desyncs Resources' record of the node's old content from what the
+     live prover document actually holds; the NEXT use_theories then
+     diffs the new file content against a phantom "no prior content"
+     baseline and inserts it on top of the still-present old text,
+     corrupting the document (observed directly: duplicated theory
+     headers / outer syntax errors). use_theories reads the file fresh
+     and diffs against its OWN correctly-tracked prior content on every
+     call, so a plain re-run already picks up on-disk edits with no
+     purge needed. */
   def load_theory(
     name: String,
     master_dir: String,
@@ -898,16 +913,17 @@ class MCP_Session private(
       use_theories_result(name, resolved_master_dir, include_output, offset, limit)
     }
 
-  /* unlike check_theory, unload_theory needs an actual document-level
-     removal, not just a fresh use_theories call -- so it goes through
-     Resources.clean_theories (unload_theories + purge_theories(None) +
-     session.update in one state.change), the one purge path that DOES
-     push its edits to the live prover document and so doesn't desync
-     Resources' bookkeeping from it (see check_theory's comment for the
-     corrupting alternative this replaced). Note clean_theories' purge
-     step sweeps every currently-unrequired node, not just this one --
-     the server root has a separate lifetime requirement, so its current
-     imported ancestors survive this ordinary cleanup. */
+  /* unlike a repeat load_theory call, unload_theory needs an actual
+     document-level removal, not just a fresh use_theories call -- so it
+     goes through Resources.clean_theories (unload_theories +
+     purge_theories(None) + session.update in one state.change), the one
+     purge path that DOES push its edits to the live prover document and
+     so doesn't desync Resources' bookkeeping from it (see load_theory's
+     comment above for the corrupting alternative this replaced). Note
+     clean_theories' purge step sweeps every currently-unrequired node,
+     not just this one -- the server root has a separate lifetime
+     requirement, so its current imported ancestors survive this
+     ordinary cleanup. */
   def unload_theory(name: String): MCP_Session.Result =
     serialized_theory_mutation {
       if (image_tier(name)) {
@@ -929,40 +945,6 @@ class MCP_Session private(
             MCP_Session.Ok("Unloaded " + quote(node_name.theory))
           }
       }
-    }
-
-  /* check_theory: NO explicit purge before reload (a correction of the
-     plan's original "purge before re-reading" assumption, pinned here
-     after two corrupting experiments -- see CHANGELOG). Headless.
-     Resources.purge_theories only updates its own bookkeeping and never
-     pushes purge_edits via session.update, so a manual purge desyncs
-     Resources' record of the node's old content from what the live
-     prover document actually holds; the NEXT use_theories then diffs
-     the new file content against a phantom "no prior content" baseline
-     and inserts it on top of the still-present old text, corrupting the
-     document (observed directly: duplicated theory headers / outer
-     syntax errors). use_theories reads the file fresh and diffs against
-     its OWN correctly-tracked prior content on every call, so a plain
-     re-run already picks up on-disk edits with no purge needed. */
-  def check_theory(
-    name: String,
-    master_dir: String,
-    include_output: Boolean,
-    offset: Int,
-    limit: Int
-  ): MCP_Session.Result =
-    serialized_theory_mutation {
-      val resolved_master_dir =
-        if (master_dir.isEmpty) {
-          resolve_theory(name) match {
-            case Some((_, FileSystemTier(path))) =>
-              File.standard_path(path.dir)
-            case Some((_, _)) => master_dir
-            case None => master_dir
-          }
-        }
-        else master_dir
-      use_theories_result(name, resolved_master_dir, include_output, offset, limit)
     }
 
   /* wave 3 library discovery tools: pure functions over structure/deps

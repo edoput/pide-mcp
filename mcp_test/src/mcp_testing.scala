@@ -80,11 +80,6 @@ class Fake_Backend extends MCP_Backend {
       MCP_Session.Ok("Unloaded " + quote(name))
     }
     else MCP_Session.Error("Cannot unload " + quote(name) + ": it was not loaded")
-  def check_theory(name: String, master_dir: String, include_output: Boolean,
-      offset: Int, limit: Int): MCP_Session.Result = {
-    loaded_theories += name
-    MCP_Session.Ok(name + ": ok")
-  }
   def list_sessions_info(offset: Int, limit: Int): MCP_Session.Result =
     MCP_Session.Ok("   session       chapter  heap  theories\n   HOL           main     ✓      42\n   HOL-Library   main     ✓      18")
   def list_theories_info(session: String, offset: Int, limit: Int): MCP_Session.Result =
@@ -122,8 +117,6 @@ class Throwing_Backend extends MCP_Backend {
   def load_theory(name: String, master_dir: String, include_output: Boolean,
       offset: Int, limit: Int): MCP_Session.Result = boom
   def unload_theory(name: String): MCP_Session.Result = boom
-  def check_theory(name: String, master_dir: String, include_output: Boolean,
-      offset: Int, limit: Int): MCP_Session.Result = boom
   def list_sessions_info(offset: Int, limit: Int): MCP_Session.Result = boom
   def list_theories_info(session: String, offset: Int, limit: Int): MCP_Session.Result = boom
   def search_sources(pattern: String, offset: Int, limit: Int): MCP_Session.Result = boom

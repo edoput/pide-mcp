@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ISABELLE = list(resolve_launcher().argv)
 TIMEOUT = float(os.environ.get("MCP_TEST_TIMEOUT", "600"))
 HANDSHAKE_TIMEOUT = float(os.environ.get("MCP_HANDSHAKE_TIMEOUT", "60"))
-BUILTINS = {"load_theory", "check_theory", "unload_theory", "list_sessions",
+BUILTINS = {"load_theory", "unload_theory", "list_sessions",
             "list_theories", "search_sources", "doc_list", "doc_read"}
 failures = 0
 
@@ -158,11 +158,11 @@ declare [[mcp_tools del: doc_list]]
             verdict("declaration emits tools notification while load is pending",
                     client.await_notification("notifications/tools/list_changed"))
             write_draft('ML \\<open>error "fixture-error"\\<close>')
-            reply = call(client, "check_theory", name=draft, master_dir=str(path))
-            verdict("check_theory reports edited error", "fixture-error" in text_of(reply), reply)
+            reply = call(client, "load_theory", name=draft, master_dir=str(path))
+            verdict("re-loading reports the edited error", "fixture-error" in text_of(reply), reply)
             write_draft('ML \\<open>writeln "fixed"\\<close>')
-            reply = call(client, "check_theory", name=draft, master_dir=str(path))
-            verdict("check_theory accepts repaired file", not is_err(reply) and "fixture-error" not in text_of(reply), reply)
+            reply = call(client, "load_theory", name=draft, master_dir=str(path))
+            verdict("re-loading accepts the repaired file", not is_err(reply) and "fixture-error" not in text_of(reply), reply)
             verdict("unload_theory removes loaded document", not is_err(call(client, "unload_theory", name=draft)))
             verdict("unload_theory rejects image theory", is_err(call(client, "unload_theory", name=theory)))
 
@@ -188,7 +188,7 @@ def test_live_root_refresh():
             for version in ["version-one", "version-two"]:
                 if version == "version-two":
                     write_ancestor(version)
-                    reply = call(client, "check_theory", name=ancestor, master_dir=str(path))
+                    reply = call(client, "load_theory", name=ancestor, master_dir=str(path))
                     verdict("reprocess imported local ancestor", not is_err(reply), reply)
                 rows = client.request("tools/list")["result"]["tools"]
                 probe = next((row for row in rows if row["name"] == "inherited_probe"), {})

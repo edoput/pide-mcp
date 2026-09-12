@@ -352,9 +352,9 @@ class MCP_Tools_Tests extends MCP_Suite {
     }
   }
 
-  test("builtin catalogue contains exactly the retained eight tools") {
+  test("builtin catalogue contains exactly the retained seven tools") {
     assertEquals(MCP_Server.builtins.map(_.name).toSet,
-      Set("load_theory", "check_theory", "unload_theory", "list_sessions",
+      Set("load_theory", "unload_theory", "list_sessions",
         "list_theories", "search_sources", "doc_list", "doc_read"))
   }
 
@@ -395,12 +395,13 @@ class MCP_Tools_Tests extends MCP_Suite {
     }
   }
 
-  test("tools/list includes load_theory/unload_theory/check_theory") {
+  test("tools/list includes load_theory/unload_theory, and no check_theory") {
     val tools = get_list(rpc("tools/list"), "result", "tools")
     val names = tools.map(t => get_string(t, "name")).toSet
     assert(names.contains("load_theory"), "missing load_theory")
     assert(names.contains("unload_theory"), "missing unload_theory")
-    assert(names.contains("check_theory"), "missing check_theory")
+    assert(!names.contains("check_theory"),
+      "check_theory should be retired -- it was identical to load_theory")
     assertEquals(required_args(tool_row("load_theory")), List("name"))
   }
 
@@ -431,13 +432,6 @@ class MCP_Tools_Tests extends MCP_Suite {
   test("tools/call unload_theory on a loaded theory succeeds") {
     assert_no_error(call_tool("unload_theory", JSON.Object("name" -> "Loaded")))
   }
-
-  test("tools/call check_theory reaches backend.check_theory") {
-    val backend = new Fake_Backend
-    val reply = call_tool("check_theory", JSON.Object("name" -> "Draft.Foo"), backend)
-    assert_no_error(reply)
-  }
-
 
   test("tools/list includes list_sessions with readOnlyHint and idempotentHint") {
     val row = tool_row("list_sessions")

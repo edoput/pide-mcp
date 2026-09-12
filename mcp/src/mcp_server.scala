@@ -186,7 +186,7 @@ object MCP_Server {
 
   val builtins: List[Builtin_Tool] =
     List(tools.LoadTheory.load_theory_tool, tools.UnloadTheory.unload_theory_tool,
-      tools.CheckTheory.check_theory_tool, tools.ListSessions.list_sessions_tool,
+      tools.ListSessions.list_sessions_tool,
       tools.ListTheories.list_theories_tool, tools.SearchSources.search_sources_tool,
       tools.DocList.doc_list_tool, tools.DocRead.doc_read_tool)
 
@@ -194,7 +194,6 @@ object MCP_Server {
      root names.  Implementations live in isabelle.mcp.tools. */
   val load_theory_tool: Builtin_Tool = tools.LoadTheory.load_theory_tool
   val unload_theory_tool: Builtin_Tool = tools.UnloadTheory.unload_theory_tool
-  val check_theory_tool: Builtin_Tool = tools.CheckTheory.check_theory_tool
   val list_sessions_tool: Builtin_Tool = tools.ListSessions.list_sessions_tool
   val list_theories_tool: Builtin_Tool = tools.ListTheories.list_theories_tool
   val search_sources_tool: Builtin_Tool = tools.SearchSources.search_sources_tool

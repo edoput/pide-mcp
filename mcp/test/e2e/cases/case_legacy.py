@@ -10,10 +10,10 @@ from mcp.test.e2e.registry import e2e_test
     entrypoint="mcp/test/test_mcp.py",
     verifies=("python_e2e#A1",),
     covers=(
-        "check_theory#T4",
         "context_locator#T5",
         "context_locator#T6",
         "load_theory#T6",
+        "load_theory#T10",
         "planning_gate#T8",
         "python_e2e#T4",
         "unload_theory#T5",

@@ -99,7 +99,7 @@ object MCP_Pide_Payload_Measure {
         "string_fun", Nil, MCP_Session.Tool_Annotations.default))
     XML.Encode.pair(XML.Encode.list(encode_tool_row),
       XML.Encode.list(XML.Encode.pair(XML.Encode.string, XML.Encode.bool)))(
-        (rows, List("list_sessions" -> true, "check_theory" -> false)))
+        (rows, List("list_sessions" -> true, "unload_theory" -> false)))
   }
 
   private def status_text(text: String): XML.Body =
